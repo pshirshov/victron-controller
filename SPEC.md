@@ -565,19 +565,48 @@ Write operations the service owns exclusively: `setZappiChargeMode` (Fast/Eco/Ec
 
 ### 10.5. Victron D-Bus (on-device, no credentials)
 
-Service instance IDs below are from the current NR flow; M1 discovery scripts will confirm the live values.
+Confirmed via `scripts/discover-victron.sh` on 2026-04-21 (Venus OS v3.70, ARMv7, kernel 6.12.23-venus-8). All instance IDs match the legacy NR flow.
 
-| Service | Paths |
-|---|---|
-| `com.victronenergy.system/0` | `/Ac/Consumption/L1/Power`, `/Ac/Grid/L1/Power`, `/Ac/Consumption/L1/Current` |
-| `com.victronenergy.battery/512` | `/Soc`, `/Soh`, `/InstalledCapacity`, `/Dc/0/Power` |
-| `com.victronenergy.solarcharger/274` | `/Yield/Power` |
-| `com.victronenergy.solarcharger/289` | `/Yield/Power` |
-| `com.victronenergy.pvinverter/33` (Soltaro) | `/Ac/Power`, `/Ac/L1/Current` |
-| `com.victronenergy.grid/34` | `/Ac/L1/Power`, `/Ac/L1/Voltage`, `/Ac/L1/Current` |
-| `com.victronenergy.vebus/275` | `/Ac/ActiveIn/L1/I`, `/Ac/In/1/CurrentLimit`, `/Ac/Out/L1/I`, `/Ac/Out/L1/P` |
-| `com.victronenergy.evcharger/35` (net EV-branch ET112) | `/Ac/Current` (signed), `/Ac/Power` (signed) |
-| `com.victronenergy.settings` | `/Settings/CGwacs/AcPowerSetPoint`, `/Settings/CGwacs/BatteryLife/State`, `/Settings/CGwacs/BatteryLife/Schedule/Charge/{0,1}/{Start,Duration,Soc,Day,AllowDischarge}` |
+| Bus name | `DeviceInstance` | `ProductName` | `Mgmt.Connection` | `Position` |
+|---|---|---|---|---|
+| `com.victronenergy.system` | 0 | (system aggregator) | — | — |
+| `com.victronenergy.battery.socketcan_can0` | 512 | Pylontech battery | CAN-bus | — |
+| `com.victronenergy.solarcharger.ttyS2` | 274 | SmartSolar MPPT RS 450/200 | VE.Direct | — |
+| `com.victronenergy.solarcharger.ttyUSB1` | 289 | SmartSolar MPPT RS 450/200 | USB | — |
+| `com.victronenergy.pvinverter.cgwacs_ttyUSB2_mb1` (Soltaro) | 33 | PV inverter on input 1 | /dev/ttyUSB2 | **0 = AC-Input-1** |
+| `com.victronenergy.grid.cgwacs_ttyUSB0_mb1` | 34 | Grid meter | /dev/ttyUSB0 | — |
+| `com.victronenergy.vebus.ttyS3` | 275 | MultiPlus-II 48/5000/70-50 | VE.Bus | — |
+| `com.victronenergy.evcharger.cgwacs_ttyUSB0_mb2` (EV-branch ET112) | 35 | EVSE | /dev/ttyUSB0 | **1 = AC-Output** |
+| `com.victronenergy.settings` | — | — | — | — |
+
+**Topology implication** — the EV-branch ET112 is on **AC-Output** (Position=1), i.e. the critical-loads side of the MultiPlus. Consequences:
+
+- When the grid drops, the Zappi/Hoymiles branch is still powered from the DC battery via the inverter.
+- The legacy current-limit controller clamps to `offgrid_current` when `zappi_active && !battery_charging` specifically to prevent unintended battery drain into the car during off-grid operation.
+- The new `allow_battery_to_car` knob (SPEC §5.9) will need to bypass that clamp — this is the defining piece of its semantics.
+
+Paths we subscribe to (by role):
+
+| Role | Bus name | Paths |
+|---|---|---|
+| System aggregates | `…system` | `/Ac/Consumption/L1/Power`, `/Ac/Grid/L1/Power`, `/Ac/Consumption/L1/Current` |
+| Battery | `…battery.socketcan_can0` | `/Soc`, `/Soh`, `/InstalledCapacity`, `/Dc/0/Power` |
+| MPPTs | `…solarcharger.ttyS2`, `…solarcharger.ttyUSB1` | `/Yield/Power` |
+| Soltaro meter | `…pvinverter.cgwacs_ttyUSB2_mb1` | `/Ac/Power`, `/Ac/L1/Current` |
+| Grid meter | `…grid.cgwacs_ttyUSB0_mb1` | `/Ac/L1/Power`, `/Ac/L1/Voltage`, `/Ac/L1/Current` |
+| Inverter (vebus) | `…vebus.ttyS3` | `/Ac/ActiveIn/L1/I`, `/Ac/In/1/CurrentLimit`, `/Ac/Out/L1/I`, `/Ac/Out/L1/P` |
+| EV-branch ET112 | `…evcharger.cgwacs_ttyUSB0_mb2` | `/Ac/Current` (signed), `/Ac/Power` (signed) |
+| Settings | `…settings` | `/Settings/CGwacs/AcPowerSetPoint`, `/Settings/CGwacs/BatteryLife/State`, `/Settings/CGwacs/BatteryLife/Schedule/Charge/{0,1}/{Start,Duration,Soc,Day,AllowDischarge}` |
+
+**Other `com.victronenergy.*` services present** (not consumed by the controller but good to have on record):
+
+- `com.victronenergy.adc` — GX analog inputs.
+- `com.victronenergy.fronius` — Fronius autodiscovery (unused — no Fronius).
+- `com.victronenergy.hub4` — ESS hub (DeviceInstance=0, ProductName=ESS). May become interesting if we want to override the ESS state directly.
+- `com.victronenergy.logger` — VRM portal logger.
+- `com.victronenergy.modbustcp` / `com.victronenergy.modbusclient.tcp` — modbus bridges.
+- `com.victronenergy.platform` — GX device info (DeviceInstance=0, ProductName=GX Device).
+- `com.victronenergy.shelly` — Shelly autodiscovery.
 
 ### 10.6. Home Assistant
 

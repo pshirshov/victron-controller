@@ -9,7 +9,10 @@
 #           services.txt             — bus-name list, one per line
 #           per-service/*.items.txt  — GetItems dump per service
 #
-# Runs one remote batch over a single SSH connection.
+# Runs one remote batch over a single SSH connection. The remote side is
+# executed via `sh -c` (passed as an argv string, not piped through
+# stdin) so it works on stock Venus OS (BusyBox ash) and avoids stdin
+# buffering issues when the remote spawns dbus-send subprocesses.
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
@@ -30,41 +33,55 @@ echo "target:  $TARGET"
 echo "outdir:  $OUTDIR"
 echo
 
-# The remote batch: single shell on Venus that dumps everything to stdout.
-# We split sections by known markers so the local side can fan out.
-# shellcheck disable=SC2016   # intentional: this literal runs on the remote side
+# The remote batch. Single-quoted string: nothing here is expanded
+# locally. Uses POSIX sh (no bashisms) — Venus OS has BusyBox ash as
+# /bin/sh, not bash.
+#
+# shellcheck disable=SC2016  # intentional: this literal runs on the remote side
 REMOTE_SCRIPT='
 set -u
 LC_ALL=C
 
-# which dbus helper?
-if command -v dbus >/dev/null 2>&1; then
-  DBUS="dbus -y"
-elif command -v dbus-send >/dev/null 2>&1; then
-  DBUS="fallback"
-else
-  echo "ERROR: no dbus CLI available on the host" >&2
+log() { echo "[remote] $*" >&2; }
+
+log "starting discovery on $(hostname 2>/dev/null || echo ?)"
+
+if ! command -v dbus-send >/dev/null 2>&1; then
+  echo "ERROR: dbus-send not found on remote" >&2
   exit 3
 fi
 
+HAS_DBUS_HELPER=0
+command -v dbus >/dev/null 2>&1 && HAS_DBUS_HELPER=1
+log "dbus helper present: $HAS_DBUS_HELPER"
+
+# Wrap dbus calls in a short timeout so a hung daemon does not block the
+# whole run. BusyBox usually ships `timeout`, but not always on Venus.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT="timeout 10"
+  log "using timeout wrapper"
+else
+  TIMEOUT=""
+  log "no timeout command available; dbus calls will not be time-limited"
+fi
+
 get_value() {
-  svc="$1"; path="$2"
-  if [ "$DBUS" = "fallback" ]; then
-    dbus-send --system --print-reply=literal --dest="$svc" "$path" \
-      com.victronenergy.BusItem.GetValue 2>/dev/null \
-      | awk "{for(i=1;i<=NF;i++)if(\$i~/variant/){for(j=i+1;j<=NF;j++)printf \"%s \",\$j;print \"\"}}" \
-      | sed "s/[[:space:]]*$//"
+  svc=$1; path=$2
+  if [ "$HAS_DBUS_HELPER" = 1 ]; then
+    $TIMEOUT dbus -y "$svc" "$path" GetValue 2>/dev/null </dev/null || true
   else
-    dbus -y "$svc" "$path" GetValue 2>/dev/null || true
+    $TIMEOUT dbus-send --system --print-reply=literal --dest="$svc" "$path" \
+      com.victronenergy.BusItem.GetValue 2>/dev/null </dev/null || true
   fi
 }
 
 dump_items() {
-  svc="$1"
-  if [ "$DBUS" = "fallback" ]; then
-    dbus-send --system --print-reply --dest="$svc" / com.victronenergy.BusItem.GetItems 2>&1
+  svc=$1
+  if [ "$HAS_DBUS_HELPER" = 1 ]; then
+    $TIMEOUT dbus -y "$svc" / GetItems 2>&1 </dev/null || echo "(GetItems failed)"
   else
-    dbus -y "$svc" / GetItems 2>&1
+    $TIMEOUT dbus-send --system --print-reply --dest="$svc" / \
+      com.victronenergy.BusItem.GetItems 2>&1 </dev/null || echo "(GetItems failed)"
   fi
 }
 
@@ -73,42 +90,66 @@ echo "host:           $(hostname 2>/dev/null || echo unknown)"
 echo "date_utc:       $(date -u +%FT%TZ)"
 echo "venus_version:  $(cat /opt/victronenergy/version 2>/dev/null || echo unknown)"
 echo "kernel:         $(uname -a 2>/dev/null || echo unknown)"
-echo "dbus_tool:      $DBUS"
+echo "dbus_helper:    $HAS_DBUS_HELPER"
 echo
 
+log "listing services..."
 echo "=== SERVICES ==="
-SERVICES="$(
-  dbus-send --system --print-reply=literal \
+
+# Raw ListNames output — include verbatim in dump.txt so we can debug
+# parsing issues when the grep below returns nothing.
+RAW_LIST=$(
+  $TIMEOUT dbus-send --system --print-reply \
     --dest=org.freedesktop.DBus /org/freedesktop/DBus \
-    org.freedesktop.DBus.ListNames 2>/dev/null \
-  | tr " " "\n" \
-  | grep -E "^com\.victronenergy\." \
-  | sort -u
-)"
+    org.freedesktop.DBus.ListNames 2>&1 </dev/null \
+  || echo "(ListNames failed)"
+)
+
+# Extract Victron service names from wherever they appear in the output.
+# Matches both `com.victronenergy.battery` and `com.victronenergy.battery.ttyUSB0`.
+SERVICES=$(printf "%s\n" "$RAW_LIST" \
+  | grep -oE "com\.victronenergy\.[A-Za-z0-9._-]+" \
+  | sort -u)
+
 echo "$SERVICES"
 echo
 
+N=$(printf "%s\n" "$SERVICES" | grep -c .)
+if [ "$N" = 0 ]; then
+  echo "=== RAW LISTNAMES (no Victron services parsed — debug dump follows) ==="
+  printf "%s\n" "$RAW_LIST"
+  echo "=== /RAW LISTNAMES ==="
+  log "no services matched; raw ListNames captured in dump.txt for inspection"
+fi
+log "dumping $N services..."
+I=0
 for svc in $SERVICES; do
-  inst="$(get_value "$svc" /DeviceInstance)"
-  prod="$(get_value "$svc" /ProductName)"
-  mgmt="$(get_value "$svc" /Mgmt/Connection)"
-  pos="$(get_value "$svc" /Position)"
+  I=$((I+1))
+  log "  [$I/$N] $svc"
   echo "=== BEGIN $svc ==="
-  echo "DeviceInstance:  $inst"
-  echo "ProductName:     $prod"
-  echo "Mgmt.Connection: $mgmt"
-  echo "Position:        $pos"
+  echo "DeviceInstance:  $(get_value "$svc" /DeviceInstance)"
+  echo "ProductName:     $(get_value "$svc" /ProductName)"
+  echo "Mgmt.Connection: $(get_value "$svc" /Mgmt/Connection)"
+  echo "Position:        $(get_value "$svc" /Position)"
   echo "--- items ---"
   dump_items "$svc"
   echo "=== END $svc ==="
   echo
 done
+
+log "done"
 '
 
-# shellcheck disable=SC2029
-ssh "${SSH_OPTS[@]}" "$TARGET" bash -s > "$OUTDIR/dump.txt" <<< "$REMOTE_SCRIPT"
+# Pass the whole script as a single argv to ssh; sshd invokes it via
+# /bin/sh -c. `-T` disables pseudo-terminal allocation. No stdin is
+# passed, so nothing on the remote can block waiting for input.
+echo "[local] running ssh; remote progress on stderr below:"
+ssh -T "${SSH_OPTS[@]}" "$TARGET" "$REMOTE_SCRIPT" > "$OUTDIR/dump.txt"
 
-# Fan out: write services.txt and per-service/*.items.txt
+# Fan out: write services.txt and per-service/*.items.txt from dump.txt.
+# Pre-create services.txt so downstream reporting works even if the
+# section is empty.
+: > "$OUTDIR/services.txt"
 awk '
   $0 == "=== SERVICES ===" { in_services = 1; next }
   in_services && /^=== / { in_services = 0 }
@@ -132,7 +173,8 @@ awk -v outdir="$OUTDIR/per-service" '
   capturing && outfile != "" { print >> outfile }
 ' "$OUTDIR/dump.txt"
 
-echo "wrote:"
+echo
+echo "[local] done."
 echo "  $OUTDIR/dump.txt"
 echo "  $OUTDIR/services.txt ($(wc -l < "$OUTDIR/services.txt" | tr -d ' ') services)"
 echo "  $OUTDIR/per-service/*.items.txt ($(find "$OUTDIR/per-service" -maxdepth 1 -name '*.items.txt' 2>/dev/null | wc -l | tr -d ' ') files)"
