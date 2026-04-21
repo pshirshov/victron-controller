@@ -12,6 +12,7 @@ use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
 use victron_controller_shell::dbus::{Subscriber, Writer};
+use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
 use victron_controller_shell::mqtt::{self, publish_ha_discovery};
 use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
     Writer as MyenergiWriter};
@@ -77,6 +78,72 @@ async fn main() -> Result<()> {
             error!(error = %e, "myenergi poller terminated with error");
         }
     });
+
+    // Forecast fetchers — one task per configured provider.
+    let http = forecast::http_client();
+    let mut forecast_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let solcast = SolcastClient::new(
+        http.clone(),
+        cfg.forecast.solcast.api_key.clone(),
+        cfg.forecast.solcast.site_ids.clone(),
+    );
+    if solcast.is_configured() {
+        let tx_f = tx.clone();
+        let cadence = cfg.forecast.solcast.cadence;
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ = forecast::run_scheduler(Box::new(solcast), cadence, tx_f).await;
+        }));
+    } else {
+        info!("forecast: Solcast disabled (no api_key or site_ids)");
+    }
+
+    let fs_planes: Vec<_> = cfg
+        .forecast
+        .forecast_solar
+        .planes
+        .iter()
+        .copied()
+        .map(Into::into)
+        .collect();
+    let fs_client = ForecastSolarClient::new(
+        http.clone(),
+        cfg.forecast.forecast_solar.latitude,
+        cfg.forecast.forecast_solar.longitude,
+        fs_planes,
+    );
+    if fs_client.is_configured() {
+        let tx_f = tx.clone();
+        let cadence = cfg.forecast.forecast_solar.cadence;
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ = forecast::run_scheduler(Box::new(fs_client), cadence, tx_f).await;
+        }));
+    } else {
+        info!("forecast: Forecast.Solar disabled (no planes configured)");
+    }
+
+    let om_planes: Vec<_> = cfg
+        .forecast
+        .open_meteo
+        .planes
+        .iter()
+        .copied()
+        .map(Into::into)
+        .collect();
+    let om_client = OpenMeteoClient::new(
+        http,
+        cfg.forecast.open_meteo.latitude,
+        cfg.forecast.open_meteo.longitude,
+        om_planes,
+    );
+    if om_client.is_configured() {
+        let tx_f = tx.clone();
+        let cadence = cfg.forecast.open_meteo.cadence;
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ = forecast::run_scheduler(Box::new(om_client), cadence, tx_f).await;
+        }));
+    } else {
+        info!("forecast: Open-Meteo disabled (no planes configured)");
+    }
 
     // NB: rumqttc's EventLoop is !Send on some feature configs, so the
     // MQTT subscriber cannot be `tokio::spawn`ed like the other

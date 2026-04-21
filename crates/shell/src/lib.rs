@@ -13,6 +13,7 @@
 pub mod clock;
 pub mod config;
 pub mod dbus;
+pub mod forecast;
 pub mod mqtt;
 pub mod myenergi;
 pub mod runtime;

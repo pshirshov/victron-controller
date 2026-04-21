@@ -17,6 +17,8 @@ pub struct Config {
     #[serde(default)]
     pub myenergi: MyenergiConfig,
     #[serde(default)]
+    pub forecast: ForecastConfig,
+    #[serde(default)]
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub tuning: TuningConfig,
@@ -150,6 +152,123 @@ fn default_myenergi_poll() -> Duration {
     Duration::from_secs(15)
 }
 
+// -----------------------------------------------------------------------------
+// Forecast config — three providers, each optional.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ForecastConfig {
+    #[serde(default)]
+    pub solcast: SolcastProviderConfig,
+    #[serde(default)]
+    pub forecast_solar: ForecastSolarProviderConfig,
+    #[serde(default)]
+    pub open_meteo: OpenMeteoProviderConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SolcastProviderConfig {
+    /// API key. Blank ⇒ provider disabled.
+    #[serde(default)]
+    pub api_key: String,
+    /// Rooftop site IDs (up to 2 on free tier). Empty ⇒ disabled.
+    #[serde(default)]
+    pub site_ids: Vec<String>,
+    /// Poll cadence. Free tier = 10 calls/day/site; default = 2 h.
+    #[serde(
+        default = "default_solcast_cadence",
+        with = "humantime_serde_compat"
+    )]
+    pub cadence: Duration,
+}
+
+fn default_solcast_cadence() -> Duration {
+    Duration::from_secs(2 * 60 * 60)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ForecastSolarProviderConfig {
+    /// Latitude / longitude of the site.
+    #[serde(default)]
+    pub latitude: f64,
+    #[serde(default)]
+    pub longitude: f64,
+    /// Representative planes. Empty ⇒ provider disabled.
+    #[serde(default)]
+    pub planes: Vec<PlaneConfig>,
+    /// Poll cadence. Free tier rate-limited at ~12 req/h/IP. Default 1 h.
+    #[serde(
+        default = "default_forecast_solar_cadence",
+        with = "humantime_serde_compat"
+    )]
+    pub cadence: Duration,
+}
+
+impl Default for ForecastSolarProviderConfig {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            planes: Vec::new(),
+            cadence: default_forecast_solar_cadence(),
+        }
+    }
+}
+
+fn default_forecast_solar_cadence() -> Duration {
+    Duration::from_secs(60 * 60)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenMeteoProviderConfig {
+    #[serde(default)]
+    pub latitude: f64,
+    #[serde(default)]
+    pub longitude: f64,
+    #[serde(default)]
+    pub planes: Vec<PlaneConfig>,
+    /// Poll cadence. No rate limit; default 15 min.
+    #[serde(
+        default = "default_open_meteo_cadence",
+        with = "humantime_serde_compat"
+    )]
+    pub cadence: Duration,
+}
+
+impl Default for OpenMeteoProviderConfig {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            planes: Vec::new(),
+            cadence: default_open_meteo_cadence(),
+        }
+    }
+}
+
+fn default_open_meteo_cadence() -> Duration {
+    Duration::from_secs(15 * 60)
+}
+
+/// One PV plane from config. `azimuth_deg` follows the compass
+/// convention: 0=N, 90=E, 180=S, 270=W.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct PlaneConfig {
+    pub tilt_deg: f64,
+    pub azimuth_deg: f64,
+    pub kwp: f64,
+}
+
+impl From<PlaneConfig> for crate::forecast::Plane {
+    fn from(p: PlaneConfig) -> Self {
+        Self {
+            tilt_deg: p.tilt_deg,
+            azimuth_deg: p.azimuth_deg,
+            kwp: p.kwp,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardConfig {
     #[serde(default = "default_dashboard_port")]
@@ -270,6 +389,7 @@ impl Default for Config {
             dbus: DbusConfig::default(),
             mqtt: MqttConfig::default(),
             myenergi: MyenergiConfig::default(),
+            forecast: ForecastConfig::default(),
             dashboard: DashboardConfig::default(),
             tuning: TuningConfig::default(),
         }

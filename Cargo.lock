@@ -2070,6 +2070,7 @@ name = "victron-controller-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "diqwest",
  "futures-util",
