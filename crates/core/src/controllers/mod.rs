@@ -8,5 +8,6 @@ pub mod current_limit;
 pub mod schedules;
 pub mod setpoint;
 pub mod tariff_band;
+pub mod weather_soc;
 
 pub use tariff_band::{TariffBand, TariffBandKind, TariffBandSubKind, tariff_band};
