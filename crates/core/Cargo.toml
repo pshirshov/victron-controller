@@ -1,0 +1,10 @@
+[package]
+name = "victron-controller-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure TASS core for the victron-controller service"
+
+[lints]
+workspace = true
