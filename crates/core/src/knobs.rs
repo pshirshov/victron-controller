@@ -46,26 +46,26 @@ pub struct Knobs {
     // --- Export / discharge policy ---
     pub force_disable_export: bool,
     /// Export when battery SoC (%) is at or above this threshold.
-    pub export_soc_threshold: f32,
+    pub export_soc_threshold: f64,
     /// Evening controller targets this SoC (%) at end-of-day.
-    pub discharge_soc_target: f32,
+    pub discharge_soc_target: f64,
     /// Night-time scheduled charge target (%).
-    pub battery_soc_target: f32,
+    pub battery_soc_target: f64,
     /// Evening target (%) during weekly full-charge.
-    pub full_charge_discharge_soc_target: f32,
+    pub full_charge_discharge_soc_target: f64,
     /// Export threshold (%) during weekly full-charge.
-    pub full_charge_export_soc_threshold: f32,
+    pub full_charge_export_soc_threshold: f64,
     pub discharge_time: DischargeTime,
     pub debug_full_charge: DebugFullCharge,
-    pub pessimism_multiplier_modifier: f32,
+    pub pessimism_multiplier_modifier: f64,
     pub disable_night_grid_discharge: bool,
 
     // --- Zappi ---
     pub charge_car_boost: bool,
     pub charge_car_extended: bool,
-    pub zappi_current_target: f32,
-    pub zappi_limit: f32,
-    pub zappi_emergency_margin: f32,
+    pub zappi_current_target: f64,
+    pub zappi_limit: f64,
+    pub zappi_emergency_margin: f64,
 
     // --- New knobs (SPEC §2.10a) ---
     /// Hard cap on negative setpoint magnitude (grid-side export limit, W).
@@ -74,18 +74,18 @@ pub struct Knobs {
     /// windows. Always boots `false` regardless of retained value.
     pub allow_battery_to_car: bool,
     /// Eddi target becomes Normal when battery SoC ≥ this (%).
-    pub eddi_enable_soc: f32,
+    pub eddi_enable_soc: f64,
     /// Eddi target becomes Stopped when battery SoC ≤ this (%).
-    pub eddi_disable_soc: f32,
+    pub eddi_disable_soc: f64,
     /// Minimum dwell time (s) at the current Eddi state before re-evaluation.
     pub eddi_dwell_s: u32,
 
     // --- Weather-SoC planner thresholds ---
-    pub weathersoc_winter_temperature_threshold: f32,
-    pub weathersoc_low_energy_threshold: f32,
-    pub weathersoc_ok_energy_threshold: f32,
-    pub weathersoc_high_energy_threshold: f32,
-    pub weathersoc_too_much_energy_threshold: f32,
+    pub weathersoc_winter_temperature_threshold: f64,
+    pub weathersoc_low_energy_threshold: f64,
+    pub weathersoc_ok_energy_threshold: f64,
+    pub weathersoc_high_energy_threshold: f64,
+    pub weathersoc_too_much_energy_threshold: f64,
 
     // --- Ops ---
     pub writes_enabled: bool,
@@ -145,17 +145,17 @@ mod tests {
         let k = Knobs::safe_defaults();
         // Spot-check the non-trivial values from SPEC §7.
         assert!(!k.force_disable_export);
-        assert!((k.export_soc_threshold - 80.0).abs() < f32::EPSILON);
-        assert!((k.discharge_soc_target - 80.0).abs() < f32::EPSILON);
-        assert!((k.battery_soc_target - 80.0).abs() < f32::EPSILON);
-        assert!((k.full_charge_discharge_soc_target - 57.0).abs() < f32::EPSILON);
-        assert!((k.full_charge_export_soc_threshold - 100.0).abs() < f32::EPSILON);
+        assert!((k.export_soc_threshold - 80.0).abs() < f64::EPSILON);
+        assert!((k.discharge_soc_target - 80.0).abs() < f64::EPSILON);
+        assert!((k.battery_soc_target - 80.0).abs() < f64::EPSILON);
+        assert!((k.full_charge_discharge_soc_target - 57.0).abs() < f64::EPSILON);
+        assert!((k.full_charge_export_soc_threshold - 100.0).abs() < f64::EPSILON);
         assert_eq!(k.discharge_time, DischargeTime::At0200);
         assert_eq!(k.debug_full_charge, DebugFullCharge::None);
         assert_eq!(k.grid_export_limit_w, 4900);
         assert!(!k.allow_battery_to_car);
-        assert!((k.eddi_enable_soc - 96.0).abs() < f32::EPSILON);
-        assert!((k.eddi_disable_soc - 94.0).abs() < f32::EPSILON);
+        assert!((k.eddi_enable_soc - 96.0).abs() < f64::EPSILON);
+        assert!((k.eddi_disable_soc - 94.0).abs() < f64::EPSILON);
         assert_eq!(k.eddi_dwell_s, 60);
         assert!(k.writes_enabled);
     }

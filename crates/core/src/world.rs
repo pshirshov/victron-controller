@@ -1,0 +1,197 @@
+//! The single top-level state container for the pure core. See SPEC §2.3.6.
+
+use chrono::{NaiveDate, NaiveDateTime};
+use std::time::Instant;
+
+use crate::controllers::schedules::ScheduleSpec;
+use crate::knobs::Knobs;
+use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
+use crate::tass::{Actual, Actuated};
+use crate::types::ForecastProvider;
+
+/// All scalar sensor readings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sensors {
+    pub battery_soc: Actual<f64>,
+    pub battery_soh: Actual<f64>,
+    pub battery_installed_capacity: Actual<f64>,
+    pub battery_dc_power: Actual<f64>,
+    pub mppt_power_0: Actual<f64>,
+    pub mppt_power_1: Actual<f64>,
+    pub soltaro_power: Actual<f64>,
+    pub power_consumption: Actual<f64>,
+    pub grid_power: Actual<f64>,
+    pub grid_voltage: Actual<f64>,
+    pub grid_current: Actual<f64>,
+    pub consumption_current: Actual<f64>,
+    pub offgrid_power: Actual<f64>,
+    pub offgrid_current: Actual<f64>,
+    pub vebus_input_current: Actual<f64>,
+    pub vebus_output_current: Actual<f64>,
+    pub evcharger_ac_power: Actual<f64>,
+    pub evcharger_ac_current: Actual<f64>,
+    pub ess_state: Actual<f64>,
+    pub outdoor_temperature: Actual<f64>,
+}
+
+impl Sensors {
+    #[must_use]
+    pub fn unknown(now: Instant) -> Self {
+        Self {
+            battery_soc: Actual::unknown(now),
+            battery_soh: Actual::unknown(now),
+            battery_installed_capacity: Actual::unknown(now),
+            battery_dc_power: Actual::unknown(now),
+            mppt_power_0: Actual::unknown(now),
+            mppt_power_1: Actual::unknown(now),
+            soltaro_power: Actual::unknown(now),
+            power_consumption: Actual::unknown(now),
+            grid_power: Actual::unknown(now),
+            grid_voltage: Actual::unknown(now),
+            grid_current: Actual::unknown(now),
+            consumption_current: Actual::unknown(now),
+            offgrid_power: Actual::unknown(now),
+            offgrid_current: Actual::unknown(now),
+            vebus_input_current: Actual::unknown(now),
+            vebus_output_current: Actual::unknown(now),
+            evcharger_ac_power: Actual::unknown(now),
+            evcharger_ac_current: Actual::unknown(now),
+            ess_state: Actual::unknown(now),
+            outdoor_temperature: Actual::unknown(now),
+        }
+    }
+}
+
+/// Per-provider forecast snapshot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ForecastSnapshot {
+    pub today_kwh: f64,
+    pub tomorrow_kwh: f64,
+    pub fetched_at: Instant,
+}
+
+/// Non-scalar sensor state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypedSensors {
+    pub zappi_state: Actual<ZappiState>,
+    pub eddi_mode: Actual<EddiMode>,
+    pub forecast_solcast: Option<ForecastSnapshot>,
+    pub forecast_forecast_solar: Option<ForecastSnapshot>,
+    pub forecast_open_meteo: Option<ForecastSnapshot>,
+}
+
+impl TypedSensors {
+    #[must_use]
+    pub fn unknown(now: Instant) -> Self {
+        Self {
+            zappi_state: Actual::unknown(now),
+            eddi_mode: Actual::unknown(now),
+            forecast_solcast: None,
+            forecast_forecast_solar: None,
+            forecast_open_meteo: None,
+        }
+    }
+
+    #[must_use]
+    pub fn forecast(&self, p: ForecastProvider) -> Option<&ForecastSnapshot> {
+        match p {
+            ForecastProvider::Solcast => self.forecast_solcast.as_ref(),
+            ForecastProvider::ForecastSolar => self.forecast_forecast_solar.as_ref(),
+            ForecastProvider::OpenMeteo => self.forecast_open_meteo.as_ref(),
+        }
+    }
+}
+
+/// Cross-cutting bookkeeping. Persisted to retained MQTT when changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bookkeeping {
+    pub next_full_charge: Option<NaiveDateTime>,
+    pub above_soc_date: Option<NaiveDate>,
+    pub prev_ess_state: Option<i32>,
+    /// Last-known Zappi-active classification from current-limit controller;
+    /// consumed by the setpoint controller's Zappi-active branch.
+    pub zappi_active: bool,
+    pub charge_to_full_required: bool,
+    pub soc_end_of_day_target: f64,
+    /// Effective export SoC threshold (charge-to-full overrides when active).
+    pub effective_export_soc_threshold: f64,
+    pub battery_selected_soc_target: f64,
+    /// Last Eddi mode transition time (used by Eddi controller's dwell check).
+    pub eddi_last_transition_at: Option<Instant>,
+}
+
+impl Bookkeeping {
+    #[must_use]
+    pub const fn fresh_boot() -> Self {
+        Self {
+            next_full_charge: None,
+            above_soc_date: None,
+            prev_ess_state: None,
+            zappi_active: false,
+            charge_to_full_required: false,
+            soc_end_of_day_target: 80.0,
+            effective_export_soc_threshold: 80.0,
+            battery_selected_soc_target: 80.0,
+            eddi_last_transition_at: None,
+        }
+    }
+}
+
+/// Provenance record: which owner last wrote a knob, and when.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KnobProvenance {
+    pub last_dashboard_write: Option<Instant>,
+}
+
+impl KnobProvenance {
+    #[must_use]
+    pub const fn fresh_boot() -> Self {
+        Self {
+            last_dashboard_write: None,
+        }
+    }
+}
+
+/// Top-level world state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct World {
+    // Actuated
+    pub grid_setpoint: Actuated<i32>,
+    pub input_current_limit: Actuated<f64>,
+    pub zappi_mode: Actuated<ZappiMode>,
+    pub eddi_mode: Actuated<EddiMode>,
+    pub schedule_0: Actuated<ScheduleSpec>,
+    pub schedule_1: Actuated<ScheduleSpec>,
+
+    // Knobs (plain values; γ γ hold tracked via knob_provenance)
+    pub knobs: Knobs,
+    pub knob_provenance: KnobProvenance,
+
+    // Sensors
+    pub sensors: Sensors,
+    pub typed_sensors: TypedSensors,
+
+    // Derived / cross-controller
+    pub bookkeeping: Bookkeeping,
+}
+
+impl World {
+    /// Fresh-boot world: all sensors `Unknown`, all actuated entities
+    /// `Unset`, knobs at [`Knobs::safe_defaults`], bookkeeping empty.
+    #[must_use]
+    pub fn fresh_boot(now: Instant) -> Self {
+        Self {
+            grid_setpoint: Actuated::new(now),
+            input_current_limit: Actuated::new(now),
+            zappi_mode: Actuated::new(now),
+            eddi_mode: Actuated::new(now),
+            schedule_0: Actuated::new(now),
+            schedule_1: Actuated::new(now),
+            knobs: Knobs::safe_defaults(),
+            knob_provenance: KnobProvenance::fresh_boot(),
+            sensors: Sensors::unknown(now),
+            typed_sensors: TypedSensors::unknown(now),
+            bookkeeping: Bookkeeping::fresh_boot(),
+        }
+    }
+}
