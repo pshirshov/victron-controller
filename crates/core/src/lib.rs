@@ -20,6 +20,7 @@
 pub mod clock;
 pub mod controllers;
 pub mod knobs;
+pub mod myenergi;
 pub mod owner;
 pub mod tass;
 
