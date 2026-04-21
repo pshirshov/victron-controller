@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4414411e84f9f668e8decd5b0b2d4ddbd475e2fa2028baae3f62ec23ce0df3af # shrinks to events = [Sensor(SensorReading { id: BatterySoc, value: 0.0, at: Instant { tv_sec: 771544, tv_nsec: 508406717 } })]
