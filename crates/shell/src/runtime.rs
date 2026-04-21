@@ -13,11 +13,12 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace};
 
-use victron_controller_core::types::{Effect, Event, PublishPayload};
+use victron_controller_core::types::{Effect, Event};
 use victron_controller_core::{process, Topology, World};
 
 use crate::clock::RealClock;
 use crate::dbus::Writer;
+use crate::mqtt::Publisher as MqttPublisher;
 use crate::myenergi::Writer as MyenergiWriter;
 
 #[derive(Debug)]
@@ -27,12 +28,14 @@ pub struct Runtime {
     clock: RealClock,
     writer: Writer,
     myenergi: MyenergiWriter,
+    mqtt: Option<MqttPublisher>,
 }
 
 impl Runtime {
     pub fn new(
         writer: Writer,
         myenergi: MyenergiWriter,
+        mqtt: Option<MqttPublisher>,
         topology: Topology,
         now: Instant,
     ) -> Self {
@@ -42,6 +45,7 @@ impl Runtime {
             clock: RealClock,
             writer,
             myenergi,
+            mqtt,
         }
     }
 
@@ -89,20 +93,10 @@ impl Runtime {
                 });
             }
             Effect::Publish(payload) => {
-                // Wired in a later commit (MQTT publisher).
-                match payload {
-                    PublishPayload::Knob { id, value } => {
-                        debug!(?id, ?value, "Publish(Knob) dropped (no MQTT yet)");
-                    }
-                    PublishPayload::ActuatedPhase { id, phase } => {
-                        debug!(?id, ?phase, "Publish(ActuatedPhase) dropped (no MQTT yet)");
-                    }
-                    PublishPayload::KillSwitch(v) => {
-                        debug!(v, "Publish(KillSwitch) dropped (no MQTT yet)");
-                    }
-                    PublishPayload::Bookkeeping(k, v) => {
-                        debug!(?k, ?v, "Publish(Bookkeeping) dropped (no MQTT yet)");
-                    }
+                if let Some(mqtt) = &self.mqtt {
+                    mqtt.publish(payload).await;
+                } else {
+                    debug!(?payload, "Publish dropped (no MQTT broker configured)");
                 }
             }
             Effect::Log {

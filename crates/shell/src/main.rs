@@ -12,6 +12,7 @@ use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
 use victron_controller_shell::dbus::{Subscriber, Writer};
+use victron_controller_shell::mqtt::{self, publish_ha_discovery};
 use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
     Writer as MyenergiWriter};
 use victron_controller_shell::runtime::Runtime;
@@ -46,8 +47,20 @@ async fn main() -> Result<()> {
     let myenergi_writer = MyenergiWriter::new(myenergi_client.clone());
     let myenergi_poller = MyenergiPoller::new(myenergi_client, cfg.myenergi.poll_period);
 
+    // MQTT (optional; skipped when host is empty).
+    let (mqtt_publisher, mqtt_subscriber) = match mqtt::connect(&cfg.mqtt).await? {
+        Some((p, s)) => {
+            info!("publishing HA discovery config");
+            if let Err(e) = publish_ha_discovery(&p.client_handle(), &cfg.mqtt.topic_root).await {
+                error!(error = %e, "HA discovery publish failed (non-fatal)");
+            }
+            (Some(p), Some(s))
+        }
+        None => (None, None),
+    };
+
     let topology = Topology::defaults();
-    let runtime = Runtime::new(writer, myenergi_writer, topology, Instant::now());
+    let runtime = Runtime::new(writer, myenergi_writer, mqtt_publisher, topology, Instant::now());
 
     // Spawn subscriber + myenergi poller + runtime; all linked via
     // `tx`/`rx` so when the runtime's receiver closes, producers exit.
@@ -64,6 +77,17 @@ async fn main() -> Result<()> {
             error!(error = %e, "myenergi poller terminated with error");
         }
     });
+
+    let mqtt_sub_task = if let Some(sub) = mqtt_subscriber {
+        let tx_for_mq = tx.clone();
+        Some(tokio::spawn(async move {
+            if let Err(e) = sub.run(tx_for_mq).await {
+                error!(error = %e, "mqtt subscriber terminated with error");
+            }
+        }))
+    } else {
+        None
+    };
 
     drop(tx); // runtime owns no Sender → rx.recv() returns None after all producers exit
 
@@ -84,6 +108,11 @@ async fn main() -> Result<()> {
         }
         _ = myenergi_task => {
             info!("myenergi task ended");
+        }
+        () = async {
+            if let Some(t) = mqtt_sub_task { t.await.ok(); } else { std::future::pending::<()>().await; }
+        } => {
+            info!("mqtt subscriber task ended");
         }
         _ = runtime_task => {
             info!("runtime task ended");
