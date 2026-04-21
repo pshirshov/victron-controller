@@ -18,3 +18,13 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
+# Ports of a JS algorithm use a lot of literal comparisons and documentation
+# mentions domain terms (SoC, PV, Zappi). These are style nitpicks that
+# don't improve correctness.
+doc_markdown = "allow"
+float_cmp = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
