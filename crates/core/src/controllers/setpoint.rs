@@ -35,6 +35,7 @@ pub struct SetpointInput {
 /// [`crate::knobs::Knobs`] or in bookkeeping; they are assembled into this
 /// struct at the call site of [`evaluate_setpoint`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SetpointInputGlobals {
     pub force_disable_export: bool,
     pub export_soc_threshold: f64,
@@ -42,6 +43,12 @@ pub struct SetpointInputGlobals {
     pub full_charge_export_soc_threshold: f64,
     pub full_charge_discharge_soc_target: f64,
     pub zappi_active: bool,
+    /// When `true` and `zappi_active`, the Zappi-specific branch (which
+    /// pins setpoint to `-solar_export` to forbid battery → EV flow) is
+    /// bypassed: the usual time-of-day controller runs, allowing the
+    /// evening discharge branch to export battery into the grid-side
+    /// branch the Zappi is drawing from.
+    pub allow_battery_to_car: bool,
     pub discharge_time: DischargeTime,
     pub debug_full_charge: DebugFullCharge,
     pub pessimism_multiplier_modifier: f64,
@@ -199,10 +206,14 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     let hour = now.hour();
     let minute = now.minute();
 
-    // Branches match the TS version's order exactly.
+    // Branches match the TS version's order exactly, with one addition:
+    // the zappi_active branch is gated on `!allow_battery_to_car` so the
+    // new knob (SPEC §5.9) can bypass the PV-only export clamp and let
+    // the regular time-of-day controller run (which may discharge battery
+    // through the grid into the EV).
     if g.force_disable_export {
         setpoint_target = IDLE_SETPOINT_W;
-    } else if g.zappi_active {
+    } else if g.zappi_active && !g.allow_battery_to_car {
         if (2..8).contains(&hour) {
             setpoint_target = IDLE_SETPOINT_W - soltaro_export;
         } else {
@@ -475,6 +486,7 @@ mod tests {
                 full_charge_export_soc_threshold: 85.0,
                 full_charge_discharge_soc_target: 30.0,
                 zappi_active: false,
+                allow_battery_to_car: false,
                 discharge_time: DischargeTime::At0200,
                 debug_full_charge: DebugFullCharge::None,
                 pessimism_multiplier_modifier: 1.0,
@@ -585,6 +597,77 @@ mod tests {
         let out = evaluate_setpoint(&input, &c);
         // soltaro_export = max(10 + 600 - 1200, 0) = 0
         // setpoint = 10 - 0 = 10 → after rounding/≥0 rule → 10
+        assert_eq!(out.setpoint_target, 10);
+    }
+
+    // ------------------------------------------------------------------
+    // allow_battery_to_car toggle — SPEC §5.9
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn allow_battery_to_car_bypasses_zappi_night_branch() {
+        // Evening time, zappi active, allow_battery_to_car=true — the
+        // Zappi-specific branch is bypassed and the evening discharge
+        // controller runs. We don't assert a specific setpoint value,
+        // just that it's NOT the `10 - soltaro_export` or `-solar_export`
+        // form the zappi branch would produce.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: true,
+                export_soc_threshold: 70.0,
+                ..base_input().globals
+            },
+            battery_soc: 90.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        // 20:30 — evening branch.
+        let c = clock_at(2026, 1, 15, 20, 30);
+        let out = evaluate_setpoint(&input, &c);
+        // Evening controller engages: hours_remaining is set (it's -1 in
+        // other branches). That's the strongest signal that we took the
+        // evening path, not the zappi path.
+        assert!(out.debug.hours_remaining > 0.0);
+    }
+
+    #[test]
+    fn allow_battery_to_car_false_keeps_zappi_clamp() {
+        // Same inputs, knob off — verify we still take the Zappi branch
+        // and produce `-solar_export`.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                ..base_input().globals
+            },
+            mppt_power_0: 2000.0,
+            mppt_power_1: 1500.0,
+            soltaro_power: 500.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 20, 30); // evening
+        let out = evaluate_setpoint(&input, &c);
+        let expected_solar_export = (3500.0_f64.max(0.0) + 500.0_f64.max(0.0)).floor();
+        assert_eq!(out.setpoint_target, -(expected_solar_export as i32));
+        // hours_remaining stays at its -1 sentinel — evening branch did NOT run.
+        assert!((out.debug.hours_remaining + 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn force_disable_export_overrides_allow_battery_to_car() {
+        // Kill switch still wins.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                force_disable_export: true,
+                zappi_active: true,
+                allow_battery_to_car: true,
+                ..base_input().globals
+            },
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 20, 30);
+        let out = evaluate_setpoint(&input, &c);
         assert_eq!(out.setpoint_target, 10);
     }
 

@@ -579,11 +579,11 @@ Confirmed via `scripts/discover-victron.sh` on 2026-04-21 (Venus OS v3.70, ARMv7
 | `com.victronenergy.evcharger.cgwacs_ttyUSB0_mb2` (EV-branch ET112) | 35 | EVSE | /dev/ttyUSB0 | **1 = AC-Output** |
 | `com.victronenergy.settings` | — | — | — | — |
 
-**Topology implication** — the EV-branch ET112 is on **AC-Output** (Position=1), i.e. the critical-loads side of the MultiPlus. Consequences:
+**Topology note**:
 
-- When the grid drops, the Zappi/Hoymiles branch is still powered from the DC battery via the inverter.
-- The legacy current-limit controller clamps to `offgrid_current` when `zappi_active && !battery_charging` specifically to prevent unintended battery drain into the car during off-grid operation.
-- The new `allow_battery_to_car` knob (SPEC §5.9) will need to bypass that clamp — this is the defining piece of its semantics.
+- The Soltaro pvinverter is on **AC-Input-1** (Position=0), upstream of the inverter, parallel to the grid meter. This matches how the legacy code sums `pvinverter/33.AcPower` into `solar_export`.
+- The EV-branch ET112 is **on the grid side** per the Victron dashboard (confirmed by user). `/Position=1` on this service *does not* mean AC-Output — on `evcharger`-role meters the Position value is reused for EV-charger-specific enumeration and is unrelated to the standard `0/1/2 = AC-in-1/AC-out/AC-in-2` convention used on pvinverter-role meters.
+- Consequently the legacy current-limit clamp `zappi_active && !battery_charging → offgrid_current` is about restricting the MultiPlus's AC-input current budget (so grid capacity is preserved for the car and not consumed by pushing battery out to the grid), not about preventing off-grid battery-to-car flow. The `allow_battery_to_car` knob (SPEC §5.9) works at the **setpoint** layer — when on, it bypasses the Zappi-active branch in `evaluate_setpoint` (which today pins setpoint to `-solar_export`, limiting export to just PV) and lets the evening-discharge controller run normally so battery can be exported through the grid meter to cover EV draw.
 
 Paths we subscribe to (by role):
 

@@ -409,6 +409,7 @@ fn run_setpoint(
             full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
             full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
             zappi_active: bk.zappi_active,
+            allow_battery_to_car: k.allow_battery_to_car,
             discharge_time: k.discharge_time,
             debug_full_charge: k.debug_full_charge,
             pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
