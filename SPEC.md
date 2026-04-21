@@ -579,11 +579,26 @@ Confirmed via `scripts/discover-victron.sh` on 2026-04-21 (Venus OS v3.70, ARMv7
 | `com.victronenergy.evcharger.cgwacs_ttyUSB0_mb2` (EV-branch ET112) | 35 | EVSE | /dev/ttyUSB0 | **1 = AC-Output** |
 | `com.victronenergy.settings` | — | — | — | — |
 
-**Topology note**:
+**Topology note** (verified against `victronenergy/dbus-modbus-client` source):
 
-- The Soltaro pvinverter is on **AC-Input-1** (Position=0), upstream of the inverter, parallel to the grid meter. This matches how the legacy code sums `pvinverter/33.AcPower` into `solar_export`.
-- The EV-branch ET112 is **on the grid side** per the Victron dashboard (confirmed by user). `/Position=1` on this service *does not* mean AC-Output — on `evcharger`-role meters the Position value is reused for EV-charger-specific enumeration and is unrelated to the standard `0/1/2 = AC-in-1/AC-out/AC-in-2` convention used on pvinverter-role meters.
-- Consequently the legacy current-limit clamp `zappi_active && !battery_charging → offgrid_current` is about restricting the MultiPlus's AC-input current budget (so grid capacity is preserved for the car and not consumed by pushing battery out to the grid), not about preventing off-grid battery-to-car flow. The `allow_battery_to_car` knob (SPEC §5.9) works at the **setpoint** layer — when on, it bypasses the Zappi-active branch in `evaluate_setpoint` (which today pins setpoint to `-solar_export`, limiting export to just PV) and lets the evening-discharge controller run normally so battery can be exported through the grid meter to cover EV draw.
+The `/Position` enum is **role-dependent and deliberately reversed** between service types. From `dbus-modbus-client/victron_em.py` (with an explicit comment in the source):
+
+| Role | Position=0 | Position=1 | Position=2 |
+|---|---|---|---|
+| `pvinverter` | AC Input 1 | AC Output | AC Input 2 |
+| `evcharger` / `heatpump` / `acload` | AC Output | AC Input | (treated as AC Input) |
+| `grid` | (no `/Position` — grid has no position to pick) | | |
+
+On this install both meters are on the **AC Input** side (confirmed by the user's GX console):
+
+- Soltaro `pvinverter.cgwacs_ttyUSB2_mb1` — Position=0 ⇒ AC Input 1.
+- EV-branch `evcharger.cgwacs_ttyUSB0_mb2` — Position=1 ⇒ AC Input (the evcharger-role reversal).
+
+Consequences for the controller:
+
+- Both Soltaro and the Zappi/Hoymiles branch are upstream of the inverter, on the grid side. Grid-side power accounting in `compute_limit` (`gridside_consumption_power = consumption - offgrid + soltaro_inflow`) is consistent with this wiring — Soltaro and Zappi contribute to the same grid-side balance.
+- The legacy clamp `zappi_active && !battery_charging → offgrid_current` restricts the MultiPlus's AC-input current budget so the inverter doesn't consume grid capacity the Zappi is trying to use directly; it's about grid-side contention, not off-grid battery protection.
+- `allow_battery_to_car` (SPEC §5.9) works at the **setpoint** layer: when on, it bypasses the Zappi-active clamp (which today pins the setpoint to `-solar_export`, capping export at PV output only) and lets the evening-discharge controller set a more-negative setpoint, pushing battery energy out to the grid-side bus where the Zappi naturally consumes it.
 
 Paths we subscribe to (by role):
 
