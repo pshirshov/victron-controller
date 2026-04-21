@@ -13,4 +13,5 @@
 pub mod clock;
 pub mod config;
 pub mod dbus;
+pub mod myenergi;
 pub mod runtime;

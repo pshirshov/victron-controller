@@ -12,6 +12,8 @@ use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
 use victron_controller_shell::dbus::{Subscriber, Writer};
+use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
+    Writer as MyenergiWriter};
 use victron_controller_shell::runtime::Runtime;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -40,18 +42,30 @@ async fn main() -> Result<()> {
         .await
         .context("connect D-Bus writer")?;
 
-    let topology = Topology::defaults();
-    let runtime = Runtime::new(writer, topology, Instant::now());
+    let myenergi_client = MyenergiClient::new(cfg.myenergi.clone());
+    let myenergi_writer = MyenergiWriter::new(myenergi_client.clone());
+    let myenergi_poller = MyenergiPoller::new(myenergi_client, cfg.myenergi.poll_period);
 
-    // Spawn subscriber + runtime; they are linked via `tx`/`rx` so when
-    // either ends the other naturally stops.
+    let topology = Topology::defaults();
+    let runtime = Runtime::new(writer, myenergi_writer, topology, Instant::now());
+
+    // Spawn subscriber + myenergi poller + runtime; all linked via
+    // `tx`/`rx` so when the runtime's receiver closes, producers exit.
     let tx_for_sub = tx.clone();
     let subscriber_task = tokio::spawn(async move {
         if let Err(e) = subscriber.run(tx_for_sub).await {
             error!(error = %e, "subscriber terminated with error");
         }
     });
-    drop(tx); // runtime owns no Sender → rx.recv() returns None after subscriber ends
+
+    let tx_for_my = tx.clone();
+    let myenergi_task = tokio::spawn(async move {
+        if let Err(e) = myenergi_poller.run(tx_for_my).await {
+            error!(error = %e, "myenergi poller terminated with error");
+        }
+    });
+
+    drop(tx); // runtime owns no Sender → rx.recv() returns None after all producers exit
 
     let tick_period = cfg.tuning.tick_period;
     let runtime_task = tokio::spawn(async move {
@@ -67,6 +81,9 @@ async fn main() -> Result<()> {
         }
         _ = subscriber_task => {
             info!("subscriber task ended");
+        }
+        _ = myenergi_task => {
+            info!("myenergi task ended");
         }
         _ = runtime_task => {
             info!("runtime task ended");

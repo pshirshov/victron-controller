@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub mqtt: MqttConfig,
     #[serde(default)]
+    pub myenergi: MyenergiConfig,
+    #[serde(default)]
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub tuning: TuningConfig,
@@ -102,6 +104,50 @@ impl Default for MqttConfig {
             topic_root: default_mqtt_root(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MyenergiConfig {
+    /// myenergi account username.
+    #[serde(default)]
+    pub username: String,
+    /// myenergi account password.
+    #[serde(default)]
+    pub password: String,
+    /// Director region URL, e.g. `https://s18.myenergi.net`. Leave blank
+    /// to disable the integration.
+    #[serde(default)]
+    pub director_url: String,
+    /// Serial number of the Zappi to poll + write. Optional — if None,
+    /// Zappi polling/writes are skipped.
+    #[serde(default)]
+    pub zappi_serial: Option<String>,
+    /// Serial number of the Eddi. Optional.
+    #[serde(default)]
+    pub eddi_serial: Option<String>,
+    /// Polling interval. Default 15 s — matches the legacy NR flow, but
+    /// myenergi cloud returns ≤ 5-min-granular data per SPEC so this
+    /// mostly drives reactivity to plug-state transitions rather than
+    /// value freshness.
+    #[serde(default = "default_myenergi_poll", with = "humantime_serde_compat")]
+    pub poll_period: Duration,
+}
+
+impl Default for MyenergiConfig {
+    fn default() -> Self {
+        Self {
+            username: String::new(),
+            password: String::new(),
+            director_url: "https://s18.myenergi.net".to_string(),
+            zappi_serial: None,
+            eddi_serial: None,
+            poll_period: default_myenergi_poll(),
+        }
+    }
+}
+
+fn default_myenergi_poll() -> Duration {
+    Duration::from_secs(15)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +269,7 @@ impl Default for Config {
         Self {
             dbus: DbusConfig::default(),
             mqtt: MqttConfig::default(),
+            myenergi: MyenergiConfig::default(),
             dashboard: DashboardConfig::default(),
             tuning: TuningConfig::default(),
         }

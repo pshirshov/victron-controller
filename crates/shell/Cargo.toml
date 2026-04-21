@@ -31,6 +31,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# HTTP (for myenergi + forecasts). Pin to 0.11 to match diqwest 2.
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+diqwest = "2"
+serde_json = "1"
+
+# MQTT
+rumqttc = { version = "0.24", default-features = false, features = ["use-rustls"] }
+
 # Error handling at boundaries
 anyhow = "1"
 thiserror = "1"

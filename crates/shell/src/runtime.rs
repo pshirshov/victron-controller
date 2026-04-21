@@ -11,13 +11,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use victron_controller_core::types::{Effect, Event, PublishPayload};
 use victron_controller_core::{process, Topology, World};
 
 use crate::clock::RealClock;
 use crate::dbus::Writer;
+use crate::myenergi::Writer as MyenergiWriter;
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -25,15 +26,22 @@ pub struct Runtime {
     topology: Topology,
     clock: RealClock,
     writer: Writer,
+    myenergi: MyenergiWriter,
 }
 
 impl Runtime {
-    pub fn new(writer: Writer, topology: Topology, now: Instant) -> Self {
+    pub fn new(
+        writer: Writer,
+        myenergi: MyenergiWriter,
+        topology: Topology,
+        now: Instant,
+    ) -> Self {
         Self {
             world: World::fresh_boot(now),
             topology,
             clock: RealClock,
             writer,
+            myenergi,
         }
     }
 
@@ -73,8 +81,12 @@ impl Runtime {
                 self.writer.write(target, value).await;
             }
             Effect::CallMyenergi(action) => {
-                // Wired in a later commit — for now just log.
-                warn!(?action, "CallMyenergi effect dropped (no myenergi client yet)");
+                // Spawn so a slow HTTP call (myenergi cloud) doesn't
+                // block the event loop.
+                let my = self.myenergi.clone();
+                tokio::spawn(async move {
+                    my.execute(action).await;
+                });
             }
             Effect::Publish(payload) => {
                 // Wired in a later commit (MQTT publisher).
