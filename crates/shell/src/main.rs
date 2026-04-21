@@ -78,15 +78,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    let mqtt_sub_task = if let Some(sub) = mqtt_subscriber {
-        let tx_for_mq = tx.clone();
-        Some(tokio::spawn(async move {
+    // NB: rumqttc's EventLoop is !Send on some feature configs, so the
+    // MQTT subscriber cannot be `tokio::spawn`ed like the other
+    // producers — it has to run inline on the main task. The `select!`
+    // below includes it as a branch.
+    let tx_for_mq = tx.clone();
+    let mqtt_sub_fut = async move {
+        if let Some(sub) = mqtt_subscriber {
             if let Err(e) = sub.run(tx_for_mq).await {
                 error!(error = %e, "mqtt subscriber terminated with error");
             }
-        }))
-    } else {
-        None
+        } else {
+            std::future::pending::<()>().await;
+        }
     };
 
     drop(tx); // runtime owns no Sender → rx.recv() returns None after all producers exit
@@ -109,10 +113,8 @@ async fn main() -> Result<()> {
         _ = myenergi_task => {
             info!("myenergi task ended");
         }
-        () = async {
-            if let Some(t) = mqtt_sub_task { t.await.ok(); } else { std::future::pending::<()>().await; }
-        } => {
-            info!("mqtt subscriber task ended");
+        () = mqtt_sub_fut => {
+            info!("mqtt subscriber ended");
         }
         _ = runtime_task => {
             info!("runtime task ended");

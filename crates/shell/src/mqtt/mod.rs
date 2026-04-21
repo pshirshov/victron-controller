@@ -21,18 +21,23 @@ mod discovery;
 mod serialize;
 
 pub use discovery::publish_ha_discovery;
-pub use serialize::{decode_knob_set, encode_publish_payload};
+pub use serialize::{decode_knob_set, decode_state_message, encode_publish_payload};
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use rumqttc::{AsyncClient, Event as MqttEvent, EventLoop, MqttOptions, Packet, QoS};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use victron_controller_core::types::{Event, PublishPayload};
 
 use crate::config::MqttConfig;
+
+/// How long the bootstrap phase waits for retained `/state` messages
+/// before switching to the normal subscription pattern.
+const BOOTSTRAP_WINDOW: Duration = Duration::from_secs(2);
 
 /// Wraps the async MQTT client + its event loop. Cheap to clone — the
 /// client handle is an `Arc` internally.
@@ -139,45 +144,119 @@ impl std::fmt::Debug for Subscriber {
 }
 
 impl Subscriber {
-    /// Subscribe to command topics, then drive the event loop forever,
-    /// forwarding Command events into `tx`.
+    /// Drive the MQTT subscriber across two phases and the main loop.
+    ///
+    /// **Phase 1 (bootstrap)**: subscribe to retained `/state` topics,
+    /// drain the event loop for [`BOOTSTRAP_WINDOW`], forward every
+    /// parsed retained message as a System-owned `Event::Command` so
+    /// the runtime seeds its knobs from MQTT instead of hard-coded
+    /// safe-defaults.
+    ///
+    /// **Phase 2**: unsubscribe from `/state`, subscribe to `/set`,
+    /// and loop forever — each inbound message becomes an HaMqtt-
+    /// owned `Event::Command`. On connection error (network drop,
+    /// broker restart) we re-subscribe from scratch rather than
+    /// relying on rumqttc to replay subscriptions.
     pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
-        let knob_topic = format!("{}/knob/+/set", self.topic_root);
-        let kill_topic = format!("{}/writes_enabled/set", self.topic_root);
-        self.client
-            .subscribe(&knob_topic, QoS::AtLeastOnce)
-            .await
-            .with_context(|| format!("subscribe {knob_topic}"))?;
-        self.client
-            .subscribe(&kill_topic, QoS::AtLeastOnce)
-            .await
-            .with_context(|| format!("subscribe {kill_topic}"))?;
-        info!(%knob_topic, %kill_topic, "mqtt subscribed");
+        let state_topics = [
+            format!("{}/knob/+/state", self.topic_root),
+            format!("{}/writes_enabled/state", self.topic_root),
+        ];
+        let set_topics = [
+            format!("{}/knob/+/set", self.topic_root),
+            format!("{}/writes_enabled/set", self.topic_root),
+        ];
+
+        // Phase 1: bootstrap ---------------------------------------------------
+        for t in &state_topics {
+            self.client
+                .subscribe(t, QoS::AtLeastOnce)
+                .await
+                .with_context(|| format!("bootstrap subscribe {t}"))?;
+        }
+        info!("mqtt bootstrap: collecting retained /state for {:?}", BOOTSTRAP_WINDOW);
+        let deadline = Instant::now() + BOOTSTRAP_WINDOW;
+        let mut applied = 0_usize;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match timeout(remaining, self.event_loop.poll()).await {
+                Ok(Ok(MqttEvent::Incoming(Packet::Publish(p)))) => {
+                    if let Some(event) = serialize::decode_state_message(
+                        &self.topic_root,
+                        &p.topic,
+                        &p.payload,
+                    ) {
+                        if tx.send(event).await.is_err() {
+                            return Ok(());
+                        }
+                        applied += 1;
+                    }
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    warn!(error = %e, "bootstrap event loop error; aborting bootstrap");
+                    break;
+                }
+                Err(_) => break, // deadline reached
+            }
+        }
+        info!(applied, "mqtt bootstrap complete; seeded knobs from retained state");
+
+        for t in &state_topics {
+            let _ = self.client.unsubscribe(t).await;
+        }
+
+        // Phase 2: main loop ---------------------------------------------------
+        self.subscribe_set_topics(&set_topics).await?;
 
         loop {
             let ev = match self.event_loop.poll().await {
                 Ok(e) => e,
                 Err(e) => {
-                    warn!(error = %e, "mqtt event loop error; reconnecting in 5s");
+                    warn!(error = %e, "mqtt event loop error; waiting 5s before re-subscribing");
                     tokio::time::sleep(Duration::from_secs(5)).await;
+                    // rumqttc reconnects automatically, but doesn't replay
+                    // subscriptions — so re-issue them.
+                    if let Err(e2) = self.subscribe_set_topics(&set_topics).await {
+                        warn!(error = %e2, "re-subscribe failed; continuing");
+                    }
                     continue;
                 }
             };
-            let MqttEvent::Incoming(Packet::Publish(publish)) = ev else {
-                continue;
-            };
-            if let Some(event) = serialize::decode_knob_set(
-                &self.topic_root,
-                &publish.topic,
-                &publish.payload,
-            ) {
-                if tx.send(event).await.is_err() {
-                    info!("runtime receiver closed; mqtt subscriber exiting");
-                    return Ok(());
+            match ev {
+                MqttEvent::Incoming(Packet::ConnAck(_)) => {
+                    debug!("mqtt ConnAck — re-subscribing");
+                    if let Err(e) = self.subscribe_set_topics(&set_topics).await {
+                        warn!(error = %e, "re-subscribe after ConnAck failed");
+                    }
                 }
-            } else {
-                debug!(topic = %publish.topic, "unrouted mqtt message");
+                MqttEvent::Incoming(Packet::Publish(publish)) => {
+                    if let Some(event) = serialize::decode_knob_set(
+                        &self.topic_root,
+                        &publish.topic,
+                        &publish.payload,
+                    ) {
+                        if tx.send(event).await.is_err() {
+                            info!("runtime receiver closed; mqtt subscriber exiting");
+                            return Ok(());
+                        }
+                    } else {
+                        debug!(topic = %publish.topic, "unrouted mqtt message");
+                    }
+                }
+                _ => {}
             }
         }
+    }
+
+    async fn subscribe_set_topics(&self, topics: &[String]) -> Result<()> {
+        for t in topics {
+            self.client
+                .subscribe(t, QoS::AtLeastOnce)
+                .await
+                .with_context(|| format!("subscribe {t}"))?;
+        }
+        info!(?topics, "mqtt /set topics subscribed");
+        Ok(())
     }
 }

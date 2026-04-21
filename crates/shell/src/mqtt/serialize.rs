@@ -46,12 +46,30 @@ pub fn encode_publish_payload(p: &PublishPayload) -> Option<(String, String, boo
 /// `<root>/writes_enabled/set` message into a core Event::Command.
 #[must_use]
 pub fn decode_knob_set(topic_root: &str, topic: &str, payload: &[u8]) -> Option<Event> {
+    decode_generic(topic_root, topic, payload, "/set", Owner::HaMqtt)
+}
+
+/// Decode a retained `<root>/knob/<name>/state` or
+/// `<root>/writes_enabled/state` message into a core Event::Command
+/// owned by `System` — used during the startup bootstrap phase to
+/// seed knobs from retained MQTT state.
+#[must_use]
+pub fn decode_state_message(topic_root: &str, topic: &str, payload: &[u8]) -> Option<Event> {
+    decode_generic(topic_root, topic, payload, "/state", Owner::System)
+}
+
+fn decode_generic(
+    topic_root: &str,
+    topic: &str,
+    payload: &[u8],
+    suffix: &str,
+    owner: Owner,
+) -> Option<Event> {
     let stripped = topic.strip_prefix(topic_root)?.strip_prefix('/')?;
     let body = std::str::from_utf8(payload).ok()?.trim();
-    let owner = Owner::HaMqtt;
     let at = Instant::now();
 
-    if stripped == "writes_enabled/set" {
+    if stripped == format!("writes_enabled{suffix}") {
         let enabled = match body.to_ascii_lowercase().as_str() {
             "true" | "1" | "on" => true,
             "false" | "0" | "off" => false,
@@ -65,7 +83,7 @@ pub fn decode_knob_set(topic_root: &str, topic: &str, payload: &[u8]) -> Option<
     }
 
     if let Some(rest) = stripped.strip_prefix("knob/") {
-        let name = rest.strip_suffix("/set")?;
+        let name = rest.strip_suffix(suffix)?;
         let id = knob_id_from_name(name)?;
         let value = parse_knob_value(id, body)?;
         return Some(Event::Command {
@@ -427,6 +445,72 @@ mod tests {
         assert!(decode_knob_set(
             "victron-controller",
             "other-root/knob/force_disable_export/set",
+            b"true"
+        )
+        .is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // decode_state_message (bootstrap path)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decode_state_knob_uses_system_owner() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/knob/export_soc_threshold/state",
+            b"67.0",
+        )
+        .unwrap();
+        match e {
+            Event::Command {
+                command:
+                    Command::Knob {
+                        id: KnobId::ExportSocThreshold,
+                        value: KnobValue::Float(f),
+                    },
+                owner: Owner::System,
+                ..
+            } => assert!((f - 67.0).abs() < f64::EPSILON),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_state_kill_switch_uses_system_owner() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/writes_enabled/state",
+            b"false",
+        )
+        .unwrap();
+        assert!(matches!(
+            e,
+            Event::Command {
+                command: Command::KillSwitch(false),
+                owner: Owner::System,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_state_rejects_set_suffix() {
+        // State decoder must not match /set topics.
+        assert!(decode_state_message(
+            "victron-controller",
+            "victron-controller/knob/force_disable_export/set",
+            b"true"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn decode_knob_set_rejects_state_suffix() {
+        // Symmetrically: /set decoder must not match /state topics.
+        assert!(decode_knob_set(
+            "victron-controller",
+            "victron-controller/knob/force_disable_export/state",
             b"true"
         )
         .is_none());
