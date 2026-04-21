@@ -5,9 +5,11 @@
 //! [`crate::World`] and turns their decisions into `Effect`s.
 
 pub mod current_limit;
+pub mod eddi_mode;
 pub mod schedules;
 pub mod setpoint;
 pub mod tariff_band;
 pub mod weather_soc;
+pub mod zappi_mode;
 
 pub use tariff_band::{TariffBand, TariffBandKind, TariffBandSubKind, tariff_band};
