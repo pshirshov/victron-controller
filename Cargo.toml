@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core"]
+members = ["crates/core", "crates/shell"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,3 +28,14 @@ cast_sign_loss = "allow"
 cast_precision_loss = "allow"
 too_many_lines = "allow"
 similar_names = "allow"
+# More style nitpicks that pedantic flags in the async shell code.
+wildcard_imports = "allow"
+enum_glob_use = "allow"
+manual_let_else = "allow"
+redundant_closure_for_method_calls = "allow"
+unnecessary_wraps = "allow"
+single_match_else = "allow"
+match_single_binding = "allow"
+derivable_impls = "allow"
+items_after_statements = "allow"
+redundant_else = "allow"

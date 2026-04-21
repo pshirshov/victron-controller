@@ -1,0 +1,39 @@
+[package]
+name = "victron-controller-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Async shell: I/O, event loop, and effect execution for the victron-controller service"
+
+[[bin]]
+name = "victron-controller"
+path = "src/main.rs"
+
+[dependencies]
+victron-controller-core = { path = "../core" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+futures-util = "0.3"
+
+# D-Bus
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
+# Config + serde
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Time
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Error handling at boundaries
+anyhow = "1"
+thiserror = "1"
+
+[lints]
+workspace = true
