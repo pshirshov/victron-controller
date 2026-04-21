@@ -6,6 +6,7 @@
 
 pub mod current_limit;
 pub mod eddi_mode;
+pub mod forecast_fusion;
 pub mod schedules;
 pub mod setpoint;
 pub mod tariff_band;

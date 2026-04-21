@@ -71,7 +71,7 @@ pub fn process(
     topology: &Topology,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
-    apply_event(event, world, clock, &mut effects);
+    apply_event(event, world, clock, topology, &mut effects);
     run_controllers(world, clock, topology, &mut effects);
     effects
 }
@@ -80,11 +80,17 @@ pub fn process(
 // Event application
 // =============================================================================
 
-fn apply_event(event: &Event, world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+fn apply_event(
+    event: &Event,
+    world: &mut World,
+    clock: &dyn Clock,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
     match event {
         Event::Sensor(reading) => apply_sensor_reading(*reading, world),
         Event::TypedSensor(reading) => apply_typed_reading(*reading, world),
-        Event::Readback(readback) => apply_readback(*readback, world, effects),
+        Event::Readback(readback) => apply_readback(*readback, world, topology, effects),
         Event::Command {
             command,
             owner,
@@ -151,25 +157,75 @@ fn apply_typed_reading(r: TypedReading, world: &mut World) {
     }
 }
 
-fn apply_readback(r: ActuatedReadback, world: &mut World, _effects: &mut [Effect]) {
+fn apply_readback(
+    r: ActuatedReadback,
+    world: &mut World,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
+    let params = topology.controller_params;
     match r {
         ActuatedReadback::GridSetpoint { value, at } => {
             world.grid_setpoint.on_reading(value, at);
+            let tol = params.setpoint_confirm_tolerance_w;
+            if world
+                .grid_setpoint
+                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
+            {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::GridSetpoint,
+                    phase: world.grid_setpoint.target.phase,
+                }));
+            }
         }
         ActuatedReadback::InputCurrentLimit { value, at } => {
             world.input_current_limit.on_reading(value, at);
+            let tol = params.current_limit_confirm_tolerance_a;
+            if world
+                .input_current_limit
+                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
+            {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::InputCurrentLimit,
+                    phase: world.input_current_limit.target.phase,
+                }));
+            }
         }
         ActuatedReadback::ZappiMode { mode, at } => {
             world.zappi_mode.on_reading(mode, at);
+            if world.zappi_mode.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::ZappiMode,
+                    phase: world.zappi_mode.target.phase,
+                }));
+            }
         }
         ActuatedReadback::EddiMode { mode, at } => {
             world.eddi_mode.on_reading(mode, at);
+            if world.eddi_mode.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::EddiMode,
+                    phase: world.eddi_mode.target.phase,
+                }));
+            }
         }
         ActuatedReadback::Schedule0 { value, at } => {
             world.schedule_0.on_reading(value, at);
+            if world.schedule_0.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::Schedule0,
+                    phase: world.schedule_0.target.phase,
+                }));
+            }
         }
         ActuatedReadback::Schedule1 { value, at } => {
             world.schedule_1.on_reading(value, at);
+            if world.schedule_1.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::Schedule1,
+                    phase: world.schedule_1.target.phase,
+                }));
+            }
         }
     }
 }
@@ -809,30 +865,23 @@ fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effec
         return;
     }
 
-    // Need at least one forecast provider.
-    let Some((_provider, snap)) = world
-        .typed_sensors
-        .forecast_solcast
-        .map(|s| (ForecastProvider::Solcast, s))
-        .or_else(|| {
-            world
-                .typed_sensors
-                .forecast_forecast_solar
-                .map(|s| (ForecastProvider::ForecastSolar, s))
-        })
-        .or_else(|| {
-            world
-                .typed_sensors
-                .forecast_open_meteo
-                .map(|s| (ForecastProvider::OpenMeteo, s))
-        })
-    else {
-        return;
-    };
     // Use today's temp if fresh; else skip.
     if !world.sensors.outdoor_temperature.is_usable() {
         return;
     }
+
+    // Fuse forecasts across providers. We don't track provider-level
+    // freshness in World yet (would need another Actual per provider);
+    // treat all snapshots as fresh — the shell is responsible for only
+    // ever publishing fresh data and stopping republishes when stale.
+    let strategy = world.knobs.forecast_disagreement_strategy;
+    let Some(today_kwh) = crate::controllers::forecast_fusion::fused_today_kwh(
+        &world.typed_sensors,
+        strategy,
+        |_provider, _snap| true,
+    ) else {
+        return;
+    };
 
     let k = &world.knobs;
     let input = WeatherSocInput {
@@ -845,7 +894,7 @@ fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effec
             too_much_energy_threshold_kwh: k.weathersoc_too_much_energy_threshold,
         },
         today_temperature_c: world.sensors.outdoor_temperature.value.unwrap(),
-        today_energy_kwh: snap.today_kwh,
+        today_energy_kwh: today_kwh,
     };
     let d = evaluate_weather_soc(&input, clock);
 
@@ -1070,6 +1119,82 @@ mod tests {
         );
         assert!(confirmed);
         assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Confirmed);
+    }
+
+    #[test]
+    fn setpoint_readback_event_drives_confirmation_automatically() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        // Tick to propose + command.
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target = world.grid_setpoint.target.value.unwrap();
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+
+        // Readback within tolerance → Confirmed with a PublishPhase effect.
+        let effects = process(
+            &Event::Readback(ActuatedReadback::GridSetpoint {
+                value: target + 12, // within ±50 tolerance
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Confirmed);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::ActuatedPhase {
+                id: ActuatedId::GridSetpoint,
+                phase: TargetPhase::Confirmed
+            })
+        )));
+    }
+
+    #[test]
+    fn setpoint_readback_out_of_tolerance_stays_commanded() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target = world.grid_setpoint.target.value.unwrap();
+
+        let _ = process(
+            &Event::Readback(ActuatedReadback::GridSetpoint {
+                value: target + 200, // outside ±50
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+    }
+
+    #[test]
+    fn zappi_mode_readback_drives_confirmation_on_exact_match() {
+        // Dial up conditions that cause the Zappi controller to propose a
+        // target: Boost window with charge_car_boost enabled → Fast.
+        let c = FixedClock::at(naive(3, 0));
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        world.knobs.charge_car_boost = true;
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.zappi_mode.target.value, Some(ZappiMode::Fast));
+        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Commanded);
+
+        let _ = process(
+            &Event::Readback(ActuatedReadback::ZappiMode {
+                mode: ZappiMode::Fast,
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Confirmed);
     }
 
     // ------------------------------------------------------------------
