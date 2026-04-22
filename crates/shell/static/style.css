@@ -134,17 +134,152 @@ footer {
 
 #last-error { color: var(--bad); font-family: ui-monospace, monospace; }
 
-.conn-indicator {
+/* --- WebSocket status widget ---
+ * Adapted from pshirshov/ws-reconnect-demo. 32×32 circle with state
+ * dot + countdown ring + hover tooltip + retry button (terminal only)
+ * + an event log below. */
+
+#ws-indicator-slot { position: relative; display: inline-block; }
+#ws-indicator-slot .ws-widget-log {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -8px;
+  right: auto;
+  min-width: 320px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
   font-family: ui-monospace, monospace;
+  font-size: 11px;
+  list-style: none;
+  margin: 0;
+  display: none;
+  z-index: 99;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+#ws-indicator-slot:hover .ws-widget-log,
+#ws-indicator-slot:focus-within .ws-widget-log { display: block; }
+#ws-indicator-slot .ws-widget-log li { padding: 1px 0; }
+#ws-indicator-slot .ws-widget-log .ws-log-state      { color: var(--accent); }
+#ws-indicator-slot .ws-widget-log .ws-log-lifecycle  { color: var(--muted); }
+#ws-indicator-slot .ws-widget-log .ws-log-reconnect  { color: var(--warn); }
+#ws-indicator-slot .ws-widget-log .ws-log-error      { color: var(--bad); }
+
+.ws-indicator {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  flex-shrink: 0;
+}
+.ws-indicator:focus { outline: none; }
+.ws-indicator-svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+  pointer-events: none;
+}
+.ws-indicator-arc {
+  stroke-dasharray: 81.68;   /* 2πr for r=13; actual value set in TS */
+  transition: stroke-dashoffset 140ms linear, opacity 120ms ease-out, stroke 150ms ease;
+}
+.ws-indicator-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  transition: background 150ms ease, box-shadow 150ms ease;
+}
+
+/* Per-state colours. Mirrors the reference demo. */
+.ws-indicator[data-state="alive"]      .ws-indicator-dot { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
+.ws-indicator[data-state="alive"]      .ws-indicator-arc { stroke: #3fb950; }
+.ws-indicator[data-state="stale"]      .ws-indicator-dot { background: #f0883e; box-shadow: 0 0 6px #f0883e88; }
+.ws-indicator[data-state="stale"]      .ws-indicator-arc { stroke: #f0883e; }
+.ws-indicator[data-state="connecting"] .ws-indicator-dot { background: #e3b341; box-shadow: 0 0 6px #e3b34188; animation: ws-pulse 1.2s ease-in-out infinite; }
+.ws-indicator[data-state="connecting"] .ws-indicator-arc { stroke: #e3b341; }
+.ws-indicator[data-state="dead"]       .ws-indicator-dot { background: #f85149; box-shadow: 0 0 6px #f8514988; }
+.ws-indicator[data-state="dead"]       .ws-indicator-arc { stroke: #f85149; }
+.ws-indicator[data-state="terminal"]   .ws-indicator-dot {
+  background: #6e1e1e;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px #f85149, 0 0 10px #f85149aa;
+}
+.ws-indicator[data-state="terminal"]   .ws-indicator-arc {
+  stroke: #f85149;
+  stroke-dasharray: 4 4;
+  opacity: 1 !important;
+  stroke-dashoffset: 0 !important;
+}
+.ws-indicator[data-state="frozen"]     .ws-indicator-dot { background: #79c0ff; box-shadow: 0 0 6px #79c0ff88; }
+.ws-indicator[data-state="frozen"]     .ws-indicator-arc { stroke: #79c0ff; opacity: 0 !important; }
+
+@keyframes ws-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-indicator-dot, .ws-indicator-arc { animation: none !important; transition: none !important; }
+}
+
+/* Tooltip */
+.ws-indicator-tooltip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 320px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
   font-size: 12px;
-  padding: 2px 8px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.5;
+  color: var(--fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  white-space: nowrap;
+}
+.ws-indicator:hover .ws-indicator-tooltip,
+.ws-indicator:focus .ws-indicator-tooltip,
+.ws-indicator:focus-within .ws-indicator-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.ws-tt-title {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.ws-tt-error { color: var(--bad); }
+.ws-indicator-tooltip code {
+  font-family: inherit;
+  color: var(--accent);
+}
+
+.ws-retry {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  font-size: 10px;
+  background: #f85149;
+  color: #fff;
+  border: none;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  display: none;
 }
-@media (prefers-color-scheme: dark) {
-  .conn-indicator { background: rgba(255, 255, 255, 0.06); }
-}
-.conn-NEW    { color: var(--accent); }
-.conn-ALIVE  { color: var(--ok); font-weight: 600; }
-.conn-STALE  { color: var(--warn); font-weight: 600; }
-.conn-DEAD   { color: var(--bad); }
+.ws-retry:hover { filter: brightness(1.15); }

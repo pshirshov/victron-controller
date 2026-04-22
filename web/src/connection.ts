@@ -1,189 +1,310 @@
-// ManagedConnection: a single WebSocket wrapped with a state machine
-// (NEW → ALIVE → STALE → DEAD), per-nonce ping/pong liveness, and
-// RTT tracking.
+// ManagedConnection: WebSocket + four-state machine (NEW/ALIVE/STALE/DEAD),
+// per-ping nonce timeout, RTT sampling, connect-timeout guard.
 //
-// Adapted from pshirshov/ws-reconnect-demo's src/client/connection.ts
-// (the demo uses a generic ping/pong protocol; here we carry our
-// baboon-typed WsPing / WsPong messages inside the WsClientMessage /
-// WsServerMessage ADTs).
+// Adapted from pshirshov/ws-reconnect-demo (src/client/connection.ts),
+// with our baboon-typed WsClientMessage / WsServerMessage envelope.
 
-export type ConnState = "NEW" | "ALIVE" | "STALE" | "DEAD";
+export enum ConnectionState {
+  NEW = "NEW",
+  ALIVE = "ALIVE",
+  STALE = "STALE",
+  DEAD = "DEAD",
+}
 
 export interface ConnectionConfig {
   url: string;
   pingIntervalMs: number;
   pongTimeoutMs: number;
-  connectTimeoutMs: number;
   staleGracePeriodMs: number;
+  connectTimeoutMs: number;
 }
 
-export interface PingBody { nonce: string; client_ts_ms: number; }
-export interface PongBody { nonce: string; client_ts_ms: number; server_ts_ms: number; }
+export interface RttSample {
+  rtt: number;
+  receivedAt: number;
+}
 
-export type Listener = (conn: ManagedConnection) => void;
+export interface ConnectionStats {
+  id: string;
+  state: ConnectionState;
+  createdAt: number;
+  lastPingSentAt: number | null;
+  lastPongReceivedAt: number | null;
+  lastRtt: number | null;
+  avgRtt: number | null;
+  minRtt: number | null;
+  maxRtt: number | null;
+  pendingPingCount: number;
+  earliestPendingPingSentAt: number | null;
+  totalPingsSent: number;
+  totalPongsReceived: number;
+  rttSamples: ReadonlyArray<RttSample>;
+  staleAt: number | null;
+  deadAt: number | null;
+  closeCode: number | null;
+  closeReason: string | null;
+}
 
-let nextId = 1;
+export type StateChangeCallback = (
+  conn: ManagedConnection,
+  oldState: ConnectionState,
+  newState: ConnectionState,
+) => void;
+
+export type ServerMessageCallback = (raw: unknown) => void;
+
+let connectionCounter = 0;
 
 export class ManagedConnection {
-  readonly id = nextId++;
-  state: ConnState = "NEW";
-  createdAt = Date.now();
-  closedAt: number | null = null;
-  closeCode: number | null = null;
-  closeReason: string = "";
+  readonly id: string;
+  private ws: WebSocket;
+  private state: ConnectionState = ConnectionState.NEW;
+  private readonly createdAt: number = Date.now();
 
-  // Pending pings keyed by nonce.
-  private pending = new Map<string, { sentAt: number; timer: number }>();
-  private pingTimer: number | null = null;
-  private connectTimer: number | null = null;
-  private staleTimer: number | null = null;
+  private pendingPings = new Map<string, number>(); // nonce → sentAt
+  private lastPingSentAt: number | null = null;
+  private lastPongReceivedAt: number | null = null;
+  private lastRtt: number | null = null;
+  private rttSamples: RttSample[] = [];
+  private totalPingsSent = 0;
+  private totalPongsReceived = 0;
+  private static readonly MAX_RTT_SAMPLES = 500;
 
-  private ws: WebSocket | null = null;
-  private listeners = new Set<Listener>();
+  private staleAt: number | null = null;
+  private deadAt: number | null = null;
+  private closeCode: number | null = null;
+  private closeReason: string | null = null;
 
-  // RTT samples (ms).
-  rttLast = 0;
-  rttMin = Infinity;
-  rttMax = 0;
-  rttSum = 0;
-  rttCount = 0;
+  private pingIntervalId: ReturnType<typeof setInterval> | null = null;
+  private staleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private connectTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  pings = 0;
-  pongs = 0;
+  private readonly config: ConnectionConfig;
+  private readonly onStateChange: StateChangeCallback;
+  private readonly onServerMessage: ServerMessageCallback;
+  private frozen = false;
 
   constructor(
-    private readonly config: ConnectionConfig,
-    private readonly onServerMessage: (raw: unknown) => void,
+    config: ConnectionConfig,
+    onStateChange: StateChangeCallback,
+    onServerMessage: ServerMessageCallback,
   ) {
-    try {
-      this.ws = new WebSocket(config.url);
-    } catch (_e) {
-      this.transition("DEAD", "constructor-threw");
-      return;
-    }
-    this.ws.onopen = () => this.onOpen();
-    this.ws.onclose = (e) => this.onClose(e.code, e.reason);
-    this.ws.onerror = () => {}; // onclose always fires after
-    this.ws.onmessage = (e) => this.onMessage(e);
+    this.id = `conn-${++connectionCounter}`;
+    this.config = config;
+    this.onStateChange = onStateChange;
+    this.onServerMessage = onServerMessage;
 
-    this.connectTimer = window.setTimeout(() => {
-      if (this.state === "NEW" || (this.ws && this.ws.readyState === WebSocket.CONNECTING)) {
-        this.close(4000, "connect-timeout");
+    this.ws = new WebSocket(config.url);
+    this.ws.onopen = this.handleOpen.bind(this);
+    this.ws.onclose = this.handleClose.bind(this);
+    this.ws.onerror = () => {}; // onclose always follows
+    this.ws.onmessage = this.handleMessage.bind(this);
+
+    // R4 — abort if TCP/TLS handshake hangs.
+    this.connectTimeoutId = setTimeout(() => {
+      if (
+        this.state === ConnectionState.NEW &&
+        this.ws.readyState === WebSocket.CONNECTING
+      ) {
+        this.close(`connect timeout after ${config.connectTimeoutMs}ms`);
       }
     }, config.connectTimeoutMs);
   }
 
-  addListener(fn: Listener) { this.listeners.add(fn); }
-  removeListener(fn: Listener) { this.listeners.delete(fn); }
+  get currentState(): ConnectionState { return this.state; }
 
-  send(raw: string): boolean {
-    if (this.state !== "ALIVE" || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(raw);
-    return true;
+  getStats(): ConnectionStats {
+    const rtt = this.rttSamples;
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (const s of rtt) {
+      if (s.rtt < min) min = s.rtt;
+      if (s.rtt > max) max = s.rtt;
+      sum += s.rtt;
+    }
+    let earliestPending: number | null = null;
+    for (const sentAt of this.pendingPings.values()) {
+      if (earliestPending === null || sentAt < earliestPending) earliestPending = sentAt;
+    }
+    return {
+      id: this.id,
+      state: this.state,
+      createdAt: this.createdAt,
+      lastPingSentAt: this.lastPingSentAt,
+      lastPongReceivedAt: this.lastPongReceivedAt,
+      lastRtt: this.lastRtt,
+      avgRtt: rtt.length > 0 ? Math.round(sum / rtt.length) : null,
+      minRtt: rtt.length > 0 ? min : null,
+      maxRtt: rtt.length > 0 ? max : null,
+      pendingPingCount: this.pendingPings.size,
+      earliestPendingPingSentAt: earliestPending,
+      totalPingsSent: this.totalPingsSent,
+      totalPongsReceived: this.totalPongsReceived,
+      rttSamples: rtt,
+      staleAt: this.staleAt,
+      deadAt: this.deadAt,
+      closeCode: this.closeCode,
+      closeReason: this.closeReason,
+    };
   }
 
-  close(code = 1000, reason = "") {
-    if (this.state === "DEAD") return;
-    this.closeCode = code;
-    this.closeReason = reason;
-    try { this.ws?.close(code, reason); } catch (_e) { /* ignore */ }
-    this.transition("DEAD", reason);
-  }
-
-  private onOpen() {
-    if (this.connectTimer !== null) { window.clearTimeout(this.connectTimer); this.connectTimer = null; }
-    this.transition("ALIVE", "open");
-    this.scheduleNextPing();
-  }
-
-  private onClose(code: number, reason: string) {
-    if (this.connectTimer !== null) { window.clearTimeout(this.connectTimer); this.connectTimer = null; }
-    this.closeCode = code;
-    this.closeReason = reason || "";
-    this.transition("DEAD", `close ${code}`);
-  }
-
-  private onMessage(ev: MessageEvent) {
-    if (this.state === "DEAD") return;
-    let parsed: unknown;
-    try { parsed = JSON.parse(ev.data); } catch { return; }
-    this.onServerMessage(parsed);
-  }
-
-  /// Call when a Pong for a known nonce arrives.
-  handlePong(body: PongBody) {
-    const entry = this.pending.get(body.nonce);
-    if (!entry) return; // unknown / already timed out
-    window.clearTimeout(entry.timer);
-    this.pending.delete(body.nonce);
-    this.pongs++;
-    const rtt = Date.now() - entry.sentAt;
-    this.rttLast = rtt;
-    this.rttMin = Math.min(this.rttMin, rtt);
-    this.rttMax = Math.max(this.rttMax, rtt);
-    this.rttSum += rtt;
-    this.rttCount++;
-    // A pong during STALE revives us to ALIVE.
-    if (this.state === "STALE") {
-      this.transition("ALIVE", "pong-after-stale");
-      if (this.staleTimer !== null) { window.clearTimeout(this.staleTimer); this.staleTimer = null; }
+  /// Send an application command. Returns true if handed to a live socket.
+  sendCommand(cmd: unknown): boolean {
+    if (this.state !== ConnectionState.ALIVE) return false;
+    if (this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(JSON.stringify({ SendCommand: { body: cmd } }));
+      return true;
+    } catch {
+      return false;
     }
   }
 
-  private scheduleNextPing() {
-    if (this.state === "DEAD") return;
-    if (this.pingTimer !== null) window.clearTimeout(this.pingTimer);
-    this.pingTimer = window.setTimeout(() => this.sendPing(), this.config.pingIntervalMs);
-  }
+  sendPing(): void {
+    if (this.frozen) return;
+    if (this.state === ConnectionState.DEAD) return;
+    if (this.ws.readyState !== WebSocket.OPEN) return;
 
-  private sendPing() {
-    if (this.state === "DEAD" || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    const clientTs = Date.now();
-    const body: PingBody = { nonce, client_ts_ms: clientTs };
-    const timer = window.setTimeout(() => this.onPongTimeout(nonce), this.config.pongTimeoutMs);
-    this.pending.set(nonce, { sentAt: clientTs, timer });
-    this.pings++;
+    const nonce = crypto.randomUUID();
+    const now = Date.now();
+    this.pendingPings.set(nonce, now);
+    this.lastPingSentAt = now;
+    this.totalPingsSent++;
+
     try {
-      this.ws.send(JSON.stringify({ Ping: { body } }));
-    } catch (_e) {
-      this.close(4001, "send-failed");
+      this.ws.send(JSON.stringify({ Ping: { body: { nonce, client_ts_ms: now } } }));
+    } catch {
+      this.close("send-failed");
       return;
     }
-    this.scheduleNextPing();
+
+    // R3 — per-ping timeout.
+    setTimeout(() => {
+      if (
+        this.pendingPings.has(nonce) &&
+        this.state !== ConnectionState.DEAD &&
+        !this.frozen
+      ) {
+        this.markStale();
+      }
+    }, this.config.pongTimeoutMs);
   }
 
-  private onPongTimeout(nonce: string) {
-    const entry = this.pending.get(nonce);
-    if (!entry) return; // pong arrived just in time
-    this.pending.delete(nonce);
-    if (this.state === "ALIVE") {
-      this.transition("STALE", "pong-timeout");
-      // Start the stale grace period; if we stay STALE past it, die.
-      this.staleTimer = window.setTimeout(() => {
-        if (this.state === "STALE") this.close(4002, "stale-grace-expired");
-      }, this.config.staleGracePeriodMs);
+  close(reason: string): void {
+    if (this.state === ConnectionState.DEAD) return;
+    this.closeCode = 1000;
+    this.closeReason = reason;
+    this.clearAllTimers();
+    if (
+      this.ws.readyState === WebSocket.OPEN ||
+      this.ws.readyState === WebSocket.CONNECTING
+    ) {
+      this.ws.close(1000, reason.slice(0, 123));
+    }
+    this.transitionTo(ConnectionState.DEAD);
+  }
+
+  /// Fire an immediate ping to verify liveness — used by the time-jump
+  /// detector and page-lifecycle handlers (R8, R9).
+  checkAlive(): void {
+    if (this.state !== ConnectionState.ALIVE && this.state !== ConnectionState.STALE) return;
+    // Drop pending pings that can't possibly resolve (e.g. after a freeze).
+    const now = Date.now();
+    for (const [nonce, sentAt] of this.pendingPings) {
+      if (now - sentAt > this.config.pongTimeoutMs * 3) this.pendingPings.delete(nonce);
+    }
+    this.sendPing();
+  }
+
+  setFrozen(frozen: boolean): void { this.frozen = frozen; }
+
+  // --- private ---
+
+  private handleOpen(): void {
+    if (this.connectTimeoutId !== null) {
+      clearTimeout(this.connectTimeoutId);
+      this.connectTimeoutId = null;
+    }
+    this.transitionTo(ConnectionState.ALIVE);
+    this.pingIntervalId = setInterval(() => this.sendPing(), this.config.pingIntervalMs);
+    this.sendPing();
+  }
+
+  private handleClose(event: CloseEvent): void {
+    if (this.state === ConnectionState.DEAD) return;
+    this.closeCode = event.code;
+    this.closeReason ??= `code=${event.code} reason=${event.reason || "(none)"}`;
+    this.clearAllTimers();
+    this.transitionTo(ConnectionState.DEAD);
+  }
+
+  private handleMessage(event: MessageEvent): void {
+    if (this.frozen) return;
+    let msg: unknown;
+    try { msg = JSON.parse(event.data as string); } catch { return; }
+    if (typeof msg !== "object" || msg === null) return;
+    const obj = msg as Record<string, unknown>;
+
+    // Pong routed to our per-nonce bookkeeping.
+    if ("Pong" in obj) {
+      const body = (obj.Pong as { body: { nonce: string; client_ts_ms: number; server_ts_ms: number } }).body;
+      this.handlePong(body.nonce);
+      this.onServerMessage(msg);
+      return;
+    }
+    this.onServerMessage(msg);
+  }
+
+  private handlePong(nonce: string): void {
+    const sentAt = this.pendingPings.get(nonce);
+    if (sentAt === undefined) return; // R11 equivalent: drop unsolicited pongs
+    this.pendingPings.delete(nonce);
+
+    const now = Date.now();
+    const rtt = now - sentAt;
+    this.lastPongReceivedAt = now;
+    this.lastRtt = rtt;
+    this.totalPongsReceived++;
+
+    this.rttSamples.push({ rtt, receivedAt: now });
+    if (this.rttSamples.length > ManagedConnection.MAX_RTT_SAMPLES) this.rttSamples.shift();
+
+    if (this.state === ConnectionState.STALE) {
+      if (this.staleTimeoutId !== null) {
+        clearTimeout(this.staleTimeoutId);
+        this.staleTimeoutId = null;
+      }
+      this.staleAt = null;
+      this.transitionTo(ConnectionState.ALIVE);
     }
   }
 
-  private transition(to: ConnState, reason: string) {
-    if (this.state === to) return;
-    this.state = to;
-    if (to === "DEAD") {
-      this.closedAt = Date.now();
-      for (const [_nonce, e] of this.pending) window.clearTimeout(e.timer);
-      this.pending.clear();
-      if (this.pingTimer !== null) { window.clearTimeout(this.pingTimer); this.pingTimer = null; }
-      if (this.staleTimer !== null) { window.clearTimeout(this.staleTimer); this.staleTimer = null; }
-    }
-    for (const l of this.listeners) l(this);
-    console.debug(`[ws ${this.id}] → ${to} (${reason})`);
+  private markStale(): void {
+    if (this.frozen) return;
+    if (this.state !== ConnectionState.ALIVE) return;
+    this.staleAt = Date.now();
+    this.transitionTo(ConnectionState.STALE);
+    this.staleTimeoutId = setTimeout(() => {
+      if (this.state === ConnectionState.STALE) {
+        this.close(`stale for ${this.config.staleGracePeriodMs}ms without recovery`);
+      }
+    }, this.config.staleGracePeriodMs);
   }
 
-  pendingCount() { return this.pending.size; }
-  avgRtt() { return this.rttCount > 0 ? Math.round(this.rttSum / this.rttCount) : 0; }
-  lossPct() {
-    if (this.pings === 0) return 0;
-    return Math.round(100 * (this.pings - this.pongs) / this.pings);
+  private clearAllTimers(): void {
+    if (this.connectTimeoutId !== null) { clearTimeout(this.connectTimeoutId); this.connectTimeoutId = null; }
+    if (this.pingIntervalId !== null) { clearInterval(this.pingIntervalId); this.pingIntervalId = null; }
+    if (this.staleTimeoutId !== null) { clearTimeout(this.staleTimeoutId); this.staleTimeoutId = null; }
+  }
+
+  private transitionTo(newState: ConnectionState): void {
+    const oldState = this.state;
+    if (oldState === newState) return;
+    if (oldState === ConnectionState.DEAD) return; // terminal
+    this.state = newState;
+    if (newState === ConnectionState.DEAD) {
+      this.deadAt = Date.now();
+      this.clearAllTimers();
+    }
+    this.onStateChange(this, oldState, newState);
   }
 }
