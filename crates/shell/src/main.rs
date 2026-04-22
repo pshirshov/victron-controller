@@ -1,17 +1,20 @@
 //! victron-controller binary entry point.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info};
 
+use victron_controller_core::world::World;
 use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
+use victron_controller_shell::dashboard::DashboardServer;
 use victron_controller_shell::dbus::{Subscriber, Writer};
 use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
 use victron_controller_shell::mqtt::{
@@ -82,7 +85,8 @@ async fn main() -> Result<()> {
     };
 
     let topology = Topology::defaults();
-    let runtime = Runtime::new(writer, myenergi_writer, mqtt_publisher, topology, Instant::now());
+    let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
+    let runtime = Runtime::new(world.clone(), writer, myenergi_writer, mqtt_publisher, topology);
 
     // Spawn subscriber + myenergi poller + runtime; all linked via
     // `tx`/`rx` so when the runtime's receiver closes, producers exit.
@@ -181,6 +185,20 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Dashboard HTTP server.
+    let dashboard_bind: std::net::SocketAddr = format!(
+        "{}:{}",
+        cfg.dashboard.bind, cfg.dashboard.port
+    )
+    .parse()
+    .context("parse dashboard bind addr")?;
+    let dashboard = DashboardServer::new(dashboard_bind, world.clone(), tx.clone());
+    let dashboard_task = tokio::spawn(async move {
+        if let Err(e) = dashboard.run().await {
+            error!(error = %e, "dashboard server terminated with error");
+        }
+    });
+
     drop(tx); // runtime owns no Sender → rx.recv() returns None after all producers exit
 
     let tick_period = cfg.tuning.tick_period;
@@ -215,6 +233,9 @@ async fn main() -> Result<()> {
         }
         _ = runtime_task => {
             info!("runtime task ended");
+        }
+        _ = dashboard_task => {
+            info!("dashboard task ended");
         }
     }
 

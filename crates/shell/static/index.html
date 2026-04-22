@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>victron-controller</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>victron-controller</h1>
+    <div class="status">
+      <span id="captured-at">—</span>
+      <span id="writes-badge" class="badge">…</span>
+    </div>
+  </header>
+
+  <section id="actuated">
+    <h2>Actuated</h2>
+    <table id="actuated-table">
+      <thead>
+        <tr>
+          <th>Entity</th>
+          <th>Target</th>
+          <th>Owner</th>
+          <th>Phase</th>
+          <th>Actual</th>
+          <th>Freshness</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="sensors">
+    <h2>Sensors</h2>
+    <table id="sensors-table">
+      <thead>
+        <tr>
+          <th>Sensor</th>
+          <th>Value</th>
+          <th>Freshness</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="bookkeeping">
+    <h2>Bookkeeping</h2>
+    <table id="bk-table">
+      <thead><tr><th>Field</th><th>Value</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="forecasts">
+    <h2>Forecasts</h2>
+    <table id="forecasts-table">
+      <thead>
+        <tr>
+          <th>Provider</th>
+          <th>Today (kWh)</th>
+          <th>Tomorrow (kWh)</th>
+          <th>Fetched</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="knobs">
+    <h2>Knobs</h2>
+    <div id="kill-switch" class="kill-switch"></div>
+    <table id="knobs-table">
+      <thead>
+        <tr>
+          <th>Knob</th>
+          <th>Value</th>
+          <th>Set</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <footer>
+    <span id="last-error"></span>
+    <span id="refresh-indicator">refreshing…</span>
+  </footer>
+
+  <script src="/index.js"></script>
+</body>
+</html>

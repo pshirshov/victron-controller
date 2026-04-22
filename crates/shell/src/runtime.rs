@@ -7,10 +7,11 @@
 //! D-Bus); that task owns the bus connection and serialises writes,
 //! so the core doesn't need to think about concurrency.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info, trace};
 
 use victron_controller_core::types::{Effect, Event};
@@ -23,7 +24,7 @@ use crate::myenergi::Writer as MyenergiWriter;
 
 #[derive(Debug)]
 pub struct Runtime {
-    world: World,
+    world: Arc<Mutex<World>>,
     topology: Topology,
     clock: RealClock,
     writer: Writer,
@@ -33,14 +34,14 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(
+        world: Arc<Mutex<World>>,
         writer: Writer,
         myenergi: MyenergiWriter,
         mqtt: Option<MqttPublisher>,
         topology: Topology,
-        now: Instant,
     ) -> Self {
         Self {
-            world: World::fresh_boot(now),
+            world,
             topology,
             clock: RealClock,
             writer,
@@ -54,7 +55,7 @@ impl Runtime {
     /// controller re-evaluation keep running even without external
     /// events.
     pub async fn run(
-        mut self,
+        self,
         mut rx: mpsc::Receiver<Event>,
         tick_period: Duration,
     ) -> Result<()> {
@@ -72,7 +73,10 @@ impl Runtime {
                 _ = tick.tick() => Event::Tick { at: Instant::now() },
             };
             trace!(?event, "process");
-            let effects = process(&event, &mut self.world, &self.clock, &self.topology);
+            let effects = {
+                let mut world = self.world.lock().await;
+                process(&event, &mut world, &self.clock, &self.topology)
+            };
             for e in effects {
                 self.dispatch(e).await;
             }

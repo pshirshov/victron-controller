@@ -1,0 +1,444 @@
+//! Convert `core::World` into a `WorldSnapshot` for serialization, and
+//! decode baboon `Command`s into `core::Event`s.
+//!
+//! Kept dumb: one function per struct, one field per mapping. Intentionally
+//! no clever abstractions — the cost of adding a new core field is a
+//! single additional line here rather than a type-level detour.
+
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::ref_option)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::too_many_lines)]
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use victron_controller_core::controllers::schedules::ScheduleSpec;
+use victron_controller_core::knobs::{
+    DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Knobs,
+};
+use victron_controller_core::myenergi::{EddiMode, ZappiMode};
+use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
+use victron_controller_core::types::{Command, Event, KnobId, KnobValue};
+use victron_controller_core::world::World;
+use victron_controller_core::Owner;
+
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated::Actuated as ModelActuated;
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated_enum_name::ActuatedEnumName;
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated_f64::ActuatedF64 as ModelActuatedF64;
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated_i32::ActuatedI32 as ModelActuatedI32;
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated_schedule::ActuatedSchedule as ModelActuatedSchedule;
+use victron_controller_dashboard_model::victron_controller::dashboard::actual_f64::ActualF64 as ModelActualF64;
+use victron_controller_dashboard_model::victron_controller::dashboard::actual_i32::ActualI32 as ModelActualI32;
+use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping::Bookkeeping as ModelBookkeeping;
+use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as ModelCommand;
+use victron_controller_dashboard_model::victron_controller::dashboard::debug_full_charge::DebugFullCharge as ModelDebugFullCharge;
+use victron_controller_dashboard_model::victron_controller::dashboard::discharge_time::DischargeTime as ModelDischargeTime;
+use victron_controller_dashboard_model::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy as ModelForecastStrategy;
+use victron_controller_dashboard_model::victron_controller::dashboard::forecast_snapshot::ForecastSnapshot as ModelForecastSnapshot;
+use victron_controller_dashboard_model::victron_controller::dashboard::forecasts::Forecasts as ModelForecasts;
+use victron_controller_dashboard_model::victron_controller::dashboard::freshness::Freshness as ModelFreshness;
+use victron_controller_dashboard_model::victron_controller::dashboard::knobs::Knobs as ModelKnobs;
+use victron_controller_dashboard_model::victron_controller::dashboard::owner::Owner as ModelOwner;
+use victron_controller_dashboard_model::victron_controller::dashboard::schedule_spec::ScheduleSpec as ModelScheduleSpec;
+use victron_controller_dashboard_model::victron_controller::dashboard::sensors::Sensors as ModelSensors;
+use victron_controller_dashboard_model::victron_controller::dashboard::target_phase::TargetPhase as ModelTargetPhase;
+use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
+
+// --- enums ----------------------------------------------------------------
+
+fn freshness(f: Freshness) -> ModelFreshness {
+    match f {
+        Freshness::Unknown => ModelFreshness::Unknown,
+        Freshness::Fresh => ModelFreshness::Fresh,
+        Freshness::Stale => ModelFreshness::Stale,
+        Freshness::Deprecated => ModelFreshness::Deprecated,
+    }
+}
+
+fn phase(p: TargetPhase) -> ModelTargetPhase {
+    match p {
+        TargetPhase::Unset => ModelTargetPhase::Unset,
+        TargetPhase::Pending => ModelTargetPhase::Pending,
+        TargetPhase::Commanded => ModelTargetPhase::Commanded,
+        TargetPhase::Confirmed => ModelTargetPhase::Confirmed,
+    }
+}
+
+fn owner(o: Owner) -> ModelOwner {
+    match o {
+        Owner::Unset => ModelOwner::Unset,
+        Owner::System => ModelOwner::System,
+        Owner::Dashboard => ModelOwner::Dashboard,
+        Owner::HaMqtt => ModelOwner::HaMqtt,
+        Owner::WeatherSocPlanner => ModelOwner::WeatherSocPlanner,
+        Owner::SetpointController => ModelOwner::SetpointController,
+        Owner::CurrentLimitController => ModelOwner::CurrentLimitController,
+        Owner::ScheduleController => ModelOwner::ScheduleController,
+        Owner::ZappiController => ModelOwner::ZappiController,
+        Owner::EddiController => ModelOwner::EddiController,
+        Owner::FullChargeScheduler => ModelOwner::FullChargeScheduler,
+    }
+}
+
+fn discharge_time(d: DischargeTime) -> ModelDischargeTime {
+    match d {
+        DischargeTime::At0200 => ModelDischargeTime::At0200,
+        DischargeTime::At2300 => ModelDischargeTime::At2300,
+    }
+}
+
+fn debug_full_charge(d: DebugFullCharge) -> ModelDebugFullCharge {
+    match d {
+        DebugFullCharge::Forbid => ModelDebugFullCharge::Forbid,
+        DebugFullCharge::Force => ModelDebugFullCharge::Force,
+        DebugFullCharge::None => ModelDebugFullCharge::None_,
+    }
+}
+
+fn forecast_strategy(s: ForecastDisagreementStrategy) -> ModelForecastStrategy {
+    match s {
+        ForecastDisagreementStrategy::Max => ModelForecastStrategy::Max,
+        ForecastDisagreementStrategy::Min => ModelForecastStrategy::Min,
+        ForecastDisagreementStrategy::Mean => ModelForecastStrategy::Mean,
+        ForecastDisagreementStrategy::SolcastIfAvailableElseMean => {
+            ModelForecastStrategy::SolcastIfAvailableElseMean
+        }
+    }
+}
+
+// --- time helpers ---------------------------------------------------------
+
+/// Convert a monotonic Instant into an approximate wall-clock epoch-ms.
+/// We don't have a real mapping from `Instant` to UNIX time, so we
+/// approximate using the elapsed wall-clock since boot:
+/// `now_epoch_ms - elapsed_ms_since(instant)`. Good enough for a
+/// dashboard "last updated" indicator; not suitable for absolute
+/// timestamps.
+fn instant_to_epoch_ms(instant: std::time::Instant) -> i64 {
+    let now = std::time::Instant::now();
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let delta_ms = now.saturating_duration_since(instant).as_millis() as i64;
+    now_epoch - delta_ms
+}
+
+// --- wrappers -------------------------------------------------------------
+
+fn actual_f64(a: &Actual<f64>) -> ModelActualF64 {
+    ModelActualF64 {
+        value: a.value,
+        freshness: freshness(a.freshness),
+        since_epoch_ms: instant_to_epoch_ms(a.since),
+    }
+}
+
+fn actuated_i32(a: &Actuated<i32>) -> ModelActuatedI32 {
+    ModelActuatedI32 {
+        target_value: a.target.value,
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual: ModelActualI32 {
+            value: a.actual.value,
+            freshness: freshness(a.actual.freshness),
+            since_epoch_ms: instant_to_epoch_ms(a.actual.since),
+        },
+    }
+}
+
+fn actuated_f64(a: &Actuated<f64>) -> ModelActuatedF64 {
+    ModelActuatedF64 {
+        target_value: a.target.value,
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual: actual_f64(&a.actual),
+    }
+}
+
+fn actuated_zappi(a: &Actuated<ZappiMode>, actual_val: Option<&ZappiMode>, actual_fresh: Freshness, actual_since: std::time::Instant) -> ActuatedEnumName {
+    ActuatedEnumName {
+        target_value: a.target.value.map(|v| format!("{v:?}")),
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual_value: actual_val.map(|v| format!("{v:?}")),
+        actual_freshness: freshness(actual_fresh),
+        actual_since_epoch_ms: instant_to_epoch_ms(actual_since),
+    }
+}
+
+fn actuated_eddi(a: &Actuated<EddiMode>, actual_val: Option<&EddiMode>, actual_fresh: Freshness, actual_since: std::time::Instant) -> ActuatedEnumName {
+    ActuatedEnumName {
+        target_value: a.target.value.map(|v| format!("{v:?}")),
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual_value: actual_val.map(|v| format!("{v:?}")),
+        actual_freshness: freshness(actual_fresh),
+        actual_since_epoch_ms: instant_to_epoch_ms(actual_since),
+    }
+}
+
+fn schedule_spec(s: &ScheduleSpec) -> ModelScheduleSpec {
+    ModelScheduleSpec {
+        start_s: s.start_s,
+        duration_s: s.duration_s,
+        discharge: s.discharge,
+        soc: s.soc,
+        days: s.days,
+    }
+}
+
+fn actuated_schedule(a: &Actuated<ScheduleSpec>) -> ModelActuatedSchedule {
+    ModelActuatedSchedule {
+        target: a.target.value.as_ref().map(schedule_spec),
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual: a.actual.value.as_ref().map(schedule_spec),
+        actual_freshness: freshness(a.actual.freshness),
+        actual_since_epoch_ms: instant_to_epoch_ms(a.actual.since),
+    }
+}
+
+// --- top-level mapping ----------------------------------------------------
+
+#[must_use]
+pub fn world_to_snapshot(world: &World) -> WorldSnapshot {
+    let s = &world.sensors;
+    let a = world.actuated();
+    let k = &world.knobs;
+    let b = &world.bookkeeping;
+    let f = &world.typed_sensors;
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let now_naive = chrono::Local::now().naive_local().to_string();
+
+    WorldSnapshot {
+        captured_at_epoch_ms: now_epoch,
+        captured_at_naive_iso: now_naive,
+        sensors: ModelSensors {
+            battery_soc: actual_f64(&s.battery_soc),
+            battery_soh: actual_f64(&s.battery_soh),
+            battery_installed_capacity: actual_f64(&s.battery_installed_capacity),
+            battery_dc_power: actual_f64(&s.battery_dc_power),
+            mppt_power_0: actual_f64(&s.mppt_power_0),
+            mppt_power_1: actual_f64(&s.mppt_power_1),
+            soltaro_power: actual_f64(&s.soltaro_power),
+            power_consumption: actual_f64(&s.power_consumption),
+            grid_power: actual_f64(&s.grid_power),
+            grid_voltage: actual_f64(&s.grid_voltage),
+            grid_current: actual_f64(&s.grid_current),
+            consumption_current: actual_f64(&s.consumption_current),
+            offgrid_power: actual_f64(&s.offgrid_power),
+            offgrid_current: actual_f64(&s.offgrid_current),
+            vebus_input_current: actual_f64(&s.vebus_input_current),
+            vebus_output_current: actual_f64(&s.vebus_output_current),
+            evcharger_ac_power: actual_f64(&s.evcharger_ac_power),
+            evcharger_ac_current: actual_f64(&s.evcharger_ac_current),
+            ess_state: actual_f64(&s.ess_state),
+            outdoor_temperature: actual_f64(&s.outdoor_temperature),
+        },
+        actuated: ModelActuated {
+            grid_setpoint: actuated_i32(a.grid_setpoint),
+            input_current_limit: actuated_f64(a.input_current_limit),
+            zappi_mode: actuated_zappi(
+                a.zappi_mode,
+                f.zappi_state.value.as_ref().map(|z| &z.zappi_mode),
+                f.zappi_state.freshness,
+                f.zappi_state.since,
+            ),
+            eddi_mode: actuated_eddi(
+                a.eddi_mode,
+                f.eddi_mode.value.as_ref(),
+                f.eddi_mode.freshness,
+                f.eddi_mode.since,
+            ),
+            schedule_0: actuated_schedule(a.schedule_0),
+            schedule_1: actuated_schedule(a.schedule_1),
+        },
+        knobs: knobs_to_model(k),
+        bookkeeping: ModelBookkeeping {
+            next_full_charge_iso: b.next_full_charge.map(|dt| dt.to_string()),
+            above_soc_date_iso: b.above_soc_date.map(|d| d.to_string()),
+            prev_ess_state: b.prev_ess_state,
+            zappi_active: b.zappi_active,
+            charge_to_full_required: b.charge_to_full_required,
+            soc_end_of_day_target: b.soc_end_of_day_target,
+            effective_export_soc_threshold: b.effective_export_soc_threshold,
+            battery_selected_soc_target: b.battery_selected_soc_target,
+        },
+        forecasts: ModelForecasts {
+            solcast: f.forecast_solcast.as_ref().map(forecast_snapshot),
+            forecast_solar: f.forecast_forecast_solar.as_ref().map(forecast_snapshot),
+            open_meteo: f.forecast_open_meteo.as_ref().map(forecast_snapshot),
+        },
+    }
+}
+
+fn knobs_to_model(k: &Knobs) -> ModelKnobs {
+    ModelKnobs {
+        force_disable_export: k.force_disable_export,
+        export_soc_threshold: k.export_soc_threshold,
+        discharge_soc_target: k.discharge_soc_target,
+        battery_soc_target: k.battery_soc_target,
+        full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
+        full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
+        discharge_time: discharge_time(k.discharge_time),
+        debug_full_charge: debug_full_charge(k.debug_full_charge),
+        pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
+        disable_night_grid_discharge: k.disable_night_grid_discharge,
+        charge_car_boost: k.charge_car_boost,
+        charge_car_extended: k.charge_car_extended,
+        zappi_current_target: k.zappi_current_target,
+        zappi_limit: k.zappi_limit,
+        zappi_emergency_margin: k.zappi_emergency_margin,
+        grid_export_limit_w: k.grid_export_limit_w as i32,
+        allow_battery_to_car: k.allow_battery_to_car,
+        eddi_enable_soc: k.eddi_enable_soc,
+        eddi_disable_soc: k.eddi_disable_soc,
+        eddi_dwell_s: k.eddi_dwell_s as i32,
+        weathersoc_winter_temperature_threshold: k.weathersoc_winter_temperature_threshold,
+        weathersoc_low_energy_threshold: k.weathersoc_low_energy_threshold,
+        weathersoc_ok_energy_threshold: k.weathersoc_ok_energy_threshold,
+        weathersoc_high_energy_threshold: k.weathersoc_high_energy_threshold,
+        weathersoc_too_much_energy_threshold: k.weathersoc_too_much_energy_threshold,
+        writes_enabled: k.writes_enabled,
+        forecast_disagreement_strategy: forecast_strategy(k.forecast_disagreement_strategy),
+    }
+}
+
+fn forecast_snapshot(f: &victron_controller_core::world::ForecastSnapshot) -> ModelForecastSnapshot {
+    ModelForecastSnapshot {
+        today_kwh: f.today_kwh,
+        tomorrow_kwh: f.tomorrow_kwh,
+        fetched_at_epoch_ms: instant_to_epoch_ms(f.fetched_at),
+    }
+}
+
+// --- command decode -------------------------------------------------------
+
+/// Map a `World` to just the six actuated entities it exposes — a
+/// helper so the snapshot converter doesn't duplicate the field list.
+fn world_actuated(world: &World) -> WorldActuatedRefs<'_> {
+    WorldActuatedRefs {
+        grid_setpoint: &world.grid_setpoint,
+        input_current_limit: &world.input_current_limit,
+        zappi_mode: &world.zappi_mode,
+        eddi_mode: &world.eddi_mode,
+        schedule_0: &world.schedule_0,
+        schedule_1: &world.schedule_1,
+    }
+}
+
+struct WorldActuatedRefs<'a> {
+    grid_setpoint: &'a Actuated<i32>,
+    input_current_limit: &'a Actuated<f64>,
+    zappi_mode: &'a Actuated<ZappiMode>,
+    eddi_mode: &'a Actuated<EddiMode>,
+    schedule_0: &'a Actuated<ScheduleSpec>,
+    schedule_1: &'a Actuated<ScheduleSpec>,
+}
+
+trait WorldActuatedAccess {
+    fn actuated(&self) -> WorldActuatedRefs<'_>;
+}
+impl WorldActuatedAccess for World {
+    fn actuated(&self) -> WorldActuatedRefs<'_> {
+        world_actuated(self)
+    }
+}
+
+/// Decode an incoming dashboard command into a core Event::Command.
+/// Unknown knob names return None so the caller can 400.
+#[must_use]
+pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Event> {
+    use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as C;
+    let core_cmd = match cmd {
+        C::SetBoolKnob(c) => {
+            let id = knob_id_from_name(&c.knob_name)?;
+            Command::Knob { id, value: KnobValue::Bool(c.value) }
+        }
+        C::SetFloatKnob(c) => {
+            let id = knob_id_from_name(&c.knob_name)?;
+            Command::Knob { id, value: KnobValue::Float(c.value) }
+        }
+        C::SetUintKnob(c) => {
+            let id = knob_id_from_name(&c.knob_name)?;
+            let v = u32::try_from(c.value).ok()?;
+            Command::Knob { id, value: KnobValue::Uint32(v) }
+        }
+        C::SetDischargeTime(c) => Command::Knob {
+            id: KnobId::DischargeTime,
+            value: KnobValue::DischargeTime(match c.value {
+                ModelDischargeTime::At0200 => DischargeTime::At0200,
+                ModelDischargeTime::At2300 => DischargeTime::At2300,
+            }),
+        },
+        C::SetDebugFullCharge(c) => Command::Knob {
+            id: KnobId::DebugFullCharge,
+            value: KnobValue::DebugFullCharge(match c.value {
+                ModelDebugFullCharge::Forbid => DebugFullCharge::Forbid,
+                ModelDebugFullCharge::Force => DebugFullCharge::Force,
+                ModelDebugFullCharge::None_ => DebugFullCharge::None,
+            }),
+        },
+        C::SetForecastDisagreementStrategy(c) => Command::Knob {
+            id: KnobId::ForecastDisagreementStrategy,
+            value: KnobValue::ForecastDisagreementStrategy(match c.value {
+                ModelForecastStrategy::Max => ForecastDisagreementStrategy::Max,
+                ModelForecastStrategy::Min => ForecastDisagreementStrategy::Min,
+                ModelForecastStrategy::Mean => ForecastDisagreementStrategy::Mean,
+                ModelForecastStrategy::SolcastIfAvailableElseMean => {
+                    ForecastDisagreementStrategy::SolcastIfAvailableElseMean
+                }
+            }),
+        },
+        C::SetKillSwitch(c) => Command::KillSwitch(c.value),
+    };
+    Some(Event::Command {
+        command: core_cmd,
+        owner: Owner::Dashboard,
+        at,
+    })
+}
+
+/// Exhaustive `snake_case` knob-name → KnobId mapping. Mirrors the MQTT
+/// serializer's table to keep one wire vocabulary. Kept here so the
+/// dashboard + MQTT subscribers can evolve independently if needed.
+fn knob_id_from_name(n: &str) -> Option<KnobId> {
+    Some(match n {
+        "force_disable_export" => KnobId::ForceDisableExport,
+        "export_soc_threshold" => KnobId::ExportSocThreshold,
+        "discharge_soc_target" => KnobId::DischargeSocTarget,
+        "battery_soc_target" => KnobId::BatterySocTarget,
+        "full_charge_discharge_soc_target" => KnobId::FullChargeDischargeSocTarget,
+        "full_charge_export_soc_threshold" => KnobId::FullChargeExportSocThreshold,
+        "discharge_time" => KnobId::DischargeTime,
+        "debug_full_charge" => KnobId::DebugFullCharge,
+        "pessimism_multiplier_modifier" => KnobId::PessimismMultiplierModifier,
+        "disable_night_grid_discharge" => KnobId::DisableNightGridDischarge,
+        "charge_car_boost" => KnobId::ChargeCarBoost,
+        "charge_car_extended" => KnobId::ChargeCarExtended,
+        "zappi_current_target" => KnobId::ZappiCurrentTarget,
+        "zappi_limit" => KnobId::ZappiLimit,
+        "zappi_emergency_margin" => KnobId::ZappiEmergencyMargin,
+        "grid_export_limit_w" => KnobId::GridExportLimitW,
+        "allow_battery_to_car" => KnobId::AllowBatteryToCar,
+        "eddi_enable_soc" => KnobId::EddiEnableSoc,
+        "eddi_disable_soc" => KnobId::EddiDisableSoc,
+        "eddi_dwell_s" => KnobId::EddiDwellS,
+        "weathersoc_winter_temperature_threshold" => KnobId::WeathersocWinterTemperatureThreshold,
+        "weathersoc_low_energy_threshold" => KnobId::WeathersocLowEnergyThreshold,
+        "weathersoc_ok_energy_threshold" => KnobId::WeathersocOkEnergyThreshold,
+        "weathersoc_high_energy_threshold" => KnobId::WeathersocHighEnergyThreshold,
+        "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
+        "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
+        _ => return None,
+    })
+}

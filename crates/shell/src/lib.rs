@@ -12,6 +12,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod dashboard;
 pub mod dbus;
 pub mod forecast;
 pub mod mqtt;

@@ -1,0 +1,282 @@
+model victron_controller.dashboard
+version "0.1.0"
+
+// ---------------------------------------------------------------------------
+// Primitives: the four value shapes actually carried by the world
+// ---------------------------------------------------------------------------
+
+// TASS freshness state, mirrors core::tass::Freshness.
+enum Freshness {
+  Unknown
+  Fresh
+  Stale
+  Deprecated
+}
+
+// TASS target phase, mirrors core::tass::TargetPhase.
+enum TargetPhase {
+  Unset
+  Pending
+  Commanded
+  Confirmed
+}
+
+// Who set the current target, mirrors core::owner::Owner.
+enum Owner {
+  Unset
+  System
+  Dashboard
+  HaMqtt
+  WeatherSocPlanner
+  SetpointController
+  CurrentLimitController
+  ScheduleController
+  ZappiController
+  EddiController
+  FullChargeScheduler
+}
+
+enum ZappiMode {
+  Fast
+  Eco
+  EcoPlus
+  Off
+}
+
+enum EddiMode {
+  Normal
+  Stopped
+}
+
+enum DischargeTime {
+  At0200
+  At2300
+}
+
+enum DebugFullCharge {
+  Forbid
+  Force
+  None_
+}
+
+enum ForecastDisagreementStrategy {
+  Max
+  Min
+  Mean
+  SolcastIfAvailableElseMean
+}
+
+// ---------------------------------------------------------------------------
+// Generic actual / actuated wrappers (TASS)
+// ---------------------------------------------------------------------------
+
+// Sensor reading. `value` is None when freshness=Unknown.
+data ActualF64 {
+  value: opt[f64]
+  freshness: Freshness
+  since_epoch_ms: i64
+}
+
+// I32-valued sensor / readback.
+data ActualI32 {
+  value: opt[i32]
+  freshness: Freshness
+  since_epoch_ms: i64
+}
+
+// Actuated entity with an i32 target (GridSetpoint).
+data ActuatedI32 {
+  target_value: opt[i32]
+  target_owner: Owner
+  target_phase: TargetPhase
+  target_since_epoch_ms: i64
+  actual: ActualI32
+}
+
+// Actuated entity with an f64 target (InputCurrentLimit).
+data ActuatedF64 {
+  target_value: opt[f64]
+  target_owner: Owner
+  target_phase: TargetPhase
+  target_since_epoch_ms: i64
+  actual: ActualF64
+}
+
+// Generic actuated entity with an enum-like name for the target.
+// Used for ZappiMode / EddiMode where the value fits the enum.
+data ActuatedEnumName {
+  target_value: opt[str]
+  target_owner: Owner
+  target_phase: TargetPhase
+  target_since_epoch_ms: i64
+  actual_value: opt[str]
+  actual_freshness: Freshness
+  actual_since_epoch_ms: i64
+}
+
+data ScheduleSpec {
+  start_s: i32
+  duration_s: i32
+  discharge: i32
+  soc: f64
+  days: i32
+}
+
+data ActuatedSchedule {
+  target: opt[ScheduleSpec]
+  target_owner: Owner
+  target_phase: TargetPhase
+  target_since_epoch_ms: i64
+  actual: opt[ScheduleSpec]
+  actual_freshness: Freshness
+  actual_since_epoch_ms: i64
+}
+
+// ---------------------------------------------------------------------------
+// World sub-sections
+// ---------------------------------------------------------------------------
+
+data Sensors {
+  battery_soc: ActualF64
+  battery_soh: ActualF64
+  battery_installed_capacity: ActualF64
+  battery_dc_power: ActualF64
+  mppt_power_0: ActualF64
+  mppt_power_1: ActualF64
+  soltaro_power: ActualF64
+  power_consumption: ActualF64
+  grid_power: ActualF64
+  grid_voltage: ActualF64
+  grid_current: ActualF64
+  consumption_current: ActualF64
+  offgrid_power: ActualF64
+  offgrid_current: ActualF64
+  vebus_input_current: ActualF64
+  vebus_output_current: ActualF64
+  evcharger_ac_power: ActualF64
+  evcharger_ac_current: ActualF64
+  ess_state: ActualF64
+  outdoor_temperature: ActualF64
+}
+
+data Actuated {
+  grid_setpoint: ActuatedI32
+  input_current_limit: ActuatedF64
+  zappi_mode: ActuatedEnumName
+  eddi_mode: ActuatedEnumName
+  schedule_0: ActuatedSchedule
+  schedule_1: ActuatedSchedule
+}
+
+data Knobs {
+  force_disable_export: bit
+  export_soc_threshold: f64
+  discharge_soc_target: f64
+  battery_soc_target: f64
+  full_charge_discharge_soc_target: f64
+  full_charge_export_soc_threshold: f64
+  discharge_time: DischargeTime
+  debug_full_charge: DebugFullCharge
+  pessimism_multiplier_modifier: f64
+  disable_night_grid_discharge: bit
+  charge_car_boost: bit
+  charge_car_extended: bit
+  zappi_current_target: f64
+  zappi_limit: f64
+  zappi_emergency_margin: f64
+  grid_export_limit_w: i32
+  allow_battery_to_car: bit
+  eddi_enable_soc: f64
+  eddi_disable_soc: f64
+  eddi_dwell_s: i32
+  weathersoc_winter_temperature_threshold: f64
+  weathersoc_low_energy_threshold: f64
+  weathersoc_ok_energy_threshold: f64
+  weathersoc_high_energy_threshold: f64
+  weathersoc_too_much_energy_threshold: f64
+  writes_enabled: bit
+  forecast_disagreement_strategy: ForecastDisagreementStrategy
+}
+
+data Bookkeeping {
+  next_full_charge_iso: opt[str]
+  above_soc_date_iso: opt[str]
+  prev_ess_state: opt[i32]
+  zappi_active: bit
+  charge_to_full_required: bit
+  soc_end_of_day_target: f64
+  effective_export_soc_threshold: f64
+  battery_selected_soc_target: f64
+}
+
+data ForecastSnapshot {
+  today_kwh: f64
+  tomorrow_kwh: f64
+  fetched_at_epoch_ms: i64
+}
+
+data Forecasts {
+  solcast: opt[ForecastSnapshot]
+  forecast_solar: opt[ForecastSnapshot]
+  open_meteo: opt[ForecastSnapshot]
+}
+
+// ---------------------------------------------------------------------------
+// Top-level snapshot returned by the dashboard server
+// ---------------------------------------------------------------------------
+
+root data WorldSnapshot {
+  captured_at_epoch_ms: i64
+  captured_at_naive_iso: str
+  sensors: Sensors
+  actuated: Actuated
+  knobs: Knobs
+  bookkeeping: Bookkeeping
+  forecasts: Forecasts
+}
+
+// ---------------------------------------------------------------------------
+// Commands the dashboard can send
+// ---------------------------------------------------------------------------
+
+root adt Command {
+  data SetBoolKnob {
+    knob_name: str
+    value: bit
+  }
+  data SetFloatKnob {
+    knob_name: str
+    value: f64
+  }
+  data SetUintKnob {
+    knob_name: str
+    value: i32
+  }
+  data SetDischargeTime {
+    value: DischargeTime
+  }
+  data SetDebugFullCharge {
+    value: DebugFullCharge
+  }
+  data SetForecastDisagreementStrategy {
+    value: ForecastDisagreementStrategy
+  }
+  data SetKillSwitch {
+    value: bit
+  }
+}
+
+root data CommandAck {
+  accepted: bit
+  error_message: opt[str]
+}
+
+// ---------------------------------------------------------------------------
+// Version info (every baboon service should expose one)
+// ---------------------------------------------------------------------------
+
+root data VersionInfo {
+  current_version: str
+  min_supported_version: str
+  git_sha: opt[str]
+}

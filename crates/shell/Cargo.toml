@@ -12,6 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 victron-controller-core = { path = "../core" }
+victron-controller-dashboard-model = { path = "../dashboard-model" }
+
+# Dashboard HTTP server
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

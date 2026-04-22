@@ -8,9 +8,10 @@
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    baboon.url = "github:7mind/baboon";
   };
 
-  outputs = { self, nixpkgs, flake-utils, fenix }:
+  outputs = { self, nixpkgs, flake-utils, fenix, baboon }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -38,6 +39,8 @@
             patchelf   # used by install-victron.sh to rewrite the ELF
                        # interpreter path from the nix-store default
                        # to /lib/ld-linux-armhf.so.3 for Venus.
+            baboon.packages.${system}.baboon  # data model compiler for
+                                              # the dashboard wire format
           ];
 
           # Tell cargo which linker to use when targeting armv7.
