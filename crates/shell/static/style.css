@@ -133,3 +133,18 @@ footer {
 }
 
 #last-error { color: var(--bad); font-family: ui-monospace, monospace; }
+
+.conn-indicator {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.06);
+}
+@media (prefers-color-scheme: dark) {
+  .conn-indicator { background: rgba(255, 255, 255, 0.06); }
+}
+.conn-NEW    { color: var(--accent); }
+.conn-ALIVE  { color: var(--ok); font-weight: 600; }
+.conn-STALE  { color: var(--warn); font-weight: 600; }
+.conn-DEAD   { color: var(--bad); }

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {ActuatedF64, ActuatedF64_UEBACodec} from './ActuatedF64'
 import {ActuatedSchedule, ActuatedSchedule_UEBACodec} from './ActuatedSchedule'

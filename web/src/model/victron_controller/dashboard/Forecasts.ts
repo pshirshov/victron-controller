@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {ForecastSnapshot, ForecastSnapshot_UEBACodec} from './ForecastSnapshot'
 

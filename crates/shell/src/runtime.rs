@@ -18,6 +18,8 @@ use victron_controller_core::types::{Effect, Event};
 use victron_controller_core::{process, Topology, World};
 
 use crate::clock::RealClock;
+use crate::dashboard::SnapshotBroadcast;
+use crate::dashboard::convert::world_to_snapshot;
 use crate::dbus::Writer;
 use crate::mqtt::Publisher as MqttPublisher;
 use crate::myenergi::Writer as MyenergiWriter;
@@ -30,6 +32,7 @@ pub struct Runtime {
     writer: Writer,
     myenergi: MyenergiWriter,
     mqtt: Option<MqttPublisher>,
+    snapshot_stream: Arc<SnapshotBroadcast>,
 }
 
 impl Runtime {
@@ -39,6 +42,7 @@ impl Runtime {
         myenergi: MyenergiWriter,
         mqtt: Option<MqttPublisher>,
         topology: Topology,
+        snapshot_stream: Arc<SnapshotBroadcast>,
     ) -> Self {
         Self {
             world,
@@ -47,6 +51,7 @@ impl Runtime {
             writer,
             myenergi,
             mqtt,
+            snapshot_stream,
         }
     }
 
@@ -73,10 +78,14 @@ impl Runtime {
                 _ = tick.tick() => Event::Tick { at: Instant::now() },
             };
             trace!(?event, "process");
-            let effects = {
+            let (effects, snapshot) = {
                 let mut world = self.world.lock().await;
-                process(&event, &mut world, &self.clock, &self.topology)
+                let effects = process(&event, &mut world, &self.clock, &self.topology);
+                let snapshot = world_to_snapshot(&world);
+                (effects, snapshot)
             };
+            // Fan the fresh snapshot out to every WebSocket client.
+            self.snapshot_stream.send(snapshot);
             for e in effects {
                 self.dispatch(e).await;
             }

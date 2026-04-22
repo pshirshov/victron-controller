@@ -9,5 +9,6 @@
 
 pub mod convert;
 pub mod server;
+pub mod ws;
 
-pub use server::DashboardServer;
+pub use server::{DashboardServer, SnapshotBroadcast};

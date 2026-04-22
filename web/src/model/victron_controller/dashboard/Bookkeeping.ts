@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 
 export class Bookkeeping implements BaboonGeneratedLatest {

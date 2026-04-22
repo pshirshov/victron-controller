@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {ActualI32, ActualI32_UEBACodec} from './ActualI32'
 import {TargetPhase, TargetPhase_UEBACodec} from './TargetPhase'

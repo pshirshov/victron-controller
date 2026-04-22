@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {Freshness, Freshness_UEBACodec} from './Freshness'
 import {ScheduleSpec, ScheduleSpec_UEBACodec} from './ScheduleSpec'

@@ -15,7 +15,7 @@ victron-controller-core = { path = "../core" }
 victron-controller-dashboard-model = { path = "../dashboard-model" }
 
 # Dashboard HTTP server
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 
 # Async runtime

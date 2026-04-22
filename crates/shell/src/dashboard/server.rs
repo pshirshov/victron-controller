@@ -12,7 +12,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{error, info, warn};
 
 use victron_controller_core::types::Event;
@@ -21,6 +21,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::command::
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 
 use super::convert::{command_to_event, world_to_snapshot};
+use super::ws::ws_handler;
 
 /// Shared state: a snapshot of `World` (published by the runtime) and
 /// a sender the HTTP layer uses to push Command events back to the
@@ -29,6 +30,35 @@ use super::convert::{command_to_event, world_to_snapshot};
 pub struct DashboardState {
     pub world: Arc<Mutex<World>>,
     pub events: mpsc::Sender<Event>,
+    /// Broadcast channel used to fan out snapshots from the runtime's
+    /// tick to every connected WebSocket client.
+    pub snapshot_stream: Arc<SnapshotBroadcast>,
+}
+
+#[derive(Debug)]
+pub struct SnapshotBroadcast {
+    tx: broadcast::Sender<WorldSnapshot>,
+}
+
+impl SnapshotBroadcast {
+    #[must_use]
+    pub fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            tx: broadcast::channel(capacity).0,
+        })
+    }
+
+    pub fn send(&self, snap: WorldSnapshot) {
+        // broadcast::send returns Err only when there are no receivers;
+        // that's fine — we don't buffer snapshots when no one is
+        // subscribed.
+        let _ = self.tx.send(snap);
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<WorldSnapshot> {
+        self.tx.subscribe()
+    }
 }
 
 impl std::fmt::Debug for DashboardState {
@@ -48,10 +78,19 @@ pub struct DashboardServer {
 
 impl DashboardServer {
     #[must_use]
-    pub fn new(bind: SocketAddr, world: Arc<Mutex<World>>, events: mpsc::Sender<Event>) -> Self {
+    pub fn new(
+        bind: SocketAddr,
+        world: Arc<Mutex<World>>,
+        events: mpsc::Sender<Event>,
+        snapshot_stream: Arc<SnapshotBroadcast>,
+    ) -> Self {
         Self {
             bind,
-            state: DashboardState { world, events },
+            state: DashboardState {
+                world,
+                events,
+                snapshot_stream,
+            },
         }
     }
 
@@ -68,11 +107,12 @@ impl DashboardServer {
 
 fn router(state: DashboardState) -> Router {
     Router::new()
+        .route("/ws", get(ws_handler))
         .route("/api/snapshot", get(snapshot_handler))
         .route("/api/command", post(command_handler))
         .route("/api/version", get(version_handler))
         .route("/", get(index_handler))
-        .route("/index.js", get(index_js_handler))
+        .route("/bundle.js", get(bundle_js_handler))
         .route("/style.css", get(index_css_handler))
         .with_state(state)
 }
@@ -117,14 +157,14 @@ async fn version_handler() -> impl IntoResponse {
 }
 
 const INDEX_HTML: &str = include_str!("../../static/index.html");
-const INDEX_JS: &str = include_str!("../../static/index.js");
+const BUNDLE_JS: &str = include_str!("../../static/bundle.js");
 const INDEX_CSS: &str = include_str!("../../static/style.css");
 
 async fn index_handler() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
 }
-async fn index_js_handler() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "application/javascript")], INDEX_JS)
+async fn bundle_js_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "application/javascript")], BUNDLE_JS)
 }
 async fn index_css_handler() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/css")], INDEX_CSS)

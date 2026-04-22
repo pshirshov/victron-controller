@@ -58,6 +58,9 @@ TARGET_TRIPLE="armv7-unknown-linux-gnueabihf"
 BINARY_PATH="target/${TARGET_TRIPLE}/release/victron-controller"
 
 # ----- build --------------------------------------------------------------
+echo "[local] building web frontend..."
+"$REPO_ROOT/scripts/build-web.sh"
+
 echo "[local] building ${TARGET_TRIPLE} release..."
 cargo build -p victron-controller-shell --release --target "${TARGET_TRIPLE}"
 

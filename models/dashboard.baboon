@@ -280,3 +280,64 @@ root data VersionInfo {
   min_supported_version: str
   git_sha: opt[str]
 }
+
+// ---------------------------------------------------------------------------
+// WebSocket protocol — reliable streaming of snapshots + RFC-6455-compatible
+// app-level ping/pong for connection health detection (see
+// https://github.com/pshirshov/ws-reconnect-demo for the pattern).
+// ---------------------------------------------------------------------------
+
+// Ping from client to server.
+data WsPing {
+  nonce: str
+  client_ts_ms: i64
+}
+
+// Pong from server to client (echoes nonce + client_ts; adds server_ts).
+data WsPong {
+  nonce: str
+  client_ts_ms: i64
+  server_ts_ms: i64
+}
+
+// Full world snapshot pushed from server to client.
+data WsSnapshot {
+  snapshot: WorldSnapshot
+}
+
+// A single log line, pushed as it fires. Clients render in a rolling
+// buffer for the observer-mode feed.
+data WsLogLine {
+  at_epoch_ms: i64
+  level: str
+  source: str
+  message: str
+}
+
+root adt WsServerMessage {
+  data Hello {
+    server_version: str
+    server_ts_ms: i64
+  }
+  data Pong {
+    body: WsPong
+  }
+  data Snapshot {
+    body: WorldSnapshot
+  }
+  data Log {
+    body: WsLogLine
+  }
+  data Ack {
+    body: CommandAck
+  }
+}
+
+root adt WsClientMessage {
+  data Ping {
+    body: WsPing
+  }
+  data SendCommand {
+    body: Command
+  }
+}

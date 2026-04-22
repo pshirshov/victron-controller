@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 
 export enum DebugFullCharge {

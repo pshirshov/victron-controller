@@ -41,6 +41,10 @@
                        # to /lib/ld-linux-armhf.so.3 for Venus.
             baboon.packages.${system}.baboon  # data model compiler for
                                               # the dashboard wire format
+            # Frontend build toolchain.
+            nodejs_22
+            esbuild
+            typescript
           ];
 
           # Tell cargo which linker to use when targeting armv7.

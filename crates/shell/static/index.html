@@ -10,6 +10,7 @@
   <header>
     <h1>victron-controller</h1>
     <div class="status">
+      <span id="conn-indicator" class="conn-indicator"><span class="conn-NEW">connecting…</span></span>
       <span id="captured-at">—</span>
       <span id="writes-badge" class="badge">…</span>
     </div>
@@ -86,9 +87,8 @@
 
   <footer>
     <span id="last-error"></span>
-    <span id="refresh-indicator">refreshing…</span>
   </footer>
 
-  <script src="/index.js"></script>
+  <script src="/bundle.js" defer></script>
 </body>
 </html>

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {DebugFullCharge, DebugFullCharge_UEBACodec} from './DebugFullCharge'
 import {DischargeTime, DischargeTime_UEBACodec} from './DischargeTime'

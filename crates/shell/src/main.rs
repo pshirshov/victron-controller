@@ -14,7 +14,7 @@ use victron_controller_core::world::World;
 use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
-use victron_controller_shell::dashboard::DashboardServer;
+use victron_controller_shell::dashboard::{DashboardServer, SnapshotBroadcast};
 use victron_controller_shell::dbus::{Subscriber, Writer};
 use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
 use victron_controller_shell::mqtt::{
@@ -86,7 +86,15 @@ async fn main() -> Result<()> {
 
     let topology = Topology::defaults();
     let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
-    let runtime = Runtime::new(world.clone(), writer, myenergi_writer, mqtt_publisher, topology);
+    let snapshot_stream = SnapshotBroadcast::new(64);
+    let runtime = Runtime::new(
+        world.clone(),
+        writer,
+        myenergi_writer,
+        mqtt_publisher,
+        topology,
+        snapshot_stream.clone(),
+    );
 
     // Spawn subscriber + myenergi poller + runtime; all linked via
     // `tx`/`rx` so when the runtime's receiver closes, producers exit.
@@ -192,7 +200,12 @@ async fn main() -> Result<()> {
     )
     .parse()
     .context("parse dashboard bind addr")?;
-    let dashboard = DashboardServer::new(dashboard_bind, world.clone(), tx.clone());
+    let dashboard = DashboardServer::new(
+        dashboard_bind,
+        world.clone(),
+        tx.clone(),
+        snapshot_stream,
+    );
     let dashboard_task = tokio::spawn(async move {
         if let Err(e) = dashboard.run().await {
             error!(error = %e, "dashboard server terminated with error");
