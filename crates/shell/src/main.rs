@@ -14,14 +14,22 @@ use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
 use victron_controller_shell::dbus::{Subscriber, Writer};
 use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
-use victron_controller_shell::mqtt::{self, publish_ha_discovery};
+use victron_controller_shell::mqtt::{
+    self, log_channel, publish_ha_discovery, spawn_log_publisher, MqttLogLayer,
+};
 use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
     Writer as MyenergiWriter};
 use victron_controller_shell::runtime::Runtime;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
-    init_tracing();
+    // Create the log channel FIRST, before `init_tracing` — the tracing
+    // subscriber composes an MqttLogLayer around the sender end so
+    // every log line forwards to the mpsc queue. The publisher task
+    // is spawned later, after MQTT connects, to drain the receiver.
+    let (log_tx, log_rx) = log_channel();
+    init_tracing(log_tx);
+
     let cfg_path = config_path_from_args();
     info!("loading config: {}", cfg_path.display());
     let cfg: Config = config::load(&cfg_path).with_context(|| "load config")?;
@@ -56,9 +64,21 @@ async fn main() -> Result<()> {
             if let Err(e) = publish_ha_discovery(&p.client_handle(), &cfg.mqtt.topic_root).await {
                 error!(error = %e, "HA discovery publish failed (non-fatal)");
             }
+            // Drain the log channel onto MQTT from here on. Records
+            // buffered during pre-connect init will be emitted first.
+            spawn_log_publisher(log_rx, p.client_handle(), cfg.mqtt.topic_root.clone());
+            info!("mqtt log publisher started");
             (Some(p), Some(s))
         }
-        None => (None, None),
+        None => {
+            // No MQTT → just drop log records (the stdout layer still
+            // fires). Drain the receiver so try_send doesn't block.
+            tokio::spawn(async move {
+                let mut rx = log_rx;
+                while rx.recv().await.is_some() { /* discard */ }
+            });
+            (None, None)
+        }
     };
 
     let topology = Topology::defaults();
@@ -205,11 +225,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with_target(true)
+fn init_tracing(log_tx: tokio::sync::mpsc::Sender<mqtt::LogRecord>) {
+    use tracing_subscriber::{prelude::*, EnvFilter};
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt_layer)
+        .with(MqttLogLayer::new(log_tx))
         .init();
 }
 

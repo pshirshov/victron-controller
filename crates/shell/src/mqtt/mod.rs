@@ -18,9 +18,11 @@
 //! one place.
 
 mod discovery;
+mod log_layer;
 mod serialize;
 
 pub use discovery::publish_ha_discovery;
+pub use log_layer::{log_channel, spawn_log_publisher, LogRecord, MqttLogLayer};
 pub use serialize::{decode_knob_set, decode_state_message, encode_publish_payload};
 
 use std::time::{Duration, Instant};
