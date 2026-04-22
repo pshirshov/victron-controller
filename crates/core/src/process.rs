@@ -259,6 +259,43 @@ fn apply_command(
             world.knobs.writes_enabled = enabled;
             effects.push(Effect::Publish(PublishPayload::KillSwitch(enabled)));
         }
+        Command::Bookkeeping { key, value } => {
+            apply_bookkeeping(key, value, world);
+            effects.push(Effect::Publish(PublishPayload::Bookkeeping(key, value)));
+        }
+    }
+}
+
+fn apply_bookkeeping(
+    key: BookkeepingKey,
+    value: BookkeepingValue,
+    world: &mut World,
+) {
+    let bk = &mut world.bookkeeping;
+    match (key, value) {
+        (BookkeepingKey::NextFullCharge, BookkeepingValue::NaiveDateTime(dt)) => {
+            bk.next_full_charge = Some(dt);
+        }
+        (BookkeepingKey::NextFullCharge, BookkeepingValue::Cleared) => {
+            bk.next_full_charge = None;
+        }
+        (BookkeepingKey::AboveSocDate, BookkeepingValue::NaiveDate(d)) => {
+            bk.above_soc_date = Some(d);
+        }
+        (BookkeepingKey::AboveSocDate, BookkeepingValue::Cleared) => {
+            bk.above_soc_date = None;
+        }
+        (BookkeepingKey::PrevEssState, BookkeepingValue::OptionalInt(v)) => {
+            bk.prev_ess_state = v;
+        }
+        (BookkeepingKey::PrevEssState, BookkeepingValue::Cleared) => {
+            bk.prev_ess_state = None;
+        }
+        _ => {
+            // Type mismatch — retained payload shape doesn't match the
+            // key's expected shape. Silently drop; the controllers will
+            // rebuild state on first tick.
+        }
     }
 }
 
@@ -1287,6 +1324,78 @@ mod tests {
     // ------------------------------------------------------------------
     // Kill switch
     // ------------------------------------------------------------------
+
+    #[test]
+    fn bookkeeping_command_seeds_world_bookkeeping() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let restored_dt = NaiveDate::from_ymd_opt(2026, 4, 26)
+            .unwrap()
+            .and_hms_opt(17, 0, 0)
+            .unwrap();
+        let restored_date = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap();
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Bookkeeping {
+                    key: BookkeepingKey::NextFullCharge,
+                    value: BookkeepingValue::NaiveDateTime(restored_dt),
+                },
+                owner: Owner::System,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.next_full_charge, Some(restored_dt));
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Bookkeeping {
+                    key: BookkeepingKey::AboveSocDate,
+                    value: BookkeepingValue::NaiveDate(restored_date),
+                },
+                owner: Owner::System,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.above_soc_date, Some(restored_date));
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Bookkeeping {
+                    key: BookkeepingKey::PrevEssState,
+                    value: BookkeepingValue::OptionalInt(Some(9)),
+                },
+                owner: Owner::System,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.prev_ess_state, Some(9));
+
+        // Cleared variant resets to None.
+        let _ = process(
+            &Event::Command {
+                command: Command::Bookkeeping {
+                    key: BookkeepingKey::AboveSocDate,
+                    value: BookkeepingValue::Cleared,
+                },
+                owner: Owner::System,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.above_soc_date, None);
+    }
 
     #[test]
     fn kill_switch_toggles_writes_enabled_and_publishes() {

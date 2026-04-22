@@ -155,10 +155,16 @@ pub enum ActuatedReadback {
 }
 
 /// Commands originating from dashboard / HA / explicit user action.
+///
+/// The `Bookkeeping` variant is used only during the MQTT bootstrap
+/// phase to seed `World.bookkeeping` from retained state. There is no
+/// external source that should issue it at runtime; the controllers
+/// themselves own bookkeeping updates via effects.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     Knob { id: KnobId, value: KnobValue },
     KillSwitch(bool),
+    Bookkeeping { key: BookkeepingKey, value: BookkeepingValue },
 }
 
 /// Everything the pure core consumes.

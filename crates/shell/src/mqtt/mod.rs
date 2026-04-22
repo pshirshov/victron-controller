@@ -26,12 +26,16 @@ pub use serialize::{decode_knob_set, decode_state_message, encode_publish_payloa
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rumqttc::{AsyncClient, Event as MqttEvent, EventLoop, MqttOptions, Packet, QoS};
+use rumqttc::{
+    AsyncClient, Event as MqttEvent, EventLoop, MqttOptions, Packet, QoS, TlsConfiguration,
+    Transport,
+};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
-use victron_controller_core::types::{Event, PublishPayload};
+use victron_controller_core::owner::Owner;
+use victron_controller_core::types::{Command, Event, KnobId, KnobValue, PublishPayload};
 
 use crate::config::MqttConfig;
 
@@ -91,8 +95,19 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
     if let (Some(u), Some(p)) = (&config.username, &config.password) {
         opts.set_credentials(u, p);
     }
-    // TLS setup would go here via opts.set_transport(...). Deferred
-    // until the user enables it in config.
+    if config.tls {
+        let ca_path = config.ca_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("mqtt.tls=true requires mqtt.ca_path to point at a CA certificate")
+        })?;
+        let ca = std::fs::read(ca_path)
+            .with_context(|| format!("read CA certificate from {ca_path}"))?;
+        opts.set_transport(Transport::Tls(TlsConfiguration::Simple {
+            ca,
+            alpn: None,
+            client_auth: None,
+        }));
+        info!(%ca_path, "mqtt TLS enabled");
+    }
 
     let (client, event_loop) = AsyncClient::new(opts, 64);
     info!(host = %config.host, port = config.port, "mqtt connected (session will establish on first loop iteration)");
@@ -161,6 +176,7 @@ impl Subscriber {
         let state_topics = [
             format!("{}/knob/+/state", self.topic_root),
             format!("{}/writes_enabled/state", self.topic_root),
+            format!("{}/bookkeeping/+/state", self.topic_root),
         ];
         let set_topics = [
             format!("{}/knob/+/set", self.topic_root),
@@ -201,6 +217,21 @@ impl Subscriber {
             }
         }
         info!(applied, "mqtt bootstrap complete; seeded knobs from retained state");
+
+        // Unconditional post-bootstrap override: SPEC §5.9 requires
+        // `allow_battery_to_car` to boot `false` every single time,
+        // regardless of retained value. This fires AFTER the bootstrap
+        // in case the retained value was `true`.
+        let _ = tx
+            .send(Event::Command {
+                command: Command::Knob {
+                    id: KnobId::AllowBatteryToCar,
+                    value: KnobValue::Bool(false),
+                },
+                owner: Owner::System,
+                at: Instant::now(),
+            })
+            .await;
 
         for t in &state_topics {
             let _ = self.client.unsubscribe(t).await;

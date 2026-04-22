@@ -89,8 +89,14 @@ pub struct MqttConfig {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// When `true`, use TLS. Requires `ca_path` to point at a PEM-
+    /// encoded CA certificate the broker's server cert chains to.
     #[serde(default)]
     pub tls: bool,
+    /// Path to a PEM-encoded CA certificate (or bundle). Only
+    /// consulted when `tls = true`.
+    #[serde(default)]
+    pub ca_path: Option<String>,
     #[serde(default = "default_mqtt_root")]
     pub topic_root: String,
 }
@@ -103,6 +109,7 @@ impl Default for MqttConfig {
             username: None,
             password: None,
             tls: false,
+            ca_path: None,
             topic_root: default_mqtt_root(),
         }
     }

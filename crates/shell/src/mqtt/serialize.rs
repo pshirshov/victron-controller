@@ -11,7 +11,7 @@ use tracing::warn;
 
 use victron_controller_core::knobs::{DebugFullCharge, DischargeTime, ForecastDisagreementStrategy};
 use victron_controller_core::types::{
-    BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue, PublishPayload,
+    ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue, PublishPayload,
 };
 use victron_controller_core::Owner;
 
@@ -93,7 +93,50 @@ fn decode_generic(
         });
     }
 
+    // Bookkeeping state — only meaningful with the /state suffix during
+    // bootstrap, but decoded symmetrically for uniformity.
+    if let Some(rest) = stripped.strip_prefix("bookkeeping/") {
+        let name = rest.strip_suffix(suffix)?;
+        let key = bookkeeping_key_from_name(name)?;
+        let value = parse_bookkeeping_value(key, body)?;
+        return Some(Event::Command {
+            command: Command::Bookkeeping { key, value },
+            owner,
+            at,
+        });
+    }
+
     None
+}
+
+fn bookkeeping_key_from_name(name: &str) -> Option<BookkeepingKey> {
+    Some(match name {
+        "next_full_charge" => BookkeepingKey::NextFullCharge,
+        "above_soc_date" => BookkeepingKey::AboveSocDate,
+        "prev_ess_state" => BookkeepingKey::PrevEssState,
+        _ => return None,
+    })
+}
+
+fn parse_bookkeeping_value(key: BookkeepingKey, body: &str) -> Option<BookkeepingValue> {
+    if body == "null" {
+        return Some(BookkeepingValue::Cleared);
+    }
+    match key {
+        BookkeepingKey::NextFullCharge => chrono::NaiveDateTime::parse_from_str(
+            body,
+            "%Y-%m-%dT%H:%M:%S",
+        )
+        .ok()
+        .map(BookkeepingValue::NaiveDateTime),
+        BookkeepingKey::AboveSocDate => chrono::NaiveDate::parse_from_str(body, "%Y-%m-%d")
+            .ok()
+            .map(BookkeepingValue::NaiveDate),
+        BookkeepingKey::PrevEssState => body
+            .parse::<i32>()
+            .ok()
+            .map(|n| BookkeepingValue::OptionalInt(Some(n))),
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -164,15 +207,14 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
     })
 }
 
-fn actuated_name(id: victron_controller_core::types::ActuatedId) -> &'static str {
-    use victron_controller_core::types::ActuatedId::*;
+fn actuated_name(id: ActuatedId) -> &'static str {
     match id {
-        GridSetpoint => "grid_setpoint",
-        InputCurrentLimit => "input_current_limit",
-        ZappiMode => "zappi_mode",
-        EddiMode => "eddi_mode",
-        Schedule0 => "schedule_0",
-        Schedule1 => "schedule_1",
+        ActuatedId::GridSetpoint => "grid_setpoint",
+        ActuatedId::InputCurrentLimit => "input_current_limit",
+        ActuatedId::ZappiMode => "zappi_mode",
+        ActuatedId::EddiMode => "eddi_mode",
+        ActuatedId::Schedule0 => "schedule_0",
+        ActuatedId::Schedule1 => "schedule_1",
     }
 }
 
@@ -512,6 +554,107 @@ mod tests {
             "victron-controller",
             "victron-controller/knob/force_disable_export/state",
             b"true"
+        )
+        .is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Bookkeeping restoration
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn decode_bookkeeping_next_full_charge_datetime() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/bookkeeping/next_full_charge/state",
+            b"2026-04-26T17:00:00",
+        )
+        .unwrap();
+        match e {
+            Event::Command {
+                command:
+                    Command::Bookkeeping {
+                        key: BookkeepingKey::NextFullCharge,
+                        value: BookkeepingValue::NaiveDateTime(dt),
+                    },
+                owner: Owner::System,
+                ..
+            } => {
+                assert_eq!(dt.to_string(), "2026-04-26 17:00:00");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_bookkeeping_above_soc_date() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/bookkeeping/above_soc_date/state",
+            b"2026-04-21",
+        )
+        .unwrap();
+        match e {
+            Event::Command {
+                command:
+                    Command::Bookkeeping {
+                        key: BookkeepingKey::AboveSocDate,
+                        value: BookkeepingValue::NaiveDate(d),
+                    },
+                ..
+            } => {
+                assert_eq!(d.to_string(), "2026-04-21");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_bookkeeping_prev_ess_state_int() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/bookkeeping/prev_ess_state/state",
+            b"10",
+        )
+        .unwrap();
+        assert!(matches!(
+            e,
+            Event::Command {
+                command: Command::Bookkeeping {
+                    key: BookkeepingKey::PrevEssState,
+                    value: BookkeepingValue::OptionalInt(Some(10)),
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_bookkeeping_null_is_cleared() {
+        let e = decode_state_message(
+            "victron-controller",
+            "victron-controller/bookkeeping/next_full_charge/state",
+            b"null",
+        )
+        .unwrap();
+        assert!(matches!(
+            e,
+            Event::Command {
+                command: Command::Bookkeeping {
+                    value: BookkeepingValue::Cleared,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn decode_bookkeeping_bad_date_returns_none() {
+        assert!(decode_state_message(
+            "victron-controller",
+            "victron-controller/bookkeeping/above_soc_date/state",
+            b"nope"
         )
         .is_none());
     }

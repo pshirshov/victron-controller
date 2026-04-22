@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, MessageType, Proxy};
 
+use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::types::{
     ActuatedReadback, Event, SensorId, SensorReading, TypedReading,
 };
@@ -32,7 +33,20 @@ enum Route {
     Sensor(SensorId),
     GridSetpointReadback,
     CurrentLimitReadback,
-    // Future: zappi state, schedule readback etc.
+    /// Partial update to Schedule N's Nth field. The subscriber
+    /// accumulates all five fields before emitting a complete
+    /// ScheduleSpec readback.
+    ScheduleField { index: u8, field: ScheduleSpecField },
+}
+
+/// Which field of a ScheduleSpec this D-Bus path corresponds to.
+#[derive(Debug, Clone, Copy)]
+enum ScheduleSpecField {
+    Start,
+    Duration,
+    Soc,
+    Days,
+    AllowDischarge,
 }
 
 /// Build the routing table from the configured bus names. Keyed by
@@ -88,13 +102,75 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     );
     add(&mut r, &s.settings, "/Settings/CGwacs/BatteryLife/State", Route::Sensor(EssState));
 
+    // Schedule readback — 5 fields × 2 schedules. Each partial update
+    // advances the subscriber's accumulator; a full ScheduleSpec is
+    // emitted once all 5 fields have arrived.
+    for index in 0..=1u8 {
+        for (path_field, spec_field) in [
+            ("Start", ScheduleSpecField::Start),
+            ("Duration", ScheduleSpecField::Duration),
+            ("Soc", ScheduleSpecField::Soc),
+            ("Day", ScheduleSpecField::Days),
+            ("AllowDischarge", ScheduleSpecField::AllowDischarge),
+        ] {
+            add(
+                &mut r,
+                &s.settings,
+                &format!("/Settings/CGwacs/BatteryLife/Schedule/Charge/{index}/{path_field}"),
+                Route::ScheduleField { index, field: spec_field },
+            );
+        }
+    }
+
     r
+}
+
+/// Accumulator for partial ScheduleSpec updates. Each schedule's
+/// fields trickle in one D-Bus signal at a time; we emit a complete
+/// ScheduleSpec to the core every time any of them changes, populating
+/// missing fields with sentinel zeros (which the target comparison
+/// will fail to match — driving phase to stay in Commanded until all
+/// fields converge).
+#[derive(Debug, Clone, Copy, Default)]
+struct SchedulePartial {
+    start_s: Option<i32>,
+    duration_s: Option<i32>,
+    soc: Option<f64>,
+    days: Option<i32>,
+    discharge: Option<i32>,
+}
+
+impl SchedulePartial {
+    fn apply(&mut self, field: ScheduleSpecField, value: f64) {
+        match field {
+            ScheduleSpecField::Start => self.start_s = Some(value as i32),
+            ScheduleSpecField::Duration => self.duration_s = Some(value as i32),
+            ScheduleSpecField::Soc => self.soc = Some(value),
+            ScheduleSpecField::Days => self.days = Some(value as i32),
+            ScheduleSpecField::AllowDischarge => self.discharge = Some(value as i32),
+        }
+    }
+
+    /// Return a complete ScheduleSpec IFF all 5 fields have arrived at
+    /// least once. Missing fields return None.
+    fn as_spec(&self) -> Option<ScheduleSpec> {
+        Some(ScheduleSpec {
+            start_s: self.start_s?,
+            duration_s: self.duration_s?,
+            soc: self.soc?,
+            days: self.days?,
+            discharge: self.discharge?,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct Subscriber {
     conn: Connection,
     routes: Arc<HashMap<(String, String), Route>>,
+    /// Accumulator for partial schedule field updates — one per
+    /// schedule index (0, 1). Mutable across the run() loop.
+    schedule_accumulators: [SchedulePartial; 2],
 }
 
 impl Subscriber {
@@ -105,7 +181,11 @@ impl Subscriber {
             .context("connecting to the system D-Bus")?;
         let routes = Arc::new(routing_table(services));
         info!("D-Bus subscriber connected; {} paths routed", routes.len());
-        Ok(Self { conn, routes })
+        Ok(Self {
+            conn,
+            routes,
+            schedule_accumulators: [SchedulePartial::default(); 2],
+        })
     }
 
     /// Start the subscriber loop. Each service is seeded with a
@@ -115,7 +195,7 @@ impl Subscriber {
     /// the task.
     ///
     /// Returns when `tx` is dropped or on an unrecoverable bus error.
-    pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()> {
+    pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
         // 1. Initial seed: call GetItems on every unique service.
         let services: std::collections::HashSet<String> = self
             .routes
@@ -150,9 +230,6 @@ impl Subscriber {
             };
             let header = msg.header();
             let Some(svc) = header.sender().map(|s| s.to_string()) else {
-                // The sender unique-name, not the well-known name; we
-                // need to resolve. Venus emits with its well-known name
-                // as destination, so we rely on the path we ASKED for.
                 continue;
             };
             let path = header.path().map(|p| p.to_string()).unwrap_or_default();
@@ -160,20 +237,20 @@ impl Subscriber {
                 debug!(%svc, %path, "unrouted signal");
                 continue;
             }
-            // Unpack body: a{sa{sv}} map: {path: {Value, Text}}
             let Ok(body) = msg.body().deserialize::<ItemsChangedBody>() else {
                 continue;
             };
             for (child_path, child_value) in body.0 {
-                let key = (svc.clone(), child_path.clone());
-                if let Some(route) = self.routes.get(&key) {
-                    let Some(value) = extract_scalar(&child_value.value) else {
-                        continue;
-                    };
-                    if let Some(event) = route_to_event(route, value, Instant::now()) {
-                        if tx.send(event).await.is_err() {
-                            return Ok(()); // receiver dropped — clean shutdown
-                        }
+                let key = (svc.clone(), child_path);
+                let Some(route) = self.routes.get(&key).cloned() else {
+                    continue;
+                };
+                let Some(value) = extract_scalar(&child_value.value) else {
+                    continue;
+                };
+                if let Some(event) = self.route_to_event(&route, value, Instant::now()) {
+                    if tx.send(event).await.is_err() {
+                        return Ok(());
                     }
                 }
             }
@@ -181,8 +258,45 @@ impl Subscriber {
         Ok(())
     }
 
+    /// Turn a routed (value, time) into an Event, possibly mutating the
+    /// schedule accumulators in the process.
+    fn route_to_event(&mut self, route: &Route, value: f64, at: Instant) -> Option<Event> {
+        match route {
+            Route::Sensor(id) => Some(Event::Sensor(SensorReading {
+                id: *id,
+                value,
+                at,
+            })),
+            Route::GridSetpointReadback => {
+                #[allow(clippy::cast_possible_truncation)]
+                Some(Event::Readback(ActuatedReadback::GridSetpoint {
+                    value: value as i32,
+                    at,
+                }))
+            }
+            Route::CurrentLimitReadback => {
+                Some(Event::Readback(ActuatedReadback::InputCurrentLimit {
+                    value,
+                    at,
+                }))
+            }
+            Route::ScheduleField { index, field } => {
+                let idx = *index as usize;
+                let acc = &mut self.schedule_accumulators[idx];
+                acc.apply(*field, value);
+                // Only emit once we have all 5 fields.
+                let spec = acc.as_spec()?;
+                Some(Event::Readback(if *index == 0 {
+                    ActuatedReadback::Schedule0 { value: spec, at }
+                } else {
+                    ActuatedReadback::Schedule1 { value: spec, at }
+                }))
+            }
+        }
+    }
+
     /// Bootstrap: ask a service for all its items at once via GetItems.
-    async fn seed_service(&self, service: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
+    async fn seed_service(&mut self, service: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
         let proxy = Proxy::new(&self.conn, service, "/", "com.victronenergy.BusItem")
             .await
             .context("building GetItems proxy")?;
@@ -193,14 +307,14 @@ impl Subscriber {
         debug!(%service, count = items.len(), "seeded from GetItems");
         let at = Instant::now();
         for (path, entry) in items {
-            let key = (service.to_string(), path.clone());
-            let Some(route) = self.routes.get(&key) else {
+            let key = (service.to_string(), path);
+            let Some(route) = self.routes.get(&key).cloned() else {
                 continue;
             };
             let Some(value) = extract_scalar(&entry.value) else {
                 continue;
             };
-            if let Some(event) = route_to_event(route, value, at) {
+            if let Some(event) = self.route_to_event(&route, value, at) {
                 if tx.send(event).await.is_err() {
                     return Ok(());
                 }
@@ -256,28 +370,9 @@ fn extract_scalar(v: &Value<'_>) -> Option<f64> {
     }
 }
 
-fn route_to_event(route: &Route, value: f64, at: Instant) -> Option<Event> {
-    match route {
-        Route::Sensor(id) => Some(Event::Sensor(SensorReading {
-            id: *id,
-            value,
-            at,
-        })),
-        Route::GridSetpointReadback => {
-            #[allow(clippy::cast_possible_truncation)]
-            Some(Event::Readback(ActuatedReadback::GridSetpoint {
-                value: value as i32,
-                at,
-            }))
-        }
-        Route::CurrentLimitReadback => Some(Event::Readback(ActuatedReadback::InputCurrentLimit {
-            value,
-            at,
-        })),
-    }
-}
-
-// Silence unused-variable warning for the future TypedReading variant.
+// Silence unused-variable warning for the TypedReading variant that
+// the subscriber doesn't emit (it comes from the myenergi poller
+// instead).
 const _: fn() = || {
     let _ = TypedReading::Eddi {
         mode: victron_controller_core::myenergi::EddiMode::Stopped,
