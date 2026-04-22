@@ -520,10 +520,16 @@ fn maybe_propose_setpoint(
 
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
-            level: LogLevel::Debug,
-            source: "process::setpoint",
-            message: format!("writes_enabled=false; setpoint target {value} not emitted"),
+            level: LogLevel::Info,
+            source: "observer",
+            message: format!(
+                "GridSetpoint would be set to {value} W (owner={owner:?}); suppressed by writes_enabled=false"
+            ),
         });
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: ActuatedId::GridSetpoint,
+            phase: world.grid_setpoint.target.phase,
+        }));
         return;
     }
 
@@ -645,6 +651,17 @@ fn run_current_limit(
     }
 
     if !world.knobs.writes_enabled {
+        effects.push(Effect::Log {
+            level: LogLevel::Info,
+            source: "observer",
+            message: format!(
+                "InputCurrentLimit would be set to {value:.2} A; suppressed by writes_enabled=false"
+            ),
+        });
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: ActuatedId::InputCurrentLimit,
+            phase: world.input_current_limit.target.phase,
+        }));
         return;
     }
 
@@ -746,6 +763,17 @@ fn maybe_propose_schedule(
     }
 
     if !world.knobs.writes_enabled {
+        effects.push(Effect::Log {
+            level: LogLevel::Info,
+            source: "observer",
+            message: format!(
+                "Schedule{index} would be set to {spec:?}; suppressed by writes_enabled=false"
+            ),
+        });
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id,
+            phase: actuated.target.phase,
+        }));
         return;
     }
 
@@ -831,6 +859,17 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
     }
 
     if !world.knobs.writes_enabled {
+        effects.push(Effect::Log {
+            level: LogLevel::Info,
+            source: "observer",
+            message: format!(
+                "ZappiMode would be set to {desired:?}; suppressed by writes_enabled=false"
+            ),
+        });
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: ActuatedId::ZappiMode,
+            phase: world.zappi_mode.target.phase,
+        }));
         return;
     }
 
@@ -880,6 +919,17 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
     }
 
     if !world.knobs.writes_enabled {
+        effects.push(Effect::Log {
+            level: LogLevel::Info,
+            source: "observer",
+            message: format!(
+                "EddiMode would be set to {desired:?}; suppressed by writes_enabled=false"
+            ),
+        });
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: ActuatedId::EddiMode,
+            phase: world.eddi_mode.target.phase,
+        }));
         return;
     }
 
@@ -1101,6 +1151,57 @@ mod tests {
             assert!(
                 !matches!(e, Effect::WriteDbus { .. } | Effect::CallMyenergi(_)),
                 "unexpected actuation effect: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn observer_mode_logs_decisions_and_publishes_phase() {
+        // Observer mode = writes_enabled = false. Expect:
+        //   - no WriteDbus / CallMyenergi
+        //   - one Info-level Log for each controller that would've acted
+        //   - one Publish(ActuatedPhase) per acting controller (so the
+        //     dashboard / HA sees the proposed target phase)
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.knobs.writes_enabled = false;
+        seed_required_sensors(&mut world, c.monotonic);
+        // Raise SoC above export threshold so setpoint isn't just 10.
+        world.sensors.battery_soc.on_reading(90.0, c.monotonic);
+
+        let effects = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        // At least one observer-source log line should fire.
+        let observer_logs: Vec<_> = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Log { source: "observer", .. }))
+            .collect();
+        assert!(
+            !observer_logs.is_empty(),
+            "expected at least one observer-mode log, got {effects:#?}"
+        );
+
+        // All observer logs must be Info level.
+        for e in &observer_logs {
+            if let Effect::Log { level, .. } = e {
+                assert_eq!(*level, LogLevel::Info, "observer log should be Info: {e:?}");
+            }
+        }
+
+        // At least one Publish(ActuatedPhase) for GridSetpoint.
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::ActuatedPhase {
+                id: ActuatedId::GridSetpoint,
+                ..
+            })
+        )));
+
+        // No actuation effects slipped through.
+        for e in &effects {
+            assert!(
+                !matches!(e, Effect::WriteDbus { .. } | Effect::CallMyenergi(_)),
+                "unexpected actuation: {e:?}"
             );
         }
     }
