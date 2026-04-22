@@ -492,14 +492,14 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | Field | Value |
 |---|---|
 | Hostname | `mqtt.example.invalid` |
-| Port | **FILLME** (1883 plaintext / 8883 TLS) |
-| TLS | **FILLME** (yes/no; if yes, CA / client cert paths) |
-| Username | **FILLME** |
+| Port | 1883 |
+| TLS | NO |
+| Username | mqtt |
 | Password | **FILLME** |
 | ClientId prefix | `victron-controller` |
 | Keepalive | 30 s |
 | Clean session on reconnect | false |
-| Broker retention configured (`persistence true`) | **FILLME** (yes/no/unsure) |
+| Broker retention configured (`persistence true`) | yes |
 
 Topic root: `victron-controller/`.
 
@@ -526,10 +526,10 @@ Topic root: `victron-controller/`.
 
 | Field | Value |
 |---|---|
-| Hub serial | **FILLME** (legacy NR flow shows `10000002` — confirm) |
+| Hub serial | 10000002 |
 | API key / password | **FILLME** |
-| Zappi serial | **FILLME** |
-| Eddi serial | **FILLME** |
+| Zappi serial | 10000001 |
+| Eddi serial | 10000002 |
 | Director region URL | **FILLME** (usually `https://s18.myenergi.net`) |
 | Poll cadence | 15 s (default, configurable) |
 | Freshness threshold | 5 min |
@@ -629,7 +629,7 @@ We consume **nothing** from HA directly. HA reads our MQTT state; HA may publish
 
 | Field | Value |
 |---|---|
-| HA MQTT bridged to same broker (`mqtt.example.invalid`)? | **FILLME** (yes/no; if no, give the bridge topology) |
+| HA MQTT bridged to same broker (`mqtt.example.invalid`)? | yes |
 
 ### 10.7. Logging sink
 
@@ -654,7 +654,7 @@ Outbound ports that must be reachable from the Victron:
 | `api.open-meteo.com` | 443 | Open-Meteo |
 | NTP (ntp.org or local) | 123 | clock sync |
 
-Firewall / VLAN constraints: **FILLME** (or "none").
+Firewall / VLAN constraints: none
 
 ---
 

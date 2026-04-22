@@ -1,0 +1,116 @@
+# victron-controller — example config
+#
+# Copy to /data/etc/victron-controller/config.toml on the GX, fill in
+# credentials, and restart the service. Every section is optional; any
+# omitted section falls back to the safe defaults in crates/shell/src/config.rs
+# and crates/core/src/knobs.rs.
+#
+# Quick safety note: leave [dbus] writes_enabled = false until you've
+# watched the service in observer mode for long enough to trust it.
+# When writes are disabled the service computes + logs what it WOULD do
+# without touching the inverter.
+
+# =============================================================================
+# D-Bus writer
+# =============================================================================
+[dbus]
+# When false, WriteDbus effects are logged but NOT emitted. Distinct from
+# the runtime `writes_enabled` kill switch — this one is a config-file
+# master switch. Default: true.
+writes_enabled = false
+
+# D-Bus service names override. Defaults come from SPEC §10.5 and match
+# the user's Venus 3.70 install captured by scripts/discover-victron.sh.
+# Only override when your DeviceInstance numbers drift or you migrate
+# to different cabling.
+# [dbus.services]
+# system             = "com.victronenergy.system"
+# settings           = "com.victronenergy.settings"
+# battery            = "com.victronenergy.battery.socketcan_can0"
+# mppt_0             = "com.victronenergy.solarcharger.ttyUSB1"
+# mppt_1             = "com.victronenergy.solarcharger.ttyS2"
+# pvinverter_soltaro = "com.victronenergy.pvinverter.cgwacs_ttyUSB2_mb1"
+# grid               = "com.victronenergy.grid.cgwacs_ttyUSB0_mb1"
+# vebus              = "com.victronenergy.vebus.ttyS3"
+# evcharger          = "com.victronenergy.evcharger.cgwacs_ttyUSB0_mb2"
+
+# =============================================================================
+# MQTT — the central nervous system per SPEC §4 / §10.1
+# =============================================================================
+[mqtt]
+# Leave host empty to disable MQTT entirely (the service still controls
+# D-Bus, but no HA integration, no retained state, no log transport).
+host       = "mqtt.example.invalid"
+port       = 1883
+username   = "victron-controller"
+password   = "REPLACE_ME"
+
+# TLS configuration. When tls = true, ca_path is mandatory.
+tls        = false
+# ca_path  = "/data/etc/victron-controller/ca.pem"
+
+# Topic root — all state, commands, and discovery are namespaced under this.
+topic_root = "victron-controller"
+
+# =============================================================================
+# myenergi Zappi + Eddi
+# =============================================================================
+[myenergi]
+# Leave username empty (the default) to skip myenergi integration.
+username     = ""
+password     = ""
+director_url = "https://s18.myenergi.net"
+# Optional — leave as None to skip device-specific poll/write.
+# zappi_serial = "12345678"
+# eddi_serial  = "87654321"
+# Poll cadence. myenergi data is ~5 min granular per SPEC, so 15 s is
+# mostly for plug-state transition reactivity.
+poll_period  = "15s"
+
+# =============================================================================
+# Forecast providers — Solcast + Forecast.Solar + Open-Meteo (SPEC §5.7)
+# =============================================================================
+# Each provider is optional; when its required fields are empty the
+# provider task isn't spawned and no events are emitted.
+
+[forecast.solcast]
+# api_key  = "REPLACE_ME"
+# site_ids = ["rooftop-site-uuid-1", "rooftop-site-uuid-2"]
+cadence    = "2h"   # free tier: 10 calls/day/site
+
+[forecast.forecast_solar]
+# No API key required for the free tier.
+# latitude  = 55.9
+# longitude = -3.2
+# Representative planes — user configures up to a handful. Each plane
+# costs one API call per refresh so keep the list short on free tier.
+# Azimuth follows the compass convention: 0 = N, 90 = E, 180 = S, 270 = W.
+# planes    = [
+#   { tilt_deg = 35, azimuth_deg = 180, kwp = 2.0 },
+#   { tilt_deg = 40, azimuth_deg = 90,  kwp = 1.5 },
+# ]
+cadence     = "1h"
+
+[forecast.open_meteo]
+# No key. Free. No rate limit on sensible cadences.
+# latitude  = 55.9
+# longitude = -3.2
+# planes    = [
+#   { tilt_deg = 35, azimuth_deg = 180, kwp = 2.0 },
+# ]
+cadence     = "15m"
+
+# =============================================================================
+# Local dashboard — not implemented yet (per user deferral); reserved.
+# =============================================================================
+[dashboard]
+port = 8910
+bind = "0.0.0.0"
+
+# =============================================================================
+# Runtime tuning
+# =============================================================================
+[tuning]
+# Heartbeat period for freshness decay + periodic controller re-evaluation.
+# 1 s is plenty (controllers are pure arithmetic on a small world).
+tick_period = "1s"
