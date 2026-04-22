@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::signal;
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -169,10 +170,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Wait for Ctrl-C or either task finishing.
+    // SIGTERM is sent by daemontools' `svc -d` and by systemd. Ctrl-C
+    // is SIGINT. Handle both so the service exits cleanly under
+    // supervision.
+    let mut sigterm = unix_signal(SignalKind::terminate())
+        .context("install SIGTERM handler")?;
+
+    // Wait for any shutdown signal or either task finishing.
     tokio::select! {
         _ = signal::ctrl_c() => {
-            info!("received Ctrl-C; shutting down");
+            info!("received SIGINT (Ctrl-C); shutting down");
+        }
+        _ = sigterm.recv() => {
+            info!("received SIGTERM; shutting down");
         }
         _ = subscriber_task => {
             info!("subscriber task ended");

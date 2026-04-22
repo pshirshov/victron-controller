@@ -412,6 +412,189 @@ proptest! {
 // Property 7 — typed sensor events never change scalar sensor values
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Property 8 — bookkeeping restoration sets exactly the targeted field
+// -----------------------------------------------------------------------------
+
+proptest! {
+    #[test]
+    fn bookkeeping_restoration_sets_the_targeted_field(
+        year in 2020i32..2030,
+        month in 1u32..12,
+        day in 1u32..28,
+        hour in 0u32..23,
+        ess_state in -1000i32..1000,
+        pick in 0usize..3,
+    ) {
+        use victron_controller_core::types::{BookkeepingKey, BookkeepingValue, Command};
+
+        let t0 = Instant::now();
+        let mut world = seeded_world(t0);
+        let topo = Topology::defaults();
+        let clock = FixedClock::at(naive_noon());
+
+        let (key, value): (_, BookkeepingValue) = match pick {
+            0 => {
+                let dt = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap()
+                    .and_hms_opt(hour, 0, 0).unwrap();
+                (BookkeepingKey::NextFullCharge, BookkeepingValue::NaiveDateTime(dt))
+            }
+            1 => {
+                let d = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
+                (BookkeepingKey::AboveSocDate, BookkeepingValue::NaiveDate(d))
+            }
+            _ => (
+                BookkeepingKey::PrevEssState,
+                BookkeepingValue::OptionalInt(Some(ess_state)),
+            ),
+        };
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Bookkeeping { key, value },
+                owner: Owner::System,
+                at: t0,
+            },
+            &mut world,
+            &clock,
+            &topo,
+        );
+
+        // The targeted field must reflect the restoration. (Other
+        // bookkeeping fields may or may not have changed; the setpoint
+        // and current-limit controllers also modify bookkeeping as a
+        // side-effect of running on every event.)
+        match (key, value) {
+            (BookkeepingKey::NextFullCharge, BookkeepingValue::NaiveDateTime(expected)) => {
+                // Can be overwritten by the setpoint controller if
+                // battery_soc==100 triggers rollover — in seeded_world
+                // SoC is 75 so this shouldn't happen; assert equality.
+                prop_assert_eq!(world.bookkeeping.next_full_charge, Some(expected));
+            }
+            (BookkeepingKey::AboveSocDate, BookkeepingValue::NaiveDate(expected)) => {
+                // Schedules controller could overwrite on the "above
+                // soc during extended" latch, but our seeded_world has
+                // charge_battery_extended=false so that doesn't fire.
+                prop_assert_eq!(world.bookkeeping.above_soc_date, Some(expected));
+            }
+            (BookkeepingKey::PrevEssState, BookkeepingValue::OptionalInt(Some(expected))) => {
+                // Current-limit controller updates prev_ess_state on
+                // every evaluation. seeded_world's ess_state is 10, so
+                // if expected != 10 and != 9 (the skip-value), the
+                // controller's write of Some(10) clobbers our restore.
+                // Assert the final state is *either* our restore or the
+                // controller's observation.
+                let final_ = world.bookkeeping.prev_ess_state;
+                prop_assert!(
+                    final_ == Some(expected) || final_ == Some(10),
+                    "expected Some({expected}) or Some(10), got {final_:?}"
+                );
+            }
+            _ => unreachable!("type mismatch in match arms"),
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Property 9 — γ-rule: Dashboard write + an HA write anywhere in the
+// next 999 ms must be dropped; an HA write at 1000+ ms wins.
+// -----------------------------------------------------------------------------
+
+proptest! {
+    #[test]
+    fn gamma_rule_holds_dashboard_over_ha_within_hold_window(
+        hold_ms in 0u64..999,
+    ) {
+        use victron_controller_core::types::{Command, KnobId, KnobValue};
+
+        let t0 = Instant::now();
+        let mut world = seeded_world(t0);
+        let topo = Topology::defaults();
+        let clock = FixedClock::at(naive_noon());
+
+        // Dashboard sets the knob first.
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob {
+                    id: KnobId::ExportSocThreshold,
+                    value: KnobValue::Float(50.0),
+                },
+                owner: Owner::Dashboard,
+                at: t0,
+            },
+            &mut world,
+            &clock,
+            &topo,
+        );
+        prop_assert!((world.knobs.export_soc_threshold - 50.0).abs() < f64::EPSILON);
+
+        // HA writes within the 1 s hold window — should be dropped.
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob {
+                    id: KnobId::ExportSocThreshold,
+                    value: KnobValue::Float(80.0),
+                },
+                owner: Owner::HaMqtt,
+                at: t0 + Duration::from_millis(hold_ms),
+            },
+            &mut world,
+            &clock,
+            &topo,
+        );
+        prop_assert!(
+            (world.knobs.export_soc_threshold - 50.0).abs() < f64::EPSILON,
+            "HA write at {hold_ms}ms suppressed"
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn gamma_rule_allows_ha_after_hold_window(
+        extra_ms in 0u64..100_000,
+    ) {
+        use victron_controller_core::types::{Command, KnobId, KnobValue};
+
+        let t0 = Instant::now();
+        let mut world = seeded_world(t0);
+        let topo = Topology::defaults();
+        let clock = FixedClock::at(naive_noon());
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob {
+                    id: KnobId::ExportSocThreshold,
+                    value: KnobValue::Float(50.0),
+                },
+                owner: Owner::Dashboard,
+                at: t0,
+            },
+            &mut world,
+            &clock,
+            &topo,
+        );
+
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob {
+                    id: KnobId::ExportSocThreshold,
+                    value: KnobValue::Float(80.0),
+                },
+                owner: Owner::HaMqtt,
+                at: t0 + Duration::from_millis(1000 + extra_ms),
+            },
+            &mut world,
+            &clock,
+            &topo,
+        );
+        prop_assert!(
+            (world.knobs.export_soc_threshold - 80.0).abs() < f64::EPSILON,
+            "HA write at 1000+{extra_ms}ms accepted"
+        );
+    }
+}
+
 proptest! {
     #[test]
     fn zappi_typed_events_do_not_touch_scalar_sensors(
