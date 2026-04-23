@@ -136,6 +136,35 @@ export function renderBookkeeping(snap: WorldSnapshot) {
     .join("");
 }
 
+export function renderDecisions(snap: WorldSnapshot) {
+  const tbody = document.querySelector("#decisions-table tbody") as HTMLElement;
+  const d = snap.decisions;
+  const rows: Array<[string, any]> = [
+    ["grid_setpoint", d.grid_setpoint],
+    ["input_current_limit", d.input_current_limit],
+    ["schedule_0", d.schedule_0],
+    ["schedule_1", d.schedule_1],
+    ["zappi_mode", d.zappi_mode],
+    ["eddi_mode", d.eddi_mode],
+    ["weather_soc", d.weather_soc],
+  ];
+  tbody.innerHTML = rows
+    .map(([name, dec]) => {
+      if (!dec) {
+        return `<tr><td class="mono">${name}</td><td class="dim">—</td><td class="dim">—</td></tr>`;
+      }
+      const factors = (dec.factors as Array<{ name: string; value: string }>)
+        .map((f) => `<span class="factor"><b>${esc(f.name)}</b>=${esc(f.value)}</span>`)
+        .join(" ");
+      return `<tr>
+        <td class="mono">${name}</td>
+        <td>${esc(dec.summary as string)}</td>
+        <td class="factors">${factors}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
 export function renderForecasts(snap: WorldSnapshot) {
   const tbody = document.querySelector("#forecasts-table tbody") as HTMLElement;
   const providers: Array<[string, any]> = [

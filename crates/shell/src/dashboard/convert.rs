@@ -20,7 +20,7 @@ use victron_controller_core::knobs::{
 };
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
-use victron_controller_core::types::{Command, Event, KnobId, KnobValue};
+use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue};
 use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
@@ -33,6 +33,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::actual_f6
 use victron_controller_dashboard_model::victron_controller::dashboard::actual_i32::ActualI32 as ModelActualI32;
 use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping::Bookkeeping as ModelBookkeeping;
 use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as ModelCommand;
+use victron_controller_dashboard_model::victron_controller::dashboard::decision::Decision as ModelDecision;
+use victron_controller_dashboard_model::victron_controller::dashboard::decision_factor::DecisionFactor as ModelDecisionFactor;
+use victron_controller_dashboard_model::victron_controller::dashboard::decisions::Decisions as ModelDecisions;
 use victron_controller_dashboard_model::victron_controller::dashboard::debug_full_charge::DebugFullCharge as ModelDebugFullCharge;
 use victron_controller_dashboard_model::victron_controller::dashboard::discharge_time::DischargeTime as ModelDischargeTime;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy as ModelForecastStrategy;
@@ -278,6 +281,33 @@ pub fn world_to_snapshot(world: &World) -> WorldSnapshot {
             forecast_solar: f.forecast_forecast_solar.as_ref().map(forecast_snapshot),
             open_meteo: f.forecast_open_meteo.as_ref().map(forecast_snapshot),
         },
+        decisions: decisions_to_model(&world.decisions),
+    }
+}
+
+fn decision(d: &Decision) -> ModelDecision {
+    ModelDecision {
+        summary: d.summary.clone(),
+        factors: d
+            .factors
+            .iter()
+            .map(|f| ModelDecisionFactor {
+                name: f.name.clone(),
+                value: f.value.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn decisions_to_model(d: &victron_controller_core::world::Decisions) -> ModelDecisions {
+    ModelDecisions {
+        grid_setpoint: d.grid_setpoint.as_ref().map(decision),
+        input_current_limit: d.input_current_limit.as_ref().map(decision),
+        schedule_0: d.schedule_0.as_ref().map(decision),
+        schedule_1: d.schedule_1.as_ref().map(decision),
+        zappi_mode: d.zappi_mode.as_ref().map(decision),
+        eddi_mode: d.eddi_mode.as_ref().map(decision),
+        weather_soc: d.weather_soc.as_ref().map(decision),
     }
 }
 

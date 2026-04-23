@@ -19,6 +19,7 @@
 use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, tariff_band};
 use crate::myenergi::{ZappiMode, ZappiPlugState, ZappiState, ZappiStatus};
+use crate::types::Decision;
 
 // --- Constants ---
 
@@ -62,12 +63,13 @@ pub struct CurrentLimitInputGlobals {
     pub prev_ess_state: Option<i32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CurrentLimitOutput {
     /// Target value to write to `/Ac/In/1/CurrentLimit`.
     pub input_current_limit: f64,
     pub debug: CurrentLimitDebug,
     pub bookkeeping: CurrentLimitBookkeeping,
+    pub decision: Decision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -205,26 +207,36 @@ pub fn evaluate_current_limit(
     );
 
     // --- compute_limit() ---
-    let target = if is_boost || is_enabled_extended_charge {
+    let (target, branch): (f64, &'static str) = if is_boost || is_enabled_extended_charge {
         if battery_charging {
-            fitted_target
+            (fitted_target, "boost/extended window + battery charging → fitted current")
         } else if zappi_active {
-            // Prevent battery from draining into car.
-            input.offgrid_current
+            (input.offgrid_current, "boost/extended + Zappi active but battery not charging → cap at offgrid current")
         } else if g.disable_night_grid_discharge {
-            input.offgrid_current
+            (input.offgrid_current, "boost/extended + disable_night_grid_discharge → cap at offgrid current")
         } else {
-            MAX_GRID_CURRENT_A
+            (MAX_GRID_CURRENT_A, "boost/extended + idle → full grid (65 A)")
         }
     } else if zappi_active {
-        available_pv_power_as_gridside_amps
+        (available_pv_power_as_gridside_amps, "outside charge window + Zappi active → cap at PV availability")
     } else if g.disable_night_grid_discharge && is_extended_charge {
-        input.offgrid_current
+        (input.offgrid_current, "extended window + disable_night_grid_discharge → cap at offgrid current")
     } else {
-        MAX_GRID_CURRENT_A
+        (MAX_GRID_CURRENT_A, "idle / default → full grid (65 A)")
     };
 
     let input_current_limit = target.clamp(0.0, MAX_GRID_CURRENT_A);
+
+    let decision = Decision::new(branch)
+        .with_factor("tariff", format!("{tariff:?}"))
+        .with_factor("battery_charging", format!("{battery_charging}"))
+        .with_factor("zappi_active", format!("{zappi_active}"))
+        .with_factor("extended_charge_required", format!("{}", g.extended_charge_required))
+        .with_factor("disable_night_grid_discharge", format!("{}", g.disable_night_grid_discharge))
+        .with_factor("offgrid_current_A", format!("{:.2}", input.offgrid_current))
+        .with_factor("available_pv_A", format!("{available_pv_power_as_gridside_amps:.2}"))
+        .with_factor("fitted_target_A", format!("{fitted_target:.2}"))
+        .with_factor("final_limit_A", format!("{input_current_limit:.2}"));
 
     CurrentLimitOutput {
         input_current_limit,
@@ -254,6 +266,7 @@ pub fn evaluate_current_limit(
             prev_ess_state,
             zappi_active,
         },
+        decision,
     }
 }
 

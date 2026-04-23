@@ -5,6 +5,7 @@ import { ConnectionManager, DEFAULT_CONFIG } from "./manager.js";
 import {
   renderActuated,
   renderBookkeeping,
+  renderDecisions,
   renderForecasts,
   renderSensors,
 } from "./render.js";
@@ -49,6 +50,7 @@ function applySnapshot(snap: WorldSnapshot): void {
     writesBadge.className = "badge off";
   }
   renderSensors(snap);
+  renderDecisions(snap);
   renderActuated(snap);
   renderBookkeeping(snap);
   renderForecasts(snap);

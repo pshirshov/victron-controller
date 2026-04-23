@@ -1,5 +1,6 @@
 use crate::victron_controller::dashboard::actuated::Actuated;
 use crate::victron_controller::dashboard::bookkeeping::Bookkeeping;
+use crate::victron_controller::dashboard::decisions::Decisions;
 use crate::victron_controller::dashboard::forecasts::Forecasts;
 use crate::victron_controller::dashboard::knobs::Knobs;
 use crate::victron_controller::dashboard::sensors::Sensors;
@@ -14,13 +15,14 @@ pub struct WorldSnapshot {
     pub knobs: Knobs,
     pub bookkeeping: Bookkeeping,
     pub forecasts: Forecasts,
+    pub decisions: Decisions,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        5
+        6
     }
 }
 
@@ -72,6 +74,14 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.decisions.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -82,6 +92,7 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             value.knobs.encode_ueba(ctx, writer)?;
             value.bookkeeping.encode_ueba(ctx, writer)?;
             value.forecasts.encode_ueba(ctx, writer)?;
+            value.decisions.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -100,6 +111,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
         let knobs = Knobs::decode_ueba(ctx, reader)?;
         let bookkeeping = Bookkeeping::decode_ueba(ctx, reader)?;
         let forecasts = Forecasts::decode_ueba(ctx, reader)?;
+        let decisions = Decisions::decode_ueba(ctx, reader)?;
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -108,6 +120,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             knobs,
             bookkeeping,
             forecasts,
+            decisions,
         })
     }
 }

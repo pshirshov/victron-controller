@@ -88,6 +88,19 @@ tr:hover td { background: rgba(0, 0, 0, 0.02); }
 .dim { color: var(--muted); }
 .mono { font-family: ui-monospace, monospace; }
 
+.factors { font-size: 11px; color: var(--muted); }
+.factor {
+  display: inline-block;
+  background: rgba(128, 128, 128, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin: 1px 3px 1px 0;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
+.factor b { color: var(--fg); font-weight: 600; }
+
 input[type=number], input[type=text], select {
   background: transparent;
   color: var(--fg);

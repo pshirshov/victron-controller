@@ -21,6 +21,7 @@
 //!   today is already predicted sunny.
 
 use crate::Clock;
+use crate::types::Decision;
 
 /// Inputs — two aggregates from the forecast stack plus thresholds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,14 +43,16 @@ pub struct WeatherSocInputGlobals {
     pub too_much_energy_threshold_kwh: f64,
 }
 
-/// Output: proposed values for five knobs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Output: proposed values for five knobs + the human-readable
+/// reasoning chain for how they were arrived at.
+#[derive(Debug, Clone, PartialEq)]
 pub struct WeatherSocDecision {
     pub export_soc_threshold: f64,
     pub discharge_soc_target: f64,
     pub battery_soc_target: f64,
     pub disable_night_grid_discharge: bool,
     pub charge_battery_extended: bool,
+    pub decision: Decision,
 }
 
 /// Evaluate the weather-SoC planner's knob proposals for the given
@@ -107,33 +110,62 @@ pub fn evaluate_weather_soc(
 
     let way_too_much = g.too_much_energy_threshold_kwh * 1.5;
 
-    // --- Cascading decision ladder ---
+    // --- Cascading decision ladder — also narrate which rungs fired ---
+    let mut rungs: Vec<&'static str> = Vec::new();
     if today_energy > g.too_much_energy_threshold_kwh {
         export_more(&mut export_soc_threshold);
+        rungs.push("today_energy > too_much → export_more");
     }
     if today_temp > g.winter_temperature_threshold_c && today_energy > way_too_much {
         export_max(&mut export_soc_threshold);
+        rungs.push("warm + way-too-much → export_max");
     }
     if today_temp <= g.winter_temperature_threshold_c {
         preserve_evening_battery(&mut export_soc_threshold, &mut discharge_soc_target);
+        rungs.push("cold → preserve_evening_battery");
     }
     if today_energy <= g.high_energy_threshold_kwh {
         disable_export(&mut export_soc_threshold, &mut discharge_soc_target);
+        rungs.push("today_energy ≤ high → disable_export");
         if today_temp <= g.winter_temperature_threshold_c {
             extend_charge(&mut battery_soc_target, &mut charge_battery_extended);
             preserve_morning_battery(&mut disable_night_grid_discharge);
+            rungs.push("cold + ≤ high → extend_charge + preserve_morning_battery");
         }
     }
     if today_energy <= g.ok_energy_threshold_kwh {
         extend_charge(&mut battery_soc_target, &mut charge_battery_extended);
         preserve_morning_battery(&mut disable_night_grid_discharge);
+        rungs.push("today_energy ≤ ok → extend_charge + preserve_morning_battery");
     }
     if today_energy <= g.low_energy_threshold_kwh {
         charge_to_full_extended(&mut battery_soc_target, &mut charge_battery_extended);
+        rungs.push("today_energy ≤ low → charge_to_full_extended");
     }
     if g.charge_to_full_required && today_energy < g.high_energy_threshold_kwh {
         charge_to_full_extended(&mut battery_soc_target, &mut charge_battery_extended);
+        rungs.push("charge_to_full_required + not-sunny → charge_to_full_extended");
     }
+
+    let summary = if rungs.is_empty() {
+        "Mild/moderate day — defaults apply".to_string()
+    } else {
+        format!("Rungs fired: {}", rungs.join("; "))
+    };
+    let decision = Decision::new(summary)
+        .with_factor("today_temp_C", format!("{today_temp:.1}"))
+        .with_factor("today_energy_kWh", format!("{today_energy:.1}"))
+        .with_factor("winter_threshold_C", format!("{:.1}", g.winter_temperature_threshold_c))
+        .with_factor("low_threshold_kWh", format!("{:.0}", g.low_energy_threshold_kwh))
+        .with_factor("ok_threshold_kWh", format!("{:.0}", g.ok_energy_threshold_kwh))
+        .with_factor("high_threshold_kWh", format!("{:.0}", g.high_energy_threshold_kwh))
+        .with_factor("too_much_threshold_kWh", format!("{:.0}", g.too_much_energy_threshold_kwh))
+        .with_factor("charge_to_full_required", format!("{}", g.charge_to_full_required))
+        .with_factor("→ export_soc_threshold", format!("{export_soc_threshold:.0}%"))
+        .with_factor("→ discharge_soc_target", format!("{discharge_soc_target:.0}%"))
+        .with_factor("→ battery_soc_target", format!("{battery_soc_target:.0}%"))
+        .with_factor("→ charge_battery_extended", format!("{charge_battery_extended}"))
+        .with_factor("→ disable_night_grid_discharge", format!("{disable_night_grid_discharge}"));
 
     WeatherSocDecision {
         export_soc_threshold,
@@ -141,6 +173,7 @@ pub fn evaluate_weather_soc(
         battery_soc_target,
         disable_night_grid_discharge,
         charge_battery_extended,
+        decision,
     }
 }
 

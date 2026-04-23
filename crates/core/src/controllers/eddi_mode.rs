@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::Clock;
 use crate::myenergi::EddiMode;
 use crate::tass::Freshness;
+use crate::types::Decision;
 
 /// Inputs — the SoC sensor half (value + freshness) and the three knobs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,77 +40,106 @@ pub struct EddiModeKnobs {
     pub dwell_s: u32,
 }
 
-/// Decision: explicit target or leave-alone. A `Set` decision that
-/// matches `current_mode` is semantically a no-op but still returned so
-/// that the outer `process()` can drive the TASS phase machine.
+/// Decision: explicit target or leave-alone. A `Set` action that
+/// matches `current_mode` is semantically a no-op but still returned
+/// so that the outer `process()` can drive the TASS phase machine.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum EddiModeDecision {
+pub enum EddiModeAction {
     Set(EddiMode),
     Leave,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct EddiModeOutput {
+    pub action: EddiModeAction,
+    pub decision: Decision,
+}
+
 /// Evaluate the desired Eddi mode target.
 #[must_use]
-pub fn evaluate_eddi_mode(input: &EddiModeInput, clock: &dyn Clock) -> EddiModeDecision {
+pub fn evaluate_eddi_mode(input: &EddiModeInput, clock: &dyn Clock) -> EddiModeOutput {
+    let factors = || Decision::new("placeholder")
+        .with_factor("soc_freshness", format!("{:?}", input.soc_freshness))
+        .with_factor("soc", match input.soc_value {
+            Some(v) => format!("{v:.1}%"),
+            None => "—".to_string(),
+        })
+        .with_factor("current_mode", format!("{:?}", input.current_mode))
+        .with_factor("enable_soc", format!("{:.0}%", input.knobs.enable_soc))
+        .with_factor("disable_soc", format!("{:.0}%", input.knobs.disable_soc))
+        .with_factor("dwell_s", format!("{}", input.knobs.dwell_s))
+        .factors;
+
     // Safety: SoC unknown or stale → target Stopped.
     if input.soc_freshness != Freshness::Fresh {
-        return safe_decision(EddiMode::Stopped, input);
+        let action = safe_action(EddiMode::Stopped, input);
+        return EddiModeOutput {
+            action,
+            decision: Decision {
+                summary: "SoC not Fresh — safety direction → Stopped".to_string(),
+                factors: factors(),
+            },
+        };
     }
     let Some(soc) = input.soc_value else {
-        return safe_decision(EddiMode::Stopped, input);
+        let action = safe_action(EddiMode::Stopped, input);
+        return EddiModeOutput {
+            action,
+            decision: Decision {
+                summary: "SoC Fresh but value missing — safety direction → Stopped".to_string(),
+                factors: factors(),
+            },
+        };
     };
 
-    // Clear cases — above enable threshold = Normal; at/below disable = Stopped.
-    // Hysteresis band in between: hold current mode.
-    let desired = if soc >= input.knobs.enable_soc {
-        EddiMode::Normal
+    let (desired, band): (EddiMode, &'static str) = if soc >= input.knobs.enable_soc {
+        (EddiMode::Normal, "SoC ≥ enable threshold → Normal")
     } else if soc <= input.knobs.disable_soc {
-        EddiMode::Stopped
+        (EddiMode::Stopped, "SoC ≤ disable threshold → Stopped")
     } else {
-        // In hysteresis band — keep current mode.
-        input.current_mode
+        (input.current_mode, "SoC in hysteresis band → hold current mode")
     };
 
-    apply_dwell(desired, input, clock)
-}
-
-/// Short-circuit that enforces the dwell timer for safety-direction
-/// transitions too. The safety direction is `Stopped`, so we always
-/// apply it even within dwell — only the *transition to Normal* is
-/// gated by dwell.
-fn safe_decision(target: EddiMode, input: &EddiModeInput) -> EddiModeDecision {
-    if target == input.current_mode {
-        EddiModeDecision::Leave
+    let (action, dwell_note) = apply_dwell(desired, input, clock);
+    let full_summary = if let Some(n) = dwell_note {
+        format!("{band}; {n}")
     } else {
-        EddiModeDecision::Set(target)
+        band.to_string()
+    };
+    EddiModeOutput {
+        action,
+        decision: Decision {
+            summary: full_summary,
+            factors: factors(),
+        },
     }
 }
 
-/// Gate a non-safety transition on the dwell timer.
+fn safe_action(target: EddiMode, input: &EddiModeInput) -> EddiModeAction {
+    if target == input.current_mode { EddiModeAction::Leave } else { EddiModeAction::Set(target) }
+}
+
+/// Gate a non-safety transition on the dwell timer. Returns the action
+/// plus an optional note for the decision summary.
 fn apply_dwell(
     desired: EddiMode,
     input: &EddiModeInput,
     clock: &dyn Clock,
-) -> EddiModeDecision {
-    // No-op if we already match.
+) -> (EddiModeAction, Option<&'static str>) {
     if desired == input.current_mode {
-        return EddiModeDecision::Leave;
+        return (EddiModeAction::Leave, None);
     }
-
-    // Safety direction (→ Stopped) is never dwell-gated.
     if desired == EddiMode::Stopped {
-        return EddiModeDecision::Set(EddiMode::Stopped);
+        return (EddiModeAction::Set(EddiMode::Stopped), Some("safety direction bypasses dwell"));
     }
-
-    // Normal requires dwell satisfied or first transition.
     let dwell = Duration::from_secs(u64::from(input.knobs.dwell_s));
     let now = clock.monotonic();
     match input.last_transition_at {
-        None => EddiModeDecision::Set(EddiMode::Normal),
+        None => (EddiModeAction::Set(EddiMode::Normal), Some("first transition (no dwell)")),
         Some(prev) if now.saturating_duration_since(prev) >= dwell => {
-            EddiModeDecision::Set(EddiMode::Normal)
+            (EddiModeAction::Set(EddiMode::Normal), Some("dwell satisfied"))
         }
-        Some(_) => EddiModeDecision::Leave,
+        Some(_) => (EddiModeAction::Leave, Some("dwell not yet satisfied — holding")),
     }
 }
 
@@ -163,8 +193,8 @@ mod tests {
     fn unknown_soc_forces_stopped() {
         let input = input_with(None, Freshness::Unknown, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
@@ -173,8 +203,8 @@ mod tests {
         // Even with a value present, Stale freshness → Stopped.
         let input = input_with(Some(99.0), Freshness::Stale, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
@@ -182,15 +212,15 @@ mod tests {
     fn deprecated_soc_forces_stopped() {
         let input = input_with(Some(99.0), Freshness::Deprecated, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
     #[test]
     fn stale_soc_when_already_stopped_is_leave() {
         let input = input_with(Some(99.0), Freshness::Stale, EddiMode::Stopped, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()), EddiModeDecision::Leave);
+        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
     }
 
     // ------------------------------------------------------------------
@@ -201,8 +231,8 @@ mod tests {
     fn soc_at_enable_threshold_sets_normal() {
         let input = input_with(Some(96.0), Freshness::Fresh, EddiMode::Stopped, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Normal)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Normal)
         );
     }
 
@@ -210,8 +240,8 @@ mod tests {
     fn soc_above_enable_threshold_sets_normal() {
         let input = input_with(Some(99.5), Freshness::Fresh, EddiMode::Stopped, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Normal)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Normal)
         );
     }
 
@@ -219,8 +249,8 @@ mod tests {
     fn soc_at_disable_threshold_sets_stopped() {
         let input = input_with(Some(94.0), Freshness::Fresh, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
@@ -228,8 +258,8 @@ mod tests {
     fn soc_below_disable_threshold_sets_stopped() {
         let input = input_with(Some(85.0), Freshness::Fresh, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
@@ -240,13 +270,13 @@ mod tests {
     #[test]
     fn in_hysteresis_while_normal_stays_normal() {
         let input = input_with(Some(95.0), Freshness::Fresh, EddiMode::Normal, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()), EddiModeDecision::Leave);
+        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
     }
 
     #[test]
     fn in_hysteresis_while_stopped_stays_stopped() {
         let input = input_with(Some(95.0), Freshness::Fresh, EddiMode::Stopped, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()), EddiModeDecision::Leave);
+        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
     }
 
     // ------------------------------------------------------------------
@@ -258,8 +288,8 @@ mod tests {
         // No prior transition; dwell doesn't apply.
         let input = input_with(Some(99.0), Freshness::Fresh, EddiMode::Stopped, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Normal)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Normal)
         );
     }
 
@@ -276,7 +306,7 @@ mod tests {
             EddiMode::Stopped,
             Some(recently),
         );
-        assert_eq!(evaluate_eddi_mode(&input, &c), EddiModeDecision::Leave);
+        assert_eq!(evaluate_eddi_mode(&input, &c).action, EddiModeAction::Leave);
     }
 
     #[test]
@@ -293,8 +323,8 @@ mod tests {
             Some(long_ago),
         );
         assert_eq!(
-            evaluate_eddi_mode(&input, &c),
-            EddiModeDecision::Set(EddiMode::Normal)
+            evaluate_eddi_mode(&input, &c).action,
+            EddiModeAction::Set(EddiMode::Normal)
         );
     }
 
@@ -313,15 +343,15 @@ mod tests {
             Some(recently),
         );
         assert_eq!(
-            evaluate_eddi_mode(&input, &c),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &c).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
     #[test]
     fn no_change_when_already_in_desired_mode() {
         let input = input_with(Some(99.0), Freshness::Fresh, EddiMode::Normal, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()), EddiModeDecision::Leave);
+        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
     }
 
     // ------------------------------------------------------------------
@@ -333,8 +363,8 @@ mod tests {
         // A Normal-to-Stopped boundary: SoC was above, now just under disable.
         let input = input_with(Some(93.9), Freshness::Fresh, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 
@@ -345,8 +375,8 @@ mod tests {
         // freshness), we fall back to Stopped.
         let input = input_with(None, Freshness::Fresh, EddiMode::Normal, None);
         assert_eq!(
-            evaluate_eddi_mode(&input, &clock()),
-            EddiModeDecision::Set(EddiMode::Stopped)
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Set(EddiMode::Stopped)
         );
     }
 }

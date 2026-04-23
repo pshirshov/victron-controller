@@ -32,7 +32,7 @@ use crate::controllers::current_limit::{
 use crate::controllers::eddi_mode::{
     EddiModeInput, EddiModeKnobs, evaluate_eddi_mode,
 };
-use crate::controllers::eddi_mode::EddiModeDecision;
+use crate::controllers::eddi_mode::EddiModeAction;
 use crate::controllers::schedules::{
     SchedulesInput, SchedulesInputGlobals, evaluate_schedules,
 };
@@ -45,7 +45,7 @@ use crate::controllers::weather_soc::{
 use crate::controllers::zappi_mode::{
     ZappiModeInput, ZappiModeInputGlobals, evaluate_zappi_mode,
 };
-use crate::controllers::zappi_mode::ZappiModeDecision;
+use crate::controllers::zappi_mode::ZappiModeAction;
 use crate::myenergi::EddiMode;
 use crate::owner::Owner;
 use crate::topology::{ControllerParams, Topology};
@@ -462,6 +462,7 @@ fn run_setpoint(
     };
 
     let out = evaluate_setpoint(&input, clock);
+    world.decisions.grid_setpoint = Some(out.decision.clone());
 
     // SPEC §5.11: grid-side hard cap.
     let grid_cap = -i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);
@@ -621,6 +622,7 @@ fn run_current_limit(
     };
 
     let out = evaluate_current_limit(&input, clock);
+    world.decisions.input_current_limit = Some(out.decision.clone());
 
     // Bookkeeping exports.
     if world.bookkeeping.prev_ess_state != out.bookkeeping.prev_ess_state {
@@ -708,6 +710,8 @@ fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
     };
 
     let out = evaluate_schedules(&input, clock);
+    world.decisions.schedule_0 = Some(out.decision.clone());
+    world.decisions.schedule_1 = Some(out.decision.clone());
 
     // Bookkeeping updates.
     world.bookkeeping.battery_selected_soc_target = out.bookkeeping.battery_selected_soc_target;
@@ -844,10 +848,11 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
         session_charged_pct,
     };
 
-    let d = evaluate_zappi_mode(&input, clock);
-    let desired = match d {
-        ZappiModeDecision::Leave => return,
-        ZappiModeDecision::Set(m) => m,
+    let out = evaluate_zappi_mode(&input, clock);
+    world.decisions.zappi_mode = Some(out.decision);
+    let desired = match out.action {
+        ZappiModeAction::Leave => return,
+        ZappiModeAction::Set(m) => m,
     };
 
     let now = clock.monotonic();
@@ -904,10 +909,11 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
         },
     };
 
-    let d = evaluate_eddi_mode(&input, clock);
-    let desired = match d {
-        EddiModeDecision::Leave => return,
-        EddiModeDecision::Set(m) => m,
+    let out = evaluate_eddi_mode(&input, clock);
+    world.decisions.eddi_mode = Some(out.decision);
+    let desired = match out.action {
+        EddiModeAction::Leave => return,
+        EddiModeAction::Set(m) => m,
     };
 
     let now = clock.monotonic();
@@ -985,6 +991,7 @@ fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effec
         today_energy_kwh: today_kwh,
     };
     let d = evaluate_weather_soc(&input, clock);
+    world.decisions.weather_soc = Some(d.decision.clone());
 
     // Translate decision into knob proposals (owner=WeatherSocPlanner).
     propose_knob(

@@ -221,6 +221,31 @@ data Forecasts {
   open_meteo: opt[ForecastSnapshot]
 }
 
+// One input/value pair that went into a decision (e.g. tariff=Day, battery_soc=55%).
+data DecisionFactor {
+  name: str
+  value: str
+}
+
+// Human-readable explanation of a controller's decision: a short summary
+// plus the structured list of input factors that led to it.
+data Decision {
+  summary: str
+  factors: lst[DecisionFactor]
+}
+
+// Latest decision from each controller. Each entry is None until that
+// controller has run at least once.
+data Decisions {
+  grid_setpoint: opt[Decision]
+  input_current_limit: opt[Decision]
+  schedule_0: opt[Decision]
+  schedule_1: opt[Decision]
+  zappi_mode: opt[Decision]
+  eddi_mode: opt[Decision]
+  weather_soc: opt[Decision]
+}
+
 // ---------------------------------------------------------------------------
 // Top-level snapshot returned by the dashboard server
 // ---------------------------------------------------------------------------
@@ -233,6 +258,7 @@ root data WorldSnapshot {
   knobs: Knobs
   bookkeeping: Bookkeeping
   forecasts: Forecasts
+  decisions: Decisions
 }
 
 // ---------------------------------------------------------------------------

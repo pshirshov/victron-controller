@@ -5,6 +5,7 @@ import {Bookkeeping, Bookkeeping_UEBACodec} from './Bookkeeping'
 import {Actuated, Actuated_UEBACodec} from './Actuated'
 import {Sensors, Sensors_UEBACodec} from './Sensors'
 import {Forecasts, Forecasts_UEBACodec} from './Forecasts'
+import {Decisions, Decisions_UEBACodec} from './Decisions'
 
 export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _captured_at_epoch_ms: bigint;
@@ -14,8 +15,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _knobs: Knobs;
     private readonly _bookkeeping: Bookkeeping;
     private readonly _forecasts: Forecasts;
+    private readonly _decisions: Decisions;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -23,6 +25,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._knobs = knobs
         this._bookkeeping = bookkeeping
         this._forecasts = forecasts
+        this._decisions = decisions
     }
 
     public get captured_at_epoch_ms(): bigint {
@@ -46,6 +49,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get forecasts(): Forecasts {
         return this._forecasts;
     }
+    public get decisions(): Decisions {
+        return this._decisions;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -55,11 +61,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             actuated: this._actuated,
             knobs: this._knobs,
             bookkeeping: this._bookkeeping,
-            forecasts: this._forecasts
+            forecasts: this._forecasts,
+            decisions: this._decisions
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -67,11 +74,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'actuated' in overrides ? overrides.actuated! : this._actuated,
             'knobs' in overrides ? overrides.knobs! : this._knobs,
             'bookkeeping' in overrides ? overrides.bookkeeping! : this._bookkeeping,
-            'forecasts' in overrides ? overrides.forecasts! : this._forecasts
+            'forecasts' in overrides ? overrides.forecasts! : this._forecasts,
+            'decisions' in overrides ? overrides.decisions! : this._decisions
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -79,7 +87,8 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.actuated,
             obj.knobs,
             obj.bookkeeping,
-            obj.forecasts
+            obj.forecasts,
+            obj.decisions
         );
     }
 
@@ -150,6 +159,13 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                Decisions_UEBACodec.instance.encode(ctx, value.decisions, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -160,6 +176,7 @@ export class WorldSnapshot_UEBACodec {
             Knobs_UEBACodec.instance.encode(ctx, value.knobs, writer);
             Bookkeeping_UEBACodec.instance.encode(ctx, value.bookkeeping, writer);
             Forecasts_UEBACodec.instance.encode(ctx, value.forecasts, writer);
+            Decisions_UEBACodec.instance.encode(ctx, value.decisions, writer);
         }
     }
     
@@ -171,7 +188,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 6; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -183,6 +200,7 @@ export class WorldSnapshot_UEBACodec {
         const knobs = Knobs_UEBACodec.instance.decode(ctx, reader);
         const bookkeeping = Bookkeeping_UEBACodec.instance.decode(ctx, reader);
         const forecasts = Forecasts_UEBACodec.instance.decode(ctx, reader);
+        const decisions = Decisions_UEBACodec.instance.decode(ctx, reader);
         return new WorldSnapshot(
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -191,6 +209,7 @@ export class WorldSnapshot_UEBACodec {
             knobs,
             bookkeeping,
             forecasts,
+            decisions,
         );
     }
 

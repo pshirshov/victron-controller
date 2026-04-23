@@ -12,6 +12,43 @@ use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::owner::Owner;
 use std::time::Instant;
 
+/// Human-readable explanation of a controller's decision — one-line
+/// summary plus the key factors that drove it. Every controller
+/// produces one of these every time it evaluates, even when the
+/// output is "no change". Published in the world snapshot so the
+/// dashboard/HA surface can always show WHY a target has its current
+/// value, not just WHAT the value is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decision {
+    pub summary: String,
+    pub factors: Vec<DecisionFactor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionFactor {
+    pub name: String,
+    pub value: String,
+}
+
+impl Decision {
+    #[must_use]
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            factors: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_factor(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.factors.push(DecisionFactor {
+            name: name.into(),
+            value: value.into(),
+        });
+        self
+    }
+}
+
 // =============================================================================
 // IDs
 // =============================================================================

@@ -15,6 +15,7 @@ use chrono::{Datelike, NaiveDateTime, TimeDelta, Timelike};
 
 use crate::Clock;
 use crate::knobs::{DebugFullCharge, DischargeTime};
+use crate::types::Decision;
 
 /// Inputs for the setpoint controller — mirrors `SetPointInput` in the
 /// legacy TS module.
@@ -58,12 +59,16 @@ pub struct SetpointInputGlobals {
 /// Full output of the setpoint controller. The shell turns this into a
 /// single `WriteDbus` effect for `GridSetpoint` and (separately) persists
 /// the `bookkeeping` fields to retained MQTT.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SetpointOutput {
     /// The target value to write to `/Settings/CGwacs/AcPowerSetPoint`.
     pub setpoint_target: i32,
     pub debug: SetpointDebug,
     pub bookkeeping: SetpointBookkeeping,
+    /// Human-readable explanation of which branch fired and which
+    /// factors drove the chosen target. Published into the world
+    /// snapshot so the dashboard can show it next to the target.
+    pub decision: Decision,
 }
 
 /// Full debug tuple — mirrors `SetPointOutputDebug` verbatim.
@@ -211,18 +216,40 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     // new knob (SPEC §5.9) can bypass the PV-only export clamp and let
     // the regular time-of-day controller run (which may discharge battery
     // through the grid into the EV).
+    let mut decision: Decision;
     if g.force_disable_export {
         setpoint_target = IDLE_SETPOINT_W;
+        decision = Decision::new("Export killed by force_disable_export → idle 10 W")
+            .with_factor("force_disable_export", "true");
     } else if g.zappi_active && !g.allow_battery_to_car {
         if (2..8).contains(&hour) {
             setpoint_target = IDLE_SETPOINT_W - soltaro_export;
+            decision = Decision::new(
+                "Zappi active in early-morning window — dump Soltaro surplus only, preserve battery"
+            )
+            .with_factor("hour", format!("{hour:02}:{minute:02}"))
+            .with_factor("zappi_active", "true")
+            .with_factor("allow_battery_to_car", "false")
+            .with_factor("soltaro_power_W", format!("{soltaro_power:.0}"))
+            .with_factor("soltaro_export_W", format!("{soltaro_export:.0}"));
         } else {
             setpoint_target = -solar_export;
+            decision = Decision::new(
+                "Zappi active during the day — export PV only, do not discharge battery into car",
+            )
+            .with_factor("zappi_active", "true")
+            .with_factor("allow_battery_to_car", "false")
+            .with_factor("solar_export_W", format!("{solar_export:.0}"))
+            .with_factor("setpoint_W (pre-clamp)", format!("{setpoint_target:.0}"));
         }
     } else if hour == 23 && minute >= 55 {
         // "qendercore protection window" — avoid feeding Soltaro during the
         // 23:59–00:00 grid quirk; start 5 min early for export rampdown.
         setpoint_target = IDLE_SETPOINT_W;
+        decision = Decision::new(
+            "23:55-00:00 Soltaro-feed protection window → idle 10 W",
+        )
+        .with_factor("hour", format!("{hour:02}:{minute:02}"));
     } else if !(2..17).contains(&hour) {
         // Evening discharge controller.
         let early_discharge = g.discharge_time == DischargeTime::At2300;
@@ -266,6 +293,9 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
 
         if millis_remaining <= 0.0 {
             setpoint_target = IDLE_SETPOINT_W;
+            decision = Decision::new("Evening window past discharge-end time → idle 10 W")
+                .with_factor("hour", format!("{hour:02}:{minute:02}"))
+                .with_factor("discharge_time_knob", format!("{:?}", g.discharge_time));
         } else {
             hours_remaining = millis_remaining / (1000.0 * 60.0 * 60.0);
             pessimism_multiplier = 1.8_f64.min(
@@ -297,11 +327,31 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
 
             let min_pre: f64 = if preserve_battery { 10.0 } else { -200.0 };
             setpoint_target = min_pre.min(-export_power);
+            decision = Decision::new(if preserve_battery {
+                "Evening discharge — baseload would drain below target, preserving battery at idle"
+            } else {
+                "Evening discharge — exporting to hit end-of-day target"
+            })
+            .with_factor("hour", format!("{hour:02}:{minute:02}"))
+            .with_factor("battery_soc", format!("{battery_soc:.1}%"))
+            .with_factor("export_soc_threshold", format!("{export_soc_threshold:.0}%"))
+            .with_factor("hours_remaining", format!("{hours_remaining:.2}"))
+            .with_factor("pessimism_multiplier", format!("{pessimism_multiplier:.2}"))
+            .with_factor("current_capacity_Wh", format!("{current_capacity:.0}"))
+            .with_factor("current_target_Wh", format!("{current_target:.0}"))
+            .with_factor("exportable_capacity_Wh", format!("{exportable_capacity:.0}"))
+            .with_factor("export_power_W", format!("{export_power:.0}"))
+            .with_factor("preserve_battery", format!("{preserve_battery}"));
         }
     } else if (8..17).contains(&hour) {
         // Daytime PV-multiplier controller.
         if export_soc_threshold == 100.0 {
             setpoint_target = IDLE_SETPOINT_W;
+            decision = Decision::new(
+                "Daytime but export_soc_threshold=100 → hold at idle 10 W",
+            )
+            .with_factor("hour", format!("{hour:02}:{minute:02}"))
+            .with_factor("export_soc_threshold", "100%");
         } else {
             let bad_weather = solar_export <= 1100.0;
             let min_setpoint: f64 = if bad_weather { 10.0 } else { -200.0 };
@@ -350,23 +400,46 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
                 .max(solar_export * pv_multiplier * bad_mult - current_consumption);
             let balance_margin: f64 = if battery_soc < balance_soc { 100.0 } else { 0.0 };
 
-            setpoint_target = if battery_soc < export_soc_threshold {
-                IDLE_SETPOINT_W
+            let day_branch: &'static str;
+            if battery_soc < export_soc_threshold {
+                setpoint_target = IDLE_SETPOINT_W;
+                day_branch = "SoC below export threshold — hold at idle";
             } else if battery_soc == export_soc_threshold {
-                min_setpoint
+                setpoint_target = min_setpoint;
+                day_branch = "SoC at threshold — bleed the minimum export step";
             } else {
-                min_setpoint.min(balance_margin - export_power)
-            };
+                setpoint_target = min_setpoint.min(balance_margin - export_power);
+                day_branch = "SoC above threshold — PV-multiplier export";
+            }
+            decision = Decision::new(format!("Daytime — {day_branch}"))
+                .with_factor("hour", format!("{hour:02}:{minute:02}"))
+                .with_factor("battery_soc", format!("{battery_soc:.1}%"))
+                .with_factor("export_soc_threshold", format!("{export_soc_threshold:.0}%"))
+                .with_factor("balance_soc", format!("{balance_soc:.1}%"))
+                .with_factor("solar_export_W", format!("{solar_export:.0}"))
+                .with_factor("bad_weather", format!("{bad_weather}"))
+                .with_factor("pv_multiplier", format!("{pv_multiplier:.2}"))
+                .with_factor("export_power_W", format!("{export_power:.0}"));
         }
     } else if (2..5).contains(&hour) {
         // Boost window (redundant with the final else but preserved from TS).
         setpoint_target = IDLE_SETPOINT_W;
+        decision = Decision::new("Boost window (02:00–05:00) → idle 10 W")
+            .with_factor("hour", format!("{hour:02}:{minute:02}"));
     } else {
         // 05:00–08:00 extended night.
         setpoint_target = IDLE_SETPOINT_W;
+        decision = Decision::new("Extended night (05:00–08:00) → idle 10 W")
+            .with_factor("hour", format!("{hour:02}:{minute:02}"));
     }
 
     let final_setpoint = prepare_setpoint(max_discharge, setpoint_target);
+
+    // Record the post-processing facts that affected the final number.
+    decision = decision
+        .with_factor("pre_clamp_setpoint_W", format!("{setpoint_target:.0}"))
+        .with_factor("max_discharge_W", format!("{max_discharge:.0}"))
+        .with_factor("final_setpoint_W", format!("{final_setpoint}"));
 
     // `mppt_power`, `soltaro_power`, `battery_soh` are used in the debug
     // struct below; keep them bound so they're not "unused" lints.
@@ -406,6 +479,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
             soc_end_of_day_target,
             export_soc_threshold,
         },
+        decision,
     }
 }
 

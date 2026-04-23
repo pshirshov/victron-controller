@@ -17,6 +17,7 @@
 use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, TariffBandKind, tariff_band};
 use crate::myenergi::ZappiMode;
+use crate::types::Decision;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiModeInput {
@@ -43,50 +44,81 @@ pub struct ZappiModeInputGlobals {
 /// "don't touch" (the latter when no rule applies, so the user's
 /// manual choice in the myenergi app is preserved).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ZappiModeDecision {
+pub enum ZappiModeAction {
     Set(ZappiMode),
     Leave,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZappiModeOutput {
+    pub action: ZappiModeAction,
+    pub decision: Decision,
+}
+
 /// Evaluate the desired Zappi mode target for the current moment.
 #[must_use]
-pub fn evaluate_zappi_mode(input: &ZappiModeInput, clock: &dyn Clock) -> ZappiModeDecision {
+pub fn evaluate_zappi_mode(input: &ZappiModeInput, clock: &dyn Clock) -> ZappiModeOutput {
     let g = &input.globals;
     let now = clock.naive();
     let band = tariff_band(now);
+    let common = Decision::new("placeholder")
+        .with_factor("tariff", format!("{band:?}"))
+        .with_factor("charge_car_boost", format!("{}", g.charge_car_boost))
+        .with_factor("charge_car_extended", format!("{}", g.charge_car_extended))
+        .with_factor("current_mode", format!("{:?}", input.current_mode))
+        .with_factor("zappi_limit_pct", format!("{:.0}%", g.zappi_limit_pct))
+        .with_factor("session_charged_pct", format!("{:.0}%", input.session_charged_pct));
 
     // 1. Boost window — flag-driven Fast/Off.
     if band == TariffBand::BOOST {
-        return ZappiModeDecision::Set(if g.charge_car_boost {
-            ZappiMode::Fast
-        } else {
-            ZappiMode::Off
-        });
+        let mode = if g.charge_car_boost { ZappiMode::Fast } else { ZappiMode::Off };
+        return ZappiModeOutput {
+            action: ZappiModeAction::Set(mode),
+            decision: Decision {
+                summary: format!("Boost window (02:00–05:00) → mode={mode:?} (driven by charge_car_boost)"),
+                factors: common.factors,
+            },
+        };
     }
 
     // 2. NightExtended — flag-driven Fast/Off.
     if band == TariffBand::NIGHT_EXTENDED {
-        return ZappiModeDecision::Set(if g.charge_car_extended {
-            ZappiMode::Fast
-        } else {
-            ZappiMode::Off
-        });
+        let mode = if g.charge_car_extended { ZappiMode::Fast } else { ZappiMode::Off };
+        return ZappiModeOutput {
+            action: ZappiModeAction::Set(mode),
+            decision: Decision {
+                summary: format!(
+                    "NightExtended window (05:00–08:00) → mode={mode:?} (driven by charge_car_extended)"
+                ),
+                factors: common.factors,
+            },
+        };
     }
 
-    // 3. Night-time auto-stop (covers NightStart 23-02 and any other Night-
-    //    kind band not handled above, which in current set is just
-    //    NightStart).
+    // 3. Night-time auto-stop.
     let is_night = band.kind == TariffBandKind::Night;
     if is_night
         && g.zappi_limit_pct <= 65.0
         && input.session_charged_pct >= g.zappi_limit_pct
         && input.current_mode != ZappiMode::Off
     {
-        return ZappiModeDecision::Set(ZappiMode::Off);
+        return ZappiModeOutput {
+            action: ZappiModeAction::Set(ZappiMode::Off),
+            decision: Decision {
+                summary: "Night auto-stop — session charged ≥ zappi_limit → Off".to_string(),
+                factors: common.factors,
+            },
+        };
     }
 
     // Daytime + all other cases — don't touch.
-    ZappiModeDecision::Leave
+    ZappiModeOutput {
+        action: ZappiModeAction::Leave,
+        decision: Decision {
+            summary: "No rule applies — leaving Zappi mode unchanged".to_string(),
+            factors: common.factors,
+        },
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -128,14 +160,14 @@ mod tests {
         let mut input = base_input();
         input.globals.charge_car_boost = true;
         let d = evaluate_zappi_mode(&input, &clock_at(3, 0));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Fast));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Fast));
     }
 
     #[test]
     fn boost_window_without_flag_sets_off() {
         let input = base_input();
         let d = evaluate_zappi_mode(&input, &clock_at(3, 0));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Off));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
     }
 
     // ------------------------------------------------------------------
@@ -147,14 +179,14 @@ mod tests {
         let mut input = base_input();
         input.globals.charge_car_extended = true;
         let d = evaluate_zappi_mode(&input, &clock_at(6, 30));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Fast));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Fast));
     }
 
     #[test]
     fn extended_window_without_flag_sets_off() {
         let input = base_input();
         let d = evaluate_zappi_mode(&input, &clock_at(6, 30));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Off));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
     }
 
     // ------------------------------------------------------------------
@@ -169,7 +201,7 @@ mod tests {
         input.current_mode = ZappiMode::Eco;
         // NightStart (23:30)
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Off));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
     }
 
     #[test]
@@ -179,7 +211,7 @@ mod tests {
         input.session_charged_pct = 60.0;
         input.current_mode = ZappiMode::Off;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
-        assert_eq!(d, ZappiModeDecision::Leave);
+        assert_eq!(d.action, ZappiModeAction::Leave);
     }
 
     #[test]
@@ -189,7 +221,7 @@ mod tests {
         input.session_charged_pct = 95.0;
         input.current_mode = ZappiMode::Eco;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
-        assert_eq!(d, ZappiModeDecision::Leave);
+        assert_eq!(d.action, ZappiModeAction::Leave);
     }
 
     #[test]
@@ -199,7 +231,7 @@ mod tests {
         input.session_charged_pct = 30.0;
         input.current_mode = ZappiMode::Eco;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
-        assert_eq!(d, ZappiModeDecision::Leave);
+        assert_eq!(d.action, ZappiModeAction::Leave);
     }
 
     // ------------------------------------------------------------------
@@ -214,14 +246,14 @@ mod tests {
         input.session_charged_pct = 80.0;
         // Daytime — even with all auto-stop conditions met, we don't touch.
         let d = evaluate_zappi_mode(&input, &clock_at(12, 0));
-        assert_eq!(d, ZappiModeDecision::Leave);
+        assert_eq!(d.action, ZappiModeAction::Leave);
     }
 
     #[test]
     fn peak_window_leaves_mode_alone() {
         let input = base_input();
         let d = evaluate_zappi_mode(&input, &clock_at(18, 0));
-        assert_eq!(d, ZappiModeDecision::Leave);
+        assert_eq!(d.action, ZappiModeAction::Leave);
     }
 
     // ------------------------------------------------------------------
@@ -237,6 +269,6 @@ mod tests {
         input.current_mode = ZappiMode::Eco;
         // Boost rule wins — mode becomes Fast regardless of over-limit.
         let d = evaluate_zappi_mode(&input, &clock_at(3, 0));
-        assert_eq!(d, ZappiModeDecision::Set(ZappiMode::Fast));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Fast));
     }
 }

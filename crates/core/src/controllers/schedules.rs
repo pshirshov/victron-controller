@@ -19,6 +19,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 
 use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, tariff_band};
+use crate::types::Decision;
 
 /// Victron schedule `Day` encoding used by the legacy flow.
 ///
@@ -65,12 +66,15 @@ pub struct SchedulesInputGlobals {
     pub battery_soc_target: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SchedulesOutput {
     pub schedule_0: ScheduleSpec,
     pub schedule_1: ScheduleSpec,
     pub bookkeeping: SchedulesBookkeeping,
     pub debug: SchedulesDebug,
+    /// Same decision is reused for both schedules — they are driven
+    /// by the same branch logic.
+    pub decision: Decision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -136,6 +140,7 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
     };
 
     let mut new_above_soc_date: Option<NaiveDate> = None;
+    let branch: &'static str;
 
     if g.charge_battery_extended {
         // Decision tree:
@@ -152,12 +157,15 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
         if in_extended_window_with_discharge && (above_soc || latch_hit_today) {
             schedule_1.days = DAYS_DISABLED;
             new_above_soc_date = Some(now.date());
+            branch = "charge_battery_extended, but SoC hit target today during extended window → disable Schedule 1 for rest of day";
         } else {
             schedule_1.days = DAYS_ENABLED;
+            branch = "charge_battery_extended active → Schedule 1 enabled";
         }
     } else if is_extended_charge_time && !g.zappi_active {
         // Zappi finished charging during extended time — stop charging battery.
         schedule_1.days = DAYS_DISABLED;
+        branch = "extended window + Zappi finished → disable Schedule 1 (no more charging needed)";
     } else if g.charge_car_extended {
         // Car extended charging on but battery extended off — keep
         // schedule enabled with a nominal SoC=10 so ESS stays in the right
@@ -165,9 +173,21 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
         schedule_1.soc = 10.0;
         schedule_1.days = DAYS_ENABLED;
         schedule_1.discharge = 0;
+        branch = "charge_car_extended only → Schedule 1 enabled with nominal soc=10 (ESS mode only)";
     } else {
         schedule_1.days = DAYS_DISABLED;
+        branch = "no extended-charge flags set → Schedule 1 disabled";
     }
+
+    let decision = Decision::new(branch)
+        .with_factor("charge_to_full_required", format!("{}", g.charge_to_full_required))
+        .with_factor("charge_battery_extended", format!("{}", g.charge_battery_extended))
+        .with_factor("charge_car_extended", format!("{}", g.charge_car_extended))
+        .with_factor("zappi_active", format!("{}", g.zappi_active))
+        .with_factor("battery_soc", format!("{battery_soc:.1}%"))
+        .with_factor("battery_soc_target", format!("{battery_selected_soc_target:.0}%"))
+        .with_factor("above_soc_today", format!("{above_soc}"))
+        .with_factor("is_extended_charge_time", format!("{is_extended_charge_time}"));
 
     SchedulesOutput {
         schedule_0,
@@ -176,6 +196,7 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
             battery_selected_soc_target,
             new_above_soc_date,
         },
+        decision,
         debug: SchedulesDebug {
             above_soc,
             above_soc_date: g.above_soc_date,

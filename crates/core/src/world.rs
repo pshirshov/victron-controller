@@ -7,7 +7,7 @@ use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
-use crate::types::ForecastProvider;
+use crate::types::{Decision, ForecastProvider};
 
 /// All scalar sensor readings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,6 +137,19 @@ impl Bookkeeping {
     }
 }
 
+/// Latest "why?" explanation per controller. Overwritten on every
+/// evaluation, so the snapshot always matches the live target state.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Decisions {
+    pub grid_setpoint: Option<Decision>,
+    pub input_current_limit: Option<Decision>,
+    pub schedule_0: Option<Decision>,
+    pub schedule_1: Option<Decision>,
+    pub zappi_mode: Option<Decision>,
+    pub eddi_mode: Option<Decision>,
+    pub weather_soc: Option<Decision>,
+}
+
 /// Provenance record: which owner last wrote a knob, and when.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KnobProvenance {
@@ -153,7 +166,7 @@ impl KnobProvenance {
 }
 
 /// Top-level world state.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct World {
     // Actuated
     pub grid_setpoint: Actuated<i32>,
@@ -173,6 +186,10 @@ pub struct World {
 
     // Derived / cross-controller
     pub bookkeeping: Bookkeeping,
+
+    /// Latest human-readable explanation for each controller. See
+    /// SPEC §5.12 and `types::Decision`.
+    pub decisions: Decisions,
 }
 
 impl World {
@@ -192,6 +209,7 @@ impl World {
             sensors: Sensors::unknown(now),
             typed_sensors: TypedSensors::unknown(now),
             bookkeeping: Bookkeeping::fresh_boot(),
+            decisions: Decisions::default(),
         }
     }
 }
