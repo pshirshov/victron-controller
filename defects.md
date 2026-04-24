@@ -50,14 +50,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Compute `zappi_active` once at the top of the process pipeline from `world.typed_sensors.zappi_state` (the derivable predicate), pass to both controllers. Same for the other two fields where derivable; else reorder controllers.
 
 ### [A-06] Observer → writes-enabled transition: Pending targets never commit
-**Status:** open
+**Status:** resolved (PR-05)
 **Severity:** major
 **Location:** `crates/core/src/process.rs` — every `maybe_propose_*` (`:503-548`, `:640-681`, `:767-846`, `:879-908`, `:939-970`)
 **Description:** With `writes_enabled=false`, the controller calls `propose_target` *before* the kill-switch check. Target transitions to `Pending` with value V; no `WriteDbus`/`CallMyenergi` is emitted; `mark_commanded` not called. When user flips `writes_enabled=true` later, controller computes same V → `propose_target` returns false (same value, non-Unset phase) → no effect emitted. Target stays Pending forever; the bus retains whatever Venus had before.
 **Suggested fix:** In every `maybe_propose_*`, when `writes_enabled=false`, do NOT mutate target; only emit `Effect::Log`. When the flag is true, run the existing propose/commanded/emit sequence. Add a regression test for the observer→live→observer→live cycle.
 
 ### [A-07] `Command::KillSwitch(true)` doesn't invalidate in-flight Pending targets
-**Status:** open
+**Status:** resolved (PR-05)
 **Severity:** major
 **Location:** `crates/core/src/process.rs:257-260`
 **Description:** Sibling of A-06. Even after A-06 is fixed, controllers' `propose_target` same-value short-circuit suppresses writes on the first post-flip tick because no sensor changed. The correct semantics: on `false→true`, invalidate every actuated target so the next tick forces a write.
@@ -417,7 +417,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `send_timeout(1s)` for subscriber/mqtt-sub/dashboard; dashboard handler uses `try_send` → 503 on full channel.
 
 ### [A-59] Asymmetric deadband uses `current_target`, not last-committed value
-**Status:** open
+**Status:** resolved (PR-05)
 **Severity:** nit
 **Location:** `crates/core/src/process.rs:511-517`
 **Description:** If a target value V was propose-stuck in Pending (A-06), a new V' within 25 W is swallowed though the bus is still at a third earlier value. Fixes together with A-06.

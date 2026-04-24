@@ -256,7 +256,38 @@ fn apply_command(
             effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
         }
         Command::KillSwitch(enabled) => {
+            let prev = world.knobs.writes_enabled;
             world.knobs.writes_enabled = enabled;
+            // Edge-triggered reset (PR-05, A-06/A-07): transitioning from
+            // observer (writes suppressed) to active (writes enabled)
+            // invalidates every actuated target so the controllers are
+            // forced to re-propose + emit a fresh WriteDbus/CallMyenergi
+            // on the next tick. Without this, any target that was left
+            // in a non-Unset phase (e.g. from an earlier live run, or —
+            // once the observer-mode fix lands together with this —
+            // from retained MQTT state) would make propose_target's
+            // same-value short-circuit fire forever.
+            if !prev && enabled {
+                world.grid_setpoint.reset_to_unset(at);
+                world.input_current_limit.reset_to_unset(at);
+                world.zappi_mode.reset_to_unset(at);
+                world.eddi_mode.reset_to_unset(at);
+                world.schedule_0.reset_to_unset(at);
+                world.schedule_1.reset_to_unset(at);
+                for id in [
+                    ActuatedId::GridSetpoint,
+                    ActuatedId::InputCurrentLimit,
+                    ActuatedId::ZappiMode,
+                    ActuatedId::EddiMode,
+                    ActuatedId::Schedule0,
+                    ActuatedId::Schedule1,
+                ] {
+                    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                        id,
+                        phase: crate::tass::TargetPhase::Unset,
+                    }));
+                }
+            }
             effects.push(Effect::Publish(PublishPayload::KillSwitch(enabled)));
         }
         Command::Bookkeeping { key, value } => {
@@ -568,11 +599,11 @@ fn maybe_propose_setpoint(
         }
     }
 
-    let changed = world.grid_setpoint.propose_target(value, owner, now);
-    if !changed {
-        return;
-    }
-
+    // Observer mode (PR-05, A-06/A-07): emit the "would be set to X" log
+    // but do NOT mutate target state. Leaving the target in its prior
+    // phase means that when writes flip back on via `Command::KillSwitch`,
+    // the edge-trigger there resets every target to `Unset` and the next
+    // tick forces a clean propose + write.
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -581,10 +612,11 @@ fn maybe_propose_setpoint(
                 "GridSetpoint would be set to {value} W (owner={owner:?}); suppressed by writes_enabled=false"
             ),
         });
-        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-            id: ActuatedId::GridSetpoint,
-            phase: world.grid_setpoint.target.phase,
-        }));
+        return;
+    }
+
+    let changed = world.grid_setpoint.propose_target(value, owner, now);
+    if !changed {
         return;
     }
 
@@ -703,13 +735,8 @@ fn run_current_limit(
         }
     }
 
-    let changed = world
-        .input_current_limit
-        .propose_target(value, Owner::CurrentLimitController, now);
-    if !changed {
-        return;
-    }
-
+    // Observer mode (PR-05): see `maybe_propose_setpoint` — target stays
+    // untouched; the `Command::KillSwitch(true)` edge-trigger re-arms it.
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -718,10 +745,13 @@ fn run_current_limit(
                 "InputCurrentLimit would be set to {value:.2} A; suppressed by writes_enabled=false"
             ),
         });
-        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-            id: ActuatedId::InputCurrentLimit,
-            phase: world.input_current_limit.target.phase,
-        }));
+        return;
+    }
+
+    let changed = world
+        .input_current_limit
+        .propose_target(value, Owner::CurrentLimitController, now);
+    if !changed {
         return;
     }
 
@@ -843,11 +873,9 @@ fn maybe_propose_schedule(
         ActuatedId::Schedule1
     };
 
-    let changed = actuated.propose_target(spec, Owner::ScheduleController, now);
-    if !changed {
-        return;
-    }
-
+    // Observer mode (PR-05): see `maybe_propose_setpoint`. Skip the
+    // propose + 5 WriteDbus burst entirely. The `Command::KillSwitch(true)`
+    // edge-trigger will reset the target on the way back to live.
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -856,10 +884,11 @@ fn maybe_propose_schedule(
                 "Schedule{index} would be set to {spec:?}; suppressed by writes_enabled=false"
             ),
         });
-        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-            id,
-            phase: actuated.target.phase,
-        }));
+        return;
+    }
+
+    let changed = actuated.propose_target(spec, Owner::ScheduleController, now);
+    if !changed {
         return;
     }
 
@@ -938,13 +967,8 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
     };
 
     let now = clock.monotonic();
-    let changed = world
-        .zappi_mode
-        .propose_target(desired, Owner::ZappiController, now);
-    if !changed {
-        return;
-    }
 
+    // Observer mode (PR-05): see `maybe_propose_setpoint`.
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -953,10 +977,13 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
                 "ZappiMode would be set to {desired:?}; suppressed by writes_enabled=false"
             ),
         });
-        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-            id: ActuatedId::ZappiMode,
-            phase: world.zappi_mode.target.phase,
-        }));
+        return;
+    }
+
+    let changed = world
+        .zappi_mode
+        .propose_target(desired, Owner::ZappiController, now);
+    if !changed {
         return;
     }
 
@@ -999,13 +1026,8 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
     };
 
     let now = clock.monotonic();
-    let changed = world
-        .eddi_mode
-        .propose_target(desired, Owner::EddiController, now);
-    if !changed {
-        return;
-    }
 
+    // Observer mode (PR-05): see `maybe_propose_setpoint`.
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -1014,10 +1036,13 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
                 "EddiMode would be set to {desired:?}; suppressed by writes_enabled=false"
             ),
         });
-        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-            id: ActuatedId::EddiMode,
-            phase: world.eddi_mode.target.phase,
-        }));
+        return;
+    }
+
+    let changed = world
+        .eddi_mode
+        .propose_target(desired, Owner::EddiController, now);
+    if !changed {
         return;
     }
 
@@ -1273,12 +1298,13 @@ mod tests {
     }
 
     #[test]
-    fn observer_mode_logs_decisions_and_publishes_phase() {
-        // Observer mode = writes_enabled = false. Expect:
-        //   - no WriteDbus / CallMyenergi
-        //   - one Info-level Log for each controller that would've acted
-        //   - one Publish(ActuatedPhase) per acting controller (so the
-        //     dashboard / HA sees the proposed target phase)
+    fn observer_mode_logs_only_no_target_mutation() {
+        // Observer mode = writes_enabled = false. PR-05 invariant:
+        //   - at least one Info-level `observer` Log
+        //   - NO WriteDbus / CallMyenergi
+        //   - NO Publish(ActuatedPhase) for any controller (target state
+        //     must stay untouched so the KillSwitch false→true edge can
+        //     reset it cleanly)
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
@@ -1306,22 +1332,251 @@ mod tests {
             }
         }
 
-        // At least one Publish(ActuatedPhase) for GridSetpoint.
-        assert!(effects.iter().any(|e| matches!(
-            e,
-            Effect::Publish(PublishPayload::ActuatedPhase {
-                id: ActuatedId::GridSetpoint,
-                ..
-            })
-        )));
-
-        // No actuation effects slipped through.
+        // No actuation effects and no ActuatedPhase publishes — target
+        // state must stay pristine so the kill-switch edge-trigger works.
         for e in &effects {
             assert!(
-                !matches!(e, Effect::WriteDbus { .. } | Effect::CallMyenergi(_)),
-                "unexpected actuation: {e:?}"
+                !matches!(
+                    e,
+                    Effect::WriteDbus { .. }
+                        | Effect::CallMyenergi(_)
+                        | Effect::Publish(PublishPayload::ActuatedPhase { .. })
+                ),
+                "observer mode must not emit actuation or ActuatedPhase publish: {e:?}"
             );
         }
+    }
+
+    #[test]
+    fn observer_mode_does_not_mutate_target_phase() {
+        // PR-05, A-06: on a fresh boot (observer mode is the default),
+        // every actuated target must remain `Unset` after a Tick. The
+        // controllers must emit observer logs but skip propose_target
+        // entirely.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // seed_required_sensors enables writes; don't call it directly —
+        // inline the sensor seeds while leaving writes_enabled at its
+        // fresh-boot default (false).
+        let at = c.monotonic;
+        let ss = &mut world.sensors;
+        ss.battery_soc.on_reading(75.0, at);
+        ss.battery_soh.on_reading(95.0, at);
+        ss.battery_installed_capacity.on_reading(100.0, at);
+        ss.battery_dc_power.on_reading(0.0, at);
+        ss.mppt_power_0.on_reading(1500.0, at);
+        ss.mppt_power_1.on_reading(1000.0, at);
+        ss.soltaro_power.on_reading(500.0, at);
+        ss.power_consumption.on_reading(1200.0, at);
+        ss.grid_power.on_reading(500.0, at);
+        ss.grid_voltage.on_reading(230.0, at);
+        ss.grid_current.on_reading(2.0, at);
+        ss.consumption_current.on_reading(5.0, at);
+        ss.offgrid_power.on_reading(500.0, at);
+        ss.offgrid_current.on_reading(2.2, at);
+        ss.vebus_input_current.on_reading(0.0, at);
+        ss.evcharger_ac_power.on_reading(0.0, at);
+        ss.evcharger_ac_current.on_reading(0.0, at);
+        ss.ess_state.on_reading(10.0, at);
+        ss.outdoor_temperature.on_reading(15.0, at);
+        let nt = naive(12, 0);
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Off,
+                zappi_plug_state: ZappiPlugState::EvDisconnected,
+                zappi_status: ZappiStatus::Paused,
+                zappi_last_change_signature: nt,
+            },
+            at,
+        );
+
+        assert!(!world.knobs.writes_enabled, "fresh boot must be observer mode");
+
+        let effects = process(&Event::Tick { at }, &mut world, &c, &Topology::defaults());
+
+        // Every actuated target stays at Unset.
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Unset);
+        assert_eq!(world.input_current_limit.target.phase, TargetPhase::Unset);
+        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Unset);
+        assert_eq!(world.eddi_mode.target.phase, TargetPhase::Unset);
+        assert_eq!(world.schedule_0.target.phase, TargetPhase::Unset);
+        assert_eq!(world.schedule_1.target.phase, TargetPhase::Unset);
+
+        // At least one observer-source Log emitted.
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::Log { source: "observer", .. })),
+            "expected at least one observer log, got {effects:#?}"
+        );
+
+        // Zero WriteDbus / CallMyenergi / ActuatedPhase publishes.
+        for e in &effects {
+            assert!(
+                !matches!(
+                    e,
+                    Effect::WriteDbus { .. }
+                        | Effect::CallMyenergi(_)
+                        | Effect::Publish(PublishPayload::ActuatedPhase { .. })
+                ),
+                "observer mode leaked actuation or phase publish: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kill_switch_false_to_true_resets_pending_targets_and_forces_rewrite_next_tick() {
+        // PR-05, A-06/A-07: observer→live→observer→live cycle. The key
+        // invariant is that the false→true edge RESETS every target
+        // before the controllers re-run, so even if propose_target's
+        // same-value short-circuit would otherwise keep an in-flight
+        // Pending target stuck forever, the reset-then-re-propose
+        // pattern produces a fresh WriteDbus on the tick that follows
+        // the edge (in practice, the controllers already re-run inside
+        // the same `process()` call that handled KillSwitch(true)).
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        // Step 1: live tick settles setpoint Commanded.
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+        let v1 = world.grid_setpoint.target.value.expect("setpoint proposed");
+
+        // Step 2: kill switch off — writes stop, but existing targets
+        // stay Commanded (we don't reset on the way INTO observer mode).
+        let _ = process(
+            &Event::Command {
+                command: Command::KillSwitch(false),
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(!world.knobs.writes_enabled);
+        assert_eq!(
+            world.grid_setpoint.target.phase,
+            TargetPhase::Commanded,
+            "entering observer mode must not wipe targets"
+        );
+
+        // Step 3: simulate the stuck-Pending hazard A-07 describes by
+        // hand — a target left in Pending with the same value the
+        // controllers want. Without the edge-trigger reset,
+        // propose_target would short-circuit and no WriteDbus would
+        // ever fire again.
+        world.grid_setpoint.target.phase = TargetPhase::Pending;
+
+        // Step 4: kill switch back on — edge-trigger resets every
+        // target, then controllers run and immediately re-propose with
+        // a fresh WriteDbus. We verify both the mid-call reset
+        // (observable via Publish(ActuatedPhase=Unset) in the effect
+        // stream) AND the follow-up Commanded rewrite (Publish with
+        // phase=Commanded + WriteDbus).
+        let eff_on = process(
+            &Event::Command {
+                command: Command::KillSwitch(true),
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(world.knobs.writes_enabled);
+
+        // Each of the six actuators published Unset during the reset.
+        for id in [
+            ActuatedId::GridSetpoint,
+            ActuatedId::InputCurrentLimit,
+            ActuatedId::ZappiMode,
+            ActuatedId::EddiMode,
+            ActuatedId::Schedule0,
+            ActuatedId::Schedule1,
+        ] {
+            assert!(
+                eff_on.iter().any(|e| matches!(
+                    e,
+                    Effect::Publish(PublishPayload::ActuatedPhase { id: pub_id, phase: TargetPhase::Unset })
+                        if *pub_id == id
+                )),
+                "expected Publish(ActuatedPhase {{ id: {id:?}, phase: Unset }}), got {eff_on:#?}"
+            );
+        }
+
+        // Post-reset controller run re-proposed setpoint with the same
+        // value as before + emitted a fresh WriteDbus.
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+        assert_eq!(world.grid_setpoint.target.value, Some(v1));
+        assert!(
+            eff_on.iter().any(|e| matches!(
+                e,
+                Effect::WriteDbus {
+                    target: DbusTarget::GridSetpoint,
+                    value: DbusValue::Int(_)
+                }
+            )),
+            "post-reset tick must emit a fresh GridSetpoint WriteDbus (got {eff_on:#?})"
+        );
+    }
+
+    #[test]
+    fn kill_switch_true_to_true_is_noop() {
+        // PR-05: the reset edge-trigger is strictly false→true. A
+        // redundant `KillSwitch(true)` while already enabled must NOT
+        // wipe targets, and must NOT emit six ActuatedPhase=Unset
+        // publishes.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        assert!(world.knobs.writes_enabled, "seed helper enables writes");
+
+        // Settle Commanded first so we can tell if a reset fires.
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+
+        // Redundant KillSwitch(true) — should not reset anything.
+        let eff = process(
+            &Event::Command {
+                command: Command::KillSwitch(true),
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        assert_eq!(
+            world.grid_setpoint.target.phase,
+            TargetPhase::Commanded,
+            "no-op KillSwitch(true) must not reset targets"
+        );
+
+        // No ActuatedPhase=Unset spam in the published effects.
+        let unset_publishes = eff
+            .iter()
+            .filter(|e| matches!(
+                e,
+                Effect::Publish(PublishPayload::ActuatedPhase { phase: TargetPhase::Unset, .. })
+            ))
+            .count();
+        assert_eq!(
+            unset_publishes, 0,
+            "redundant KillSwitch(true) must not publish Unset phases: {eff:#?}"
+        );
     }
 
     #[test]

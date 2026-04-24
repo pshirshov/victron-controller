@@ -13,7 +13,9 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 - [~] **M-AUDIT** — Drain the 68 audit findings (A-01…A-68). Priority is
   **physical-safety first** (NaN poisoning, stale-bookkeeping ordering,
   observer→live transition, retained-MQTT range validation), followed by
-  honesty-of-state for observer-mode shadow runs.
+  honesty-of-state for observer-mode shadow runs. **All CRITICAL-tier
+  findings closed as of 2026-04-24 Wave 4.** Remaining: MAJOR/minor/nit
+  batchable into M-AUDIT-2.
 
 ---
 
@@ -47,9 +49,11 @@ following PRs:
   midnight reset; dropped `!disable_night_grid_discharge` term from
   cbe derivation. Resolves A-05, A-15; partially A-18 (500 W fallback
   now canonical across controllers).
-- [ ] **PR-05** — Observer → live transition: only mutate target when
-  `writes_enabled=true`; `KillSwitch(true)` invalidates Pending targets
-  (resolves A-06, A-07, A-59).
+- [x] **PR-05** — Observer → live transition invariant: controllers
+  early-return without mutating target state when writes are
+  suppressed; `KillSwitch(true)` edge-triggers reset of every
+  actuated target so the next tick forces a fresh WriteDbus.
+  Resolves A-06, A-07, A-59. **Last CRITICAL-tier audit item closed.**
 - [x] **PR-06** — MQTT retained-knob range + NaN/Inf validation + A-49
   DischargeTime HH:MM:SS + `apply_knob` catch-all warn (resolves A-08,
   A-61, A-49). Parallel table drift (PR-06-D01) deferred.
@@ -161,6 +165,36 @@ decides which ride along.
   test deferred, D06/D07 scope-sprawl misattributed to pre-review-loop
   state, D08/D09 deferred to PR-09b). Verification: green (196+10+45
   tests, clippy, ARMv7, web bundle 26.8kb).
+
+- **PR-05** (2026-04-24) — Observer→live transition invariant.
+  Resolves A-06, A-07, A-59. **Closes the last CRITICAL-tier audit
+  item.** New method `Actuated<V>::reset_to_unset(&mut self, Instant)`
+  in `crates/core/src/tass/actuated.rs` — resets target to Unset
+  without touching actual. Every `maybe_propose_*` in process.rs
+  (setpoint, current-limit propose block, schedule, zappi_mode,
+  eddi_mode) now checks `!world.knobs.writes_enabled` before any
+  target mutation; in observer mode emits only
+  `Effect::Log { source: "observer", … }` and returns. Decision
+  population happens BEFORE the early-return so the dashboard's
+  Decision view is honest in observer mode too.
+  `Command::KillSwitch(enabled)` captures `prev = world.knobs.writes_enabled`;
+  on `!prev && enabled` edge, `reset_to_unset(at)` is called on
+  all six actuated entities and six `ActuatedPhase{Unset}` are
+  published so the dashboard reflects the transition. `true→true`,
+  `false→false`, `true→false` are no-ops. Tests:
+  `observer_mode_does_not_mutate_target_phase`,
+  `kill_switch_false_to_true_resets_pending_targets_and_forces_rewrite_next_tick`,
+  `kill_switch_true_to_true_is_noop`. Existing test
+  `observer_mode_logs_decisions_and_publishes_phase` renamed to
+  `observer_mode_logs_only_no_target_mutation` and its
+  `ActuatedPhase` assertion inverted (it was testing the old broken
+  behaviour).  Verification: 202 core + 10 property + 50 shell
+  green, clippy -D warnings clean, ARMv7 release ok.
+  Constraint for future work: the deadband check in
+  `maybe_propose_setpoint` / `run_current_limit` still guards against
+  micro-retargets once a target is set — it's compatible with the
+  reset pattern because `target.value = None` after reset bypasses
+  the deadband on the first re-propose.
 
 - **PR-04** (2026-04-24) — Canonical `classify_zappi_active` + real
   forecast-derived CBE with midnight reset. Resolves A-05, A-15;

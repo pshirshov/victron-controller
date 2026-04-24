@@ -90,6 +90,17 @@ impl<V> Actuated<V> {
     pub fn tick(&mut self, now: Instant, threshold: Duration) {
         self.actual.tick(now, threshold);
     }
+
+    /// Reset this actuated entity's target to `Unset` without touching
+    /// the actual side. Used by the runtime kill-switch edge-trigger
+    /// (`writes_enabled` false → true) so controllers are forced to
+    /// re-propose on the next tick and emit a fresh
+    /// `WriteDbus` / `CallMyenergi`. Without this, a target left in
+    /// `Pending` from observer-mode runs would short-circuit
+    /// [`Self::propose_target`]'s same-value check forever.
+    pub fn reset_to_unset(&mut self, now: Instant) {
+        self.target = Target::unset(now);
+    }
 }
 
 impl<V: PartialEq> Actuated<V> {
