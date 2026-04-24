@@ -218,7 +218,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `GetProperties` at connect to cache variant signature per path; or submit best-guess then fall back. Stop retrying after N failures; raise kill switch.
 
 ### [A-30] Event channel `mpsc::channel(256)` has no watermark; stale-batched events stamped `Fresh`
-**Status:** open
+**Status:** resolved (partially addressed — channel size is now 4096 per PR-URGENT-13 with a 75%-full watermark watcher + trend direction per PR-HYGIENE-10. The remaining "stamp on consumer" suggestion is rejected: producer-side stamping is the correct semantic — `Actual::tick(now, threshold)` compares the reading's producer-stamped `at` against `clock.monotonic()` at tick time, which correctly measures age-at-processing-time. Stamping on the consumer would hide genuine producer-side latency)
 **Severity:** minor
 **Location:** `crates/shell/src/main.rs:47`
 **Description:** Backpressure works (`.await send`) but a slow runtime after a burst leaves events in queue, stamped at `Instant::now()` on the producer side. Freshness gate sees "fresh" while values are ~seconds old.
