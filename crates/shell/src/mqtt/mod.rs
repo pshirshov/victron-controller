@@ -104,6 +104,22 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
         })?;
         let ca = std::fs::read(ca_path)
             .with_context(|| format!("read CA certificate from {ca_path}"))?;
+        // A-68: validate CA bytes at parse time instead of waiting for
+        // the first TLS handshake to fail cryptically. rumqttc's
+        // TlsConfiguration::Simple accepts whatever bytes we hand it;
+        // a typo in the config path pointing at a random file would
+        // silently "configure TLS" and then fail at connect with an
+        // opaque rustls error. We do a cheap PEM prefix check here —
+        // not a full X.509 parse, but enough to catch "wrong file".
+        let looks_like_pem = ca
+            .windows(b"-----BEGIN CERTIFICATE-----".len())
+            .any(|w| w == b"-----BEGIN CERTIFICATE-----");
+        if !looks_like_pem {
+            return Err(anyhow::anyhow!(
+                "mqtt.ca_path {ca_path} does not contain a PEM-encoded \
+                 certificate (missing '-----BEGIN CERTIFICATE-----' marker)"
+            ));
+        }
         opts.set_transport(Transport::Tls(TlsConfiguration::Simple {
             ca,
             alpn: None,

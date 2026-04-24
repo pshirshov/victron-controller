@@ -445,7 +445,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Rename to "Poll floor" or "Max interval".
 
 ### [A-63] NaiveDateTime `num_milliseconds() as f64` precision on far-future clock drift
-**Status:** open
+**Status:** resolved (documented — range is bounded by the evening-discharge window (< 1 day); f64 handles it without loss and the `<= 0.0` branches below handle pathological skew correctly)
 **Severity:** nit
 **Location:** `crates/core/src/controllers/setpoint.rs:279,281`
 **Description:** Always < 8 h in current use; pathological clock skew would saturate i64. Defensive.
@@ -476,7 +476,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Document the dependency; guarantee reset by calling `apply_knob(AllowBatteryToCar, false)` unconditionally at process start.
 
 ### [A-68] `TlsConfiguration::Simple` accepts malformed CA bytes without parse-time validation
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/mod.rs:100-112`
 **Description:** Fails at event-loop time, not config-load time.

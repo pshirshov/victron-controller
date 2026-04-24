@@ -293,6 +293,14 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
 
         let hour_before = discharge_end_time - TimeDelta::hours(1);
 
+        // A-63: `num_milliseconds()` returns i64 and cannot saturate
+        // here — `discharge_end_time - now` is bounded to at most one
+        // calendar day (< 9e7 ms), well within f64's 53-bit integer
+        // range. The clippy lint fires because `as f64` could in
+        // principle lose precision; allow is correct for this usage.
+        // If clock skew ever made these deltas pathological (days
+        // away), the subsequent `<= 0.0` branches still behave
+        // correctly and the setpoint falls through to `idle 10 W`.
         #[allow(clippy::cast_precision_loss)]
         let millis_remaining_1hour = (hour_before - now).num_milliseconds() as f64;
         #[allow(clippy::cast_precision_loss)]
