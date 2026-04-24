@@ -127,6 +127,19 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-19** — REAL root cause of the field wedge (confirmed
+  by per-thread `wchan` diagnostic added to fetch-logs.sh by user's
+  suggestion): `Subscriber::seed_service` awaits
+  `proxy.call("GetItems", &()).await` with no timeout. One hung
+  Venus D-Bus reply → poll arm parked forever → signal + heartbeat
+  arms starved → sensors decay → controllers bail. This wedge
+  class was called out as deferred D08 during PR-URGENT-13 review
+  and never landed; now biting daily. Fix: 2 s per-call timeout
+  on GetItems; error flows through the existing rate-limited
+  warn + escalation path from PR-URGENT-13. PR-URGENT-15/16/17/18
+  were all real downstream hardening but not THIS bug — each
+  remains warranted.
+
 - [x] **PR-URGENT-18** — ROOT CAUSE of the field wedge:
   `tracing_subscriber::fmt::layer()` default writer is synchronous
   `io::stdout()`. On daemontools the pipe buffer is ~64 KB;
@@ -384,6 +397,54 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-19** (2026-04-24) — **Real root cause of the field
+  wedge.** User added per-thread `/proc/<pid>/task/*/wchan` to
+  `fetch-logs.sh` at my request — that diagnostic was decisive.
+  Observed thread states on the wedged service:
+  ```
+  tid=main         wchan=futex_wait_queue   # tokio::select! in main, normal
+  tid=tokio-worker wchan=do_epoll_wait      # IDLE worker, no tasks ready
+  tid=tokio-worker wchan=futex_wait_queue   # one task parked on a lock
+  tid=tracing-appe wchan=futex_wait_queue   # idle, waiting for log, normal
+  ```
+  One idle + one blocked worker rules out a stdout-pipe wedge
+  (both would be in `pipe_write`). So PR-URGENT-18 (tracing
+  non_blocking) was real hardening but not the actual bug.
+  Root cause: `crates/shell/src/dbus/subscriber.rs::seed_service`
+  awaits `proxy.call("GetItems", &()).await` on zbus with NO
+  timeout. The subscriber's `tokio::select!` has three arms
+  (signal stream, periodic poll reseed, heartbeat). The poll arm
+  body iterates all 9 Victron services sequentially. If ONE
+  service hangs on its reply (Venus daemon briefly unresponsive,
+  D-Bus broker queue, service startup race), `seed_service` parks
+  inside the await. The select loop can't re-enter: signals stop
+  being consumed, heartbeat stops firing. Sensors decay at the
+  2-second freshness window. Controllers bail. Observer-mode logs
+  go quiet (stable same-value propose_target returns false). The
+  matching 20-s-of-activity-then-silence field symptom is exact.
+  This wedge class was called out during PR-URGENT-13's review as
+  deferred D08 ("D-Bus wedge on `seed_service()` can still park
+  the select loop; PR-URGENT-13b should wrap that call in a
+  timeout") and never landed.
+  Fix: added `const GET_ITEMS_TIMEOUT: Duration = Duration::
+  from_secs(2);` + `tokio::time::timeout(GET_ITEMS_TIMEOUT,
+  proxy.call("GetItems", &())).await`. Healthy Venus responds in
+  <50 ms; 2 s is 40× headroom. Timeout failure flows through the
+  existing error path from PR-URGENT-13 (rate-limited warn at
+  30 s, error! escalation at `RESEED_ESCALATE_AFTER=5`
+  consecutive fails) so operators see a clear signal before the
+  next tick. `Proxy::new` NOT wrapped — verified against zbus
+  4.4.0 source, `CacheProperties::Lazily` default skips any
+  D-Bus round-trip; it's purely local struct construction and
+  can't hang. Tests 275 green, clippy clean, ARMv7 release ok.
+  Constraint for future work: EVERY zbus `proxy.call(...).await`
+  in this codebase needs a bounded wait. If we add new services
+  or new method calls, they get the same timeout pattern.
+  Longer-term option: split `seed_service` into parallel
+  `FuturesUnordered` over the 9 services so one slow service
+  doesn't even delay the others — deferred; per-call timeout is
+  sufficient to unwedge the loop.
 
 - **PR-URGENT-18** (2026-04-24) — **Root cause of the persistent
   field wedge:** `tracing_subscriber::fmt::layer()` default writer

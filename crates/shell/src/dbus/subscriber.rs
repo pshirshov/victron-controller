@@ -207,6 +207,12 @@ const RESEED_ESCALATE_AFTER: u32 = 5;
 /// Interval at which the subscriber emits a liveness heartbeat INFO log
 /// summarising poll tick + signal counters since the last heartbeat.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// Upper bound on a single Venus GetItems reply. Healthy responses
+/// are <50 ms; 2 s is 40x headroom. On timeout, the poll arm marks
+/// this service as failed (via `fail_counts`) and continues to the
+/// next one — one hung service can no longer starve the whole
+/// subscriber `select!` loop (PR-URGENT-19).
+const GET_ITEMS_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Subscriber {
     /// Connect to the Venus system bus.
@@ -472,10 +478,16 @@ impl Subscriber {
         let proxy = Proxy::new(&self.conn, service, "/", "com.victronenergy.BusItem")
             .await
             .context("building GetItems proxy")?;
-        let items: HashMap<String, ItemEntry> = proxy
-            .call("GetItems", &())
-            .await
-            .with_context(|| format!("GetItems call on {service}"))?;
+        // Bound the wait. A healthy Venus returns GetItems in <50 ms; a
+        // hung service would otherwise park this whole select arm and
+        // starve both the signal and heartbeat arms (PR-URGENT-19).
+        let items: HashMap<String, ItemEntry> = tokio::time::timeout(
+            GET_ITEMS_TIMEOUT,
+            proxy.call("GetItems", &()),
+        )
+        .await
+        .with_context(|| format!("GetItems timed out on {service}"))?
+        .with_context(|| format!("GetItems call on {service}"))?;
         debug!(%service, count = items.len(), "seeded from GetItems");
         let at = Instant::now();
         for (path, entry) in items {

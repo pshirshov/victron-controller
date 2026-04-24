@@ -98,7 +98,7 @@ section "process"
 MAIN_PID=\$(svstat \$REMOTE_SERVICE_DIR 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i=="(pid") print \$(i+1)}' | tr -d ')')
 if [ -n "\$MAIN_PID" ] && [ -d /proc/\$MAIN_PID ]; then
   echo "-- pid \$MAIN_PID --"
-  cat /proc/\$MAIN_PID/status 2>&1 | head -20 || true
+  cat /proc/\$MAIN_PID/status 2>&1 | head -n 20 || true
   echo
   echo "-- fds (interested in stdout/stderr = 1/2) --"
   ls -la /proc/\$MAIN_PID/fd/0 /proc/\$MAIN_PID/fd/1 /proc/\$MAIN_PID/fd/2 2>&1 || true
@@ -121,7 +121,7 @@ if [ -n "\$MAIN_PID" ] && [ -d /proc/\$MAIN_PID ]; then
     [ -d "\$tid" ] || continue
     t=\$(basename "\$tid")
     echo "--- tid \$t ---"
-    cat "\$tid/stack" 2>&1 | head -20 || true
+    cat "\$tid/stack" 2>&1 | head -n 20 || true
   done
 else
   echo "(main service not running)"
@@ -155,7 +155,7 @@ section "binary info"
 BIN=/data/opt/victron-controller/bin/victron-controller
 if [ -f \$BIN ]; then
   ls -la \$BIN
-  file \$BIN 2>&1 | head -3 || true
+  file \$BIN 2>&1 | head -n 3 || true
 else
   echo "(no binary at \$BIN)"
 fi

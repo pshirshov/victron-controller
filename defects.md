@@ -1016,6 +1016,27 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-19 — D-Bus `seed_service` has no per-call timeout; one hung Venus service wedges the subscriber's select loop
+
+### [PR-URGENT-19-D01] `Subscriber::seed_service` awaits `proxy.call("GetItems", &())` with no timeout; one hung reply parks the poll arm forever
+**Status:** resolved
+**Severity:** CRITICAL (confirmed field wedge; PR-URGENT-15/16/17/18 didn't address this path)
+**Location:** `crates/shell/src/dbus/subscriber.rs:471-497` (`seed_service`); called from `subscriber.rs:371` (periodic reseed arm of the subscriber's `tokio::select!`).
+**Description:** Bundle `/tmp/exchange/victron-bundle-20260424-190416.txt` captured with the new per-thread diagnostic (good call from the user). Per-thread state:
+```
+tid=21377 main          wchan=futex_wait_queue    # tokio::select! in main, normal
+tid=21378 tokio-rt-worker wchan=do_epoll_wait     # IDLE worker, no tasks ready
+tid=21379 tokio-rt-worker wchan=futex_wait_queue  # one task parked on a lock
+tid=21380 tracing-appende wchan=futex_wait_queue  # idle, waiting for log msg
+```
+One worker idle + one worker blocked rules out a stdout-pipe wedge (that would park both workers in `pipe_write`). PR-URGENT-18's `tracing_appender::non_blocking` was a legit hardening but wasn't *this* bug.
+Chain: `Subscriber::run` has a `tokio::select!` over three arms (`stream.next()` signal, `poll.tick()` reseed, `heartbeat.tick()` liveness). The poll arm body iterates all 9 services and calls `seed_service` for each sequentially. `seed_service` awaits `proxy.call("GetItems", &()).await` on zbus with NO timeout. If one service hangs on its reply (Venus daemon temporarily unresponsive, D-Bus broker queue, or a service not emitting its reply), this await never returns. The poll arm's body is parked inside that await → signal arm can't run → heartbeat can't run → sensors decay to Stale at the 2 s freshness window → controllers bail → observer logs go quiet (steady-state same-value propose_target returns false). Service alive, subscriber task parked.
+This wedge class was called out as deferred D08 during the PR-URGENT-13 review: "a D-Bus wedge on `seed_service()` can still park the select loop; PR-URGENT-13b should wrap that call in a timeout." It was never landed.
+Matches field symptom exactly: 20 seconds of normal activity, then 10W-System fallback (sensors stale), then silence.
+**Suggested fix:** Wrap each `seed_service` call in `tokio::time::timeout(Duration::from_secs(2), ...)`. On timeout, warn (with rate-limit via the existing `last_warn` map) and continue to the next service. Escalate to `error!` after N consecutive timeouts (reuse the `fail_counts` + `RESEED_ESCALATE_AFTER` from PR-URGENT-13 for the failure counter). Two seconds is generous — GetItems on a healthy Victron returns in <50 ms; 2 s is 40× headroom.
+Also consider: a longer-term fix would split `seed_service` into parallel per-service awaits via `FuturesUnordered` so one slow service doesn't even delay the others — but a simple per-call timeout is enough to unwedge the loop.
+**Fix:** Added `const GET_ITEMS_TIMEOUT: Duration = Duration::from_secs(2);` and wrapped `proxy.call("GetItems", &()).await` in `tokio::time::timeout(GET_ITEMS_TIMEOUT, ...)`. Outer `with_context` converts `Elapsed` → `anyhow::Error`; inner `with_context` handles the zbus error. Both propagate to the poll arm's existing error path, which increments `fail_counts`, emits rate-limited warn, and escalates to `error!` at `RESEED_ESCALATE_AFTER`. `Proxy::new` NOT wrapped — verified in zbus 4.4.0 source (`CacheProperties::Lazily` default → no D-Bus round-trip, purely local construction). Verified: 50 shell + core + property tests green, clippy clean, ARMv7 release ok, web bundle ok.
+
 ## PR-URGENT-18 — tracing fmt layer uses synchronous stdout writer; pipe backpressure wedges async workers
 
 ### [PR-URGENT-18-D01] `tracing_subscriber::fmt::layer()` default writer is `io::stdout()` (synchronous); on a 2-worker tokio runtime, any stdout-pipe stall parks both workers in `write_all`
