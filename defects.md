@@ -92,7 +92,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Subscribe to `org.freedesktop.DBus.NameOwnerChanged`; re-map on every event for a known well-known name. Alternative: on each unmapped-sender signal whose *path* belongs to a routed service, refresh the mapping.
 
 ### [A-12] `SchedulePartial` accumulator never clears; a single-field `ItemsChanged` re-emits 4 stale fields as if they were just observed
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/shell/src/dbus/subscriber.rs:141-172, 360-371`
 **Description:** Accumulator is process-wide mutable state. First seed populates all five fields; thereafter, any single-field change (Venus emits only the changed path) re-emits a full `Schedule0/1` readback with 4 hours-stale values. TASS may Confirm a target that doesn't match the bus.

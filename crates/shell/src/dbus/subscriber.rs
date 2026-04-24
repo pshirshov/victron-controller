@@ -167,7 +167,9 @@ impl SchedulePartial {
     }
 
     /// Return a complete ScheduleSpec IFF all 5 fields have arrived at
-    /// least once. Missing fields return None.
+    /// least once. Missing fields return None. Read-only peek — does
+    /// NOT consume the accumulator.
+    #[cfg(test)]
     fn as_spec(&self) -> Option<ScheduleSpec> {
         Some(ScheduleSpec {
             start_s: self.start_s?,
@@ -176,6 +178,32 @@ impl SchedulePartial {
             days: self.days?,
             discharge: self.discharge?,
         })
+    }
+
+    /// Return a complete ScheduleSpec IFF all 5 fields are present AND
+    /// reset the accumulator to empty. A subsequent emit requires
+    /// *every* field to be re-observed — either by the next 300 s
+    /// settings `GetItems` reseed (which delivers all 5 together) or
+    /// by a full `ItemsChanged` envelope carrying all 5.
+    ///
+    /// Rationale (defect A-12): partial `ItemsChanged` updates only
+    /// carry the fields that actually changed. If we emitted on every
+    /// single-field update using the retained values for the other 4,
+    /// and those other 4 had been silently changed on the bus (firmware
+    /// quirk, third-party write) since our last full observation, we'd
+    /// confidently re-publish stale data and TASS might Confirm a
+    /// target that doesn't match the bus. Clearing after each emit
+    /// enforces "only emit what we have fully re-observed".
+    fn take_spec(&mut self) -> Option<ScheduleSpec> {
+        let spec = ScheduleSpec {
+            start_s: self.start_s?,
+            duration_s: self.duration_s?,
+            soc: self.soc?,
+            days: self.days?,
+            discharge: self.discharge?,
+        };
+        *self = Self::default();
+        Some(spec)
     }
 }
 
@@ -813,8 +841,13 @@ fn route_to_event(
             let idx = *index as usize;
             let acc = &mut schedule_accumulators[idx];
             acc.apply(*field, value);
-            // Only emit once we have all 5 fields.
-            let spec = acc.as_spec()?;
+            // Emit only when all 5 fields are present AND consume them:
+            // the accumulator is reset after each emit so the next
+            // readback requires a complete re-observation of every
+            // field, not just the one that changed. See `take_spec`
+            // doc for the rationale (defect A-12). The 300 s settings
+            // reseed delivers all 5 together and satisfies this.
+            let spec = acc.take_spec()?;
             Some(Event::Readback(if *index == 0 {
                 ActuatedReadback::Schedule0 { value: spec, at }
             } else {
@@ -1134,6 +1167,68 @@ mod tests {
         // Heap entry flagged for immediate reseed.
         let entry = schedule.peek().map(|Reverse(e)| e.clone()).expect("entry present");
         assert!(entry.next_due >= before && entry.next_due <= after);
+    }
+
+    #[test]
+    fn schedule_partial_clears_after_emit() {
+        // Fill all 5 fields → take_spec returns Some, accumulator
+        // resets, subsequent as_spec/take_spec return None until
+        // every field has been re-observed.
+        let mut acc = SchedulePartial::default();
+        acc.apply(ScheduleSpecField::Start, 0.0);
+        acc.apply(ScheduleSpecField::Duration, 3_600.0);
+        acc.apply(ScheduleSpecField::Soc, 80.0);
+        acc.apply(ScheduleSpecField::Days, 7.0);
+        acc.apply(ScheduleSpecField::AllowDischarge, 1.0);
+
+        let spec = acc.take_spec().expect("all 5 fields present");
+        assert_eq!(spec.start_s, 0);
+        assert_eq!(spec.duration_s, 3_600);
+        assert!((spec.soc - 80.0).abs() < f64::EPSILON);
+        assert_eq!(spec.days, 7);
+        assert_eq!(spec.discharge, 1);
+
+        // After emit, accumulator is cleared.
+        assert!(acc.as_spec().is_none(), "accumulator should be empty after take_spec");
+        assert!(acc.take_spec().is_none(), "empty accumulator should yield None");
+
+        // Applying a single field is not enough to re-emit.
+        acc.apply(ScheduleSpecField::Start, 42.0);
+        assert!(acc.take_spec().is_none(), "partial accumulator must not emit");
+
+        // Applying the remaining 4 completes the batch → emit.
+        acc.apply(ScheduleSpecField::Duration, 60.0);
+        acc.apply(ScheduleSpecField::Soc, 50.0);
+        acc.apply(ScheduleSpecField::Days, 0.0);
+        acc.apply(ScheduleSpecField::AllowDischarge, 0.0);
+        let spec2 = acc.take_spec().expect("all 5 fields re-observed");
+        assert_eq!(spec2.start_s, 42);
+        assert_eq!(spec2.duration_s, 60);
+        // And reset again.
+        assert!(acc.as_spec().is_none());
+    }
+
+    #[test]
+    fn schedule_partial_single_field_update_does_not_re_emit_stale() {
+        // Defect A-12 scenario. After an initial full seed (all 5
+        // fields) and a successful emit, a subsequent single-field
+        // ItemsChanged must NOT re-emit using the 4 previously-held
+        // values — those could have silently changed on the bus.
+        let mut acc = SchedulePartial::default();
+        // Initial seed from GetItems: all 5 fields.
+        acc.apply(ScheduleSpecField::Start, 100.0);
+        acc.apply(ScheduleSpecField::Duration, 200.0);
+        acc.apply(ScheduleSpecField::Soc, 90.0);
+        acc.apply(ScheduleSpecField::Days, 3.0);
+        acc.apply(ScheduleSpecField::AllowDischarge, 1.0);
+        assert!(acc.take_spec().is_some(), "initial seed must emit");
+
+        // Now only one field changes on the bus.
+        acc.apply(ScheduleSpecField::Days, 7.0);
+        assert!(
+            acc.take_spec().is_none(),
+            "single-field update after emit must not re-emit stale values"
+        );
     }
 
     #[test]

@@ -607,6 +607,26 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   async code inside `spawn_log_publisher` must use `eprintln!` for
   diagnostics — tracing macros inside this task are a re-entry hazard.
 
+- **PR-08** (2026-04-24) — `SchedulePartial` take-and-clear semantic.
+  Resolves A-12. Previously the accumulator persisted across emits:
+  initial GetItems filled all 5 fields → emit Schedule0/1 readback →
+  any subsequent single-field ItemsChanged re-emitted a spec with 1
+  fresh value + 4 possibly-stale values, which TASS could Confirm
+  against a target that didn't match the bus. Fix: introduce
+  `take_spec(&mut self)` on the emit path; returns `Some(spec)` iff
+  all 5 are present AND clears the accumulator. Next emit requires
+  all 5 to be re-observed atomically — via the 300 s settings
+  GetItems reseed or a full ItemsChanged envelope carrying all 5.
+  Staleness bound: ≤ 300 s (`SEED_INTERVAL_SETTINGS`), well under
+  the 900 s Schedule staleness matrix. Existing `as_spec(&self)`
+  kept under `#[cfg(test)]` as a read-only peek for other unit
+  tests. 2 new unit tests: `schedule_partial_clears_after_emit`
+  (fill → take_spec Some → accumulator empty → single field → None →
+  complete remaining → Some) and
+  `schedule_partial_single_field_update_does_not_re_emit_stale`
+  (exact A-12 repro). 56 subscriber tests green; clippy clean;
+  ARMv7 release ok; web bundle ok.
+
 - **PR-07** (2026-04-24) — `NameOwnerChanged` watch. Subscribes to
   `org.freedesktop.DBus.NameOwnerChanged` on the same zbus connection,
   with `sender("org.freedesktop.DBus")` filter. On each signal for a
