@@ -204,7 +204,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Use `period_end − period` (bucket start) for attribution, or midpoint.
 
 ### [A-28] 401 / 403 / 429 not distinguished from timeouts; we keep hammering rate-limited endpoints
-**Status:** open
+**Status:** resolved (forecast side only; myenergi scope-deferred)
 **Severity:** major
 **Location:** `crates/shell/src/forecast/mod.rs:121-138`, `crates/shell/src/myenergi/mod.rs:70-88`
 **Description:** Solcast free tier: 10 calls/day; we burn it in 10 ticks on a 429. No exponential backoff.
