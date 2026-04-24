@@ -55,12 +55,17 @@ async fn main() -> Result<()> {
 
     // Watermark warning: once per minute, log if the channel is > 75%
     // full. Gives operators a heads-up before backpressure bites.
+    // PR-URGENT-13-D04: include the previous sample so the warn line
+    // shows trend direction — an operator can tell "climbing → imminent
+    // stall" from "draining → recovering" without correlating two log
+    // lines a minute apart.
     {
         let tx_watch = tx.clone();
         tokio::spawn(async move {
             let max = tx_watch.max_capacity();
             let threshold = max * 3 / 4;
             let mut last_warn: Option<Instant> = None;
+            let mut last_in_use: usize = 0;
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 ticker.tick().await;
@@ -75,14 +80,27 @@ async fn main() -> Result<()> {
                         now.duration_since(t) >= std::time::Duration::from_secs(60)
                     });
                     if should_warn {
+                        let trend = match in_use.cmp(&last_in_use) {
+                            std::cmp::Ordering::Greater => "climbing",
+                            std::cmp::Ordering::Less => "draining",
+                            std::cmp::Ordering::Equal => "stable",
+                        };
+                        // Max channel capacity is 4096, well under isize::MAX
+                        // on any realistic target; cast is safe.
+                        #[allow(clippy::cast_possible_wrap)]
+                        let delta: isize = (in_use as isize) - (last_in_use as isize);
                         tracing::warn!(
                             in_use,
                             max,
-                            "event channel > 75% full ({in_use}/{max})"
+                            last_in_use,
+                            delta,
+                            trend,
+                            "event channel > 75% full ({in_use}/{max}, {trend} by {delta})"
                         );
                         last_warn = Some(now);
                     }
                 }
+                last_in_use = in_use;
             }
         });
     }

@@ -567,9 +567,20 @@ impl Subscriber {
             "D-Bus subscriber running"
         );
 
-        // Heartbeat ticker. Independent of poll.tick() so the
-        // subscriber still emits liveness logs at a steady cadence
-        // even if the poll arm is starved by a busy signal stream.
+        // Heartbeat ticker. Separate `interval` so the heartbeat arm
+        // survives a busy signal stream (ItemsChanged constantly ready
+        // would otherwise starve the poll arm, and a per-arm ticker
+        // gives `tokio::select!` a third ready branch to pick from).
+        //
+        // PR-URGENT-13-D08: this is NOT starvation-proof against a
+        // BLOCKED poll body. `tokio::select!` picks a ready branch and
+        // runs its body to completion before re-entering — if
+        // `seed_service(svc).await` hangs on a degraded D-Bus call,
+        // the whole select is parked and no arm fires. That hazard is
+        // mitigated by PR-URGENT-22's `POLL_ITERATION_BUDGET` outer
+        // timeout which wraps the entire poll body, not this
+        // heartbeat arm. Comment here to correct the original D01 fix
+        // note which overstated the guarantee.
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         // First tick is immediate; skip it so we don't log
         // "0 ticks, 0 signals" at startup.
@@ -695,10 +706,15 @@ impl Subscriber {
                                 last_warn.insert(service_name.clone(), now);
                             }
                             if count_now == RESEED_ESCALATE_AFTER {
+                                // PR-URGENT-13-D07: escalation threshold
+                                // as a structured field rather than
+                                // captured-identifier interpolation —
+                                // makes log indexing / alerting queries
+                                // grep-friendly across future changes.
                                 error!(
                                     service = %service_name,
-                                    "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
-                                     consecutive ticks; sensor freshness unreliable"
+                                    threshold = RESEED_ESCALATE_AFTER,
+                                    "periodic GetItems failing for threshold+ consecutive ticks; sensor freshness unreliable"
                                 );
                             }
                         }
@@ -993,11 +1009,11 @@ struct ItemsChangedBody(HashMap<String, ItemEntry>);
 /// shapes (e.g. arrays, dicts) or for non-finite floats.
 ///
 /// PR-01-D06: I64/U64 silently cast to f64 loses precision for values
-/// > 2^53. Victron's actual sensor paths all fit (SoC 0..100%,
+/// above 2^53. Victron's actual sensor paths all fit (SoC 0..100%,
 /// currents in amps, powers in single-digit kW) so the cast is safe
 /// in practice. The `#[allow(clippy::cast_precision_loss)]` is
-/// documented here — if a future path starts ingesting values > 2^53
-/// (timestamps? counters?), it needs a different extraction helper.
+/// documented here — if a future path starts ingesting values above
+/// 2^53 (timestamps? counters?), it needs a different extraction helper.
 fn extract_scalar(v: &Value<'_>) -> Option<f64> {
     // zbus 4 Value has F64 but no F32 variant at the top level (floats
     // are f64 on the wire). Integer variants vary by width.
