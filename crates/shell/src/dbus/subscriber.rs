@@ -26,14 +26,12 @@ use crate::config::DbusServices;
 /// Cadence of the periodic `GetItems` re-seed against every Victron
 /// service. Victron emits `ItemsChanged` only on value changes, so
 /// without this poll stable values would time out of the freshness
-/// window. 5 s keeps sub-tick freshness without overwhelming the
-/// Venus D-Bus broker (PR-URGENT-20: 500 ms × 9 services ≈ 18
-/// GetItems/sec appeared to trigger broker connection eviction
-/// after ~20 s; 5 s is 10× gentler). Freshness window for local
-/// D-Bus sensors is tuned together with this (see
-/// `ControllerParams::freshness_local_dbus`).
+/// window. 500 ms gives four polls per 2 s staleness deadline — tight
+/// sensor freshness for the controller. If this rate triggers a Venus
+/// broker eviction, PR-URGENT-20's reconnect loop recovers in
+/// bounded time rather than masking the issue with a slower poll.
 /// Exposed so the dashboard can display it.
-pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
