@@ -330,11 +330,12 @@ reviewing a specific PR's patch.
 **Suggested fix:** Update SPEC §5.3 to "2 s (G3 tuning)"; fix the subscriber comment's "5-second freshness window" language.
 
 ### [A-46] Evening discharge + `allow_battery_to_car=true` can net-import at peak tariff if Zappi draws > export_cap
-**Status:** open
+**Status:** resolved (note-only — the concern is about physical grid-flow under inverter rate limits, not about a bug in the commanded setpoint. An attempted code fix was reverted after adversarial review demonstrated it was vacuous; see **Root cause** below. Remaining risk is inherent to the `allow_battery_to_car=true` opt-in per SPEC §5.9)
 **Severity:** minor
 **Location:** `crates/core/src/controllers/setpoint.rs:224-244, 245-345`
-**Description:** Zappi-clamp branch is bypassed by design (SPEC §5.9). `-export_power` is capped at `-grid_export_limit_w` only; nothing prevents a positive net import when Zappi draw exceeds PV + export cap. User opted in — money risk only.
-**Suggested fix:** Extra clamp: `setpoint_target.min(-zappi_current * grid_voltage)`. Or disable evening-discharge branch whenever `grid_power > small_margin` (already importing).
+**Description:** Zappi-clamp branch is bypassed by design (SPEC §5.9). `-export_power` is capped at `-grid_export_limit_w` only; nothing prevents a positive net grid import when Zappi draw exceeds the rate at which battery+PV can fund the EV branch. User opted in — money risk only.
+**Root cause:** The defect as originally filed described a non-existent failure mode in the setpoint controller. Adversarial review (PR-A46-review-round-1) of an attempted fix proved: in the evening discharge branch, `setpoint_target = min_pre.min(-export_power)` where `min_pre ∈ {10, -200}`, so `setpoint_target` is structurally upper-bounded at +10 W. No positive setpoint > 10 W can occur from that branch. The actual scenario — 7 kW Zappi draw exceeding what battery+PV can source instantaneously — is a physics/rate-limit concern at the inverter, not a commanded-setpoint concern. The battery's `BATTERY_SIDE_MAX_DISCHARGE_W = -5000 W` cap combined with `grid_export_limit_w` means commanding a very negative setpoint doesn't produce more export — the inverter throttles, and the grid tie net-imports whatever the AC load demands. No controller-layer clamp can fix this without changing the battery discharge rate limit or disabling the evening branch outright when Zappi is drawing heavily.
+**Fix deferred / out of scope:** The vacuous-clamp fix was reverted. The two honest paths forward are (a) document this as inherent opt-in risk in SPEC §5.9 (current behaviour), or (b) add a defensive early-return to idle when `g.allow_battery_to_car && input.evcharger_ac_power > N` (accept battery-waste to avoid peak-tariff draw). Option (b) requires a user product decision — it reverses the `allow_battery_to_car=true` intent (user said "let battery fund the car"; option (b) says "only if battery can fund it fully"). Flagged for user clarification.
 
 ### [A-47] `check_c4` `i32 - i32` can overflow (see A-31, duplicate)
 **Status:** resolved (duplicate of A-31 — closed by PR-setpoint-deadband-i64)
