@@ -95,6 +95,26 @@ async fn main() -> Result<()> {
     // subscriber now supervises its own connection.
     let subscriber = Subscriber::new(&services);
 
+    // A-39: startup warning when config-level gates disagree with the
+    // runtime kill switch. The dashboard badge currently reads only
+    // `knobs.writes_enabled` (the runtime kill switch); the two
+    // config-file gates `[dbus] writes_enabled` and
+    // `[myenergi] writes_enabled` silently no-op writes below that.
+    // An operator flipping the badge ON while a config gate is OFF
+    // would see "writes on" but nothing actuates. Explicit warning at
+    // startup makes the three-gate structure visible in the log.
+    if !cfg.dbus.writes_enabled {
+        tracing::warn!(
+            "config [dbus] writes_enabled = false — D-Bus writes will be suppressed \
+             regardless of runtime kill switch (A-39 / SPEC §5 three-gate chain)"
+        );
+    }
+    if !cfg.myenergi.writes_enabled {
+        tracing::warn!(
+            "config [myenergi] writes_enabled = false — myenergi writes will be suppressed \
+             regardless of runtime kill switch (A-39 / SPEC §5 three-gate chain)"
+        );
+    }
     info!("connecting D-Bus writer (dry_run={})", !cfg.dbus.writes_enabled);
     let writer = Writer::connect(services.clone(), !cfg.dbus.writes_enabled)
         .await

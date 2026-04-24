@@ -281,7 +281,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Downgrade this line to "mqtt client constructed; connecting…"; add a real "mqtt connected" log on the first `ConnAck` inside the subscriber loop.
 
 ### [A-39] Dashboard `WRITES ON / OBSERVER` badge reads only `knobs.writes_enabled`, ignores config-file `[dbus] / [myenergi] writes_enabled`
-**Status:** open
+**Status:** resolved (partial — startup `warn!` landed for both config gates; full badge-AND-of-three-gates requires baboon regen to expose config gates on the snapshot, deferred as a pure UI follow-up)
 **Severity:** major
 **Location:** `web/src/index.ts:45-51`, `crates/shell/src/main.rs:54-64`
 **Description:** Three gates; badge reflects one. Flipping the kill switch with `dbus.writes_enabled=false` in config.toml turns the badge green but nothing writes. Operator is misled about actuation reality.
@@ -337,6 +337,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Extra clamp: `setpoint_target.min(-zappi_current * grid_voltage)`. Or disable evening-discharge branch whenever `grid_power > small_margin` (already importing).
 
 ### [A-47] `check_c4` `i32 - i32` can overflow (see A-31, duplicate)
+**Status:** resolved (duplicate of A-31 — closed by PR-setpoint-deadband-i64)
 *(Duplicate of A-31; kept for cross-reference.)*
 
 ### [A-48] `as_f64` accepts scientific-notation / "NaN" / "inf" strings
@@ -466,6 +467,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** See A-29.
 
 ### [A-66] `Value::Bool(false)` as extract-scalar arm (see A-02, duplicate)
+**Status:** resolved (duplicate of A-02 — closed by PR-01)
 *(Duplicate of A-02.)*
 
 ### [A-67] `allow_battery_to_car` boot-reset depends on MQTT bootstrap completing
