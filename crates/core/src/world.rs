@@ -174,16 +174,23 @@ pub struct Decisions {
 }
 
 /// Provenance record: which owner last wrote a knob, and when.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// A-55: per-knob granularity. Previously a single `Option<Instant>`
+/// covered *every* knob, so writing `battery_soc_target` from the
+/// dashboard suppressed HaMqtt/WeatherSocPlanner on *all* knobs for
+/// the hold window — if the user touched one knob, HA stopped being
+/// able to drive the others. The per-knob map only holds the ones
+/// that have ever been written from the dashboard.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct KnobProvenance {
-    pub last_dashboard_write: Option<Instant>,
+    pub last_dashboard_write: std::collections::HashMap<crate::types::KnobId, Instant>,
 }
 
 impl KnobProvenance {
     #[must_use]
-    pub const fn fresh_boot() -> Self {
+    pub fn fresh_boot() -> Self {
         Self {
-            last_dashboard_write: None,
+            last_dashboard_write: std::collections::HashMap::new(),
         }
     }
 }

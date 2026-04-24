@@ -241,19 +241,19 @@ fn apply_command(
 ) {
     match command {
         Command::Knob { id, value } => {
-            if !accept_knob_command(owner, at, world) {
+            if !accept_knob_command(owner, id, at, world) {
                 effects.push(Effect::Log {
                     level: LogLevel::Debug,
                     source: "process::command",
                     message: format!(
-                        "suppressed knob command id={id:?} owner={owner:?} (dashboard γ-hold active)"
+                        "suppressed knob command id={id:?} owner={owner:?} (dashboard γ-hold active for this knob)"
                     ),
                 });
                 return;
             }
             apply_knob(id, value, world, effects);
             if owner == Owner::Dashboard {
-                world.knob_provenance.last_dashboard_write = Some(at);
+                world.knob_provenance.last_dashboard_write.insert(id, at);
             }
             effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
         }
@@ -332,13 +332,18 @@ fn apply_bookkeeping(
     }
 }
 
-fn accept_knob_command(owner: Owner, at: Instant, world: &World) -> bool {
+fn accept_knob_command(owner: Owner, id: KnobId, at: Instant, world: &World) -> bool {
     // γ-rule: dashboard writes suppress subsystem commands within the
     // hold window. Applies to HaMqtt AND WeatherSocPlanner — both are
     // automatic-path writers a user might want to override temporarily
     // via the dashboard.
+    //
+    // A-55: per-knob granularity. Touching `battery_soc_target` via
+    // dashboard must not suppress `export_soc_threshold` updates from
+    // HA; the γ-hold applies only to the SPECIFIC knob that was
+    // recently written.
     if matches!(owner, Owner::HaMqtt | Owner::WeatherSocPlanner) {
-        if let Some(last) = world.knob_provenance.last_dashboard_write {
+        if let Some(&last) = world.knob_provenance.last_dashboard_write.get(&id) {
             if at.saturating_duration_since(last) < DASHBOARD_HOLD_WINDOW {
                 return false;
             }
@@ -1268,18 +1273,28 @@ pub(crate) fn run_weather_soc(
     world.decisions.weather_soc = Some(d.decision.clone());
 
     // A-20: check γ-hold once up-front. If a dashboard write is active
-    // we suppress ALL four planner knobs atomically — either every
-    // knob moves together (coherent planner state) or none of them do
-    // (the operator's manual override stands). Applying knobs one-by-one
-    // with a per-call γ-check would still be safe, but this makes the
-    // "all-or-nothing" contract explicit.
+    // on ANY of the four planner knobs, we suppress ALL four atomically
+    // — either every knob moves together (coherent planner state) or
+    // none of them do (the operator's manual override stands). A-55:
+    // with per-knob γ-hold granularity, this check now explicitly walks
+    // all four IDs so the "all-or-nothing" semantic is preserved for
+    // the weather_soc plan while other knobs retain per-knob hold.
     let at = clock.monotonic();
-    if !accept_knob_command(Owner::WeatherSocPlanner, at, world) {
+    let planner_knobs = [
+        KnobId::ExportSocThreshold,
+        KnobId::DischargeSocTarget,
+        KnobId::BatterySocTarget,
+        KnobId::DisableNightGridDischarge,
+    ];
+    let any_held = planner_knobs
+        .iter()
+        .any(|&id| !accept_knob_command(Owner::WeatherSocPlanner, id, at, world));
+    if any_held {
         effects.push(Effect::Log {
             level: LogLevel::Debug,
             source: "process::weather_soc",
             message: format!(
-                "suppressed planner knobs owner={:?} (dashboard γ-hold active)",
+                "suppressed planner knobs owner={:?} (dashboard γ-hold active on ≥1 planner knob)",
                 Owner::WeatherSocPlanner
             ),
         });
@@ -1351,7 +1366,9 @@ fn propose_knob(
     // a second later. Callers SHOULD check `accept_knob_command` once
     // up-front for atomicity (see `run_weather_soc`), but we also
     // defend per-call so a future caller can't accidentally bypass it.
-    if !accept_knob_command(owner, at, world) {
+    // A-55: now per-knob — the hold window applies only to the
+    // specific `id` being written.
+    if !accept_knob_command(owner, id, at, world) {
         effects.push(Effect::Log {
             level: LogLevel::Debug,
             source: "process::weather_soc",
@@ -2938,8 +2955,12 @@ mod tests {
         let mut world = World::fresh_boot(c0.monotonic);
         seed_weather_soc_inputs(&mut world, c0.monotonic);
 
-        // Simulate a dashboard write 500 ms before the planner tick.
-        world.knob_provenance.last_dashboard_write = Some(
+        // Simulate a dashboard write 500 ms before the planner tick —
+        // specifically on BatterySocTarget, one of the four planner
+        // knobs. A-55: per-knob γ-hold, but weather_soc's planner is
+        // still all-or-nothing across the four.
+        world.knob_provenance.last_dashboard_write.insert(
+            KnobId::BatterySocTarget,
             c0.monotonic
                 .checked_sub(StdDuration::from_millis(500))
                 .expect("monotonic Instant::now() - 500 ms stays positive"),
@@ -2972,7 +2993,7 @@ mod tests {
         // If the dashboard hold expires (clear provenance) and we tick
         // again inside the 01:55 minute, the planner can still fire —
         // this validates the "try again next tick" semantic.
-        world.knob_provenance.last_dashboard_write = None;
+        world.knob_provenance.last_dashboard_write.clear();
         let c1 = clock_on(c0.naive.date(), 1, 55, 30);
         let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
         assert_eq!(

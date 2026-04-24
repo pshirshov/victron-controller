@@ -389,7 +389,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Either wire to a real build-time constant or remove.
 
 ### [A-55] γ-hold `last_dashboard_write` is global, not per-knob; also unset for `KillSwitch`
-**Status:** open
+**Status:** resolved (per-knob granularity landed; KillSwitch-protection portion deferred — separate Command path needing its own mechanism)
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:301-311`
 **Description:** HA writing `battery_soc_target` clears γ-suppression for all other knobs. `KillSwitch` itself is unprotected → HA can fight the dashboard over the kill switch.
