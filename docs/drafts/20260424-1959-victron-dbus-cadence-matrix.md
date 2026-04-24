@@ -41,6 +41,8 @@ Source-cited, distilled from Venus OS repos and wiki:
 
 ## Per-path matrix
 
+**The Summary table is authoritative. Detailed sections describe the source's emission cadence; staleness/reseed numbers in those sections are retained for rationale but the Summary values are what the code implements.**
+
 Legend:
 - **Update cadence (Victron)** = how often the source service *emits* an `ItemsChanged` for that path, on average, based on the data producer's documented behavior.
 - **Event-driven?** = does Venus push this on change via `ItemsChanged`? (yes for essentially all `com.victronenergy.*` live measurements; settings also push on change.)
@@ -122,8 +124,8 @@ CAN frames from Pylontech arrive at the SoC update rate of the battery BMS. Pylo
 
 | Path | Update cadence (Victron) | Event-driven? | Our use (criticality) | Poll cadence | Staleness window | Source |
 |---|---|---|---|---|---|---|
-| `/Soc` | ~1 Hz while changing; seconds–minutes when idle | yes | high — setpoint + Eddi | none; re-seed 60 s | **10 s** (was 2 s) | dbus wiki `com.victronenergy.battery` [wiki](https://github.com/victronenergy/venus/wiki/dbus) |
-| `/Soh` | rarely — minutes to hours | yes (on change only) | low — slow aging metric | none; re-seed 300 s | **600 s** | same |
+| `/Soc` | ~1 Hz while changing; seconds–minutes when idle | yes | high — setpoint + Eddi | none; re-seed 60 s | **15 s** (was 2 s) | dbus wiki `com.victronenergy.battery` [wiki](https://github.com/victronenergy/venus/wiki/dbus) |
+| `/Soh` | rarely — minutes to hours | yes (on change only) | low — slow aging metric | none; re-seed 300 s | **900 s** | same |
 | `/InstalledCapacity` | basically static | yes (rarely) | low — constant | none; re-seed 600 s | **3600 s** | same |
 | `/Dc/0/Power` | ~1 Hz (user-observed: "updates once/sec") | yes | high — matches MPPT / consumption rate | none; re-seed 60 s | **5 s** | same (user field observation) |
 
@@ -164,7 +166,7 @@ VE.Bus inverter: produced by `mk2-dbus`/VE.Bus driver, historically chatty. Issu
 | `/Ac/Out/L1/P` (`OffgridPower`) | sub-second when inverting | yes | high — current-limit input | none; re-seed 60 s | 5 s | dbus wiki `com.victronenergy.vebus`; issue #789 |
 | `/Ac/Out/L1/I` (`OffgridCurrent`) | sub-second | yes | high | none; re-seed 60 s | 5 s | same |
 | `/Ac/ActiveIn/L1/I` (`VebusInputCurrent`) | sub-second | yes | medium — diagnostic | none; re-seed 60 s | 5 s | same |
-| `/Ac/In/1/CurrentLimit` (readback) | on write only (ESS writes ≤ 5 s); sparse | yes | **high — readback for TASS Confirmation** | **none; re-seed 30 s** | **30 s** (readback, not live) | dbus wiki (`/Ac/In/1/CurrentLimit` r/w) |
+| `/Ac/In/1/CurrentLimit` (readback) | on write only (ESS writes ≤ 5 s); sparse | yes | **high — readback for TASS Confirmation** | **none; re-seed 120 s** | **600 s** (readback, not live) | dbus wiki (`/Ac/In/1/CurrentLimit` r/w) |
 
 **Readback-path note:** `CurrentLimitReadback` is a *TASS readback*, not a live sensor. It only changes when somebody writes it. A 2 s staleness window means that if neither we nor any other consumer writes within 2 s, the readback flips to Stale — which the TASS phase machine interprets incorrectly. This is a bug in its own right: readback freshness should track "is the bus alive and reporting my last write?" with a much wider window (≥ 30 s).
 
@@ -183,9 +185,9 @@ These paths change **only** when something writes them (us, Node-RED, GX console
 
 | Path | Update cadence (Victron) | Event-driven? | Our use (criticality) | Poll cadence | Staleness window | Source |
 |---|---|---|---|---|---|---|
-| `/Settings/CGwacs/AcPowerSetPoint` (readback) | on write only | yes | **high — GridSetpoint readback** | none; re-seed 60 s | **60 s** | dbus wiki; legacy NR flow writes via this path |
-| `/Settings/CGwacs/BatteryLife/State` (`EssState`) | user/GUI action + rare auto-transitions | yes | medium — ESS state gate | none; re-seed 300 s | **300 s** | dbus wiki `BatteryLife/State` |
-| `/Settings/CGwacs/BatteryLife/Schedule/Charge/{0,1}/{Start,Duration,Soc,Day,AllowDischarge}` (10 paths, readbacks) | on write only, very rare (≤ once/day) | yes | **high — Schedule readback** | none; re-seed 300 s | **600 s** | dbus wiki; legacy flow writes once per schedule-evaluation cycle |
+| `/Settings/CGwacs/AcPowerSetPoint` (readback) | on write only | yes | **high — GridSetpoint readback** | none; re-seed 300 s | **900 s** | dbus wiki; legacy NR flow writes via this path |
+| `/Settings/CGwacs/BatteryLife/State` (`EssState`) | user/GUI action + rare auto-transitions | yes | medium — ESS state gate | none; re-seed 300 s | **900 s** | dbus wiki `BatteryLife/State` |
+| `/Settings/CGwacs/BatteryLife/Schedule/Charge/{0,1}/{Start,Duration,Soc,Day,AllowDischarge}` (10 paths, readbacks) | on write only, very rare (≤ once/day) | yes | **high — Schedule readback** | none; re-seed 300 s | **900 s** | dbus wiki; legacy flow writes once per schedule-evaluation cycle |
 
 **Readback-path note applies again:** schedule fields are essentially static. A 2 s freshness window means the readback is Stale ~forever after we write the schedules, which defeats the Confirmation step in the TASS phase machine. These paths *need* a staleness window measured in minutes.
 
@@ -218,35 +220,9 @@ Then the poll arm pops the earliest-due entry, calls `GetItems`, reschedules, an
 
 ### D2. Replace scalar `freshness_local_dbus` with a per-sensor table
 
-**Problem**: one 2 s window applied to every sensor means:
-- Schedule readbacks (essentially static) are always Stale → TASS Confirmation never fires.
-- `/Yield/Power` at night flickers Stale → Fresh(0) → Stale → Fresh(0) depending on signal emission.
-- `/Soh` — a value that updates once per hour — is perpetually Stale.
-
-**Proposal**: a `SensorFreshnessTable` keyed by `SensorId`:
-
-| SensorId | Window |
-|---|---|
-| `BatterySoc`, `BatteryDcPower` | 10 s |
-| `BatterySoh` | 600 s |
-| `BatteryInstalledCapacity` | 3600 s |
-| `PowerConsumption`, `ConsumptionCurrent`, `GridPower` | 5 s |
-| `GridVoltage` | 10 s |
-| `GridCurrent` | 5 s |
-| `OffgridPower`, `OffgridCurrent`, `VebusInputCurrent` | 5 s |
-| `MpptPower0`, `MpptPower1` | 30 s |
-| `SoltaroPower` | 5 s |
-| `EvchargerAcPower`, `EvchargerAcCurrent` | 5 s |
-| `EssState` | 300 s |
-
-Plus separate windows for TASS readbacks (which aren't `SensorId`s today but live in the `Actuated` structs):
-| Readback | Window |
-|---|---|
-| `InputCurrentLimit` readback | 30 s |
-| `GridSetpoint` readback | 60 s |
-| `Schedule0` / `Schedule1` readback | 600 s |
-
-The existing `freshness_local_dbus` field on `ControllerParams` should become a struct with the per-sensor values, or the sensors themselves should carry a `freshness_threshold` constant.
+**Superseded by the implementation** — see `SensorId::freshness_threshold` and
+`ActuatedId::freshness_threshold` in `crates/core/src/types.rs`. The Summary
+table above is authoritative for the values now in code.
 
 ### D3. Disentangle readback freshness from sensor freshness
 

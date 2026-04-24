@@ -79,6 +79,51 @@ pub enum SensorId {
     OutdoorTemperature,
 }
 
+impl SensorId {
+    /// Per-sensor Fresh→Stale threshold.
+    ///
+    /// Values are authoritative per
+    /// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md` and
+    /// must only change via PR review. See that matrix for the invariant
+    /// `staleness > max(organic-gap, reseed-cadence)`.
+    #[must_use]
+    pub const fn freshness_threshold(self) -> std::time::Duration {
+        use std::time::Duration;
+        match self {
+            // Fast paths: organic ItemsChanged at ~1 Hz drives freshness;
+            // 5 s means "fail fast on signal loss".
+            Self::PowerConsumption
+            | Self::ConsumptionCurrent
+            | Self::GridPower
+            | Self::GridCurrent
+            | Self::BatteryDcPower
+            | Self::SoltaroPower
+            | Self::OffgridPower
+            | Self::OffgridCurrent
+            | Self::VebusInputCurrent
+            | Self::EvchargerAcPower
+            | Self::EvchargerAcCurrent => Duration::from_secs(5),
+            // Slow-moving fast path: grid voltage sampled regularly but
+            // doesn't move much; a slightly looser window avoids spurious
+            // Stale during signal jitter.
+            Self::GridVoltage => Duration::from_secs(10),
+            // Slow-signalled: Pylontech emits SoC at ~1 Hz while changing,
+            // seconds-to-minutes idle.
+            Self::BatterySoc => Duration::from_secs(15),
+            // Reseed-driven slow metrics: value only moves on minutes-
+            // to-hours timescales; staleness ≈ 2× reseed cadence.
+            Self::BatterySoh | Self::EssState => Duration::from_secs(900),
+            // Essentially static — reseed every hour.
+            Self::BatteryInstalledCapacity => Duration::from_secs(3600),
+            // MPPTs: sub-second while sun up, silent at night when PV=0.
+            Self::MpptPower0 | Self::MpptPower1 => Duration::from_secs(30),
+            // Outdoor temperature comes from Open-Meteo (30 min cadence);
+            // give a 10 min grace window on top.
+            Self::OutdoorTemperature => Duration::from_secs(40 * 60),
+        }
+    }
+}
+
 /// Actuated-entity identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActuatedId {
@@ -88,6 +133,39 @@ pub enum ActuatedId {
     EddiMode,
     Schedule0,
     Schedule1,
+}
+
+impl ActuatedId {
+    /// Per-actuator Fresh→Stale threshold for the *readback* side.
+    ///
+    /// Readbacks change only when someone writes the underlying path,
+    /// so the staleness window is measured in minutes to hours rather
+    /// than seconds (sensor regime). Values are authoritative per
+    /// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
+    ///
+    /// **Not defined** for `ZappiMode`/`EddiMode`: those readbacks come
+    /// from the myenergi poller (not D-Bus) and share their freshness
+    /// window with the typed sensors on the same source. The single
+    /// source of truth is `ControllerParams::freshness_myenergi` — see
+    /// `apply_tick` in `process.rs`. Calling this on those variants
+    /// panics, to surface an accidental duplicate-threshold at compile
+    /// time of a caller rather than silently diverge.
+    #[must_use]
+    pub const fn freshness_threshold(self) -> std::time::Duration {
+        use std::time::Duration;
+        match self {
+            // CurrentLimit readback: reseed 60 s (vebus), staleness 600 s.
+            Self::InputCurrentLimit => Duration::from_secs(600),
+            // Grid setpoint & schedules: reseed 300 s (settings), staleness 900 s.
+            Self::GridSetpoint | Self::Schedule0 | Self::Schedule1 => {
+                Duration::from_secs(900)
+            }
+            Self::ZappiMode | Self::EddiMode => panic!(
+                "ActuatedId::{{Zappi,Eddi}}Mode freshness is driven by \
+                 ControllerParams::freshness_myenergi, not this method"
+            ),
+        }
+    }
 }
 
 /// Knob identifiers — one per user-controllable setting in [`crate::knobs::Knobs`].

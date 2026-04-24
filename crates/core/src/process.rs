@@ -409,34 +409,68 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
 }
 
 fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topology) {
+    use crate::types::{ActuatedId, SensorId};
     let p = topology.controller_params;
-    let local = p.freshness_local_dbus;
     let myenergi = p.freshness_myenergi;
-    let weather = p.freshness_outdoor_temperature;
 
     let ss = &mut world.sensors;
-    ss.battery_soc.tick(at, local);
-    ss.battery_soh.tick(at, local);
-    ss.battery_installed_capacity.tick(at, local);
-    ss.battery_dc_power.tick(at, local);
-    ss.mppt_power_0.tick(at, local);
-    ss.mppt_power_1.tick(at, local);
-    ss.soltaro_power.tick(at, local);
-    ss.power_consumption.tick(at, local);
-    ss.grid_power.tick(at, local);
-    ss.grid_voltage.tick(at, local);
-    ss.grid_current.tick(at, local);
-    ss.consumption_current.tick(at, local);
-    ss.offgrid_power.tick(at, local);
-    ss.offgrid_current.tick(at, local);
-    ss.vebus_input_current.tick(at, local);
-    ss.evcharger_ac_power.tick(at, local);
-    ss.evcharger_ac_current.tick(at, local);
-    ss.ess_state.tick(at, local);
-    ss.outdoor_temperature.tick(at, weather);
+    ss.battery_soc.tick(at, SensorId::BatterySoc.freshness_threshold());
+    ss.battery_soh.tick(at, SensorId::BatterySoh.freshness_threshold());
+    ss.battery_installed_capacity
+        .tick(at, SensorId::BatteryInstalledCapacity.freshness_threshold());
+    ss.battery_dc_power
+        .tick(at, SensorId::BatteryDcPower.freshness_threshold());
+    ss.mppt_power_0.tick(at, SensorId::MpptPower0.freshness_threshold());
+    ss.mppt_power_1.tick(at, SensorId::MpptPower1.freshness_threshold());
+    ss.soltaro_power
+        .tick(at, SensorId::SoltaroPower.freshness_threshold());
+    ss.power_consumption
+        .tick(at, SensorId::PowerConsumption.freshness_threshold());
+    ss.grid_power.tick(at, SensorId::GridPower.freshness_threshold());
+    ss.grid_voltage.tick(at, SensorId::GridVoltage.freshness_threshold());
+    ss.grid_current.tick(at, SensorId::GridCurrent.freshness_threshold());
+    ss.consumption_current
+        .tick(at, SensorId::ConsumptionCurrent.freshness_threshold());
+    ss.offgrid_power
+        .tick(at, SensorId::OffgridPower.freshness_threshold());
+    ss.offgrid_current
+        .tick(at, SensorId::OffgridCurrent.freshness_threshold());
+    ss.vebus_input_current
+        .tick(at, SensorId::VebusInputCurrent.freshness_threshold());
+    ss.evcharger_ac_power
+        .tick(at, SensorId::EvchargerAcPower.freshness_threshold());
+    ss.evcharger_ac_current
+        .tick(at, SensorId::EvchargerAcCurrent.freshness_threshold());
+    ss.ess_state.tick(at, SensorId::EssState.freshness_threshold());
+    ss.outdoor_temperature
+        .tick(at, SensorId::OutdoorTemperature.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
+
+    // Actuated readback freshness decays on its own cadence — readbacks
+    // only change when somebody writes, so windows here are much wider
+    // than sensor windows. See `ActuatedId::freshness_threshold`.
+    //
+    // Exception: the zappi/eddi mode readbacks come from the myenergi
+    // poller (not D-Bus) and share a single freshness window with the
+    // typed sensors on the same source — `params.freshness_myenergi`.
+    // Routing both through the same constant prevents the two sources
+    // of truth drifting apart.
+    world
+        .grid_setpoint
+        .tick(at, ActuatedId::GridSetpoint.freshness_threshold());
+    world
+        .input_current_limit
+        .tick(at, ActuatedId::InputCurrentLimit.freshness_threshold());
+    world.zappi_mode.tick(at, myenergi);
+    world.eddi_mode.tick(at, myenergi);
+    world
+        .schedule_0
+        .tick(at, ActuatedId::Schedule0.freshness_threshold());
+    world
+        .schedule_1
+        .tick(at, ActuatedId::Schedule1.freshness_threshold());
 
     // A-15: midnight reset of the per-day weather_soc flag. If the date
     // the flag was stamped for isn't today, clear it. Intentionally
@@ -2290,8 +2324,8 @@ mod tests {
         world.sensors.battery_soc.on_reading(80.0, c.monotonic);
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Fresh);
 
-        // Must exceed ControllerParams::freshness_local_dbus (2 s).
-        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(5), naive(12, 0));
+        // Must exceed SensorId::BatterySoc.freshness_threshold() (15 s).
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(20), naive(12, 0));
         let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
     }

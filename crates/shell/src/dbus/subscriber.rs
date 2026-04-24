@@ -5,7 +5,8 @@
 //! `{path: {Value, Text}}` payload) on the service's root object path.
 //! We subscribe to it for each service, parse the value, and dispatch.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,15 +24,19 @@ use victron_controller_core::types::{
 
 use crate::config::DbusServices;
 
-/// Cadence of the periodic `GetItems` re-seed against every Victron
-/// service. Victron emits `ItemsChanged` only on value changes, so
-/// without this poll stable values would time out of the freshness
-/// window. 500 ms gives four polls per 2 s staleness deadline — tight
-/// sensor freshness for the controller. If this rate triggers a Venus
-/// broker eviction, PR-URGENT-20's reconnect loop recovers in
-/// bounded time rather than masking the issue with a slower poll.
-/// Exposed so the dashboard can display it.
-pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
+/// Default per-service reseed cadence.
+///
+/// Victron emits `ItemsChanged` only on value changes, so without a
+/// periodic safety-net `GetItems` stable values would eventually time
+/// out of the per-sensor freshness window. Every data-bearing service
+/// (system, battery, vebus, solarcharger.*, pvinverter.*, grid,
+/// evcharger) is reseeded on this cadence. Authoritative per
+/// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
+pub const SEED_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
+/// Reseed cadence for `com.victronenergy.settings`. Schedule / setpoint
+/// readbacks and the ESS state field live here; all are reseed-driven
+/// slow metrics, so a 5 min cadence is correct (matrix-authoritative).
+pub const SEED_INTERVAL_SETTINGS: Duration = Duration::from_secs(300);
 
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
@@ -183,6 +188,11 @@ pub struct Subscriber {
     /// Unique set of service well-known names, derived from `routes`.
     /// Cached to avoid rebuilding on every reconnect.
     service_set: HashSet<String>,
+    /// Well-known name of the settings service, which gets the slower
+    /// [`SEED_INTERVAL_SETTINGS`] reseed cadence. Kept separately so
+    /// the per-service scheduler can classify services without string
+    /// matching on a scattered pattern.
+    settings_service: String,
     /// Accumulator for partial schedule field updates — one per
     /// schedule index (0, 1). Persistent across reconnects so a
     /// mid-accumulation blip doesn't discard fields already received.
@@ -253,15 +263,54 @@ const HEALTHY_SESSION_THRESHOLD: Duration = Duration::from_secs(60);
 /// outer loop to reconnect. Must be > HEARTBEAT_INTERVAL so a single
 /// transient hiccup doesn't trip it.
 const SILENCE_RECONNECT_THRESHOLD: Duration = Duration::from_secs(30);
-/// Upper bound on a single whole poll-arm iteration — the entire
-/// `for svc in services` loop across every configured service. With
-/// 9 services × [`GET_ITEMS_TIMEOUT`] = 18 s worst-case, a dead broker
-/// would otherwise pin the subscriber in timeout-warn mode long
-/// enough to starve the heartbeat arm's dual-silence detector
-/// (PR-URGENT-22). Wrapping the loop in a 5 s budget means a fully
-/// unresponsive broker triggers reconnect in ≤5 s, independent of
-/// heartbeat scheduling.
-const POLL_ITERATION_BUDGET: Duration = Duration::from_secs(5);
+/// Upper bound on a single poll-arm iteration — one per-service reseed.
+/// Strictly *greater* than [`GET_ITEMS_TIMEOUT`] so that the outer timeout
+/// bounds everything inside `seed_service` — not just the `GetItems` call
+/// itself, but also `Proxy::new` and any zbus internal dispatch that
+/// could wedge before the inner `tokio::time::timeout` starts counting.
+/// If this were equal to `GET_ITEMS_TIMEOUT` the inner timeout would
+/// always fire first on a `GetItems` hang and the `Err(_elapsed)`
+/// fast-reconnect branch below would be dead code for that failure mode.
+/// (Pre-PR-CADENCE this wrapped the whole 9-service loop and was set to
+/// 5 s; now each poll iteration handles one service, the budget shrinks
+/// — but must still strictly exceed the inner call timeout.)
+const POLL_ITERATION_BUDGET: Duration = Duration::from_secs(3);
+
+/// One entry in the per-service reseed scheduler. Ordered by
+/// `next_due` so a min-heap of `Reverse<ServiceSchedule>` yields the
+/// earliest-due service on `pop`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct ServiceSchedule {
+    service: String,
+    interval: Duration,
+    next_due: Instant,
+}
+
+impl Ord for ServiceSchedule {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.next_due
+            .cmp(&other.next_due)
+            .then_with(|| self.service.cmp(&other.service))
+    }
+}
+
+impl PartialOrd for ServiceSchedule {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Await until the earliest-due entry in `schedule` falls due. If the
+/// heap is empty — it shouldn't be in normal operation — park for a
+/// minute as a last-resort backstop so the outer `select!` still
+/// rotates through the signal stream and heartbeat arms.
+async fn sleep_until_next_due(schedule: &BinaryHeap<Reverse<ServiceSchedule>>) {
+    let next = schedule.peek().map_or_else(
+        || Instant::now() + Duration::from_secs(60),
+        |Reverse(s)| s.next_due,
+    );
+    tokio::time::sleep_until(tokio::time::Instant::from_std(next)).await;
+}
 
 impl Subscriber {
     /// Build the subscriber config. Pure — no I/O. The actual D-Bus
@@ -271,6 +320,7 @@ impl Subscriber {
         let routes = Arc::new(routing_table(services));
         let service_set: HashSet<String> =
             routes.keys().map(|(s, _)| s.clone()).collect();
+        let settings_service = services.settings.clone();
         info!(
             paths = routes.len(),
             services = service_set.len(),
@@ -279,6 +329,7 @@ impl Subscriber {
         Self {
             routes,
             service_set,
+            settings_service,
             schedule_accumulators: [SchedulePartial::default(); 2],
             poll_ticks_since_last_heartbeat: 0,
             raw_signals_since_last_heartbeat: 0,
@@ -286,6 +337,16 @@ impl Subscriber {
             started_at: Instant::now(),
             last_signal_at: None,
             last_successful_poll_at: None,
+        }
+    }
+
+    /// Per-service reseed cadence: settings is slow, everything else
+    /// runs on the default cadence. Matrix-authoritative.
+    fn reseed_interval_for(&self, service: &str) -> Duration {
+        if service == self.settings_service {
+            SEED_INTERVAL_SETTINGS
+        } else {
+            SEED_INTERVAL_DEFAULT
         }
     }
 
@@ -426,22 +487,31 @@ impl Subscriber {
             .await
             .context("subscribing to ItemsChanged")?;
 
-        // Periodic re-seed ticker. Victron's `ItemsChanged` signals only
-        // fire on value *changes*, so stable values (battery SoC at night,
-        // ESS state, idle MPPTs, zero vebus current) never emit after the
-        // initial GetItems — and our freshness window would mark them
-        // Stale, making them unusable for control decisions. A periodic
-        // `GetItems` poll against every service keeps everything fresh,
-        // and signals still provide sub-tick reactivity for fast-moving
-        // paths like grid power. See `DBUS_POLL_PERIOD` for cadence.
-        let poll_period = DBUS_POLL_PERIOD;
-        let mut poll = tokio::time::interval(poll_period);
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // First tick fires immediately; skip it — we already seeded above.
-        poll.tick().await;
+        // Per-service reseed scheduler. Victron's `ItemsChanged` signals
+        // only fire on value *changes*, so stable values (battery SoH,
+        // ESS state, schedule readbacks, MPPTs at night) never emit
+        // after the initial GetItems — and the per-sensor freshness
+        // windows would eventually mark them Stale. A matrix-driven
+        // safety-net reseed per service keeps everything fresh; signals
+        // continue to drive sub-tick reactivity for fast-moving paths.
+        // One service is reseeded per poll tick (at most one GetItems
+        // in flight), and ticks happen exactly when the earliest-due
+        // service falls due — no uniform polling.
+        let mut schedule: BinaryHeap<Reverse<ServiceSchedule>> = BinaryHeap::new();
+        let now_start = Instant::now();
+        for svc in &self.service_set {
+            let interval = self.reseed_interval_for(svc);
+            schedule.push(Reverse(ServiceSchedule {
+                service: svc.clone(),
+                interval,
+                next_due: now_start + interval,
+            }));
+        }
 
         info!(
-            poll_period_s = poll_period.as_secs(),
+            default_reseed_s = SEED_INTERVAL_DEFAULT.as_secs(),
+            settings_reseed_s = SEED_INTERVAL_SETTINGS.as_secs(),
+            scheduled_services = schedule.len(),
             "D-Bus subscriber running"
         );
 
@@ -514,87 +584,78 @@ impl Subscriber {
                         }
                     }
                 }
-                _ = poll.tick() => {
+                () = sleep_until_next_due(&schedule) => {
                     self.poll_ticks_since_last_heartbeat =
                         self.poll_ticks_since_last_heartbeat.saturating_add(1);
-                    // Wrap the whole per-service seed loop in an
-                    // iteration-wide budget so an unresponsive broker
-                    // (all 9 GetItems timing out at 2 s each = 18 s)
-                    // can't starve the outer select arms — in
-                    // particular the heartbeat arm that drives the
-                    // dual-silence reconnect trigger. On elapse we
-                    // return Err from connect_and_serve so the outer
-                    // reconnect loop takes over (PR-URGENT-22).
+                    // Pop the earliest-due service, reseed it, and
+                    // reschedule its next_due = now + interval. At most
+                    // one GetItems call is in flight at any one time,
+                    // and the overall reseed load across the whole
+                    // subscriber settles at (# services / 60 s) + (1 /
+                    // 300 s) ≈ 0.14/s — ~120× gentler than the old
+                    // uniform 500 ms broadcast.
+                    //
+                    // The per-iteration budget wraps a single service's
+                    // GetItems; the 2 s bound == GET_ITEMS_TIMEOUT so a
+                    // hung broker still triggers the outer reconnect
+                    // within the dual-silence window (PR-URGENT-22).
+                    let Some(Reverse(mut entry)) = schedule.pop() else {
+                        // Shouldn't happen — service_set seeds the heap
+                        // non-empty and we always push back. Guard so a
+                        // future regression doesn't spin the loop.
+                        return Err(anyhow!("per-service reseed schedule drained"));
+                    };
+                    let svc = entry.service.clone();
                     let conn_ref = &conn;
                     let routes = &self.routes;
                     let schedule_accumulators = &mut self.schedule_accumulators;
-                    let service_set = &self.service_set;
-                    let fail_counts_ref = &mut fail_counts;
-                    let last_warn_ref = &mut last_warn;
                     let poll_body = async move {
-                        let mut any_success = false;
-                        for svc in service_set {
-                            match seed_service(
-                                conn_ref,
-                                routes,
-                                schedule_accumulators,
-                                svc,
-                                tx,
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    any_success = true;
-                                    // Success resets both failure tracking
-                                    // and the warn-throttle, so the next
-                                    // failure warns immediately.
-                                    fail_counts_ref.remove(svc);
-                                    last_warn_ref.remove(svc);
-                                }
-                                Err(e) => {
-                                    let count = fail_counts_ref
-                                        .entry(svc.clone())
-                                        .or_insert(0);
-                                    *count += 1;
-                                    let count_now = *count;
-                                    let now = Instant::now();
-                                    let should_warn = last_warn_ref
-                                        .get(svc)
-                                        .is_none_or(|t| {
-                                            now.duration_since(*t) >= RESEED_WARN_THROTTLE
-                                        });
-                                    if should_warn {
-                                        warn!(
-                                            service = %svc,
-                                            count = count_now,
-                                            error = %format!("{e:#}"),
-                                            "periodic GetItems failed"
-                                        );
-                                        last_warn_ref.insert(svc.clone(), now);
-                                    }
-                                    if count_now == RESEED_ESCALATE_AFTER {
-                                        error!(
-                                            service = %svc,
-                                            "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
-                                             consecutive ticks; sensor freshness unreliable"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        any_success
+                        seed_service(conn_ref, routes, schedule_accumulators, &svc, tx).await
                     };
-                    match tokio::time::timeout(POLL_ITERATION_BUDGET, poll_body).await {
-                        Ok(any_success) => {
-                            if any_success {
-                                self.last_successful_poll_at = Some(Instant::now());
+                    let result =
+                        tokio::time::timeout(POLL_ITERATION_BUDGET, poll_body).await;
+                    // Reschedule regardless of success — we never want
+                    // a failing service to drop out of the queue.
+                    let now = Instant::now();
+                    entry.next_due = now + entry.interval;
+                    let service_name = entry.service.clone();
+                    schedule.push(Reverse(entry));
+                    match result {
+                        Ok(Ok(())) => {
+                            self.last_successful_poll_at = Some(now);
+                            fail_counts.remove(&service_name);
+                            last_warn.remove(&service_name);
+                        }
+                        Ok(Err(e)) => {
+                            let count = fail_counts.entry(service_name.clone()).or_insert(0);
+                            *count += 1;
+                            let count_now = *count;
+                            let should_warn = last_warn
+                                .get(&service_name)
+                                .is_none_or(|t| now.duration_since(*t) >= RESEED_WARN_THROTTLE);
+                            if should_warn {
+                                warn!(
+                                    service = %service_name,
+                                    count = count_now,
+                                    error = %format!("{e:#}"),
+                                    "periodic GetItems failed"
+                                );
+                                last_warn.insert(service_name.clone(), now);
+                            }
+                            if count_now == RESEED_ESCALATE_AFTER {
+                                error!(
+                                    service = %service_name,
+                                    "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
+                                     consecutive ticks; sensor freshness unreliable"
+                                );
                             }
                         }
                         Err(_elapsed) => {
                             return Err(anyhow!(
-                                "poll iteration exceeded {}s budget — broker \
+                                "poll iteration exceeded {}s budget on {} — broker \
                                  unresponsive; reconnecting",
-                                POLL_ITERATION_BUDGET.as_secs()
+                                POLL_ITERATION_BUDGET.as_secs(),
+                                service_name
                             ));
                         }
                     }

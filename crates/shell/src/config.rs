@@ -264,8 +264,9 @@ impl Default for OpenMeteoProviderConfig {
 fn default_open_meteo_cadence() -> Duration {
     // 30 min. Covers both the solar-irradiance forecast (slow-moving,
     // no need to hit it more often) and the current-temperature poll,
-    // which feeds `freshness_outdoor_temperature = 40 min` in the core
-    // topology — one fetch every cadence, ~10 min of fresh headroom.
+    // which feeds `SensorId::OutdoorTemperature.freshness_threshold()`
+    // (40 min) in the core types — one fetch every cadence, ~10 min
+    // of fresh headroom.
     Duration::from_secs(30 * 60)
 }
 

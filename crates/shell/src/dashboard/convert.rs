@@ -24,12 +24,12 @@ use std::time::Duration;
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
 use victron_controller_core::topology::ControllerParams;
-use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue};
+use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue, SensorId};
 use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
 use crate::config::DbusServices;
-use crate::dbus::subscriber::DBUS_POLL_PERIOD;
+use crate::dbus::subscriber::{SEED_INTERVAL_DEFAULT, SEED_INTERVAL_SETTINGS};
 
 /// Runtime inputs needed to build `sensors_meta`. Bundled so callers
 /// can pass one reference rather than juggling four arguments.
@@ -323,53 +323,193 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
 /// button + timing columns.
 fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
     let s = &ctx.services;
-    let dbus_cadence_ms: i64 = DBUS_POLL_PERIOD.as_millis().try_into().unwrap_or(i64::MAX);
-    let dbus_stale_ms: i64 = ctx
-        .controller_params
-        .freshness_local_dbus
-        .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX);
     let om_cadence_ms: i64 = ctx.open_meteo_cadence.as_millis().try_into().unwrap_or(i64::MAX);
-    let om_stale_ms: i64 = ctx
-        .controller_params
-        .freshness_outdoor_temperature
+
+    // Reseed cadence for each D-Bus service is 60 s default, 300 s for
+    // settings (see `crates/shell/src/dbus/subscriber.rs` — matrix
+    // authoritative). Staleness is per-SensorId — see
+    // `SensorId::freshness_threshold`.
+    let default_cadence_ms: i64 = SEED_INTERVAL_DEFAULT
         .as_millis()
         .try_into()
         .unwrap_or(i64::MAX);
+    let settings_cadence_ms: i64 = SEED_INTERVAL_SETTINGS
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX);
+    let staleness_ms = |id: SensorId| -> i64 {
+        id.freshness_threshold()
+            .as_millis()
+            .try_into()
+            .unwrap_or(i64::MAX)
+    };
 
-    let dbus = |svc: &str, path: &str| ModelSensorMeta {
+    let dbus = |svc: &str, path: &str, cadence_ms: i64, id: SensorId| ModelSensorMeta {
         origin: "dbus".to_string(),
         identifier: format!("{svc}{path}"),
-        cadence_ms: dbus_cadence_ms,
-        staleness_ms: dbus_stale_ms,
+        cadence_ms,
+        staleness_ms: staleness_ms(id),
     };
     let mut m: BTreeMap<String, ModelSensorMeta> = BTreeMap::new();
-    m.insert("battery_soc".into(), dbus(&s.battery, "/Soc"));
-    m.insert("battery_soh".into(), dbus(&s.battery, "/Soh"));
-    m.insert("battery_installed_capacity".into(), dbus(&s.battery, "/InstalledCapacity"));
-    m.insert("battery_dc_power".into(), dbus(&s.battery, "/Dc/0/Power"));
-    m.insert("mppt_power_0".into(), dbus(&s.mppt_0, "/Yield/Power"));
-    m.insert("mppt_power_1".into(), dbus(&s.mppt_1, "/Yield/Power"));
-    m.insert("soltaro_power".into(), dbus(&s.pvinverter_soltaro, "/Ac/Power"));
-    m.insert("power_consumption".into(), dbus(&s.system, "/Ac/Consumption/L1/Power"));
-    m.insert("grid_power".into(), dbus(&s.system, "/Ac/Grid/L1/Power"));
-    m.insert("grid_voltage".into(), dbus(&s.grid, "/Ac/L1/Voltage"));
-    m.insert("grid_current".into(), dbus(&s.grid, "/Ac/L1/Current"));
-    m.insert("consumption_current".into(), dbus(&s.system, "/Ac/Consumption/L1/Current"));
-    m.insert("offgrid_power".into(), dbus(&s.vebus, "/Ac/Out/L1/P"));
-    m.insert("offgrid_current".into(), dbus(&s.vebus, "/Ac/Out/L1/I"));
-    m.insert("vebus_input_current".into(), dbus(&s.vebus, "/Ac/ActiveIn/L1/I"));
-    m.insert("evcharger_ac_power".into(), dbus(&s.evcharger, "/Ac/Power"));
-    m.insert("evcharger_ac_current".into(), dbus(&s.evcharger, "/Ac/Current"));
-    m.insert("ess_state".into(), dbus(&s.settings, "/Settings/CGwacs/BatteryLife/State"));
+    m.insert(
+        "battery_soc".into(),
+        dbus(&s.battery, "/Soc", default_cadence_ms, SensorId::BatterySoc),
+    );
+    m.insert(
+        "battery_soh".into(),
+        dbus(&s.battery, "/Soh", default_cadence_ms, SensorId::BatterySoh),
+    );
+    m.insert(
+        "battery_installed_capacity".into(),
+        dbus(
+            &s.battery,
+            "/InstalledCapacity",
+            default_cadence_ms,
+            SensorId::BatteryInstalledCapacity,
+        ),
+    );
+    m.insert(
+        "battery_dc_power".into(),
+        dbus(
+            &s.battery,
+            "/Dc/0/Power",
+            default_cadence_ms,
+            SensorId::BatteryDcPower,
+        ),
+    );
+    m.insert(
+        "mppt_power_0".into(),
+        dbus(
+            &s.mppt_0,
+            "/Yield/Power",
+            default_cadence_ms,
+            SensorId::MpptPower0,
+        ),
+    );
+    m.insert(
+        "mppt_power_1".into(),
+        dbus(
+            &s.mppt_1,
+            "/Yield/Power",
+            default_cadence_ms,
+            SensorId::MpptPower1,
+        ),
+    );
+    m.insert(
+        "soltaro_power".into(),
+        dbus(
+            &s.pvinverter_soltaro,
+            "/Ac/Power",
+            default_cadence_ms,
+            SensorId::SoltaroPower,
+        ),
+    );
+    m.insert(
+        "power_consumption".into(),
+        dbus(
+            &s.system,
+            "/Ac/Consumption/L1/Power",
+            default_cadence_ms,
+            SensorId::PowerConsumption,
+        ),
+    );
+    m.insert(
+        "grid_power".into(),
+        dbus(
+            &s.system,
+            "/Ac/Grid/L1/Power",
+            default_cadence_ms,
+            SensorId::GridPower,
+        ),
+    );
+    m.insert(
+        "grid_voltage".into(),
+        dbus(
+            &s.grid,
+            "/Ac/L1/Voltage",
+            default_cadence_ms,
+            SensorId::GridVoltage,
+        ),
+    );
+    m.insert(
+        "grid_current".into(),
+        dbus(
+            &s.grid,
+            "/Ac/L1/Current",
+            default_cadence_ms,
+            SensorId::GridCurrent,
+        ),
+    );
+    m.insert(
+        "consumption_current".into(),
+        dbus(
+            &s.system,
+            "/Ac/Consumption/L1/Current",
+            default_cadence_ms,
+            SensorId::ConsumptionCurrent,
+        ),
+    );
+    m.insert(
+        "offgrid_power".into(),
+        dbus(
+            &s.vebus,
+            "/Ac/Out/L1/P",
+            default_cadence_ms,
+            SensorId::OffgridPower,
+        ),
+    );
+    m.insert(
+        "offgrid_current".into(),
+        dbus(
+            &s.vebus,
+            "/Ac/Out/L1/I",
+            default_cadence_ms,
+            SensorId::OffgridCurrent,
+        ),
+    );
+    m.insert(
+        "vebus_input_current".into(),
+        dbus(
+            &s.vebus,
+            "/Ac/ActiveIn/L1/I",
+            default_cadence_ms,
+            SensorId::VebusInputCurrent,
+        ),
+    );
+    m.insert(
+        "evcharger_ac_power".into(),
+        dbus(
+            &s.evcharger,
+            "/Ac/Power",
+            default_cadence_ms,
+            SensorId::EvchargerAcPower,
+        ),
+    );
+    m.insert(
+        "evcharger_ac_current".into(),
+        dbus(
+            &s.evcharger,
+            "/Ac/Current",
+            default_cadence_ms,
+            SensorId::EvchargerAcCurrent,
+        ),
+    );
+    m.insert(
+        "ess_state".into(),
+        dbus(
+            &s.settings,
+            "/Settings/CGwacs/BatteryLife/State",
+            settings_cadence_ms,
+            SensorId::EssState,
+        ),
+    );
     m.insert(
         "outdoor_temperature".into(),
         ModelSensorMeta {
             origin: "open-meteo".to_string(),
             identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
             cadence_ms: om_cadence_ms,
-            staleness_ms: om_stale_ms,
+            staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
         },
     );
     m

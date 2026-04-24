@@ -18,23 +18,21 @@ pub struct ControllerParams {
     pub current_limit_retarget_deadband_a: f64,
 
     // Freshness thresholds — see SPEC §5.3.
-    pub freshness_local_dbus: Duration,
+    //
+    // D-Bus sensor and actuated readback freshness is per-id (see
+    // `SensorId::freshness_threshold` / `ActuatedId::freshness_threshold`,
+    // authoritative per
+    // `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`).
+    // Only myenergi (single-cadence poller) is kept here as a scalar.
     pub freshness_myenergi: Duration,
-    pub freshness_outdoor_temperature: Duration,
 }
 
 impl ControllerParams {
     /// Defaults per SPEC §5.3 with the user's G3 overrides:
-    /// - local D-Bus values: 2 s (paired with 500 ms `DBUS_POLL_PERIOD`
-    ///   in the shell subscriber → four polls per deadline). Tight
-    ///   freshness is required so the controller reacts promptly when
-    ///   grid power shifts. If aggressive polling triggers a Venus
-    ///   broker eviction, PR-URGENT-20's reconnect loop recovers in
-    ///   bounded time rather than masking the issue with a slower poll.
     /// - myenergi (Zappi/Eddi): 5 min
-    /// - outdoor temperature: 40 min (Open-Meteo fetched every 30 min;
-    ///   temperature changes slowly, so a 10-min grace window keeps
-    ///   `weather_soc` happy across a single missed fetch).
+    /// - D-Bus sensors and readbacks use per-id thresholds instead of a
+    ///   single scalar — see `SensorId::freshness_threshold` and
+    ///   `ActuatedId::freshness_threshold`.
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
@@ -42,9 +40,7 @@ impl ControllerParams {
             setpoint_retarget_deadband_w: 25,
             current_limit_confirm_tolerance_a: 0.5,
             current_limit_retarget_deadband_a: 0.5,
-            freshness_local_dbus: Duration::from_secs(2),
             freshness_myenergi: Duration::from_secs(300),
-            freshness_outdoor_temperature: Duration::from_secs(40 * 60),
         }
     }
 }

@@ -102,6 +102,21 @@ along.
 Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 (planning subagent writes one per PR at kickoff).
 
+- [x] **PR-CADENCE** — Replace the 500 ms broadcast `GetItems` poll
+  with per-path cadence + per-sensor freshness, per the research
+  matrix at `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
+  Worst-case reseed load drops from 18 GetItems/s to 0.15 — matching
+  what Victron reference clients do. Changes:
+  - `DBUS_POLL_PERIOD` const → per-service reseed scheduler
+    (`BTreeMap<Service, (interval, next_due)>`) round-robin.
+  - `ControllerParams.freshness_local_dbus: Duration` → per-sensor
+    `SensorFreshnessTable` keyed by `SensorId`.
+  - Per-readback freshness windows (longer than sensors, since
+    readbacks only change on writes).
+  - Keeps PR-URGENT-19/20/22's reconnect + timeout scaffolding.
+  Ships alone first; classification logging + progressive
+  degradation (matrix §Rate-limit detection) are follow-ups.
+
 - [~] **PR-DAG** — TASS core DAG orchestrator. Splits into PR-DAG-A
   (infra — zero behavior change), PR-DAG-B (migrate zappi_active →
   `world.derived.zappi_active` + delete `DerivedView`), PR-DAG-C
@@ -582,6 +597,51 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   clippy clean, ARMv7 release ok. Constraint for future work: any
   async code inside `spawn_log_publisher` must use `eprintln!` for
   diagnostics — tracing macros inside this task are a re-entry hazard.
+
+- **PR-CADENCE** (2026-04-24) — Per-path D-Bus cadence + per-sensor
+  freshness. Based on research (`docs/drafts/20260424-1959-victron-
+  dbus-cadence-matrix.md`) showing NO Victron reference client
+  periodically re-polls GetItems — they seed once + rely on
+  ItemsChanged. Our 500 ms × 9-service broadcast (~18 calls/s) is
+  unprecedented and almost certainly the cause of the ~15 s field
+  eviction. Changes:
+  - `DBUS_POLL_PERIOD` const → per-service `BinaryHeap<Reverse<
+    ServiceSchedule>>` min-heap scheduler. Each service has its own
+    `(interval, next_due)`. `select!` poll arm pops earliest-due,
+    seeds one service, reschedules. Worst-case load: ~0.14
+    GetItems/s across 9 services (vs. 18/s before, 120× gentler).
+  - `SEED_INTERVAL_DEFAULT = 60 s`, `SEED_INTERVAL_SETTINGS = 300 s`.
+  - `ControllerParams::freshness_local_dbus` deleted. Replaced with
+    `SensorId::freshness_threshold(self) -> Duration` const fn
+    keyed per variant (5 s fast paths, 10 s grid voltage, 15 s SoC,
+    30 s MPPT yield, 900 s SoH + EssState, 3600 s InstalledCapacity,
+    40 min OutdoorTemperature).
+  - `ActuatedId::freshness_threshold(self) -> Duration` added for
+    readback windows (600 s CurrentLimit, 900 s GridSetpoint +
+    Schedule0/1). ZappiMode / EddiMode route through
+    `params.freshness_myenergi` (single source of truth for myenergi).
+  - `POLL_ITERATION_BUDGET` 5 s → 3 s (strictly > `GET_ITEMS_TIMEOUT`
+    = 2 s so the outer timeout bounds everything inside `seed_service`
+    including `Proxy::new`, not just GetItems).
+  - `apply_tick` now decays actuated readbacks (grid_setpoint,
+    current_limit, zappi_mode, eddi_mode, schedule_0, schedule_1)
+    with per-id thresholds.
+  - Dashboard metadata synthesizes per-sensor cadence + staleness.
+  Preserved: reconnect loop (PR-URGENT-20), GetItems timeout
+  (PR-URGENT-19), poll-iteration budget (PR-URGENT-22), dual-silence
+  detection, `HEARTBEAT_INTERVAL = 20 s`. Deferred follow-ups:
+  (i) classification logging on each reconnect (rate_limit /
+  broker_restart / network / client_defect / unknown); (ii)
+  progressive degradation per matrix §"Rate-limit detection &
+  response" — only implement if classification logs show recurring
+  `rate_limit`; (iii) parallelize the initial seed on reconnect
+  (currently sequential with no outer budget — reviewer-flagged D2
+  minor). Verification: 275 tests green, clippy clean, ARMv7 release
+  ok. Review rounds: 2 (round-1: 5 findings; D1 landmine fixed;
+  D3/D4 quick wins; D2 deferred; D5 acceptable). Constraint for
+  future work: if a Venus D-Bus service is added or a new path
+  routed, update BOTH `SensorId::freshness_threshold` (or
+  `ActuatedId::freshness_threshold`) AND the matrix Summary table.
 
 - **PR-URGENT-16** (2026-04-24) — WS initial-snapshot lock scoping
   hotfix. User redeployed PR-URGENT-15 (commit `530f5b6`); field

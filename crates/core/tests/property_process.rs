@@ -280,11 +280,12 @@ proptest! {
 /// This used to be the prelude of the `writes_disabled_emits_no_actuation_effects`
 /// property test, but the property body couldn't actually exercise
 /// these positive assertions — random Ticks sampled 0..600s past
-/// `t0`, and `ControllerParams::freshness_local_dbus = 2s` means the
-/// very first Tick past t0+2s goes Stale and schedules bail. So the
-/// positive assertions only held on the prelude tick, not across the
-/// random body. Split out as a regular unit test so each concern is
-/// honestly scoped.
+/// `t0`, and per-sensor freshness thresholds (see
+/// `SensorId::freshness_threshold`) mean the first Tick past the
+/// shortest threshold decays the relevant sensors Stale and schedules
+/// bail. So the positive assertions only held on the prelude tick,
+/// not across the random body. Split out as a regular unit test so
+/// each concern is honestly scoped.
 #[test]
 fn observer_mode_tick_emits_publish_actuated_phase_but_no_writes() {
     use victron_controller_core::controllers::schedules::DAYS_ENABLED;
@@ -345,8 +346,8 @@ proptest! {
 
         // Property body: the only invariant that actually holds under
         // random Ticks sampled up to t0+600s is "no WriteDbus / no
-        // CallMyenergi" — once freshness decays past
-        // ControllerParams::freshness_local_dbus (2s), controllers
+        // CallMyenergi" — once freshness decays past the per-sensor
+        // threshold (`SensorId::freshness_threshold`), controllers
         // early-out anyway. ActuatedPhase publishes are explicitly
         // allowed (PR-SCHED0-D03). Positive assertions about
         // phase=Pending / observer logs live in the sibling
