@@ -87,10 +87,13 @@ async fn main() -> Result<()> {
         });
     }
 
-    info!("connecting D-Bus subscriber");
-    let subscriber = Subscriber::connect(&services)
-        .await
-        .context("connect D-Bus subscriber")?;
+    info!("starting D-Bus subscriber loop");
+    // Pure config; the actual D-Bus connection is opened inside
+    // `run()` and re-opened on every reconnect. That way a broker
+    // eviction or transient I/O failure at startup does not abort the
+    // binary — daemontools supervises the *process*, but the
+    // subscriber now supervises its own connection.
+    let subscriber = Subscriber::new(&services);
 
     info!("connecting D-Bus writer (dry_run={})", !cfg.dbus.writes_enabled);
     let writer = Writer::connect(services.clone(), !cfg.dbus.writes_enabled)
@@ -307,6 +310,8 @@ async fn main() -> Result<()> {
             info!("received SIGTERM; shutting down");
         }
         _ = subscriber_task => {
+            // The subscriber now reconnects internally with backoff, so
+            // this fires only on clean shutdown (event channel closed).
             info!("subscriber task ended");
         }
         _ = myenergi_task => {

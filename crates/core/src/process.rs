@@ -2290,7 +2290,8 @@ mod tests {
         world.sensors.battery_soc.on_reading(80.0, c.monotonic);
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Fresh);
 
-        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(10), naive(12, 0));
+        // Must exceed ControllerParams::freshness_local_dbus (15 s).
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(20), naive(12, 0));
         let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
     }

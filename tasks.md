@@ -127,6 +127,20 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-20** — D-Bus session dies ~20s after startup; two-
+  part fix: (1) reduce aggressive 500ms poll → 5s + freshness 2s →
+  15s to stop hammering the Venus broker; (2) **graceful reconnect
+  with exponential backoff** (user-mandated: if eviction ever does
+  happen despite gentler polling, we recover without restarting the
+  whole service). `Subscriber::connect` → `Subscriber::new` (pure
+  config); `run()` loops `connect_and_serve()` with 1s→30s backoff
+  (resets to 1s after 60s+ healthy session). Triggers: stream-end,
+  dual-silence (no signals + no poll success in 30s after
+  session_age≥30s). Persistent state stays on `Self`; per-session
+  state (connection, owner_to_service, fail_counts) lives as
+  function locals. Heartbeat enhanced with session_age + last-signal
+  + last-poll-success metrics for operator visibility.
+
 - [x] **PR-URGENT-19** — REAL root cause of the field wedge (confirmed
   by per-thread `wchan` diagnostic added to fetch-logs.sh by user's
   suggestion): `Subscriber::seed_service` awaits
@@ -397,6 +411,75 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-20** (2026-04-24) — D-Bus session goes silent at t=~20s
+  despite PR-URGENT-19. Field bundle
+  (`victron-bundle-20260424-192155.txt`) showed ALL 9 Victron
+  services time out on GetItems simultaneously at t=~24s after
+  startup, AND signals stopped flowing at t=~20s. Not a single
+  service hang — the whole zbus session goes dark. Hypothesis:
+  500ms poll × 9 services × 18 msgs each = 40+ msg/sec on a single
+  D-Bus connection triggers a broker-side eviction or rate-limit
+  on the Venus's dbus-daemon. User's feedback made the path
+  forward clear: "if that's connection eviction — we MUST make
+  sure that if it happens with slower polling our app gracefully
+  reconnects."
+  Two-part fix landed together:
+  **(a) Gentler polling + better observability.**
+    - `DBUS_POLL_PERIOD` 500ms → 5s (10× less broker pressure).
+    - `ControllerParams::freshness_local_dbus` 2s → 15s (must
+      coordinate with poll period — 5s poll with 2s freshness
+      would mean sensors perpetually Stale).
+    - `HEARTBEAT_INTERVAL` 60s → 20s (faster diagnosis signal;
+      revert when field-stable).
+    - Heartbeat logs enhanced: `since_start_s`,
+      `since_last_signal_s`, `since_last_poll_success_s`. Added
+      tracking fields `started_at`, `last_signal_at`,
+      `last_successful_poll_at` on the Subscriber struct.
+    - Stream errors now logged at warn; stream-end now logged at
+      error and triggers reconnect.
+  **(b) Graceful reconnect with exponential backoff.**
+    - `Subscriber::connect` renamed to `Subscriber::new` (pure
+      config, no I/O — clones `DbusServices` + builds routing
+      table).
+    - `Subscriber::run(tx)` becomes an outer loop calling private
+      `connect_and_serve(&mut self, &tx, attempt)`. Backoff 1s →
+      30s cap, resets to 1s after a session lasting ≥ 60s
+      (`HEALTHY_SESSION_THRESHOLD`).
+    - `connect_and_serve` opens fresh `Connection::system()`,
+      resolves `GetNameOwner` for each service, subscribes to
+      `ItemsChanged`, runs the `tokio::select!` loop. Returns
+      `Err` on: (1) `stream.next() → None` (broker dropped us,
+      strongest signal), (2) dual-silence (no signals AND no
+      successful polls in 30 s after `session_age ≥ 30 s`),
+      (3) connection-open / match-rule-subscribe / proxy-build
+      failures propagated via `?`.
+    - Per-session state (connection, owner_to_service, fail_counts,
+      last_warn, message stream) lives as function locals inside
+      `connect_and_serve`; persistent state (routes, service set,
+      schedule accumulators, cross-session counters, clocks) stays
+      on `Self` so heartbeats and readbacks are continuous across
+      reconnects.
+    - Each reconnect logs `attempt`, `backoff_ms`, `session_age_s`
+      so operators can see reconnect storms.
+    - Previously: subscriber task ending killed the whole service
+      (supervisor restart). Now: recovers in-process, World state
+      preserved.
+  Touched files: `crates/shell/src/dbus/subscriber.rs` (major
+  refactor, ~100 lines churn), `crates/core/src/topology.rs`
+  (freshness default), `crates/core/src/process.rs` (one test
+  assertion updated to new freshness window), `crates/shell/src/
+  main.rs` (`::connect(...).await?` → `::new(...)`).
+  Verification: 263 tests green; clippy -D warnings clean; ARMv7
+  release ok; web bundle 26.8 kB. Review round 1: 8 concerns (all
+  "ship it" — no defects). Preserved: PR-URGENT-19's 2s GetItems
+  timeout. Known trade-off: `HEARTBEAT_INTERVAL=20s` is tighter
+  than ideal for production; revert to 60s in a follow-up once
+  field-stable. Dashboard schedule_0 rendering (user mentioned
+  "still disabled") is a separate, tracked UX issue — the target
+  column in observer mode does show `{days: 7}` per PR-SCHED0,
+  but the actual column shows `{days: -7}` from legacy Node-RED
+  leftover state. Not a core bug.
 
 - **PR-URGENT-19** (2026-04-24) — **Real root cause of the field
   wedge.** User added per-thread `/proc/<pid>/task/*/wchan` to

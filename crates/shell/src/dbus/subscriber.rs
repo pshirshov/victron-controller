@@ -5,11 +5,11 @@
 //! `{path: {Value, Text}}` payload) on the service's root object path.
 //! We subscribe to it for each service, parse the value, and dispatch.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -26,9 +26,14 @@ use crate::config::DbusServices;
 /// Cadence of the periodic `GetItems` re-seed against every Victron
 /// service. Victron emits `ItemsChanged` only on value changes, so
 /// without this poll stable values would time out of the freshness
-/// window. 500 ms gives four polls per 2 s staleness deadline.
+/// window. 5 s keeps sub-tick freshness without overwhelming the
+/// Venus D-Bus broker (PR-URGENT-20: 500 ms × 9 services ≈ 18
+/// GetItems/sec appeared to trigger broker connection eviction
+/// after ~20 s; 5 s is 10× gentler). Freshness window for local
+/// D-Bus sensors is tuned together with this (see
+/// `ControllerParams::freshness_local_dbus`).
 /// Exposed so the dashboard can display it.
-pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
+pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
@@ -173,19 +178,20 @@ impl SchedulePartial {
 
 #[derive(Debug)]
 pub struct Subscriber {
-    conn: Connection,
+    /// Routing table from (service, path) → Route. Derived from the
+    /// `DbusServices` handed to `new` once up front and reused across
+    /// every reconnect attempt.
     routes: Arc<HashMap<(String, String), Route>>,
+    /// Unique set of service well-known names, derived from `routes`.
+    /// Cached to avoid rebuilding on every reconnect.
+    service_set: HashSet<String>,
     /// Accumulator for partial schedule field updates — one per
-    /// schedule index (0, 1). Mutable across the run() loop.
+    /// schedule index (0, 1). Persistent across reconnects so a
+    /// mid-accumulation blip doesn't discard fields already received.
     schedule_accumulators: [SchedulePartial; 2],
-    /// Consecutive periodic-GetItems failure counts per service. Reset
-    /// on success. Used to escalate a silent retry loop to an error.
-    fail_counts: HashMap<String, u32>,
-    /// Last-warn timestamps per service for periodic-GetItems rate
-    /// limiting (≥ 30 s between warns for the same service).
-    last_warn: HashMap<String, Instant>,
     /// Poll-tick count since the last heartbeat emission. Reset on
-    /// every heartbeat.
+    /// every heartbeat. Persistent across reconnects so heartbeats
+    /// remain continuous through transient bus hiccups.
     poll_ticks_since_last_heartbeat: u32,
     /// Raw signal count since the last heartbeat: every `Ok(msg)` from
     /// the ItemsChanged stream, before any filtering. Measures stream
@@ -195,61 +201,166 @@ pub struct Subscriber {
     /// sender resolved to a known service AND whose path matched a
     /// route in the routing table. Measures delivered readings.
     routed_signals_since_last_heartbeat: u32,
+    /// Subscriber start time — used by the heartbeat to log
+    /// since-start age for correlating "wedged after ~20 s" reports
+    /// against absolute wall time.
+    started_at: Instant,
+    /// Monotonic time of the most recent successfully-routed
+    /// ItemsChanged signal. `None` until the first one arrives.
+    /// Used by the heartbeat to flag a silent stream even while the
+    /// poll arm is still ticking, and to gate reconnect decisions.
+    last_signal_at: Option<Instant>,
+    /// Monotonic time of the most recent poll tick in which *at least
+    /// one* `GetItems` succeeded. `None` until the first such tick.
+    /// Used by the heartbeat to flag broker-side stalls, and to gate
+    /// reconnect decisions.
+    last_successful_poll_at: Option<Instant>,
 }
 
 /// Minimum gap between periodic-`GetItems` failure warnings for a given
 /// service. Keeps the log readable during sustained outages.
 const RESEED_WARN_THROTTLE: Duration = Duration::from_secs(30);
 /// Consecutive failure count at which a single ERROR-level log escalation
-/// fires (on top of the rate-limited WARN). At the 500 ms poll cadence
-/// this is 2.5 s — already past the 2 s freshness deadline.
+/// fires (on top of the rate-limited WARN). At the 5 s poll cadence
+/// this is 25 s — well past the 15 s freshness deadline.
 const RESEED_ESCALATE_AFTER: u32 = 5;
 /// Interval at which the subscriber emits a liveness heartbeat INFO log
 /// summarising poll tick + signal counters since the last heartbeat.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// PR-URGENT-20: shortened from 60 s to 20 s for faster field-debug
+/// feedback while we chase the 20-s wedge. Turn back up once stable.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 /// Upper bound on a single Venus GetItems reply. Healthy responses
 /// are <50 ms; 2 s is 40x headroom. On timeout, the poll arm marks
 /// this service as failed (via `fail_counts`) and continues to the
 /// next one — one hung service can no longer starve the whole
 /// subscriber `select!` loop (PR-URGENT-19).
 const GET_ITEMS_TIMEOUT: Duration = Duration::from_secs(2);
+/// Initial reconnect backoff after a session ends. Doubles up to
+/// [`RECONNECT_BACKOFF_MAX`] across successive failures; resets to this
+/// value after a successful reconnect (= the next session running for
+/// at least one heartbeat).
+const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+/// Cap on the exponential reconnect backoff. 30 s balances "notice we
+/// are down within a minute" against "don't hammer a recovering broker".
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// A session lasting this long is considered "healthy"; on its
+/// failure, the reconnect backoff resets to [`RECONNECT_BACKOFF_INITIAL`]
+/// rather than continuing to grow. Prevents a stable hour-long
+/// subscriber from eating a 30 s backoff after a single disconnect.
+const HEALTHY_SESSION_THRESHOLD: Duration = Duration::from_secs(60);
+/// Dual-silence threshold driving a reconnect: if the heartbeat fires
+/// and both `since_last_signal_s > SILENCE_RECONNECT_THRESHOLD` AND
+/// `since_last_poll_success_s > SILENCE_RECONNECT_THRESHOLD`, the
+/// session has no evidence the bus is alive and we return Err to the
+/// outer loop to reconnect. Must be > HEARTBEAT_INTERVAL so a single
+/// transient hiccup doesn't trip it.
+const SILENCE_RECONNECT_THRESHOLD: Duration = Duration::from_secs(30);
 
 impl Subscriber {
-    /// Connect to the Venus system bus.
-    pub async fn connect(services: &DbusServices) -> Result<Self> {
-        let conn = Connection::system()
-            .await
-            .context("connecting to the system D-Bus")?;
+    /// Build the subscriber config. Pure — no I/O. The actual D-Bus
+    /// connection is opened lazily inside [`run`] so reconnects are
+    /// symmetric with the initial connect.
+    pub fn new(services: &DbusServices) -> Self {
         let routes = Arc::new(routing_table(services));
-        info!("D-Bus subscriber connected; {} paths routed", routes.len());
-        Ok(Self {
-            conn,
+        let service_set: HashSet<String> =
+            routes.keys().map(|(s, _)| s.clone()).collect();
+        info!(
+            paths = routes.len(),
+            services = service_set.len(),
+            "D-Bus subscriber configured"
+        );
+        Self {
             routes,
+            service_set,
             schedule_accumulators: [SchedulePartial::default(); 2],
-            fail_counts: HashMap::new(),
-            last_warn: HashMap::new(),
             poll_ticks_since_last_heartbeat: 0,
             raw_signals_since_last_heartbeat: 0,
             routed_signals_since_last_heartbeat: 0,
-        })
+            started_at: Instant::now(),
+            last_signal_at: None,
+            last_successful_poll_at: None,
+        }
     }
 
-    /// Start the subscriber loop. Each service is seeded with a
-    /// `GetItems` call (so we bootstrap the world without waiting for
-    /// the first value to tick), then we subscribe to its
-    /// `ItemsChanged` signal and forward to `tx` for the lifetime of
-    /// the task.
+    /// Outer reconnect loop. Repeatedly opens a fresh D-Bus session and
+    /// runs it via [`connect_and_serve`] until the channel is dropped
+    /// or a clean shutdown is signalled. Individual session failures
+    /// (connection drop, broker silence, stream-end) are treated as
+    /// transient: they log, wait out an exponential backoff capped at
+    /// [`RECONNECT_BACKOFF_MAX`], and reconnect.
     ///
-    /// Returns when `tx` is dropped or on an unrecoverable bus error.
+    /// Returns `Ok(())` only on clean shutdown (receiver dropped from
+    /// inside a session). No path here terminates the whole binary on
+    /// a D-Bus hiccup.
     pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
+        let mut backoff = RECONNECT_BACKOFF_INITIAL;
+        let mut attempt: u32 = 0;
+        loop {
+            attempt = attempt.saturating_add(1);
+            info!(
+                attempt,
+                backoff_ms = backoff.as_millis() as u64,
+                "D-Bus subscriber: connecting"
+            );
+            let session_start = Instant::now();
+            match self.connect_and_serve(&tx, attempt).await {
+                Ok(()) => {
+                    info!("D-Bus subscriber exiting cleanly");
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Reset backoff when the session lasted long enough
+                    // to be considered "healthy", so a clean hour-long
+                    // session dropped by the broker reconnects at 1 s
+                    // rather than the capped 30 s.
+                    let session_age = session_start.elapsed();
+                    if session_age > HEALTHY_SESSION_THRESHOLD {
+                        backoff = RECONNECT_BACKOFF_INITIAL;
+                    }
+                    warn!(
+                        attempt,
+                        session_age_s = session_age.as_secs(),
+                        backoff_ms = backoff.as_millis() as u64,
+                        error = %format!("{e:#}"),
+                        "D-Bus subscriber session ended; reconnecting"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
+                }
+            }
+        }
+    }
+
+    /// One session: open a connection, seed, subscribe, and pump events
+    /// until an unrecoverable per-session condition is hit (then return
+    /// `Err` so the outer loop reconnects) or the receiver is dropped
+    /// (then return `Ok(())` for clean shutdown).
+    ///
+    /// Per-session state (connection, owner map, match stream,
+    /// per-service fail counts + warn throttles) lives in locals here;
+    /// cross-session state (counters, clocks, schedule accumulators)
+    /// stays on `self` so the heartbeat / schedule readback remain
+    /// continuous across reconnect.
+    async fn connect_and_serve(
+        &mut self,
+        tx: &mpsc::Sender<Event>,
+        attempt: u32,
+    ) -> Result<()> {
+        let conn = Connection::system()
+            .await
+            .context("connecting to the system D-Bus")?;
+
         // 1. Initial seed: call GetItems on every unique service.
-        let services: std::collections::HashSet<String> = self
-            .routes
-            .keys()
-            .map(|(s, _)| s.clone())
-            .collect();
-        for svc in &services {
-            if let Err(e) = self.seed_service(svc, &tx).await {
+        for svc in &self.service_set {
+            if let Err(e) = seed_service(
+                &conn,
+                &self.routes,
+                &mut self.schedule_accumulators,
+                svc,
+                tx,
+            )
+            .await
+            {
                 warn!(
                     service = %svc,
                     error = %format!("{e:#}"),
@@ -265,14 +376,14 @@ impl Subscriber {
         let mut owner_to_service: HashMap<String, String> = HashMap::new();
         {
             let dbus_proxy = Proxy::new(
-                &self.conn,
+                &conn,
                 "org.freedesktop.DBus",
                 "/org/freedesktop/DBus",
                 "org.freedesktop.DBus",
             )
             .await
             .context("building org.freedesktop.DBus proxy")?;
-            for svc in &services {
+            for svc in &self.service_set {
                 match dbus_proxy.call::<_, _, String>("GetNameOwner", &(svc.as_str())).await {
                     Ok(unique) => {
                         debug!(%svc, %unique, "resolved unique name");
@@ -287,9 +398,10 @@ impl Subscriber {
             }
         }
         info!(
+            attempt,
             mapped = owner_to_service.len(),
-            total = services.len(),
-            "resolved unique bus names"
+            total = self.service_set.len(),
+            "D-Bus subscriber connected; resolved unique bus names"
         );
 
         // 2. Subscribe to ItemsChanged across every Victron service.
@@ -303,18 +415,18 @@ impl Subscriber {
             .context("building MatchRule member")?
             .build();
 
-        let mut stream = MessageStream::for_match_rule(rule, &self.conn, None)
+        let mut stream = MessageStream::for_match_rule(rule, &conn, None)
             .await
             .context("subscribing to ItemsChanged")?;
 
         // Periodic re-seed ticker. Victron's `ItemsChanged` signals only
         // fire on value *changes*, so stable values (battery SoC at night,
         // ESS state, idle MPPTs, zero vebus current) never emit after the
-        // initial GetItems — and our 5-second freshness window would
-        // mark them Stale, making them unusable for control decisions.
-        // A ~2-second GetItems poll against every service keeps
-        // everything fresh, and signals still provide sub-second
-        // reactivity for fast-moving paths like grid power.
+        // initial GetItems — and our freshness window would mark them
+        // Stale, making them unusable for control decisions. A periodic
+        // `GetItems` poll against every service keeps everything fresh,
+        // and signals still provide sub-tick reactivity for fast-moving
+        // paths like grid power. See `DBUS_POLL_PERIOD` for cadence.
         let poll_period = DBUS_POLL_PERIOD;
         let mut poll = tokio::time::interval(poll_period);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -334,64 +446,97 @@ impl Subscriber {
         // "0 ticks, 0 signals" at startup.
         heartbeat.tick().await;
 
+        // Per-session failure tracking. Reset on every reconnect so
+        // operators get fresh warn signals each session.
+        let mut fail_counts: HashMap<String, u32> = HashMap::new();
+        let mut last_warn: HashMap<String, Instant> = HashMap::new();
+        // Start of this session; gates the dual-silence reconnect test
+        // so we don't trip it on a session that simply hasn't run long
+        // enough to have seen any activity yet.
+        let session_started_at = Instant::now();
+
         loop {
             tokio::select! {
-                Some(msg) = stream.next() => {
-                    let Ok(msg) = msg else { continue };
-                    self.raw_signals_since_last_heartbeat =
-                        self.raw_signals_since_last_heartbeat.saturating_add(1);
-                    let header = msg.header();
-                    // Sender is a unique bus name like `:1.42`; translate.
-                    let Some(sender) = header.sender().map(|s| s.to_string()) else {
-                        continue;
-                    };
-                    let Some(svc) = owner_to_service.get(&sender).cloned() else {
-                        debug!(%sender, "signal from unmapped sender");
-                        continue;
-                    };
-                    let Ok(body) = msg.body().deserialize::<ItemsChangedBody>() else {
-                        continue;
-                    };
-                    for (child_path, child_value) in body.0 {
-                        let key = (svc.clone(), child_path);
-                        let Some(route) = self.routes.get(&key).cloned() else {
-                            continue;
-                        };
-                        let Some(v) = child_value.value() else { continue };
-                        let Some(value) = extract_scalar(v) else {
-                            continue;
-                        };
-                        self.routed_signals_since_last_heartbeat =
-                            self.routed_signals_since_last_heartbeat.saturating_add(1);
-                        if let Some(event) = self.route_to_event(&route, value, Instant::now()) {
-                            if tx.send(event).await.is_err() {
-                                return Ok(());
+                result = stream.next() => {
+                    match result {
+                        Some(Ok(msg)) => {
+                            self.raw_signals_since_last_heartbeat =
+                                self.raw_signals_since_last_heartbeat.saturating_add(1);
+                            let header = msg.header();
+                            // Sender is a unique bus name like `:1.42`; translate.
+                            let Some(sender) = header.sender().map(|s| s.to_string()) else {
+                                continue;
+                            };
+                            let Some(svc) = owner_to_service.get(&sender).cloned() else {
+                                debug!(%sender, "signal from unmapped sender");
+                                continue;
+                            };
+                            let Ok(body) = msg.body().deserialize::<ItemsChangedBody>() else {
+                                continue;
+                            };
+                            for (child_path, child_value) in body.0 {
+                                let key = (svc.clone(), child_path);
+                                let Some(route) = self.routes.get(&key).cloned() else {
+                                    continue;
+                                };
+                                let Some(v) = child_value.value() else { continue };
+                                let Some(value) = extract_scalar(v) else {
+                                    continue;
+                                };
+                                self.routed_signals_since_last_heartbeat =
+                                    self.routed_signals_since_last_heartbeat.saturating_add(1);
+                                let now = Instant::now();
+                                self.last_signal_at = Some(now);
+                                if let Some(event) = self.route_to_event(&route, value, now) {
+                                    if tx.send(event).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
                             }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "zbus ItemsChanged stream yielded error");
+                        }
+                        None => {
+                            // Stream-end is our strongest signal the broker
+                            // has dropped us. Return Err so the outer loop
+                            // reconnects rather than terminating the task.
+                            return Err(anyhow!(
+                                "ItemsChanged stream ended — broker likely dropped us"
+                            ));
                         }
                     }
                 }
                 _ = poll.tick() => {
                     self.poll_ticks_since_last_heartbeat =
                         self.poll_ticks_since_last_heartbeat.saturating_add(1);
-                    for svc in &services {
-                        match self.seed_service(svc, &tx).await {
+                    let mut any_success = false;
+                    for svc in &self.service_set {
+                        match seed_service(
+                            &conn,
+                            &self.routes,
+                            &mut self.schedule_accumulators,
+                            svc,
+                            tx,
+                        )
+                        .await
+                        {
                             Ok(()) => {
+                                any_success = true;
                                 // Success resets both failure tracking
                                 // and the warn-throttle, so the next
                                 // failure warns immediately.
-                                self.fail_counts.remove(svc);
-                                self.last_warn.remove(svc);
+                                fail_counts.remove(svc);
+                                last_warn.remove(svc);
                             }
                             Err(e) => {
-                                let count = self
-                                    .fail_counts
+                                let count = fail_counts
                                     .entry(svc.clone())
                                     .or_insert(0);
                                 *count += 1;
                                 let count_now = *count;
                                 let now = Instant::now();
-                                let should_warn = self
-                                    .last_warn
+                                let should_warn = last_warn
                                     .get(svc)
                                     .is_none_or(|t| {
                                         now.duration_since(*t) >= RESEED_WARN_THROTTLE
@@ -403,7 +548,7 @@ impl Subscriber {
                                         error = %format!("{e:#}"),
                                         "periodic GetItems failed"
                                     );
-                                    self.last_warn.insert(svc.clone(), now);
+                                    last_warn.insert(svc.clone(), now);
                                 }
                                 if count_now == RESEED_ESCALATE_AFTER {
                                     error!(
@@ -415,6 +560,9 @@ impl Subscriber {
                             }
                         }
                     }
+                    if any_success {
+                        self.last_successful_poll_at = Some(Instant::now());
+                    }
                 }
                 _ = heartbeat.tick() => {
                     let poll_ticks =
@@ -423,12 +571,48 @@ impl Subscriber {
                         std::mem::take(&mut self.raw_signals_since_last_heartbeat);
                     let routed_signals =
                         std::mem::take(&mut self.routed_signals_since_last_heartbeat);
+                    let now = Instant::now();
+                    let since_start_s = now.duration_since(self.started_at).as_secs();
+                    // `-1` sentinel for "never yet"; avoids std::u64::MAX
+                    // showing up as a nonsense age in logs.
+                    let since_last_signal_s: i64 = self.last_signal_at.map_or(-1, |t| {
+                        i64::try_from(now.duration_since(t).as_secs()).unwrap_or(i64::MAX)
+                    });
+                    let since_last_poll_success_s: i64 =
+                        self.last_successful_poll_at.map_or(-1, |t| {
+                            i64::try_from(now.duration_since(t).as_secs()).unwrap_or(i64::MAX)
+                        });
                     info!(
                         poll_ticks,
                         raw_signals,
                         routed_signals,
+                        since_start_s,
+                        since_last_signal_s,
+                        since_last_poll_success_s,
                         "dbus subscriber heartbeat"
                     );
+
+                    // Dual-silence reconnect trigger: both signal stream
+                    // and poll path have been quiet for longer than
+                    // SILENCE_RECONNECT_THRESHOLD. Gate on session age
+                    // so a freshly-reconnected session isn't killed
+                    // before it has had a chance to receive anything.
+                    let session_age = now.duration_since(session_started_at);
+                    if session_age > SILENCE_RECONNECT_THRESHOLD {
+                        let signal_silent = self
+                            .last_signal_at
+                            .is_none_or(|t| now.duration_since(t) > SILENCE_RECONNECT_THRESHOLD);
+                        let poll_silent = self
+                            .last_successful_poll_at
+                            .is_none_or(|t| now.duration_since(t) > SILENCE_RECONNECT_THRESHOLD);
+                        if signal_silent && poll_silent {
+                            return Err(anyhow!(
+                                "no ItemsChanged signals and no successful GetItems in \
+                                 the last {}s — reconnecting",
+                                SILENCE_RECONNECT_THRESHOLD.as_secs()
+                            ));
+                        }
+                    }
                 }
                 else => break,
             }
@@ -437,76 +621,99 @@ impl Subscriber {
     }
 
     /// Turn a routed (value, time) into an Event, possibly mutating the
-    /// schedule accumulators in the process.
+    /// schedule accumulators in the process. Thin wrapper around the
+    /// free `route_to_event` helper; the same logic is invoked from
+    /// `seed_service` (which cannot take `&mut self`).
     fn route_to_event(&mut self, route: &Route, value: f64, at: Instant) -> Option<Event> {
-        match route {
-            Route::Sensor(id) => Some(Event::Sensor(SensorReading {
-                id: *id,
+        route_to_event(route, value, at, &mut self.schedule_accumulators)
+    }
+}
+
+/// Core routing logic factored out of the impl so both `seed_service`
+/// (free fn) and `Subscriber::route_to_event` can share it. The schedule
+/// accumulator is passed in by `&mut` so callers can own it in different
+/// places (on `Self` for the signal arm, via caller for seed).
+fn route_to_event(
+    route: &Route,
+    value: f64,
+    at: Instant,
+    schedule_accumulators: &mut [SchedulePartial; 2],
+) -> Option<Event> {
+    match route {
+        Route::Sensor(id) => Some(Event::Sensor(SensorReading {
+            id: *id,
+            value,
+            at,
+        })),
+        Route::GridSetpointReadback => {
+            #[allow(clippy::cast_possible_truncation)]
+            Some(Event::Readback(ActuatedReadback::GridSetpoint {
+                value: value as i32,
+                at,
+            }))
+        }
+        Route::CurrentLimitReadback => {
+            Some(Event::Readback(ActuatedReadback::InputCurrentLimit {
                 value,
                 at,
-            })),
-            Route::GridSetpointReadback => {
-                #[allow(clippy::cast_possible_truncation)]
-                Some(Event::Readback(ActuatedReadback::GridSetpoint {
-                    value: value as i32,
-                    at,
-                }))
-            }
-            Route::CurrentLimitReadback => {
-                Some(Event::Readback(ActuatedReadback::InputCurrentLimit {
-                    value,
-                    at,
-                }))
-            }
-            Route::ScheduleField { index, field } => {
-                let idx = *index as usize;
-                let acc = &mut self.schedule_accumulators[idx];
-                acc.apply(*field, value);
-                // Only emit once we have all 5 fields.
-                let spec = acc.as_spec()?;
-                Some(Event::Readback(if *index == 0 {
-                    ActuatedReadback::Schedule0 { value: spec, at }
-                } else {
-                    ActuatedReadback::Schedule1 { value: spec, at }
-                }))
-            }
+            }))
+        }
+        Route::ScheduleField { index, field } => {
+            let idx = *index as usize;
+            let acc = &mut schedule_accumulators[idx];
+            acc.apply(*field, value);
+            // Only emit once we have all 5 fields.
+            let spec = acc.as_spec()?;
+            Some(Event::Readback(if *index == 0 {
+                ActuatedReadback::Schedule0 { value: spec, at }
+            } else {
+                ActuatedReadback::Schedule1 { value: spec, at }
+            }))
         }
     }
+}
 
-    /// Bootstrap: ask a service for all its items at once via GetItems.
-    async fn seed_service(&mut self, service: &str, tx: &mpsc::Sender<Event>) -> Result<()> {
-        let proxy = Proxy::new(&self.conn, service, "/", "com.victronenergy.BusItem")
-            .await
-            .context("building GetItems proxy")?;
-        // Bound the wait. A healthy Venus returns GetItems in <50 ms; a
-        // hung service would otherwise park this whole select arm and
-        // starve both the signal and heartbeat arms (PR-URGENT-19).
-        let items: HashMap<String, ItemEntry> = tokio::time::timeout(
-            GET_ITEMS_TIMEOUT,
-            proxy.call("GetItems", &()),
-        )
+/// Bootstrap: ask a service for all its items at once via GetItems.
+/// Free function (not a method) because it runs with the per-session
+/// `Connection` owned by `connect_and_serve`, not by `Self`.
+async fn seed_service(
+    conn: &Connection,
+    routes: &HashMap<(String, String), Route>,
+    schedule_accumulators: &mut [SchedulePartial; 2],
+    service: &str,
+    tx: &mpsc::Sender<Event>,
+) -> Result<()> {
+    let proxy = Proxy::new(conn, service, "/", "com.victronenergy.BusItem")
         .await
-        .with_context(|| format!("GetItems timed out on {service}"))?
-        .with_context(|| format!("GetItems call on {service}"))?;
-        debug!(%service, count = items.len(), "seeded from GetItems");
-        let at = Instant::now();
-        for (path, entry) in items {
-            let key = (service.to_string(), path);
-            let Some(route) = self.routes.get(&key).cloned() else {
-                continue;
-            };
-            let Some(v) = entry.value() else { continue };
-            let Some(value) = extract_scalar(v) else {
-                continue;
-            };
-            if let Some(event) = self.route_to_event(&route, value, at) {
-                if tx.send(event).await.is_err() {
-                    return Ok(());
-                }
+        .context("building GetItems proxy")?;
+    // Bound the wait. A healthy Venus returns GetItems in <50 ms; a
+    // hung service would otherwise park this whole select arm and
+    // starve both the signal and heartbeat arms (PR-URGENT-19).
+    let items: HashMap<String, ItemEntry> = tokio::time::timeout(
+        GET_ITEMS_TIMEOUT,
+        proxy.call("GetItems", &()),
+    )
+    .await
+    .with_context(|| format!("GetItems timed out on {service}"))?
+    .with_context(|| format!("GetItems call on {service}"))?;
+    debug!(%service, count = items.len(), "seeded from GetItems");
+    let at = Instant::now();
+    for (path, entry) in items {
+        let key = (service.to_string(), path);
+        let Some(route) = routes.get(&key).cloned() else {
+            continue;
+        };
+        let Some(v) = entry.value() else { continue };
+        let Some(value) = extract_scalar(v) else {
+            continue;
+        };
+        if let Some(event) = route_to_event(&route, value, at, schedule_accumulators) {
+            if tx.send(event).await.is_err() {
+                return Ok(());
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 // --- wire types ---

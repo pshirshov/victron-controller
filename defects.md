@@ -1016,6 +1016,29 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-20 — D-Bus session dies ~20s after startup (all services silent); need gentler polling AND graceful reconnect
+
+### [PR-URGENT-20-D01] After ~20s uptime, the zbus session goes silent on all 9 Victron services simultaneously — not a single-service hang
+**Status:** resolved
+**Severity:** CRITICAL (field wedge continues after PR-URGENT-19 unwedged the per-service hang)
+**Location:** `crates/shell/src/dbus/subscriber.rs`, throughout the subscriber lifecycle.
+**Description:** Field bundle `/tmp/exchange/victron-bundle-20260424-192155.txt` with PR-URGENT-19's 2s GetItems timeout + the per-thread wchan diagnostic:
+```
+18:21:00  service start
+18:21:00-20  sensor-driven setpoint updates fire normally (ItemsChanged signals flowing)
+18:21:20  last signal-driven update
+18:21:24  "10W owner=System" — sensor-stale safety fallback (2s freshness expired)
+18:21:24-40  ALL NINE GetItems calls time out, one by one, 2s each:
+            grid.cgwacs_ttyUSB0_mb1, solarcharger.ttyUSB1, evcharger.cgwacs_ttyUSB0_mb2,
+            system, vebus.ttyS3, settings, battery.socketcan_can0,
+            pvinverter.cgwacs_ttyUSB2_mb1, solarcharger.ttyS2
+18:21:40+  rate-limited warn silence (30s throttle applied to each service)
+```
+All 9 services time out simultaneously → this is not a single-service D-Bus hang, it's the whole zbus session going dark. Signals stopped flowing at ~t=20s and method calls stopped at the same time. Hypothesis: Venus's D-Bus broker evicts our client connection after some rate/count limit (500ms poll × 9 services = 18 GetItems/sec + signal stream ≈ 40+ msg/sec on a single connection is aggressive).
+**Fix (two-part, must land together):**
+1. Gentler polling: `DBUS_POLL_PERIOD` 500ms → 5s, `ControllerParams::freshness_local_dbus` 2s → 15s, `HEARTBEAT_INTERVAL` 60s → 20s (for diagnosis; reverts later). Existing heartbeat logs gain `since_start_s`, `since_last_signal_s`, `since_last_poll_success_s` fields so operators can see wedge drift in real time.
+2. **Graceful reconnect** (user flagged this as MANDATORY — "even if slower polling prevents the eviction, if eviction ever DOES happen we must recover, not die"): `Subscriber::connect` → `Subscriber::new` (no I/O, pure config). `Subscriber::run` becomes an outer loop calling private `connect_and_serve` with exponential backoff 1s → 30s cap. `connect_and_serve` opens a fresh `Connection::system()`, resolves `GetNameOwner` for each service, subscribes to `ItemsChanged`, runs the `tokio::select!` loop. Returns `Err` on reconnect triggers: (a) `stream.next() → None` (strongest signal — broker dropped us), (b) dual-silence (no signals AND no successful polls in 30s after session age ≥ 30s). Backoff resets to 1s after a session that lasted ≥ 60s (`HEALTHY_SESSION_THRESHOLD`). Persistent state (routes, schedule accumulators, cross-session counters) stays on `Self`; per-session state (connection, owner_to_service map, fail_counts) lives as function locals inside `connect_and_serve`. Each reconnect attempt logs `attempt`, `backoff_ms`, `session_age_s` for operator visibility. Previously the subscriber task ending would bring down the whole service via the supervisor — now it recovers in-process without losing in-memory World state.
+
 ## PR-URGENT-19 — D-Bus `seed_service` has no per-call timeout; one hung Venus service wedges the subscriber's select loop
 
 ### [PR-URGENT-19-D01] `Subscriber::seed_service` awaits `proxy.call("GetItems", &())` with no timeout; one hung reply parks the poll arm forever
