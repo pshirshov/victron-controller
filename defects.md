@@ -85,7 +85,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** After clamp, re-assert the idle-promotion: `if capped >= 0 { 10 } else { capped }`. Plus a symmetric `grid_import_limit_w` knob (default 10) clamped via `.min(...)`.
 
 ### [A-11] `GetNameOwner` resolved once at startup; signals from a restarted Victron service go to /dev/null
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/shell/src/dbus/subscriber.rs:226-254`
 **Description:** `owner_to_service` is built once. `svc -t /service/com.victronenergy.system` gives the service a new `:1.N` unique name; signals arrive with an unmapped sender (debug-logged then dropped). Service silently degrades to 500 ms poll-only; event-driven reactivity for fast-moving sensors is lost.

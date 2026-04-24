@@ -487,6 +487,27 @@ impl Subscriber {
             .await
             .context("subscribing to ItemsChanged")?;
 
+        // Also subscribe to NameOwnerChanged from the bus daemon itself.
+        // When a Venus service restarts, its *unique* bus name changes
+        // (e.g. `:1.42` → `:1.91`) while the well-known name stays. Our
+        // `owner_to_service` map is keyed by the unique name, so without
+        // this watch all signals from the restarted service would hit
+        // the "unmapped sender" path and be silently dropped — the
+        // service looks alive on the bus but its updates never reach
+        // controllers until the next full subscriber reconnect. (A-11.)
+        let owner_rule = MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .sender("org.freedesktop.DBus")
+            .context("building NameOwnerChanged MatchRule sender")?
+            .interface("org.freedesktop.DBus")
+            .context("building NameOwnerChanged MatchRule interface")?
+            .member("NameOwnerChanged")
+            .context("building NameOwnerChanged MatchRule member")?
+            .build();
+        let mut owner_stream = MessageStream::for_match_rule(owner_rule, &conn, None)
+            .await
+            .context("subscribing to NameOwnerChanged")?;
+
         // Per-service reseed scheduler. Victron's `ItemsChanged` signals
         // only fire on value *changes*, so stable values (battery SoH,
         // ESS state, schedule readbacks, MPPTs at night) never emit
@@ -660,6 +681,40 @@ impl Subscriber {
                         }
                     }
                 }
+                result = owner_stream.next() => {
+                    match result {
+                        Some(Ok(msg)) => {
+                            let parsed: zbus::Result<(String, String, String)> =
+                                msg.body().deserialize();
+                            match parsed {
+                                Ok((name, old_owner, new_owner)) => {
+                                    handle_name_owner_changed(
+                                        &self.service_set,
+                                        &mut owner_to_service,
+                                        &mut schedule,
+                                        &name,
+                                        &old_owner,
+                                        &new_owner,
+                                    );
+                                }
+                                Err(e) => {
+                                    debug!(
+                                        error = %e,
+                                        "NameOwnerChanged body failed to deserialize"
+                                    );
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "NameOwnerChanged stream yielded error");
+                        }
+                        None => {
+                            return Err(anyhow!(
+                                "NameOwnerChanged stream ended — broker likely dropped us"
+                            ));
+                        }
+                    }
+                }
                 _ = heartbeat.tick() => {
                     let poll_ticks =
                         std::mem::take(&mut self.poll_ticks_since_last_heartbeat);
@@ -767,6 +822,63 @@ fn route_to_event(
             }))
         }
     }
+}
+
+/// Apply a `NameOwnerChanged` signal to the per-session unique-name map
+/// and the reseed scheduler. Pure (aside from logging) — splits out as a
+/// free function so the body can be unit-tested without a live bus.
+///
+/// Semantics per A-11:
+/// - Only reacts to names we care about (`service_set`). Hundreds of
+///   transient names exist on a Venus we'd otherwise waste cycles on.
+/// - `old_owner` (if non-empty) is removed from the map to keep it
+///   lean — once the unique name is gone, no signals can arrive from it.
+/// - `new_owner` empty → service going away; just drop the mapping. No
+///   reseed (there's no one to ask).
+/// - `new_owner` non-empty → service reappeared. Install the new
+///   mapping and flag the service for an immediate reseed by advancing
+///   its heap entry's `next_due` to `now` so the poll arm picks it up
+///   on the next iteration of `select!`.
+fn handle_name_owner_changed(
+    service_set: &HashSet<String>,
+    owner_to_service: &mut HashMap<String, String>,
+    schedule: &mut BinaryHeap<Reverse<ServiceSchedule>>,
+    name: &str,
+    old_owner: &str,
+    new_owner: &str,
+) {
+    if !service_set.contains(name) {
+        return;
+    }
+    if !old_owner.is_empty() {
+        owner_to_service.remove(old_owner);
+    }
+    if new_owner.is_empty() {
+        info!(%name, %old_owner, "Venus service disappeared");
+        return;
+    }
+    owner_to_service.insert(new_owner.to_string(), name.to_string());
+    // Flag this service for an immediate reseed. Drain the heap, bump
+    // the matching entry's `next_due` to `now`, and rebuild. O(N) in
+    // the number of services (~9) — cheap compared to a reconnect,
+    // and run only on actual service churn.
+    let now = Instant::now();
+    let mut rebuilt: Vec<Reverse<ServiceSchedule>> = Vec::with_capacity(schedule.len());
+    let mut touched = false;
+    for Reverse(mut entry) in schedule.drain() {
+        if entry.service == name {
+            entry.next_due = now;
+            touched = true;
+        }
+        rebuilt.push(Reverse(entry));
+    }
+    *schedule = BinaryHeap::from(rebuilt);
+    info!(
+        %name,
+        %new_owner,
+        reseed_flagged = touched,
+        "Venus service reappeared; requesting immediate reseed"
+    );
 }
 
 /// Bootstrap: ask a service for all its items at once via GetItems.
@@ -881,6 +993,148 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_schedule(services: &[&str]) -> BinaryHeap<Reverse<ServiceSchedule>> {
+        let mut heap = BinaryHeap::new();
+        let base = Instant::now() + Duration::from_secs(60);
+        for svc in services {
+            heap.push(Reverse(ServiceSchedule {
+                service: (*svc).to_string(),
+                interval: Duration::from_secs(60),
+                next_due: base,
+            }));
+        }
+        heap
+    }
+
+    #[test]
+    fn name_owner_changed_updates_map_and_flags_reseed() {
+        let svc = "com.victronenergy.battery.socketcan_can0".to_string();
+        let other = "com.victronenergy.system".to_string();
+        let service_set: HashSet<String> =
+            [svc.clone(), other.clone()].into_iter().collect();
+        let mut owner_to_service: HashMap<String, String> = HashMap::new();
+        owner_to_service.insert(":1.42".to_string(), svc.clone());
+        owner_to_service.insert(":1.7".to_string(), other.clone());
+        let mut schedule = make_schedule(&[&svc, &other]);
+        let before = Instant::now();
+
+        handle_name_owner_changed(
+            &service_set,
+            &mut owner_to_service,
+            &mut schedule,
+            &svc,
+            ":1.42",
+            ":1.91",
+        );
+
+        // Old unique name removed, new one installed and mapped to the
+        // same well-known name.
+        assert!(!owner_to_service.contains_key(":1.42"));
+        assert_eq!(owner_to_service.get(":1.91"), Some(&svc));
+        // The other service's mapping is untouched.
+        assert_eq!(owner_to_service.get(":1.7"), Some(&other));
+
+        // The reappeared service's heap entry has `next_due <= now`
+        // (flagged for immediate reseed); the other service's entry is
+        // still well in the future.
+        let after = Instant::now();
+        let entries: Vec<ServiceSchedule> =
+            schedule.iter().map(|Reverse(e)| e.clone()).collect();
+        let restarted = entries.iter().find(|e| e.service == svc).expect("svc present");
+        assert!(
+            restarted.next_due >= before && restarted.next_due <= after,
+            "reseed flag should set next_due to ~now"
+        );
+        let untouched = entries.iter().find(|e| e.service == other).expect("other present");
+        assert!(
+            untouched.next_due > after + Duration::from_secs(30),
+            "untouched service should keep its distant next_due"
+        );
+    }
+
+    #[test]
+    fn name_owner_changed_empty_new_owner_drops_mapping_without_reseed() {
+        let svc = "com.victronenergy.battery.socketcan_can0".to_string();
+        let service_set: HashSet<String> = [svc.clone()].into_iter().collect();
+        let mut owner_to_service: HashMap<String, String> = HashMap::new();
+        owner_to_service.insert(":1.42".to_string(), svc.clone());
+        let mut schedule = make_schedule(&[&svc]);
+        let distant_due = schedule.peek().map(|Reverse(e)| e.next_due).unwrap();
+
+        handle_name_owner_changed(
+            &service_set,
+            &mut owner_to_service,
+            &mut schedule,
+            &svc,
+            ":1.42",
+            "",
+        );
+
+        // Old mapping removed, no new mapping installed.
+        assert!(owner_to_service.is_empty());
+        // Heap entry is preserved (the service may come back later) with
+        // its `next_due` unchanged — no reseed was requested.
+        let entry = schedule.peek().map(|Reverse(e)| e.clone()).expect("entry present");
+        assert_eq!(entry.service, svc);
+        assert_eq!(entry.next_due, distant_due);
+    }
+
+    #[test]
+    fn name_owner_changed_ignores_names_outside_service_set() {
+        let svc = "com.victronenergy.battery.socketcan_can0".to_string();
+        let service_set: HashSet<String> = [svc.clone()].into_iter().collect();
+        let mut owner_to_service: HashMap<String, String> = HashMap::new();
+        owner_to_service.insert(":1.42".to_string(), svc.clone());
+        let mut schedule = make_schedule(&[&svc]);
+        let distant_due = schedule.peek().map(|Reverse(e)| e.next_due).unwrap();
+
+        // Random unrelated well-known name — e.g. some transient on the
+        // Venus bus we don't route.
+        handle_name_owner_changed(
+            &service_set,
+            &mut owner_to_service,
+            &mut schedule,
+            "org.freedesktop.systemd1",
+            ":1.5",
+            ":1.99",
+        );
+
+        // Nothing about our state should have changed.
+        assert_eq!(owner_to_service.len(), 1);
+        assert_eq!(owner_to_service.get(":1.42"), Some(&svc));
+        let entry = schedule.peek().map(|Reverse(e)| e.clone()).expect("entry present");
+        assert_eq!(entry.next_due, distant_due);
+    }
+
+    #[test]
+    fn name_owner_changed_new_service_appearance_empty_old_owner() {
+        // A service appearing for the first time (no prior mapping) arrives
+        // as NameOwnerChanged(name, "", new_owner). The handler must install
+        // the mapping and flag reseed despite old_owner being empty.
+        let svc = "com.victronenergy.battery.socketcan_can0".to_string();
+        let service_set: HashSet<String> = [svc.clone()].into_iter().collect();
+        let mut owner_to_service: HashMap<String, String> = HashMap::new();
+        let mut schedule = make_schedule(&[&svc]);
+        let before = Instant::now();
+
+        handle_name_owner_changed(
+            &service_set,
+            &mut owner_to_service,
+            &mut schedule,
+            &svc,
+            "",
+            ":1.99",
+        );
+        let after = Instant::now();
+
+        // New mapping installed.
+        assert_eq!(owner_to_service.get(":1.99"), Some(&svc));
+        assert_eq!(owner_to_service.len(), 1);
+        // Heap entry flagged for immediate reseed.
+        let entry = schedule.peek().map(|Reverse(e)| e.clone()).expect("entry present");
+        assert!(entry.next_due >= before && entry.next_due <= after);
+    }
 
     #[test]
     fn extract_scalar_rejects_nonfinite_and_bool() {

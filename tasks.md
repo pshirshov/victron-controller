@@ -226,7 +226,16 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   PR-05's KillSwitch edge-reset. 4 review rounds; 14 defects filed
   (1 resolved-deferred, 13 resolved in-PR).
 - [ ] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (A-04, A-24).
-- [ ] **PR-07** — `GetNameOwner` re-resolution on `NameOwnerChanged` (A-11).
+- [x] **PR-07** — Subscribes to `org.freedesktop.DBus.NameOwnerChanged`
+  on the same zbus connection. On each signal, if the well-known name
+  is one we route, update `owner_to_service` map (remove old unique
+  name, insert new) and flag the service's heap entry with
+  `next_due = now` so the scheduler triggers an immediate reseed on
+  next iteration. Empty `new_owner` (service disappearing) just drops
+  the old mapping without reseeding. 4 unit tests: rename, disappear,
+  ignored-non-watched, first-appearance-empty-old-owner. Rule scoped
+  with `sender("org.freedesktop.DBus")` so only broker-emitted
+  signals match. Resolves A-11.
 - [ ] **PR-08** — `SchedulePartial` accumulator clearing (A-12, A-57).
 - [ ] **PR-09b** — `grid_export_limit_w` hardening follow-up to PR-09a
   (remainder of A-09, A-10, A-31, A-34/A-35).
@@ -597,6 +606,29 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   clippy clean, ARMv7 release ok. Constraint for future work: any
   async code inside `spawn_log_publisher` must use `eprintln!` for
   diagnostics — tracing macros inside this task are a re-entry hazard.
+
+- **PR-07** (2026-04-24) — `NameOwnerChanged` watch. Subscribes to
+  `org.freedesktop.DBus.NameOwnerChanged` on the same zbus connection,
+  with `sender("org.freedesktop.DBus")` filter. On each signal for a
+  well-known name in our `service_set`, updates `owner_to_service`
+  (removes stale unique bus name, inserts new) and flags the
+  service's heap entry with `next_due = now` for immediate reseed.
+  Empty `new_owner` (service disappearing) drops the mapping without
+  reseeding. Free `handle_name_owner_changed` helper (testable) + 4
+  unit tests: rename (`:1.42 → :1.91`), disappear (empty new owner),
+  ignored-non-watched (`org.freedesktop.systemd1`), first-appearance
+  (empty old owner). New fourth arm in the subscriber's `tokio::
+  select!` alongside ItemsChanged / sleep_until_next_due /
+  heartbeat. Stream end triggers reconnect via the existing outer
+  loop. Addresses A-11 which was a deferred M-AUDIT-2 item: Venus
+  services can restart (firmware update, USB replug, user restart
+  via GUI) and without this watch all signals from a restarted
+  service were silently dropped until the next full subscriber
+  reconnect. Review round 1: 2 actionable (tighten sender filter,
+  add 4th test) — both fixed in same round. Verification: 278 tests
+  green, clippy clean, ARMv7 release ok, web bundle ok. Constraint
+  for future work: any new D-Bus service added to `DbusServices`
+  automatically benefits — the handler walks `service_set`.
 
 - **PR-CADENCE** (2026-04-24) — Per-path D-Bus cadence + per-sensor
   freshness. Based on research (`docs/drafts/20260424-1959-victron-
