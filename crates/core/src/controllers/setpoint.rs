@@ -375,6 +375,12 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
             let min_setpoint: f64 = if bad_weather { 10.0 } else { -200.0 };
             let balance_soc = export_soc_threshold + 3.0;
 
+            // A-33: widen the float-equality rungs to half-open ranges.
+            // Previously `battery_soc == balance_soc` etc. fell through
+            // to `0.0` (PV-multiplier off) on any ε noise from MQTT-
+            // retained SoC deserialise (e.g. 80.0000001). ±0.5 slop on
+            // each rung covers realistic noise without overlapping the
+            // neighbouring `>=` rung above it.
             pv_multiplier = if export_soc_threshold <= 67.0 {
                 if battery_soc >= balance_soc + 20.0 {
                     5.0
@@ -384,13 +390,13 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
                     2.0
                 } else if battery_soc >= balance_soc + 5.0 {
                     1.5
-                } else if battery_soc > balance_soc {
+                } else if battery_soc > balance_soc + 0.5 {
                     1.1
-                } else if battery_soc == balance_soc {
+                } else if battery_soc >= balance_soc - 0.5 {
                     1.0
-                } else if battery_soc == balance_soc - 1.0 {
+                } else if battery_soc >= balance_soc - 1.5 {
                     0.9
-                } else if battery_soc == balance_soc - 2.0 {
+                } else if battery_soc >= balance_soc - 2.5 {
                     0.8
                 } else {
                     0.0
@@ -401,13 +407,13 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
                 3.0
             } else if battery_soc >= balance_soc + 2.0 {
                 2.5
-            } else if battery_soc > balance_soc {
+            } else if battery_soc > balance_soc + 0.5 {
                 1.1
-            } else if battery_soc == balance_soc {
+            } else if battery_soc >= balance_soc - 0.5 {
                 1.0
-            } else if battery_soc == balance_soc - 1.0 {
+            } else if battery_soc >= balance_soc - 1.5 {
                 0.9
-            } else if battery_soc == balance_soc - 2.0 {
+            } else if battery_soc >= balance_soc - 2.5 {
                 0.8
             } else {
                 0.0

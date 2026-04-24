@@ -88,11 +88,12 @@ pub fn evaluate_weather_soc(
     };
 
     let disable_export = |threshold: &mut f64, dsoc: &mut f64| {
+        // A-32: set threshold = 100 (no export), dsoc = 30. The old
+        // form included a copy-pasted `preserve_evening_battery` body
+        // whose inner branch (`if threshold != 100 → set 80`) was dead
+        // code because threshold had just been set to 100. Deleted to
+        // prevent future copy-paste bugs.
         *threshold = 100.0;
-        // preserve_evening_battery:
-        if (*threshold - 100.0).abs() >= f64::EPSILON {
-            *threshold = 80.0;
-        }
         *dsoc = 30.0;
     };
 

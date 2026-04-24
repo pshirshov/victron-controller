@@ -232,14 +232,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** `i64::from(a) - i64::from(b)` then `.abs()` compared to `i64::from(params.setpoint_retarget_deadband_w)`.
 
 ### [A-32] Weather-SoC `disable_export` inner post-condition is dead code (copy-paste trap)
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/controllers/weather_soc.rs:90-97`
 **Description:** `*threshold = 100.0; if (threshold - 100.0).abs() >= EPSILON { threshold = 80.0; }` — inner branch unreachable because `threshold` was just set to 100. Happens to align with intended behaviour for this caller but invites bugs when someone copy-pastes.
 **Suggested fix:** Delete the dead branch, comment that `disable_export` is `threshold=100; dsoc=30`.
 
 ### [A-33] Float-equality ladder in PV-multiplier silently drops to 0 on `balance_soc ± ε` noise
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/controllers/setpoint.rs:371-395`
 **Description:** `battery_soc == balance_soc`, `... == balance_soc - 1.0` etc. MQTT retained SoC can deserialise to `80.0000001`; the ladder falls through to `0.0` (below-threshold) → PV-multiplier is 0 → setpoint clamps to `min_setpoint` instead of exporting.
