@@ -51,8 +51,8 @@ use crate::owner::Owner;
 use crate::topology::{ControllerParams, Topology};
 use crate::types::{
     ActuatedId, ActuatedReadback, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
-    DbusValue, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel, MyenergiAction,
-    PublishPayload, ScheduleField, SensorId, SensorReading, TypedReading,
+    DbusValue, Decision, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel,
+    MyenergiAction, PublishPayload, ScheduleField, SensorId, SensorReading, TypedReading,
 };
 use crate::world::{ForecastSnapshot, World};
 
@@ -96,7 +96,7 @@ fn apply_event(
             owner,
             at,
         } => apply_command(*command, *owner, *at, world, effects),
-        Event::Tick { at } => apply_tick(*at, world, clock),
+        Event::Tick { at } => apply_tick(*at, world, clock, topology),
     }
 }
 
@@ -121,7 +121,6 @@ fn apply_sensor_reading(r: SensorReading, world: &mut World) {
         SensorId::OffgridPower => world.sensors.offgrid_power.on_reading(v, at),
         SensorId::OffgridCurrent => world.sensors.offgrid_current.on_reading(v, at),
         SensorId::VebusInputCurrent => world.sensors.vebus_input_current.on_reading(v, at),
-        SensorId::VebusOutputCurrent => world.sensors.vebus_output_current.on_reading(v, at),
         SensorId::EvchargerAcPower => world.sensors.evcharger_ac_power.on_reading(v, at),
         SensorId::EvchargerAcCurrent => world.sensors.evcharger_ac_current.on_reading(v, at),
         SensorId::EssState => world.sensors.ess_state.on_reading(v, at),
@@ -337,6 +336,7 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World) {
         (KnobId::ZappiLimit, KnobValue::Float(v)) => k.zappi_limit = v,
         (KnobId::ZappiEmergencyMargin, KnobValue::Float(v)) => k.zappi_emergency_margin = v,
         (KnobId::GridExportLimitW, KnobValue::Uint32(v)) => k.grid_export_limit_w = v,
+        (KnobId::GridImportLimitW, KnobValue::Uint32(v)) => k.grid_import_limit_w = v,
         (KnobId::AllowBatteryToCar, KnobValue::Bool(v)) => k.allow_battery_to_car = v,
         (KnobId::EddiEnableSoc, KnobValue::Float(v)) => k.eddi_enable_soc = v,
         (KnobId::EddiDisableSoc, KnobValue::Float(v)) => k.eddi_disable_soc = v,
@@ -359,6 +359,9 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World) {
         (KnobId::ForecastDisagreementStrategy, KnobValue::ForecastDisagreementStrategy(v)) => {
             k.forecast_disagreement_strategy = v;
         }
+        (KnobId::ChargeBatteryExtendedMode, KnobValue::ChargeBatteryExtendedMode(v)) => {
+            k.charge_battery_extended_mode = v;
+        }
         _ => {
             // Type mismatch — silently drop. Could log, but this only
             // happens if the shell constructs an invalid KnobValue.
@@ -366,10 +369,11 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World) {
     }
 }
 
-fn apply_tick(at: Instant, world: &mut World, _clock: &dyn Clock) {
-    let local = Duration::from_secs(5); // TODO: plumb ControllerParams
-    let myenergi = Duration::from_secs(300);
-    let weather = Duration::from_secs(300);
+fn apply_tick(at: Instant, world: &mut World, _clock: &dyn Clock, topology: &Topology) {
+    let p = topology.controller_params;
+    let local = p.freshness_local_dbus;
+    let myenergi = p.freshness_myenergi;
+    let weather = p.freshness_outdoor_temperature;
 
     let ss = &mut world.sensors;
     ss.battery_soc.tick(at, local);
@@ -387,7 +391,6 @@ fn apply_tick(at: Instant, world: &mut World, _clock: &dyn Clock) {
     ss.offgrid_power.tick(at, local);
     ss.offgrid_current.tick(at, local);
     ss.vebus_input_current.tick(at, local);
-    ss.vebus_output_current.tick(at, local);
     ss.evcharger_ac_power.tick(at, local);
     ss.evcharger_ac_current.tick(at, local);
     ss.ess_state.tick(at, local);
@@ -462,11 +465,20 @@ fn run_setpoint(
     };
 
     let out = evaluate_setpoint(&input, clock);
-    world.decisions.grid_setpoint = Some(out.decision.clone());
 
-    // SPEC §5.11: grid-side hard cap.
-    let grid_cap = -i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);
-    let capped = out.setpoint_target.max(grid_cap);
+    // SPEC §5.11: grid-side hard cap — two-sided clamp.
+    let export_cap = i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);
+    let import_cap = i32::try_from(k.grid_import_limit_w).unwrap_or(i32::MAX);
+    let pre_clamp = out.setpoint_target;
+    let capped = pre_clamp.clamp(-export_cap, import_cap);
+
+    let decision = out
+        .decision
+        .clone()
+        .with_factor("pre_clamp_setpoint_W", format!("{pre_clamp}"))
+        .with_factor("clamp_bounds_W", format!("[-{export_cap}, +{import_cap}]"))
+        .with_factor("post_clamp_setpoint_W", format!("{capped}"));
+    world.decisions.grid_setpoint = Some(decision);
 
     maybe_propose_setpoint(
         world,
@@ -688,17 +700,23 @@ fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
 
     let k = &world.knobs;
     let bk = &world.bookkeeping;
+    // NB: legacy flow treated `charge_battery_extended` as a separately
+    // tracked global set by weather_soc / HA. Here we derive it from
+    // `!disable_night_grid_discharge OR charge_to_full_required`, then
+    // optionally override via `charge_battery_extended_mode`. Both the
+    // components and the mode are surfaced as decision factors below.
+    let cbe_from_dngd = k.disable_night_grid_discharge.not_eq(true);
+    let cbe_from_full = bk.charge_to_full_required;
+    let cbe_derived = cbe_from_dngd || cbe_from_full;
+    let charge_battery_extended = match k.charge_battery_extended_mode {
+        crate::knobs::ChargeBatteryExtendedMode::Auto => cbe_derived,
+        crate::knobs::ChargeBatteryExtendedMode::Forced => true,
+        crate::knobs::ChargeBatteryExtendedMode::Disabled => false,
+    };
+
     let input = SchedulesInput {
         globals: SchedulesInputGlobals {
-            charge_battery_extended: k.disable_night_grid_discharge.not_eq(true)
-                || bk.charge_to_full_required,
-            // NB: legacy flow treated `charge_battery_extended` as a
-            // separately-tracked global set by weather_soc / HA. In this
-            // port the bit is collapsed onto the knob chain (see
-            // weather_soc decision output → knobs). For now drive it from
-            // disable_night_grid_discharge's inverse and the full-charge
-            // flag — close enough for the integration tests; we'll refine
-            // when weather_soc actually writes knobs in M5.
+            charge_battery_extended,
             charge_car_extended: k.charge_car_extended,
             charge_to_full_required: bk.charge_to_full_required,
             disable_night_grid_discharge: k.disable_night_grid_discharge,
@@ -710,8 +728,21 @@ fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
     };
 
     let out = evaluate_schedules(&input, clock);
-    world.decisions.schedule_0 = Some(out.decision.clone());
-    world.decisions.schedule_1 = Some(out.decision.clone());
+    let decision = out
+        .decision
+        .clone()
+        .with_factor(
+            "cbe derivation",
+            format!(
+                "!disable_night_grid_discharge={cbe_from_dngd} || charge_to_full_required={cbe_from_full} = {cbe_derived}"
+            ),
+        )
+        .with_factor(
+            "cbe mode override",
+            format!("{:?} → {charge_battery_extended}", k.charge_battery_extended_mode),
+        );
+    world.decisions.schedule_0 = Some(decision.clone());
+    world.decisions.schedule_1 = Some(decision);
 
     // Bookkeeping updates.
     world.bookkeeping.battery_selected_soc_target = out.bookkeeping.battery_selected_soc_target;
@@ -952,15 +983,47 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
 
 /// Weather-SoC runs only at the 01:55 cron moment. Because this pure core
 /// sees no wall clock directly, we trigger when the naive time is in the
-/// window 01:55:00–01:55:59 and we haven't run yet today.
+/// window 01:55:00–01:55:59. Outside that window (the common case) we
+/// still publish a Decision explaining why it didn't evaluate — the
+/// last real decision otherwise stays stuck at `None` all day and the
+/// dashboard looks broken.
 fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
     let now = clock.naive();
     if !(now.hour() == 1 && now.minute() == 55) {
+        // Only overwrite with a "didn't run" decision if weather_soc
+        // has never produced a real one; once it has, leave the last
+        // real decision visible until tomorrow's 01:55.
+        if world.decisions.weather_soc.is_none() {
+            world.decisions.weather_soc = Some(
+                Decision::new(format!(
+                    "Not scheduled to run (fires only at 01:55 local; current {:02}:{:02})",
+                    now.hour(),
+                    now.minute()
+                ))
+                .with_factor("now_hhmm", format!("{:02}:{:02}", now.hour(), now.minute()))
+                .with_factor("scheduled_at", "01:55".to_string()),
+            );
+        }
         return;
     }
 
-    // Use today's temp if fresh; else skip.
+    // Use today's temp if fresh; else skip (with explanation).
     if !world.sensors.outdoor_temperature.is_usable() {
+        world.decisions.weather_soc = Some(
+            Decision::new("Skipped: outdoor_temperature not usable".to_string())
+                .with_factor(
+                    "outdoor_temperature.freshness",
+                    format!("{:?}", world.sensors.outdoor_temperature.freshness),
+                )
+                .with_factor(
+                    "outdoor_temperature.value",
+                    world
+                        .sensors
+                        .outdoor_temperature
+                        .value
+                        .map_or("None".to_string(), |v| format!("{v:.1}°C")),
+                ),
+        );
         return;
     }
 
@@ -974,6 +1037,10 @@ fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effec
         strategy,
         |_provider, _snap| true,
     ) else {
+        world.decisions.weather_soc = Some(
+            Decision::new("Skipped: no fused forecast available".to_string())
+                .with_factor("strategy", format!("{strategy:?}")),
+        );
         return;
     };
 
@@ -1073,6 +1140,9 @@ mod tests {
     }
 
     fn seed_required_sensors(world: &mut World, at: Instant) {
+        // Tests that seed sensors want actuation effects; the cold-start
+        // default is observer-mode (`writes_enabled=false`).
+        world.knobs.writes_enabled = true;
         let ss = &mut world.sensors;
         ss.battery_soc.on_reading(75.0, at);
         ss.battery_soh.on_reading(95.0, at);
@@ -1089,7 +1159,6 @@ mod tests {
         ss.offgrid_power.on_reading(500.0, at);
         ss.offgrid_current.on_reading(2.2, at);
         ss.vebus_input_current.on_reading(0.0, at);
-        ss.vebus_output_current.on_reading(0.0, at);
         ss.evcharger_ac_power.on_reading(0.0, at);
         ss.evcharger_ac_current.on_reading(0.0, at);
         ss.ess_state.on_reading(10.0, at);
@@ -1148,8 +1217,9 @@ mod tests {
     fn setpoint_is_not_emitted_when_writes_enabled_false() {
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
-        world.knobs.writes_enabled = false;
         seed_required_sensors(&mut world, c.monotonic);
+        // seed helper enables writes; flip back off for this test.
+        world.knobs.writes_enabled = false;
 
         let effects = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
 
@@ -1171,8 +1241,9 @@ mod tests {
         //     dashboard / HA sees the proposed target phase)
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
-        world.knobs.writes_enabled = false;
         seed_required_sensors(&mut world, c.monotonic);
+        // seed helper enables writes; flip back off to get observer mode.
+        world.knobs.writes_enabled = false;
         // Raise SoC above export threshold so setpoint isn't just 10.
         world.sensors.battery_soc.on_reading(90.0, c.monotonic);
 
@@ -1509,8 +1580,27 @@ mod tests {
     fn kill_switch_toggles_writes_enabled_and_publishes() {
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
-        assert!(world.knobs.writes_enabled);
+        // Fresh boot is observer-mode by default (§7 safety).
+        assert!(!world.knobs.writes_enabled);
 
+        // Flip it on via the kill switch.
+        let eff = process(
+            &Event::Command {
+                command: Command::KillSwitch(true),
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(world.knobs.writes_enabled);
+        assert!(eff.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::KillSwitch(true))
+        )));
+
+        // And back off.
         let eff = process(
             &Event::Command {
                 command: Command::KillSwitch(false),
@@ -1733,5 +1823,69 @@ mod tests {
         // through Pending (now Commanded again after emit).
         assert_ne!(first, second, "large consumption change should move target");
         assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-09a: two-sided grid-setpoint clamp
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn setpoint_clamps_to_import_cap() {
+        // force_disable_export → evaluate_setpoint produces IDLE_SETPOINT_W
+        // (10 W). With grid_import_limit_w below that, the post-clamp value
+        // must equal the import cap exactly.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        world.knobs.force_disable_export = true;
+        world.knobs.grid_import_limit_w = 5;
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        assert_eq!(world.grid_setpoint.target.value, Some(5));
+    }
+
+    #[test]
+    fn setpoint_clamps_to_export_cap() {
+        // Regression for the existing export clamp — a deeply negative
+        // pre-clamp (SoC=99 %, huge solar) must be capped at
+        // -grid_export_limit_w after the refactor.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        world.sensors.battery_soc.on_reading(99.0, c.monotonic);
+        world.sensors.mppt_power_0.on_reading(5000.0, c.monotonic);
+        world.sensors.mppt_power_1.on_reading(5000.0, c.monotonic);
+        world.knobs.grid_export_limit_w = 3000;
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let v = world.grid_setpoint.target.value.expect("setpoint proposed");
+        assert!(v >= -3000, "setpoint {v} violates export cap -3000");
+        assert_eq!(v, -3000, "setpoint should be pinned at the export cap");
+    }
+
+    #[test]
+    fn setpoint_decision_has_pre_and_post_clamp_factors() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
+        let names: Vec<&str> = decision.factors.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"pre_clamp_setpoint_W"),
+            "missing pre_clamp_setpoint_W factor in {names:?}"
+        );
+        assert!(
+            names.contains(&"post_clamp_setpoint_W"),
+            "missing post_clamp_setpoint_W factor in {names:?}"
+        );
+        assert!(
+            names.contains(&"clamp_bounds_W"),
+            "missing clamp_bounds_W factor in {names:?}"
+        );
     }
 }

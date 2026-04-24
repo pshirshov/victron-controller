@@ -1,4 +1,11 @@
-// Render helpers — convert WorldSnapshot into HTML.
+// Render helpers — convert WorldSnapshot into HTML, incrementally.
+//
+// Every table renderer goes through `updateKeyedRows`, which diffs
+// against the existing DOM: rows are keyed by stable identifiers,
+// only changed cells get their innerHTML/className replaced, and cells
+// that contain the currently-focused element are left alone so a user
+// typing into a knob input or selecting text in a decision factor
+// isn't disrupted by the next incoming snapshot.
 
 import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSnapshot.js";
 import type { ActualF64 } from "./model/victron_controller/dashboard/ActualF64.js";
@@ -6,6 +13,57 @@ import type { ActuatedI32 } from "./model/victron_controller/dashboard/ActuatedI
 import type { ActuatedF64 } from "./model/victron_controller/dashboard/ActuatedF64.js";
 import type { ActuatedEnumName } from "./model/victron_controller/dashboard/ActuatedEnumName.js";
 import type { ActuatedSchedule } from "./model/victron_controller/dashboard/ActuatedSchedule.js";
+
+// --- incremental update primitives ---------------------------------------
+
+export type RowCell = { cls?: string; html: string };
+export type KeyedRow = { key: string; cells: RowCell[] };
+
+/// Diff-update the children of `tbody` so they match `rows` exactly,
+/// by row key. Existing rows are kept in place; only cells whose class
+/// or innerHTML has actually changed are written to the DOM. Cells
+/// that contain `document.activeElement` are never touched — that's
+/// what makes focused inputs (knob values, search highlighting, text
+/// selection inside a cell) survive a snapshot tick.
+export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
+  const active = document.activeElement;
+  const existing = new Map<string, HTMLTableRowElement>();
+  Array.from(tbody.children).forEach((el) => {
+    const tr = el as HTMLTableRowElement;
+    const k = tr.dataset.key;
+    if (k !== undefined) existing.set(k, tr);
+  });
+
+  const seen = new Set<string>();
+  rows.forEach((row, idx) => {
+    seen.add(row.key);
+    let tr = existing.get(row.key);
+    if (!tr) {
+      tr = document.createElement("tr");
+      tr.dataset.key = row.key;
+    }
+    while (tr.children.length < row.cells.length) tr.appendChild(document.createElement("td"));
+    while (tr.children.length > row.cells.length) tr.removeChild(tr.lastChild!);
+    row.cells.forEach((cell, i) => {
+      const td = tr!.children[i] as HTMLTableCellElement;
+      if (active && td.contains(active)) return;
+      const cls = cell.cls ?? "";
+      if (td.className !== cls) td.className = cls;
+      if (td.innerHTML !== cell.html) td.innerHTML = cell.html;
+    });
+    // Position row at the correct index without disturbing untouched ones.
+    if (tbody.children[idx] !== tr) tbody.insertBefore(tr, tbody.children[idx] ?? null);
+  });
+
+  // Drop rows that no longer appear.
+  Array.from(tbody.children).forEach((el) => {
+    const tr = el as HTMLTableRowElement;
+    const k = tr.dataset.key;
+    if (k !== undefined && !seen.has(k)) tr.remove();
+  });
+}
+
+// --- formatting helpers --------------------------------------------------
 
 function fmtNum(v: number | null | undefined, digits = 1): string {
   if (v === null || v === undefined) return "—";
@@ -15,7 +73,8 @@ function fmtNum(v: number | null | undefined, digits = 1): string {
 
 function fmtEpoch(ms: number): string {
   if (!ms) return "—";
-  const dt = (Date.now() - ms) / 1000;
+  // Clamp future timestamps (tiny clock skew between Venus and browser).
+  const dt = Math.max(0, (Date.now() - ms) / 1000);
   if (dt < 60) return `${dt.toFixed(0)} s ago`;
   if (dt < 3600) return `${(dt / 60).toFixed(0)} min ago`;
   return new Date(ms).toLocaleString();
@@ -25,36 +84,84 @@ function esc(s: string): string {
   return s.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as Record<string, string>)[ch]!);
 }
 
+// Format a duration in ms as "500ms", "2s", "30s", "15m", "1h 30m".
+function fmtDurationMs(totalMs: number): string {
+  if (!isFinite(totalMs) || totalMs <= 0) return "—";
+  if (totalMs < 1000) return `${totalMs}ms`;
+  const totalSec = Math.round(totalMs / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m < 60) return s === 0 ? `${m}m` : `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm === 0 ? `${h}h` : `${h}h ${mm}m`;
+}
+
+// --- table renderers -----------------------------------------------------
+
 export function renderSensors(snap: WorldSnapshot) {
   const tbody = document.querySelector("#sensors-table tbody") as HTMLElement;
   const entries = Object.entries(snap.sensors).sort(([a], [b]) => a.localeCompare(b));
-  tbody.innerHTML = entries
-    .map(([name, a]) => {
-      const act = a as ActualF64;
-      const valText = act.value === null ? "—" : fmtNum(act.value, 2);
-      return `<tr>
-        <td class="mono">${esc(name)}</td>
-        <td class="mono">${valText}</td>
-        <td class="freshness-${act.freshness}">${act.freshness} <span class="dim">(${fmtEpoch(
-          act.since_epoch_ms as unknown as number
-        )})</span></td>
-      </tr>`;
-    })
-    .join("");
+  const meta = snap.sensors_meta as unknown as Record<
+    string,
+    { origin: string; identifier: string; cadence_ms: number; staleness_ms: number }
+  >;
+  const rows: KeyedRow[] = entries.map(([name, a]) => {
+    const act = a as ActualF64;
+    const valText = act.value === null ? "—" : fmtNum(act.value, 2);
+    const mm = meta[name];
+    const origin = mm ? esc(mm.origin) : `<span class="dim">—</span>`;
+    const cadence = mm ? fmtDurationMs(mm.cadence_ms) : `<span class="dim">—</span>`;
+    const staleness = mm ? fmtDurationMs(mm.staleness_ms) : `<span class="dim">—</span>`;
+    const copyBtn = mm
+      ? `<button class="copy-btn" data-copy="${esc(mm.identifier)}" title="${esc(mm.identifier)}">copy</button>`
+      : "";
+    return {
+      key: name,
+      cells: [
+        { cls: "mono", html: esc(name) },
+        { cls: "mono", html: valText },
+        {
+          cls: `freshness-${act.freshness}`,
+          html: `${act.freshness} <span class="dim">(${fmtEpoch(
+            act.since_epoch_ms as unknown as number,
+          )})</span>`,
+        },
+        { cls: "mono", html: cadence },
+        { cls: "mono", html: staleness },
+        { cls: "mono", html: origin },
+        { html: copyBtn },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
 }
 
 export function renderActuated(snap: WorldSnapshot) {
   const tbody = document.querySelector("#actuated-table tbody") as HTMLElement;
   const a = snap.actuated;
-  const row = (name: string, target: string, owner: string, phase: string, actual: string, fresh: string, since: number) =>
-    `<tr>
-      <td class="mono">${name}</td>
-      <td class="mono">${target}</td>
-      <td>${owner}</td>
-      <td class="phase-${phase}">${phase}</td>
-      <td class="mono">${actual}</td>
-      <td class="freshness-${fresh}">${fresh} <span class="dim">(${fmtEpoch(since)})</span></td>
-    </tr>`;
+
+  const mkRow = (
+    key: string,
+    target: string,
+    owner: string,
+    phase: string,
+    actual: string,
+    fresh: string,
+    since: number,
+  ): KeyedRow => ({
+    key,
+    cells: [
+      { cls: "mono", html: key },
+      { cls: "mono", html: target },
+      { html: owner },
+      { cls: `phase-${phase}`, html: phase },
+      { cls: "mono", html: actual },
+      { cls: `freshness-${fresh}`, html: `${fresh} <span class="dim">(${fmtEpoch(since)})</span>` },
+    ],
+  });
+
   const gs: ActuatedI32 = a.grid_setpoint;
   const cl: ActuatedF64 = a.input_current_limit;
   const zm: ActuatedEnumName = a.zappi_mode;
@@ -62,84 +169,88 @@ export function renderActuated(snap: WorldSnapshot) {
   const s0: ActuatedSchedule = a.schedule_0;
   const s1: ActuatedSchedule = a.schedule_1;
 
-  const rows = [
-    row(
+  const rows: KeyedRow[] = [
+    mkRow(
       "grid_setpoint",
       gs.target_value === null ? "—" : String(gs.target_value),
       String(gs.target_owner),
       String(gs.target_phase),
       gs.actual.value === null ? "—" : String(gs.actual.value),
       String(gs.actual.freshness),
-      gs.actual.since_epoch_ms as unknown as number
+      gs.actual.since_epoch_ms as unknown as number,
     ),
-    row(
+    mkRow(
       "input_current_limit",
       cl.target_value === null ? "—" : fmtNum(cl.target_value, 2),
       String(cl.target_owner),
       String(cl.target_phase),
       cl.actual.value === null ? "—" : fmtNum(cl.actual.value, 2),
       String(cl.actual.freshness),
-      cl.actual.since_epoch_ms as unknown as number
+      cl.actual.since_epoch_ms as unknown as number,
     ),
-    row(
+    mkRow(
       "zappi_mode",
       zm.target_value ?? "—",
       String(zm.target_owner),
       String(zm.target_phase),
       zm.actual_value ?? "—",
       String(zm.actual_freshness),
-      zm.actual_since_epoch_ms as unknown as number
+      zm.actual_since_epoch_ms as unknown as number,
     ),
-    row(
+    mkRow(
       "eddi_mode",
       em.target_value ?? "—",
       String(em.target_owner),
       String(em.target_phase),
       em.actual_value ?? "—",
       String(em.actual_freshness),
-      em.actual_since_epoch_ms as unknown as number
+      em.actual_since_epoch_ms as unknown as number,
     ),
-    row(
+    mkRow(
       "schedule_0",
       s0.target ? esc(JSON.stringify(s0.target)) : "—",
       String(s0.target_owner),
       String(s0.target_phase),
       s0.actual ? esc(JSON.stringify(s0.actual)) : "—",
       String(s0.actual_freshness),
-      s0.actual_since_epoch_ms as unknown as number
+      s0.actual_since_epoch_ms as unknown as number,
     ),
-    row(
+    mkRow(
       "schedule_1",
       s1.target ? esc(JSON.stringify(s1.target)) : "—",
       String(s1.target_owner),
       String(s1.target_phase),
       s1.actual ? esc(JSON.stringify(s1.actual)) : "—",
       String(s1.actual_freshness),
-      s1.actual_since_epoch_ms as unknown as number
+      s1.actual_since_epoch_ms as unknown as number,
     ),
   ];
-  tbody.innerHTML = rows.join("");
+  updateKeyedRows(tbody, rows);
 }
 
 export function renderBookkeeping(snap: WorldSnapshot) {
   const tbody = document.querySelector("#bk-table tbody") as HTMLElement;
-  const entries = Object.entries(snap.bookkeeping);
-  tbody.innerHTML = entries
-    .map(([name, val]) => {
-      let disp: string;
-      if (val === null || val === undefined) disp = "—";
-      else if (typeof val === "boolean") disp = val ? '<span class="freshness-Fresh">true</span>' : "false";
-      else if (typeof val === "number") disp = fmtNum(val, 2);
-      else disp = esc(String(val));
-      return `<tr><td class="mono">${esc(name)}</td><td>${disp}</td></tr>`;
-    })
-    .join("");
+  const rows: KeyedRow[] = Object.entries(snap.bookkeeping).map(([name, val]) => {
+    let disp: string;
+    if (val === null || val === undefined) disp = "—";
+    else if (typeof val === "boolean") disp = val ? '<span class="freshness-Fresh">true</span>' : "false";
+    else if (typeof val === "number") disp = fmtNum(val, 2);
+    else disp = esc(String(val));
+    return {
+      key: name,
+      cells: [
+        { cls: "mono", html: esc(name) },
+        { html: disp },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
 }
 
 export function renderDecisions(snap: WorldSnapshot) {
   const tbody = document.querySelector("#decisions-table tbody") as HTMLElement;
   const d = snap.decisions;
-  const rows: Array<[string, any]> = [
+  const ordered: Array<[string, any]> = [
     ["grid_setpoint", d.grid_setpoint],
     ["input_current_limit", d.input_current_limit],
     ["schedule_0", d.schedule_0],
@@ -148,21 +259,30 @@ export function renderDecisions(snap: WorldSnapshot) {
     ["eddi_mode", d.eddi_mode],
     ["weather_soc", d.weather_soc],
   ];
-  tbody.innerHTML = rows
-    .map(([name, dec]) => {
-      if (!dec) {
-        return `<tr><td class="mono">${name}</td><td class="dim">—</td><td class="dim">—</td></tr>`;
-      }
-      const factors = (dec.factors as Array<{ name: string; value: string }>)
-        .map((f) => `<span class="factor"><b>${esc(f.name)}</b>=${esc(f.value)}</span>`)
-        .join(" ");
-      return `<tr>
-        <td class="mono">${name}</td>
-        <td>${esc(dec.summary as string)}</td>
-        <td class="factors">${factors}</td>
-      </tr>`;
-    })
-    .join("");
+  const rows: KeyedRow[] = ordered.map(([name, dec]) => {
+    if (!dec) {
+      return {
+        key: name,
+        cells: [
+          { cls: "mono", html: name },
+          { cls: "dim", html: "—" },
+          { cls: "dim", html: "—" },
+        ],
+      };
+    }
+    const factors = (dec.factors as Array<{ name: string; value: string }>)
+      .map((f) => `<span class="factor"><b>${esc(f.name)}</b>=${esc(f.value)}</span>`)
+      .join(" ");
+    return {
+      key: name,
+      cells: [
+        { cls: "mono", html: name },
+        { html: esc(dec.summary as string) },
+        { cls: "factors", html: factors },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
 }
 
 export function renderForecasts(snap: WorldSnapshot) {
@@ -172,16 +292,76 @@ export function renderForecasts(snap: WorldSnapshot) {
     ["forecast_solar", snap.forecasts.forecast_solar],
     ["open_meteo", snap.forecasts.open_meteo],
   ];
-  tbody.innerHTML = providers
-    .map(([name, f]) => {
-      if (!f)
-        return `<tr><td class="mono">${name}</td><td class="dim">no data</td><td class="dim">—</td><td class="dim">—</td></tr>`;
-      return `<tr>
-        <td class="mono">${name}</td>
-        <td class="mono">${fmtNum(f.today_kwh, 1)}</td>
-        <td class="mono">${fmtNum(f.tomorrow_kwh, 1)}</td>
-        <td class="dim">${fmtEpoch(f.fetched_at_epoch_ms)}</td>
-      </tr>`;
-    })
-    .join("");
+  const rows: KeyedRow[] = providers.map(([name, f]) => {
+    if (!f) {
+      return {
+        key: name,
+        cells: [
+          { cls: "mono", html: name },
+          { cls: "dim", html: "no data" },
+          { cls: "dim", html: "—" },
+          { cls: "dim", html: "—" },
+        ],
+      };
+    }
+    return {
+      key: name,
+      cells: [
+        { cls: "mono", html: name },
+        { cls: "mono", html: fmtNum(f.today_kwh, 1) },
+        { cls: "mono", html: fmtNum(f.tomorrow_kwh, 1) },
+        { cls: "dim", html: fmtEpoch(f.fetched_at_epoch_ms) },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
+}
+
+// --- copy-button handler (delegated, installed once) --------------------
+
+let copyHandlerInstalled = false;
+export function installCopyHandler() {
+  if (copyHandlerInstalled) return;
+  copyHandlerInstalled = true;
+  document.addEventListener("click", (ev) => {
+    const el = (ev.target as HTMLElement).closest(".copy-btn") as HTMLButtonElement | null;
+    if (!el) return;
+    const value = el.getAttribute("data-copy") ?? "";
+    doCopy(value).then(
+      (ok) => flashButton(el, ok ? "copied" : "failed", ok),
+    );
+  });
+}
+
+function flashButton(el: HTMLButtonElement, label: string, good: boolean) {
+  const orig = el.textContent ?? "copy";
+  el.textContent = label;
+  el.classList.toggle("copied", good);
+  el.classList.toggle("copy-failed", !good);
+  setTimeout(() => {
+    el.textContent = orig;
+    el.classList.remove("copied", "copy-failed");
+  }, 900);
+}
+
+async function doCopy(value: string): Promise<boolean> {
+  const cb = (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+  if (cb && typeof cb.writeText === "function") {
+    try { await cb.writeText(value); return true; } catch { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }

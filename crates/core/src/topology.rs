@@ -25,9 +25,12 @@ pub struct ControllerParams {
 
 impl ControllerParams {
     /// Defaults per SPEC §5.3 with the user's G3 overrides:
-    /// - local D-Bus values: 5 s
+    /// - local D-Bus values: 2 s (paired with 500 ms `DBUS_POLL_PERIOD`
+    ///   in the shell subscriber → four polls per deadline).
     /// - myenergi (Zappi/Eddi): 5 min
-    /// - outdoor temperature: 5 min
+    /// - outdoor temperature: 40 min (Open-Meteo fetched every 30 min;
+    ///   temperature changes slowly, so a 10-min grace window keeps
+    ///   `weather_soc` happy across a single missed fetch).
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
@@ -35,9 +38,9 @@ impl ControllerParams {
             setpoint_retarget_deadband_w: 25,
             current_limit_confirm_tolerance_a: 0.5,
             current_limit_retarget_deadband_a: 0.5,
-            freshness_local_dbus: Duration::from_secs(5),
+            freshness_local_dbus: Duration::from_secs(2),
             freshness_myenergi: Duration::from_secs(300),
-            freshness_outdoor_temperature: Duration::from_secs(300),
+            freshness_outdoor_temperature: Duration::from_secs(40 * 60),
         }
     }
 }

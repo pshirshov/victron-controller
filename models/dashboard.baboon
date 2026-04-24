@@ -66,6 +66,12 @@ enum ForecastDisagreementStrategy {
   SolcastIfAvailableElseMean
 }
 
+enum ChargeBatteryExtendedMode {
+  Auto
+  Forced
+  Disabled
+}
+
 // ---------------------------------------------------------------------------
 // Generic actual / actuated wrappers (TASS)
 // ---------------------------------------------------------------------------
@@ -152,11 +158,26 @@ data Sensors {
   offgrid_power: ActualF64
   offgrid_current: ActualF64
   vebus_input_current: ActualF64
-  vebus_output_current: ActualF64
   evcharger_ac_power: ActualF64
   evcharger_ac_current: ActualF64
   ess_state: ActualF64
   outdoor_temperature: ActualF64
+}
+
+// Static provenance for a sensor: where the value came from and a
+// source-specific identifier suitable for copying into a debugging
+// tool (D-Bus path, HTTP endpoint, etc.).
+//
+// Timing (milliseconds — the D-Bus poll is sub-second):
+//   cadence_ms    — how often the service refreshes / polls the value
+//   staleness_ms  — after how long without an update the value is
+//                   marked Stale (freshness threshold). Should always
+//                   be > cadence_ms; the gap absorbs missed refreshes.
+data SensorMeta {
+  origin: str
+  identifier: str
+  cadence_ms: i64
+  staleness_ms: i64
 }
 
 data Actuated {
@@ -185,6 +206,7 @@ data Knobs {
   zappi_limit: f64
   zappi_emergency_margin: f64
   grid_export_limit_w: i32
+  grid_import_limit_w: i32
   allow_battery_to_car: bit
   eddi_enable_soc: f64
   eddi_disable_soc: f64
@@ -196,6 +218,7 @@ data Knobs {
   weathersoc_too_much_energy_threshold: f64
   writes_enabled: bit
   forecast_disagreement_strategy: ForecastDisagreementStrategy
+  charge_battery_extended_mode: ChargeBatteryExtendedMode
 }
 
 data Bookkeeping {
@@ -254,6 +277,10 @@ root data WorldSnapshot {
   captured_at_epoch_ms: i64
   captured_at_naive_iso: str
   sensors: Sensors
+  // Per-sensor provenance (origin + source-specific identifier).
+  // Keyed by sensor field name (`battery_soc`, `grid_power`, etc.).
+  // Constant for the lifetime of the process.
+  sensors_meta: map[str, SensorMeta]
   actuated: Actuated
   knobs: Knobs
   bookkeeping: Bookkeeping
@@ -286,6 +313,9 @@ root adt Command {
   }
   data SetForecastDisagreementStrategy {
     value: ForecastDisagreementStrategy
+  }
+  data SetChargeBatteryExtendedMode {
+    value: ChargeBatteryExtendedMode
   }
   data SetKillSwitch {
     value: bit

@@ -7,7 +7,9 @@
 //! serialises them back to wire format when executing.
 
 use crate::controllers::schedules::ScheduleSpec;
-use crate::knobs::{DebugFullCharge, DischargeTime, ForecastDisagreementStrategy};
+use crate::knobs::{
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
+};
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::owner::Owner;
 use std::time::Instant;
@@ -71,7 +73,6 @@ pub enum SensorId {
     OffgridPower,
     OffgridCurrent,
     VebusInputCurrent,
-    VebusOutputCurrent,
     EvchargerAcPower,
     EvchargerAcCurrent,
     EssState,
@@ -108,6 +109,7 @@ pub enum KnobId {
     ZappiLimit,
     ZappiEmergencyMargin,
     GridExportLimitW,
+    GridImportLimitW,
     AllowBatteryToCar,
     EddiEnableSoc,
     EddiDisableSoc,
@@ -118,6 +120,7 @@ pub enum KnobId {
     WeathersocHighEnergyThreshold,
     WeathersocTooMuchEnergyThreshold,
     ForecastDisagreementStrategy,
+    ChargeBatteryExtendedMode,
 }
 
 /// Forecast providers.
@@ -152,6 +155,7 @@ pub enum KnobValue {
     DischargeTime(DischargeTime),
     DebugFullCharge(DebugFullCharge),
     ForecastDisagreementStrategy(ForecastDisagreementStrategy),
+    ChargeBatteryExtendedMode(ChargeBatteryExtendedMode),
 }
 
 // =============================================================================

@@ -1,3 +1,4 @@
+use crate::victron_controller::dashboard::charge_battery_extended_mode::ChargeBatteryExtendedMode;
 use crate::victron_controller::dashboard::debug_full_charge::DebugFullCharge;
 use crate::victron_controller::dashboard::discharge_time::DischargeTime;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
@@ -20,6 +21,7 @@ pub struct Knobs {
     pub zappi_limit: f64,
     pub zappi_emergency_margin: f64,
     pub grid_export_limit_w: i32,
+    pub grid_import_limit_w: i32,
     pub allow_battery_to_car: bool,
     pub eddi_enable_soc: f64,
     pub eddi_disable_soc: f64,
@@ -31,6 +33,7 @@ pub struct Knobs {
     pub weathersoc_too_much_energy_threshold: f64,
     pub writes_enabled: bool,
     pub forecast_disagreement_strategy: ForecastDisagreementStrategy,
+    pub charge_battery_extended_mode: ChargeBatteryExtendedMode,
 }
 
 impl PartialEq for Knobs {
@@ -113,6 +116,10 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.grid_import_limit_w.cmp(&other.grid_import_limit_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         match self.allow_battery_to_car.cmp(&other.allow_battery_to_car) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
@@ -157,6 +164,10 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.charge_battery_extended_mode.cmp(&other.charge_battery_extended_mode) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -189,6 +200,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_limit.encode_ueba(ctx, &mut buffer)?;
             value.zappi_emergency_margin.encode_ueba(ctx, &mut buffer)?;
             value.grid_export_limit_w.encode_ueba(ctx, &mut buffer)?;
+            value.grid_import_limit_w.encode_ueba(ctx, &mut buffer)?;
             value.allow_battery_to_car.encode_ueba(ctx, &mut buffer)?;
             value.eddi_enable_soc.encode_ueba(ctx, &mut buffer)?;
             value.eddi_disable_soc.encode_ueba(ctx, &mut buffer)?;
@@ -200,6 +212,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.weathersoc_too_much_energy_threshold.encode_ueba(ctx, &mut buffer)?;
             value.writes_enabled.encode_ueba(ctx, &mut buffer)?;
             value.forecast_disagreement_strategy.encode_ueba(ctx, &mut buffer)?;
+            value.charge_battery_extended_mode.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -219,6 +232,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_limit.encode_ueba(ctx, writer)?;
             value.zappi_emergency_margin.encode_ueba(ctx, writer)?;
             value.grid_export_limit_w.encode_ueba(ctx, writer)?;
+            value.grid_import_limit_w.encode_ueba(ctx, writer)?;
             value.allow_battery_to_car.encode_ueba(ctx, writer)?;
             value.eddi_enable_soc.encode_ueba(ctx, writer)?;
             value.eddi_disable_soc.encode_ueba(ctx, writer)?;
@@ -230,6 +244,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.weathersoc_too_much_energy_threshold.encode_ueba(ctx, writer)?;
             value.writes_enabled.encode_ueba(ctx, writer)?;
             value.forecast_disagreement_strategy.encode_ueba(ctx, writer)?;
+            value.charge_battery_extended_mode.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -257,6 +272,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let zappi_limit = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let zappi_emergency_margin = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let grid_export_limit_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let grid_import_limit_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let allow_battery_to_car = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let eddi_enable_soc = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let eddi_disable_soc = crate::baboon_runtime::bin_tools::read_f64(reader)?;
@@ -268,6 +284,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let weathersoc_too_much_energy_threshold = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let writes_enabled = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let forecast_disagreement_strategy = ForecastDisagreementStrategy::decode_ueba(ctx, reader)?;
+        let charge_battery_extended_mode = ChargeBatteryExtendedMode::decode_ueba(ctx, reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -285,6 +302,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             zappi_limit,
             zappi_emergency_margin,
             grid_export_limit_w,
+            grid_import_limit_w,
             allow_battery_to_car,
             eddi_enable_soc,
             eddi_disable_soc,
@@ -296,6 +314,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             weathersoc_too_much_energy_threshold,
             writes_enabled,
             forecast_disagreement_strategy,
+            charge_battery_extended_mode,
         })
     }
 }

@@ -101,6 +101,17 @@ tr:hover td { background: rgba(0, 0, 0, 0.02); }
 }
 .factor b { color: var(--fg); font-weight: 600; }
 
+.copy-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.copy-btn:hover { color: var(--fg); }
+.copy-btn.copied { color: var(--ok); border-color: var(--ok); }
+
 input[type=number], input[type=text], select {
   background: transparent;
   color: var(--fg);
@@ -149,37 +160,27 @@ footer {
 
 /* --- WebSocket status widget ---
  * Adapted from pshirshov/ws-reconnect-demo. 32×32 circle with state
- * dot + countdown ring + hover tooltip + retry button (terminal only)
- * + an event log below. */
+ * dot + countdown ring. A single hover popup shows stats + events. */
 
-#ws-indicator-slot { position: relative; display: inline-block; }
-#ws-indicator-slot .ws-widget-log {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: -8px;
-  right: auto;
-  min-width: 320px;
-  max-height: 220px;
-  overflow-y: auto;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
+#ws-indicator-slot { position: relative; display: inline-flex; align-items: center; }
+
+/* Events list embedded inside the tooltip. */
+.ws-tt-sep { border-top: 1px solid var(--border); margin: 6px 0 4px; }
+.ws-tt-subhead { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.ws-tt-log {
   list-style: none;
   margin: 0;
-  display: none;
-  z-index: 99;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
 }
-#ws-indicator-slot:hover .ws-widget-log,
-#ws-indicator-slot:focus-within .ws-widget-log { display: block; }
-#ws-indicator-slot .ws-widget-log li { padding: 1px 0; }
-#ws-indicator-slot .ws-widget-log .ws-log-state      { color: var(--accent); }
-#ws-indicator-slot .ws-widget-log .ws-log-lifecycle  { color: var(--muted); }
-#ws-indicator-slot .ws-widget-log .ws-log-reconnect  { color: var(--warn); }
-#ws-indicator-slot .ws-widget-log .ws-log-error      { color: var(--bad); }
+.ws-tt-log li { padding: 1px 0; white-space: normal; word-break: break-word; }
+.ws-tt-log .ws-log-state      { color: var(--accent); }
+.ws-tt-log .ws-log-lifecycle  { color: var(--muted); }
+.ws-tt-log .ws-log-reconnect  { color: var(--warn); }
+.ws-tt-log .ws-log-error      { color: var(--bad); }
 
 .ws-indicator {
   position: relative;

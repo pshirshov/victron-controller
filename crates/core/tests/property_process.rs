@@ -59,7 +59,6 @@ fn seeded_world(t0: Instant) -> World {
     w.sensors.offgrid_power.on_reading(500.0, t0);
     w.sensors.offgrid_current.on_reading(2.2, t0);
     w.sensors.vebus_input_current.on_reading(0.0, t0);
-    w.sensors.vebus_output_current.on_reading(0.0, t0);
     w.sensors.evcharger_ac_power.on_reading(0.0, t0);
     w.sensors.evcharger_ac_current.on_reading(0.0, t0);
     w.sensors.ess_state.on_reading(10.0, t0);
@@ -94,7 +93,6 @@ fn sensor_strategy(t0: Instant) -> impl Strategy<Value = SensorReading> {
         SensorId::OffgridPower,
         SensorId::OffgridCurrent,
         SensorId::VebusInputCurrent,
-        SensorId::VebusOutputCurrent,
         SensorId::EvchargerAcPower,
         SensorId::EvchargerAcCurrent,
         SensorId::EssState,

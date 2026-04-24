@@ -11,6 +11,7 @@
 //! config = no task = no events = no problem — the fusion layer
 //! tolerates missing providers.
 
+pub mod current_weather;
 pub mod forecast_solar;
 pub mod open_meteo;
 pub mod solcast;

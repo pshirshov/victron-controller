@@ -53,7 +53,7 @@ async fn client_task(socket: WebSocket, state: DashboardState) {
     // before the runtime's first tick.
     {
         let w = state.world.lock().await;
-        let snap = world_to_snapshot(&w);
+        let snap = world_to_snapshot(&w, &state.meta);
         let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
         if send_json(&mut tx_ws, &out).await.is_err() {
             return;

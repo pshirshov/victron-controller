@@ -7,12 +7,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use zbus::zvariant::{OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, MessageType, Proxy};
 
@@ -22,6 +22,13 @@ use victron_controller_core::types::{
 };
 
 use crate::config::DbusServices;
+
+/// Cadence of the periodic `GetItems` re-seed against every Victron
+/// service. Victron emits `ItemsChanged` only on value changes, so
+/// without this poll stable values would time out of the freshness
+/// window. 500 ms gives four polls per 2 s staleness deadline.
+/// Exposed so the dashboard can display it.
+pub const DBUS_POLL_PERIOD: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
@@ -171,7 +178,35 @@ pub struct Subscriber {
     /// Accumulator for partial schedule field updates — one per
     /// schedule index (0, 1). Mutable across the run() loop.
     schedule_accumulators: [SchedulePartial; 2],
+    /// Consecutive periodic-GetItems failure counts per service. Reset
+    /// on success. Used to escalate a silent retry loop to an error.
+    fail_counts: HashMap<String, u32>,
+    /// Last-warn timestamps per service for periodic-GetItems rate
+    /// limiting (≥ 30 s between warns for the same service).
+    last_warn: HashMap<String, Instant>,
+    /// Poll-tick count since the last heartbeat emission. Reset on
+    /// every heartbeat.
+    poll_ticks_since_last_heartbeat: u32,
+    /// Raw signal count since the last heartbeat: every `Ok(msg)` from
+    /// the ItemsChanged stream, before any filtering. Measures stream
+    /// activity / bus health.
+    raw_signals_since_last_heartbeat: u32,
+    /// Routed signal count since the last heartbeat: signals whose
+    /// sender resolved to a known service AND whose path matched a
+    /// route in the routing table. Measures delivered readings.
+    routed_signals_since_last_heartbeat: u32,
 }
+
+/// Minimum gap between periodic-`GetItems` failure warnings for a given
+/// service. Keeps the log readable during sustained outages.
+const RESEED_WARN_THROTTLE: Duration = Duration::from_secs(30);
+/// Consecutive failure count at which a single ERROR-level log escalation
+/// fires (on top of the rate-limited WARN). At the 500 ms poll cadence
+/// this is 2.5 s — already past the 2 s freshness deadline.
+const RESEED_ESCALATE_AFTER: u32 = 5;
+/// Interval at which the subscriber emits a liveness heartbeat INFO log
+/// summarising poll tick + signal counters since the last heartbeat.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 impl Subscriber {
     /// Connect to the Venus system bus.
@@ -185,6 +220,11 @@ impl Subscriber {
             conn,
             routes,
             schedule_accumulators: [SchedulePartial::default(); 2],
+            fail_counts: HashMap::new(),
+            last_warn: HashMap::new(),
+            poll_ticks_since_last_heartbeat: 0,
+            raw_signals_since_last_heartbeat: 0,
+            routed_signals_since_last_heartbeat: 0,
         })
     }
 
@@ -204,9 +244,47 @@ impl Subscriber {
             .collect();
         for svc in &services {
             if let Err(e) = self.seed_service(svc, &tx).await {
-                warn!(service = %svc, error = %e, "initial GetItems failed; will wait for signals");
+                warn!(
+                    service = %svc,
+                    error = %format!("{e:#}"),
+                    "initial GetItems failed; will wait for signals"
+                );
             }
         }
+
+        // Build unique-name → well-known-name map. D-Bus signal
+        // headers carry the sender's *unique* bus name (e.g. `:1.42`),
+        // never the well-known name our routes are keyed by. Resolve
+        // each service's current owner once up front.
+        let mut owner_to_service: HashMap<String, String> = HashMap::new();
+        {
+            let dbus_proxy = Proxy::new(
+                &self.conn,
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+            )
+            .await
+            .context("building org.freedesktop.DBus proxy")?;
+            for svc in &services {
+                match dbus_proxy.call::<_, _, String>("GetNameOwner", &(svc.as_str())).await {
+                    Ok(unique) => {
+                        debug!(%svc, %unique, "resolved unique name");
+                        owner_to_service.insert(unique, svc.clone());
+                    }
+                    Err(e) => warn!(
+                        service = %svc,
+                        error = %format!("{e:#}"),
+                        "GetNameOwner failed; signals from this service will be dropped"
+                    ),
+                }
+            }
+        }
+        info!(
+            mapped = owner_to_service.len(),
+            total = services.len(),
+            "resolved unique bus names"
+        );
 
         // 2. Subscribe to ItemsChanged across every Victron service.
         //    Venus emits these signals with member=`ItemsChanged` on
@@ -223,36 +301,130 @@ impl Subscriber {
             .await
             .context("subscribing to ItemsChanged")?;
 
-        info!("D-Bus subscriber running");
-        while let Some(msg) = stream.next().await {
-            let Ok(msg) = msg else {
-                continue;
-            };
-            let header = msg.header();
-            let Some(svc) = header.sender().map(|s| s.to_string()) else {
-                continue;
-            };
-            let path = header.path().map(|p| p.to_string()).unwrap_or_default();
-            if !self.routes.keys().any(|(s, _)| s == &svc) {
-                debug!(%svc, %path, "unrouted signal");
-                continue;
-            }
-            let Ok(body) = msg.body().deserialize::<ItemsChangedBody>() else {
-                continue;
-            };
-            for (child_path, child_value) in body.0 {
-                let key = (svc.clone(), child_path);
-                let Some(route) = self.routes.get(&key).cloned() else {
-                    continue;
-                };
-                let Some(value) = extract_scalar(&child_value.value) else {
-                    continue;
-                };
-                if let Some(event) = self.route_to_event(&route, value, Instant::now()) {
-                    if tx.send(event).await.is_err() {
-                        return Ok(());
+        // Periodic re-seed ticker. Victron's `ItemsChanged` signals only
+        // fire on value *changes*, so stable values (battery SoC at night,
+        // ESS state, idle MPPTs, zero vebus current) never emit after the
+        // initial GetItems — and our 5-second freshness window would
+        // mark them Stale, making them unusable for control decisions.
+        // A ~2-second GetItems poll against every service keeps
+        // everything fresh, and signals still provide sub-second
+        // reactivity for fast-moving paths like grid power.
+        let poll_period = DBUS_POLL_PERIOD;
+        let mut poll = tokio::time::interval(poll_period);
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // First tick fires immediately; skip it — we already seeded above.
+        poll.tick().await;
+
+        info!(
+            poll_period_s = poll_period.as_secs(),
+            "D-Bus subscriber running"
+        );
+
+        // Heartbeat ticker. Independent of poll.tick() so the
+        // subscriber still emits liveness logs at a steady cadence
+        // even if the poll arm is starved by a busy signal stream.
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        // First tick is immediate; skip it so we don't log
+        // "0 ticks, 0 signals" at startup.
+        heartbeat.tick().await;
+
+        loop {
+            tokio::select! {
+                Some(msg) = stream.next() => {
+                    let Ok(msg) = msg else { continue };
+                    self.raw_signals_since_last_heartbeat =
+                        self.raw_signals_since_last_heartbeat.saturating_add(1);
+                    let header = msg.header();
+                    // Sender is a unique bus name like `:1.42`; translate.
+                    let Some(sender) = header.sender().map(|s| s.to_string()) else {
+                        continue;
+                    };
+                    let Some(svc) = owner_to_service.get(&sender).cloned() else {
+                        debug!(%sender, "signal from unmapped sender");
+                        continue;
+                    };
+                    let Ok(body) = msg.body().deserialize::<ItemsChangedBody>() else {
+                        continue;
+                    };
+                    for (child_path, child_value) in body.0 {
+                        let key = (svc.clone(), child_path);
+                        let Some(route) = self.routes.get(&key).cloned() else {
+                            continue;
+                        };
+                        let Some(v) = child_value.value() else { continue };
+                        let Some(value) = extract_scalar(v) else {
+                            continue;
+                        };
+                        self.routed_signals_since_last_heartbeat =
+                            self.routed_signals_since_last_heartbeat.saturating_add(1);
+                        if let Some(event) = self.route_to_event(&route, value, Instant::now()) {
+                            if tx.send(event).await.is_err() {
+                                return Ok(());
+                            }
+                        }
                     }
                 }
+                _ = poll.tick() => {
+                    self.poll_ticks_since_last_heartbeat =
+                        self.poll_ticks_since_last_heartbeat.saturating_add(1);
+                    for svc in &services {
+                        match self.seed_service(svc, &tx).await {
+                            Ok(()) => {
+                                // Success resets both failure tracking
+                                // and the warn-throttle, so the next
+                                // failure warns immediately.
+                                self.fail_counts.remove(svc);
+                                self.last_warn.remove(svc);
+                            }
+                            Err(e) => {
+                                let count = self
+                                    .fail_counts
+                                    .entry(svc.clone())
+                                    .or_insert(0);
+                                *count += 1;
+                                let count_now = *count;
+                                let now = Instant::now();
+                                let should_warn = self
+                                    .last_warn
+                                    .get(svc)
+                                    .is_none_or(|t| {
+                                        now.duration_since(*t) >= RESEED_WARN_THROTTLE
+                                    });
+                                if should_warn {
+                                    warn!(
+                                        service = %svc,
+                                        count = count_now,
+                                        error = %format!("{e:#}"),
+                                        "periodic GetItems failed"
+                                    );
+                                    self.last_warn.insert(svc.clone(), now);
+                                }
+                                if count_now == RESEED_ESCALATE_AFTER {
+                                    error!(
+                                        service = %svc,
+                                        "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
+                                         consecutive ticks; sensor freshness unreliable"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    let poll_ticks =
+                        std::mem::take(&mut self.poll_ticks_since_last_heartbeat);
+                    let raw_signals =
+                        std::mem::take(&mut self.raw_signals_since_last_heartbeat);
+                    let routed_signals =
+                        std::mem::take(&mut self.routed_signals_since_last_heartbeat);
+                    info!(
+                        poll_ticks,
+                        raw_signals,
+                        routed_signals,
+                        "dbus subscriber heartbeat"
+                    );
+                }
+                else => break,
             }
         }
         Ok(())
@@ -303,7 +475,7 @@ impl Subscriber {
         let items: HashMap<String, ItemEntry> = proxy
             .call("GetItems", &())
             .await
-            .context("GetItems call")?;
+            .with_context(|| format!("GetItems call on {service}"))?;
         debug!(%service, count = items.len(), "seeded from GetItems");
         let at = Instant::now();
         for (path, entry) in items {
@@ -311,7 +483,8 @@ impl Subscriber {
             let Some(route) = self.routes.get(&key).cloned() else {
                 continue;
             };
-            let Some(value) = extract_scalar(&entry.value) else {
+            let Some(v) = entry.value() else { continue };
+            let Some(value) = extract_scalar(v) else {
                 continue;
             };
             if let Some(event) = self.route_to_event(&route, value, at) {
@@ -326,19 +499,27 @@ impl Subscriber {
 
 // --- wire types ---
 
-/// A single entry in a GetItems / ItemsChanged map: `{Value, Text}`.
-/// Only the Value is used for control; Text is the user-facing string.
+/// A single entry in a GetItems / ItemsChanged map.
+///
+/// Venus emits `a{sv}` here — a dict-of-variants with keys `"Value"` and
+/// `"Text"` (and occasionally others like `"Valid"`, `"Min"`, `"Max"`).
+/// We keep only the Value; Text is user-facing and unused for control.
+///
+/// Earlier the type was `struct { Value, Text }` which deserialises as
+/// `(vs)`, but the wire format is `a{sv}`, so zbus rightly refused with
+/// `Signature mismatch: got a{sa{sv}}, expected a{s(vs)}`.
 #[derive(Debug, serde::Deserialize, zbus::zvariant::Type)]
-struct ItemEntry {
-    #[serde(rename = "Value")]
-    value: OwnedValue,
-    #[serde(rename = "Text")]
-    #[allow(dead_code)]
-    text: String,
+#[zvariant(signature = "a{sv}")]
+struct ItemEntry(HashMap<String, OwnedValue>);
+
+impl ItemEntry {
+    fn value(&self) -> Option<&OwnedValue> {
+        self.0.get("Value")
+    }
 }
 
-/// Top-level body of an ItemsChanged signal:
-/// `a{s(a{sv})}` — map path → {Value, Text}.
+/// Top-level body of an ItemsChanged signal / GetItems reply:
+/// `a{sa{sv}}` — path → (Value, Text, ...).
 #[derive(Debug, serde::Deserialize, zbus::zvariant::Type)]
 struct ItemsChangedBody(HashMap<String, ItemEntry>);
 
@@ -351,7 +532,10 @@ fn extract_scalar(v: &Value<'_>) -> Option<f64> {
     // zbus 4 Value has F64 but no F32 variant at the top level (floats
     // are f64 on the wire). Integer variants vary by width.
     match v {
-        Value::F64(f) => Some(*f),
+        // Guard admits only finite, non-subnormal floats (plus exact
+        // zero); NaN/±Inf/subnormals fall through to the wildcard
+        // `_ => None` below (sensor dropout, not data).
+        Value::F64(f) if f.is_finite() && (*f == 0.0 || f.is_normal()) => Some(*f),
         Value::I32(n) => Some(f64::from(*n)),
         Value::U32(n) => Some(f64::from(*n)),
         Value::I64(n) => {
@@ -365,7 +549,6 @@ fn extract_scalar(v: &Value<'_>) -> Option<f64> {
         Value::I16(n) => Some(f64::from(*n)),
         Value::U16(n) => Some(f64::from(*n)),
         Value::U8(n) => Some(f64::from(*n)),
-        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         _ => None,
     }
 }
@@ -379,3 +562,23 @@ const _: fn() = || {
         at: Instant::now(),
     };
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_scalar_rejects_nonfinite_and_bool() {
+        assert_eq!(extract_scalar(&Value::F64(f64::NAN)), None);
+        assert_eq!(extract_scalar(&Value::F64(f64::INFINITY)), None);
+        assert_eq!(extract_scalar(&Value::F64(f64::NEG_INFINITY)), None);
+        assert_eq!(extract_scalar(&Value::F64(-1.5)), Some(-1.5));
+        assert_eq!(extract_scalar(&Value::Bool(true)), None);
+        assert_eq!(extract_scalar(&Value::Bool(false)), None);
+        assert_eq!(
+            extract_scalar(&Value::F64(f64::MIN_POSITIVE / 2.0)),
+            None,
+            "subnormal rejected"
+        );
+    }
+}

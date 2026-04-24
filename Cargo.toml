@@ -39,3 +39,21 @@ match_single_binding = "allow"
 derivable_impls = "allow"
 items_after_statements = "allow"
 redundant_else = "allow"
+
+# Ship-to-Venus profile. Trades ~5% compile time for a dramatically
+# smaller + faster binary:
+#   opt-level="z"     optimise for size; the controller is almost all
+#                     arithmetic + I/O, no hot loops
+#   lto=true          fat LTO across the whole workspace
+#   codegen-units=1   maximum inlining opportunity (slower to compile)
+#   strip="symbols"   drop debug sections from the final ELF
+#   panic="abort"     smaller unwind tables; Venus has no panic handler
+#                     that would benefit from unwinding anyway
+#   overflow-checks=true  keep runtime checks — cheap and catches bugs
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+overflow-checks = true

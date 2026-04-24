@@ -1,0 +1,756 @@
+# victron-controller — Defect Ledger
+
+Audit findings and per-PR review defects. Never deleted; status flips in place.
+
+Status: `[ ]` open · `[~]` under fix · `[x]` resolved
+
+Seeded 2026-04-24 from four adversarial audits (honesty, actuation-safety,
+numeric-correctness, boundary-correctness). Each `A-NN` entry is an audit
+finding; PR-NN-DMM entries (added later) capture defects found while
+reviewing a specific PR's patch.
+
+---
+
+## Audit backlog — 2026-04-24 (four parallel adversarial subagents)
+
+### [A-01] `extract_scalar` forwards NaN / ±Inf / sub-normal floats as valid readings
+**Status:** resolved (PR-01)
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:436-457`
+**Description:** Venus-published NaN or ±Inf on any float path (observed during grid-loss on `/Ac/L1/Voltage`; plausible on bus glitches) lands as `Fresh` in `Actual<f64>`. `is_usable` remains true; decay doesn't engage. NaN then poisons `current_limit = grid_power / grid_voltage`, passes through `clamp` (Rust `f64::clamp(NaN, …) = NaN`), and finally is cast to `i32` on the setpoint path — producing `i32::MAX` worth of commanded grid import for one tick (deadband then latches).
+**Root cause:** Convenience extraction over zbus `Value<_>` types without a finite-ness filter. Flagged convergently by boundary-C3, safety-C1, numeric-C2.
+**Suggested fix:** `Value::F64(f) if f.is_finite() => Some(*f)`; else `None`. Also drop the `Value::Bool(b) → f64` arm (see A-02). Add a property test: random NaN events never produce actuation effects.
+
+### [A-02] `extract_scalar` coerces `Value::Bool(b)` to 0.0 / 1.0, letting a single `false` glitch fabricate SoC=0
+**Status:** resolved (PR-01)
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:454`
+**Description:** Venus occasionally serves `Value::Bool(false)` on the `"Value"` key during a BMS resync glitch. Our extractor returns 0.0 and emits a `SensorReading` — BatterySoc reports 0%, `low_soc` triggers panic grid-charging.
+**Suggested fix:** Drop the `Value::Bool` arm entirely. Float sensors must never accept a bool.
+
+### [A-03] `grid_current = grid_power / grid_voltage` divides by zero during grid-loss transitions
+**Status:** resolved (PR-02)
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:141` (also `:176`, `:188`)
+**Description:** During grid-loss the ET340 reports `grid_voltage=0` alongside `grid_power=0`. `0/0 = NaN` — passes `is_usable`; propagates through `clamp` and into `input_current_limit`. Also `grid_voltage ≈ 0.01 V` sensor noise yields wildly wrong A and starves downstream.
+**Suggested fix:** Gate all `/grid_voltage` divisions: if `grid_voltage < MIN_SENSIBLE_GRID_V (180 V)` fall back to nominal 230 V (with a decision factor noting the fallback). Apply at `:141`, `:176`, `:188`.
+
+### [A-04] Zappi `time_in_state_min` mixes Local clock with UTC myenergi timestamps — off by TZ offset during BST
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:153-154`, `crates/shell/src/myenergi/types.rs:107-113`
+**Description:** `clock.naive()` returns `Local::now().naive_local()`; `zappi_last_change_signature` is parsed from myenergi's UTC `dat`+`tim` into bare `NaiveDateTime`. Subtraction in London summer is off by 1 h → 5-min `WAIT_TIMEOUT_MIN` fires immediately every invocation in BST. After DST fall-back, delta goes negative and the timeout never fires.
+**Suggested fix:** Switch `zappi_last_change_signature` to a monotonic `Instant` stamped by the poller on state-change, not a wall-clock parsed from the cloud. Or: parse myenergi ts as UTC and convert to Local before storing. Option (1) is strictly better — "time since last observed change" is what the controller wants.
+
+### [A-05] Controller ordering: `run_setpoint` reads bookkeeping that later controllers write
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:412-418`
+**Description:** `run_setpoint` consumes `bookkeeping.zappi_active` (written by `run_current_limit`), `battery_selected_soc_target` (written by `run_schedules`), and `charge_to_full_required` (written by `run_weather_soc`). First tick of an evening Zappi charge sees `zappi_active=false` (stale) → setpoint can propose −3.5 kW discharge into the car's grid leg despite `allow_battery_to_car=false`. Dead-band then locks the bad value in.
+**Suggested fix:** Compute `zappi_active` once at the top of the process pipeline from `world.typed_sensors.zappi_state` (the derivable predicate), pass to both controllers. Same for the other two fields where derivable; else reorder controllers.
+
+### [A-06] Observer → writes-enabled transition: Pending targets never commit
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs` — every `maybe_propose_*` (`:503-548`, `:640-681`, `:767-846`, `:879-908`, `:939-970`)
+**Description:** With `writes_enabled=false`, the controller calls `propose_target` *before* the kill-switch check. Target transitions to `Pending` with value V; no `WriteDbus`/`CallMyenergi` is emitted; `mark_commanded` not called. When user flips `writes_enabled=true` later, controller computes same V → `propose_target` returns false (same value, non-Unset phase) → no effect emitted. Target stays Pending forever; the bus retains whatever Venus had before.
+**Suggested fix:** In every `maybe_propose_*`, when `writes_enabled=false`, do NOT mutate target; only emit `Effect::Log`. When the flag is true, run the existing propose/commanded/emit sequence. Add a regression test for the observer→live→observer→live cycle.
+
+### [A-07] `Command::KillSwitch(true)` doesn't invalidate in-flight Pending targets
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:257-260`
+**Description:** Sibling of A-06. Even after A-06 is fixed, controllers' `propose_target` same-value short-circuit suppresses writes on the first post-flip tick because no sensor changed. The correct semantics: on `false→true`, invalidate every actuated target so the next tick forces a write.
+**Suggested fix:** On `KillSwitch(true)` transition, reset every target to `Target::unset(at)`: grid_setpoint, input_current_limit, zappi_mode, eddi_mode, schedule_0, schedule_1.
+
+### [A-08] `parse_knob_value` accepts `"inf"` / `"NaN"` / out-of-range from retained MQTT, promoted to System-owned knobs at boot
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/mqtt/serialize.rs:263-332`, bootstrap ingest at `:59-112`
+**Description:** `f64::from_str("inf") → Ok(INFINITY)`, `"NaN" → NaN`, `"-50"`/`"9999"`/`u32::MAX` all parse. Bootstrap records these as `Owner::System` knobs, overriding any `HaMqtt` value from a previous run. `ExportSocThreshold=9999` means battery never releases; `BatterySocTarget=-50` starts an infinite discharge.
+**Suggested fix:** In `parse_knob_value`: `.filter(|f| f.is_finite())` for all float paths. Add per-knob range validation at the boundary, using the table already used by HA discovery. Invalid retained state → drop + warn!, not load.
+
+### [A-09] `grid_export_limit_w > i32::MAX` silently disables the export cap
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:470-471`
+**Description:** `let grid_cap = -i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);` — for any u32 > i32::MAX, `try_from` fails, `unwrap_or(i32::MAX)` yields +2_147_483_647, then unary-minus gives -2_147_483_647 — i.e., effectively unbounded export.
+**Suggested fix:** Clamp ingest of `grid_export_limit_w` to a SAFE_MAX (e.g. 10000). On the consumer side use `k.grid_export_limit_w.min(10_000) as i32`. Validate at dashboard + MQTT edges.
+
+### [A-10] `grid_export_limit_w = 0` pins the setpoint at 0 W, losing idle-bleed invariant
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:470-471`
+**Description:** Edge case: `grid_cap = 0`, `capped = target.max(0)` — any negative decision becomes 0 W, bypassing the `prepare_setpoint` idle=10 W promotion. Some Victron firmware treats 0 and 10 distinctly.
+**Suggested fix:** After clamp, re-assert the idle-promotion: `if capped >= 0 { 10 } else { capped }`. Plus a symmetric `grid_import_limit_w` knob (default 10) clamped via `.min(...)`.
+
+### [A-11] `GetNameOwner` resolved once at startup; signals from a restarted Victron service go to /dev/null
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:226-254`
+**Description:** `owner_to_service` is built once. `svc -t /service/com.victronenergy.system` gives the service a new `:1.N` unique name; signals arrive with an unmapped sender (debug-logged then dropped). Service silently degrades to 500 ms poll-only; event-driven reactivity for fast-moving sensors is lost.
+**Suggested fix:** Subscribe to `org.freedesktop.DBus.NameOwnerChanged`; re-map on every event for a known well-known name. Alternative: on each unmapped-sender signal whose *path* belongs to a routed service, refresh the mapping.
+
+### [A-12] `SchedulePartial` accumulator never clears; a single-field `ItemsChanged` re-emits 4 stale fields as if they were just observed
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:141-172, 360-371`
+**Description:** Accumulator is process-wide mutable state. First seed populates all five fields; thereafter, any single-field change (Venus emits only the changed path) re-emits a full `Schedule0/1` readback with 4 hours-stale values. TASS may Confirm a target that doesn't match the bus.
+**Suggested fix:** Version/sequence token in `SchedulePartial`. Emit a readback only when all five fields have been re-observed since the last emission. Or: emit only when *all five* came from the same batch (seed pass, or same `ItemsChanged` envelope).
+
+### [A-13] Zappi night auto-stop is advertised end-to-end but `session_charged_pct` is hardcoded 0 in `run_zappi_mode`
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:860`
+**Description:** SPEC §3.5 + dashboard Decision all show the night auto-stop rule. But `run_zappi_mode` feeds literal `0.0` into the controller. The real `che` kWh is parsed by the myenergi poller (`types.rs:30`) and dropped. For users setting `zappi_limit ≤ 65`, the car charges until the tariff window closes regardless — hours of unnecessary grid pull.
+**Suggested fix:** Plumb `session_kwh` from `ZappiObservation` through `TypedReading::Zappi` / `ZappiState` into `run_zappi_mode`. Compute `session_charged_pct` from a user knob (see A-14 for the unit bug).
+
+### [A-14] `zappi_limit` documented as % but legacy semantic was kWh — wrong comparison unit
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/controllers/zappi_mode.rs:39-41`, HA discovery `discovery.rs:143`
+**Description:** HA advertises `"%"` unit; legacy NR compared `che` kWh against a kWh limit. Even after A-13 is fixed, `session_charged_pct >= zappi_limit_pct` compares kWh-as-% against %-as-%. User setting `zappi_limit=30` meaning "30 kWh" gets "stop at 30%", firing at session 1.35 kWh.
+**Suggested fix:** Keep `session_che_kwh` in kWh; add separate `zappi_limit_kwh` knob; compare kWh-to-kWh. Or have the shell precompute `session_charged_pct = min(100, che/limit*100)` and keep limit as 100 in core.
+
+### [A-15] `charge_to_full_required |=` is a sticky latch; grid-charging forced on for up to 7 days after one bad morning
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1078`
+**Description:** Weather-SoC ORs `d.charge_battery_extended` into `bookkeeping.charge_to_full_required`. The only reset path is the weekly Sunday-17:00 rollover in `evaluate_setpoint`. Between rollovers one cold morning locks grid-charging schedules on nightly until next Sunday. Dashboard shows `charge_to_full_required=true` with no reason.
+**Suggested fix:** Don't `|=`. Either (a) add a separate bookkeeping field `charge_battery_extended_today` with daily reset at midnight, or (b) recompute `charge_to_full_required` each tick from ingredients (weekly rollover OR today's weather_soc) rather than latching.
+
+### [A-16] Forecast fusion's `is_fresh` predicate is `|_,_| true` — SPEC §5.13 12h/48h rules not implemented
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1028`, `crates/core/src/controllers/forecast_fusion.rs:20-21`
+**Description:** `run_weather_soc` passes an always-true filter. `typed_sensors.forecast_*` is only overwritten on successful fetch, never cleared. A three-day-old Solcast snapshot followed by API-key expiry is still "fresh" at tomorrow's 01:55.
+**Suggested fix:** Compute `is_fresh` from `clock.monotonic().saturating_duration_since(snap.fetched_at) <= topology.controller_params.freshness_forecast`. Add `freshness_forecast: Duration` to `ControllerParams`. Log "all providers stale → conservative preset" when triggered.
+
+### [A-17] SPEC §5.8 — Hoymiles EV-branch export not folded into `solar_export`
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/controllers/setpoint.rs:184`
+**Description:** SPEC §5.8: `solar_export_w = max(0, mppt_0) + max(0, mppt_1) + max(0, soltaro) + max(0, -evcharger_35.ac_power)`. Code omits the EV-branch term. Hoymiles export sails past the controller unseen → evening discharge under-exports by the Hoymiles kW, `max_discharge` cap is tighter than the SPEC promises.
+**Suggested fix:** Add `evcharger_ac_power: f64` to `SetpointInput`; include `max(0.0, -evcharger_ac_power)` in `solar_export`; require `evcharger_ac_power.is_usable()` in the freshness guard.
+
+### [A-18] SPEC §5.8 — `zappi_active` still uses 1 A fallback instead of 500 W
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:34,168`
+**Description:** SPEC §5.8 replaced `zappi_amps > 1` with `evcharger_ac_power > 500 W` to avoid false-firing on Hoymiles exports. Code still uses amps.
+**Suggested fix:** Plumb `evcharger_ac_power` into `CurrentLimitInput`. Replace the `zappi_amps > ZAPPI_AMPS_FALLBACK_THRESHOLD` test with `evcharger_ac_power > 500.0`.
+
+### [A-19] `force_disable_export` plumbed into `CurrentLimitInputGlobals` but never consulted by any branch of `evaluate_current_limit`
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:62,263`
+**Description:** Defence-in-depth gap. Setpoint forces idle when the flag is on, but current-limit still grants full 65 A AC-in authority — any alternate setpoint writer (future dashboard override) escapes the export kill.
+**Suggested fix:** Either (a) delete the field from `CurrentLimitInputGlobals` if it's truly unused — "delete, don't pretend"; or (b) clamp `input_current_limit` to `offgrid_current + small_headroom` when `force_disable_export=true`. Prefer (a) first; revisit semantics before implementing (b).
+
+### [A-20] Weather-SoC bypasses owner-priority + γ-hold; a dashboard write at 01:54 is clobbered at 01:55
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1054-1077, 1085-1093`
+**Description:** `run_weather_soc` calls `apply_knob` directly (no owner check). γ-hold in `accept_knob_command` protects dashboard writes from HaMqtt for 1 s; nightly planner has no such courtesy and runs for a full minute at 01:55:00–01:55:59.
+**Suggested fix:** Route every planner knob change through the same `accept_knob_command` path (adding a `WeatherSocPlanner`-owned command variant if needed). Or add a γ-hold check in `run_weather_soc` that suppresses if any knob's last_dashboard_write is within N minutes.
+
+### [A-21] Weather-SoC fires 60 times in the 01:55:00–01:55:59 window, emitting ~300 retained-knob messages
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:980`
+**Description:** Controller runs on every `Event` inside the minute, not once. Flood of identical retained-MQTT messages; any dashboard override mid-minute is overwritten repeatedly.
+**Suggested fix:** Track `last_weather_soc_run_date` in bookkeeping; run the body only once per wall-day at the first tick within the 01:55 window. Combines naturally with A-20.
+
+### [A-22] myenergi HTTP writer treats any 2xx as success, ignoring body-level error codes
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/myenergi/mod.rs:116-144`
+**Description:** `set_zappi_mode`/`set_eddi_mode` return `Ok` on any HTTP 2xx. myenergi returns 200 with `{"zsh": 3}` on rejected commands. Dashboard shows `Commanded`, user sees "it worked" — but the device didn't change state.
+**Suggested fix:** Parse the JSON; require the success field (`zsh=0` for mode change). Non-zero → `Err`. On `execute`, on error publish `ActuatedPhase{Unset}` so the UI signals failure.
+
+### [A-23] myenergi writer logs "action ok" when credentials are empty (no HTTP attempted)
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/myenergi/mod.rs:117-119, 134-135`, Writer::execute
+**Description:** Credential guard returns `Ok(())` with no request. Writer::execute logs "myenergi action ok"; TASS target stays in `Commanded` forever; dashboard says "in flight".
+**Suggested fix:** Return a distinguishable `Err("not configured")`; Writer::execute logs at `warn!`; Runtime publishes `ActuatedPhase{Unset}` to reset UI state.
+
+### [A-24] `parse_myenergi_ts` falls back to `(2026-01-01, 00:00:00)` on parse failure; every poll thereafter looks identical
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/myenergi/types.rs:107-113` + `:42-43`
+**Description:** Missing/unparseable `dat` or `tim` silently coerces to sentinel. Change-detection using `zappi_last_change_signature` blinds: same value across polls → "not a new event".
+**Suggested fix:** Return `None` from `parse_zappi` on any parse failure; treat the whole poll as failed. Removes the `unwrap_or("01-01-2026")` / `unwrap_or("00:00:00")` too.
+
+### [A-25] `parse_zappi` / `parse_eddi` use `as u8` truncation on `zmo`/`sta` integers
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/myenergi/types.rs:39-41, 66`
+**Description:** `as_u64() as u8` wraps on ≥256 (firmware bug or future extension). `sta=257 → 1 → Paused`; we trust the wrong state.
+**Suggested fix:** `u8::try_from(...).ok()?`; out-of-range returns `None` for the whole poll.
+
+### [A-26] Solcast schema drift / zero-items response silently emits 0 kWh as a fresh forecast
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/forecast/solcast.rs:78-91`
+**Description:** Failed-item skip is silent. If every item has an unknown `period` or `pv_estimate:null`, we return `Ok(ForecastTotals{today:0, tomorrow:0})` — "no sun today" — triggering battery-saver behaviour on a sunny day.
+**Suggested fix:** Require ≥ N parseable items per day-bucket; else return `Err`. Distinguish a truly zero forecast from schema drift.
+
+### [A-27] Solcast `period_end` used for day bucketing misattributes boundary periods
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/forecast/solcast.rs:125-130`
+**Description:** `period_end = 00:00 next_day` after a 23:30–00:00 bucket puts 30 min of Monday production into Tuesday. Few kWh/day systematic shift.
+**Suggested fix:** Use `period_end − period` (bucket start) for attribution, or midpoint.
+
+### [A-28] 401 / 403 / 429 not distinguished from timeouts; we keep hammering rate-limited endpoints
+**Status:** open
+**Severity:** major
+**Location:** `crates/shell/src/forecast/mod.rs:121-138`, `crates/shell/src/myenergi/mod.rs:70-88`
+**Description:** Solcast free tier: 10 calls/day; we burn it in 10 ticks on a 429. No exponential backoff.
+**Suggested fix:** Match status codes. 401/403 → fail the client entirely; 429 → exponential backoff (re-enter scheduler loop with a delay); 5xx → normal backoff + retry.
+
+### [A-29] `SetValue` on Schedule paths sends fixed type assumptions; Venus firmware variance causes retry-loop log spam + partial writes
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/writer.rs:86-104`
+**Description:** Soc field is f64 in our code but some Venus firmwares expect i32; silent "Wrong type" errors that TASS re-proposes every tick. Worse with partial schedule (half fields written, half rejected).
+**Suggested fix:** `GetProperties` at connect to cache variant signature per path; or submit best-guess then fall back. Stop retrying after N failures; raise kill switch.
+
+### [A-30] Event channel `mpsc::channel(256)` has no watermark; stale-batched events stamped `Fresh`
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/main.rs:47`
+**Description:** Backpressure works (`.await send`) but a slow runtime after a burst leaves events in queue, stamped at `Instant::now()` on the producer side. Freshness gate sees "fresh" while values are ~seconds old.
+**Suggested fix:** Stamp events with the receive time on the consumer; add a queue-depth metric/log when >50% full.
+
+### [A-31] `i32 - i32` for setpoint retarget deadband can overflow if C1 allows pathological grid_cap
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:513-516`
+**Description:** `current_target - value` on i32 panics in debug / wraps in release if either operand is near extrema. Combined with A-09 this becomes reachable.
+**Suggested fix:** `i64::from(a) - i64::from(b)` then `.abs()` compared to `i64::from(params.setpoint_retarget_deadband_w)`.
+
+### [A-32] Weather-SoC `disable_export` inner post-condition is dead code (copy-paste trap)
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/controllers/weather_soc.rs:90-97`
+**Description:** `*threshold = 100.0; if (threshold - 100.0).abs() >= EPSILON { threshold = 80.0; }` — inner branch unreachable because `threshold` was just set to 100. Happens to align with intended behaviour for this caller but invites bugs when someone copy-pastes.
+**Suggested fix:** Delete the dead branch, comment that `disable_export` is `threshold=100; dsoc=30`.
+
+### [A-33] Float-equality ladder in PV-multiplier silently drops to 0 on `balance_soc ± ε` noise
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:371-395`
+**Description:** `battery_soc == balance_soc`, `... == balance_soc - 1.0` etc. MQTT retained SoC can deserialise to `80.0000001`; the ladder falls through to `0.0` (below-threshold) → PV-multiplier is 0 → setpoint clamps to `min_setpoint` instead of exporting.
+**Suggested fix:** Widen ladder rungs to half-open ranges: `battery_soc >= balance_soc - 0.5 && battery_soc < balance_soc + 0.5 → 1.0`, etc.
+
+### [A-34] `grid_export_limit_w as i32` in `convert.rs` silently truncates `u32 → i32`
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dashboard/convert.rs:417`
+**Description:** Dashboard displays sign-flipped nonsense for u32 above i32::MAX. Combined with A-09 the UI also lies.
+**Suggested fix:** `i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX)`, or change wire type to i64/u32.
+
+### [A-35] `eddi_dwell_s as i32` silent truncation (same family as A-34)
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:421`
+**Description:** Low blast radius (60 s default). Fix for consistency.
+**Suggested fix:** `i32::try_from(...).unwrap_or(i32::MAX)`.
+
+### [A-36] Observer mode (`writes_enabled=false`) suppresses `eddi_last_transition_at` bookkeeping
+**Status:** open
+**Severity:** major
+**Location:** `crates/core/src/process.rs:963-965`
+**Description:** The bookkeeping write is gated by the same `writes_enabled` check that gates the HTTP call. During the M11 shadow-run week the dwell clock never advances → every Eddi proposal logs "first transition (no dwell)". Decision factors the user is verifying are all lies.
+**Suggested fix:** Move the `eddi_last_transition_at = Some(now)` update above the `if !writes_enabled` gate — it's TASS state, not actuation.
+
+### [A-37] `safe_defaults.writes_enabled = false` contradicts SPEC §7 (documented default: `true`)
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/knobs.rs:150-151`, SPEC §7
+**Description:** Internal test `safe_defaults_match_spec_7` asserts `!k.writes_enabled`, enshrining the divergence from SPEC. Reader expecting §7's `true` will be surprised.
+**Suggested fix:** Update SPEC §7 row for `writes_enabled` to `false (G3: safe cold-start)`, with a pointer to the rationale comment in `knobs.rs`. Don't flip the code — false is safer.
+
+### [A-38] MQTT `connect()` logs "mqtt connected" before any TCP handshake; misleads diagnostics
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/mod.rs:115`
+**Description:** `AsyncClient::new` doesn't connect; handshake is at first `event_loop.poll().await` inside `Subscriber::run`. Log claims success while the broker might be unreachable.
+**Suggested fix:** Downgrade this line to "mqtt client constructed; connecting…"; add a real "mqtt connected" log on the first `ConnAck` inside the subscriber loop.
+
+### [A-39] Dashboard `WRITES ON / OBSERVER` badge reads only `knobs.writes_enabled`, ignores config-file `[dbus] / [myenergi] writes_enabled`
+**Status:** open
+**Severity:** major
+**Location:** `web/src/index.ts:45-51`, `crates/shell/src/main.rs:54-64`
+**Description:** Three gates; badge reflects one. Flipping the kill switch with `dbus.writes_enabled=false` in config.toml turns the badge green but nothing writes. Operator is misled about actuation reality.
+**Suggested fix:** Publish the config-file gates as part of the snapshot (new sensors-meta-like struct or extra fields on the kill-switch state). Render badge as AND of all three gates. On startup, `warn!` once if any config-level gate is off.
+
+### [A-40] `i64::from(duration.as_secs()).as_secs()` log truncates 500 ms to 0 s
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:286`
+**Description:** `info!(poll_period_s = poll_period.as_secs())` reports 0 for the 500 ms poll — literally says "poll disabled" in logs. Confusing on first read.
+**Suggested fix:** `poll_period_ms = poll_period.as_millis()`; rename the field in the log.
+
+### [A-41] `forecast_fusion` passes NaN through `Max`/`Min`/`Mean` (non-total ordering leaks)
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/controllers/forecast_fusion.rs:56-77`
+**Description:** Any provider NaN (e.g. Open-Meteo outage mapping `null → 0/0`) contaminates fusion. Rust `f64::max(NaN, x) = x` hides it partly, but `reduce(f64::max)` isn't total on NaN; subtly non-deterministic.
+**Suggested fix:** `.filter(|v| v.is_finite())` before reducing. Mean must use the finite count.
+
+### [A-42] `MQTT log_layer` comment claims "drop oldest" but `try_send` drops newest
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/log_layer.rs:131`
+**Description:** Flood scenario loses the *most relevant* logs (peak-incident lines), not old ones.
+**Suggested fix:** Either update the comment to "drop newest on full queue" or implement true drop-oldest (`try_recv` + retry).
+
+### [A-43] Open-Meteo hidden `SYSTEM_EFFICIENCY=0.75` biases all weather_soc thresholds
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/forecast/open_meteo.rs:37`
+**Description:** Open-Meteo kWh is pre-multiplied by 0.75; Forecast.Solar uses its own model; Solcast its own. Fusion mixes them; user calibrating thresholds against Forecast.Solar misfires when Solcast goes stale and mean falls back.
+**Suggested fix:** Expose as `[forecast.open_meteo] system_efficiency = 0.75`; document bias in SPEC §5.7; show per-provider today_kwh in dashboard.
+
+### [A-44] HA discovery `weathersoc_*_energy_threshold` max=500; SPEC §3.6 says 0..1000
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/discovery.rs:150-153`
+**Description:** UI caps at 500 kWh; SPEC says 1000. Physical kWh/day for 15 kWp never hits even 100, so benign — still a three-way divergence to reconcile.
+**Suggested fix:** Update SPEC to 500, or lift the UI caps. Low-priority.
+
+### [A-45] Topology comment + dashboard cadence disagree with SPEC §5.3 (5 s vs code 2 s)
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/topology.rs:41`, `crates/shell/src/dbus/subscriber.rs:275`, SPEC §5.3
+**Description:** SPEC says 5 s; code changed to 2 s (G3 tuning). Stale SPEC + stale comment.
+**Suggested fix:** Update SPEC §5.3 to "2 s (G3 tuning)"; fix the subscriber comment's "5-second freshness window" language.
+
+### [A-46] Evening discharge + `allow_battery_to_car=true` can net-import at peak tariff if Zappi draws > export_cap
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:224-244, 245-345`
+**Description:** Zappi-clamp branch is bypassed by design (SPEC §5.9). `-export_power` is capped at `-grid_export_limit_w` only; nothing prevents a positive net import when Zappi draw exceeds PV + export cap. User opted in — money risk only.
+**Suggested fix:** Extra clamp: `setpoint_target.min(-zappi_current * grid_voltage)`. Or disable evening-discharge branch whenever `grid_power > small_margin` (already importing).
+
+### [A-47] `check_c4` `i32 - i32` can overflow (see A-31, duplicate)
+*(Duplicate of A-31; kept for cross-reference.)*
+
+### [A-48] `as_f64` accepts scientific-notation / "NaN" / "inf" strings
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/forecast/mod.rs:111-117`
+**Description:** `"NaN".parse::<f64>() = NAN`; `"inf" = INFINITY`. Forecast totals sum these; fused kWh becomes non-finite and silently feeds weather_soc.
+**Suggested fix:** `.ok().filter(|f| f.is_finite())` in `as_f64`.
+
+### [A-49] DischargeTime knob rejects HA default `"HH:MM:SS"` format
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs:290`
+**Description:** Strict string match on `"02:00"` / `"23:00"`. HA's time selector emits `"02:00:00"` → silently dropped.
+**Suggested fix:** Accept `HH:MM` and `HH:MM:SS` by stripping the seconds suffix.
+
+### [A-50] Forecast baseline uses `Local::now().date_naive()` while Open-Meteo returns site-local; TZ drift on Venus UTC install
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/forecast/solcast.rs:62-65`, `crates/shell/src/forecast/open_meteo.rs:71-72,92-94`
+**Description:** `timezone=auto` on Open-Meteo returns site-local times; we compare against `Local::now()` (machine-local). On a Venus with TZ=UTC the buckets are offset by the site's TZ difference.
+**Suggested fix:** Add `[forecast] timezone = "…"` config; use it both when querying and bucketing. Don't trust machine TZ for solar boundaries.
+
+### [A-51] myenergi `che` parsed with `unwrap_or(0.0)`; NaN / negative passthrough
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/myenergi/types.rs:44`
+**Description:** Firmware bug returning `"NaN"` or negative kWh becomes 0.0 / NaN. Once A-13 wires `che` into the controller, this becomes a failure mode.
+**Suggested fix:** `.and_then(|v| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0)).unwrap_or(0.0)`.
+
+### [A-52] `mqtt::rand_suffix` is PID⊕ns; collisions possible on fast restart; broker may reject dup client-id
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/mod.rs:130-139`
+**Description:** Low entropy. Clean-session=false persistent subscriptions could confuse the broker.
+**Suggested fix:** Use `uuid::Uuid::new_v4()`.
+
+### [A-53] Open-Meteo 15-min → 30-min comment drift
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/forecast/current_weather.rs:10`, `config.example.toml:105`, `crates/shell/src/config.rs:264-270`
+**Description:** Docstring says "default: 15 min"; actual default now 30 min.
+**Suggested fix:** Update the comment.
+
+### [A-54] `/api/version` stub: `min_supported_version == current_version`
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/server.rs:159-163`
+**Description:** No consumer; harmless but misleading.
+**Suggested fix:** Either wire to a real build-time constant or remove.
+
+### [A-55] γ-hold `last_dashboard_write` is global, not per-knob; also unset for `KillSwitch`
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:301-311`
+**Description:** HA writing `battery_soc_target` clears γ-suppression for all other knobs. `KillSwitch` itself is unprotected → HA can fight the dashboard over the kill switch.
+**Suggested fix:** Per-knob `last_dashboard_write`; extend γ-hold to `Command::KillSwitch`.
+
+### [A-56] D-Bus writer: no reconnect, no retry, no SetValue confirmation
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/writer.rs:28-37, 86-104`
+**Description:** Startup-only `Connection::system()`. Venus D-Bus restart → every write fails → TASS stuck in Commanded; MultiPlus retains old value. Fail-closed for device state, fail-open for our narrative.
+**Suggested fix:** Periodic health check + reconnect with backoff. Publish `ActuatedPhase{Unset}` for every target when disconnected.
+
+### [A-57] Schedules: 5 separate writes not atomic; partial writes leave inconsistent schedule on bus
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:806-841`, `crates/shell/src/dbus/writer.rs:39-55`
+**Description:** If Start/Duration succeed and Soc fails, Venus runs the new window with the old SoC target. TASS readback doesn't converge; dashboard shows Commanded forever.
+**Suggested fix:** Serialise the 5-write burst in the writer; on any failure, reset `target = unset` so TASS re-proposes. Treat the burst as atomic at the controller layer.
+
+### [A-58] Event channel send stalls runtime indefinitely on slow MQTT publish
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/main.rs:47`
+**Description:** Dashboard POSTs use `tx.send(event).await` without timeout. Slow runtime + burst of POSTs → tied-up Axum workers.
+**Suggested fix:** `send_timeout(1s)` for subscriber/mqtt-sub/dashboard; dashboard handler uses `try_send` → 503 on full channel.
+
+### [A-59] Asymmetric deadband uses `current_target`, not last-committed value
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:511-517`
+**Description:** If a target value V was propose-stuck in Pending (A-06), a new V' within 25 W is swallowed though the bus is still at a third earlier value. Fixes together with A-06.
+**Suggested fix:** Once A-06 lands, verify deadband behaviour in tests.
+
+### [A-60] `CallMyenergi` dispatched via `tokio::spawn` without timeout; multiple in-flight races
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/runtime.rs:104-110`
+**Description:** reqwest has 15s timeout; runtime doesn't enforce. Multiple mode-changes → last-writer-wins across spawns, undefined.
+**Suggested fix:** `tokio::time::timeout(20s, …)`; serialize via per-device mutex or single-slot channel.
+
+### [A-61] `apply_knob` catch-all arm silently drops unknown `(KnobId, KnobValue)` pairs
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:363-367`
+**Description:** MQTT schema-drift keeps the cold-start default silently. `writes_enabled=false` makes this safe-by-default, but drift is invisible.
+**Suggested fix:** `warn!` with both sides of the mismatch.
+
+### [A-62] Dashboard "Cadence" column label is wrong for signal-driven D-Bus sensors
+**Status:** open
+**Severity:** nit
+**Location:** `web/src/render.ts:88-99`, `crates/shell/src/dashboard/convert.rs:337-370`
+**Description:** Displayed value is the poll-floor (500 ms); actual `ItemsChanged` can arrive more often. "Cadence" misleads.
+**Suggested fix:** Rename to "Poll floor" or "Max interval".
+
+### [A-63] NaiveDateTime `num_milliseconds() as f64` precision on far-future clock drift
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs:279,281`
+**Description:** Always < 8 h in current use; pathological clock skew would saturate i64. Defensive.
+**Suggested fix:** Use `.to_std()` fallibly and reject.
+
+### [A-64] Boost-window match `(2..5)` branch "redundant with final else but preserved for decision log" — benign, comment misleading
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs:424-428`
+**Description:** Branches are distinguished only for decision-log clarity; not redundant mechanically.
+**Suggested fix:** Update comment.
+
+### [A-65] `Writer::set_value` sends `Value::I32` for Schedule Settings that may be `double` on older Venus
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/writer.rs:86-104`
+**Description:** Venus 3.60 variance; silent "Wrong type" errors that get retried every tick. Dup of A-29 sub-aspect.
+**Suggested fix:** See A-29.
+
+### [A-66] `Value::Bool(false)` as extract-scalar arm (see A-02, duplicate)
+*(Duplicate of A-02.)*
+
+### [A-67] `allow_battery_to_car` boot-reset depends on MQTT bootstrap completing
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/mod.rs:223-235`
+**Description:** SPEC §5.9 says "always boots false regardless of retained". Code relies on bootstrap path to send the reset; if MQTT is disabled entirely, `safe_defaults` handles it anyway — but the mechanism is less robust than the SPEC suggests.
+**Suggested fix:** Document the dependency; guarantee reset by calling `apply_knob(AllowBatteryToCar, false)` unconditionally at process start.
+
+### [A-68] `TlsConfiguration::Simple` accepts malformed CA bytes without parse-time validation
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/mod.rs:100-112`
+**Description:** Fails at event-loop time, not config-load time.
+**Suggested fix:** Parse the PEM at load; error on malformed.
+
+### [A-69] Periodic `GetItems` re-seed failures logged at `debug!` — silently mask stale-sensor root cause in production
+**Status:** resolved (PR-URGENT-13)
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs` (periodic re-seed branch in `run()` — the `poll.tick() =>` arm)
+**Description:** First observed in a live bundle: initial seed succeeds, controllers evaluate with fresh data for ~1 s, then **all sensors go stale** and the controller re-evaluates using the freshness-fail safety fallback (`10 W owner=System`). **Zero log output** for the next 28 minutes. Root cause is that the periodic re-seed's error path is a `debug!` line — default `RUST_LOG=info` suppresses it. Whether the failure is a D-Bus connection drop, service restart (A-11 overlap), or channel backpressure (A-30/A-58), the operator has no signal at all. A 15 kW controller that silently falls back to safety 10 W for hours in production is unsafe even in "safe" mode — we can't tell it's broken.
+**Suggested fix:** Promote the periodic-failure log from `debug!` to `warn!`, rate-limited (once per service per 30 s). After N consecutive failures for the same service (e.g. 5, which is 2.5 s with 500 ms cadence), escalate to `error!` and emit an `ActuatedPhase{Unset}` so the dashboard reflects the degraded state. Also emit a short INFO-level heartbeat ("subscriber: N poll ticks, M signals received") every 60 s so operators can see the subscriber is alive.
+
+### [A-70] MQTT bootstrap flood (431 retained knob replays) saturates the 256-slot event mpsc, stalling the subscriber's re-seed task
+**Status:** resolved (PR-URGENT-13)
+**Severity:** major
+
+---
+
+## PR-URGENT-13 — Review round 1 (executor `a29ae22fa080e9578`, reviewer `aa090253ed8f1a5bd`)
+
+### [PR-URGENT-13-D01] Heartbeat is gated on the poll-tick arm; a stalled poller silences the heartbeat — defeats the purpose
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:~319-418`
+**Description:** The heartbeat log fired from inside the periodic `poll.tick()` branch of the `select!`. If `seed_service` hangs on a wedged D-Bus call, the poll arm stops firing — and with it the heartbeat. "No heartbeat for 60 s" should positively indicate "subscriber alive but pollers stalled".
+**Fix:** Added a dedicated `let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);` (first tick skipped) with its own `select!` arm. Heartbeat emission + counter resets moved there via `std::mem::take`. Poll-tick arm only does re-seed work now. Stalled poll no longer silences the heartbeat.
+
+### [PR-URGENT-13-D02] `signals_since_last_heartbeat` counts unmapped/unrouted signals; label is misleading
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs:~319-418`
+**Description:** Single counter increment early in the `stream.next()` arm lumped unmapped-sender signals in with successfully-routed events, misleading operators.
+**Fix:** Split into `raw_signals_since_last_heartbeat` (incremented right after `Ok(msg)` — measures bus activity) and `routed_signals_since_last_heartbeat` (incremented only after `owner_to_service.get(&sender)` + `routes.get(&key)` + `extract_scalar` succeed — measures delivered readings). Heartbeat log includes both as distinct fields (`raw_signals=…, routed_signals=…`).
+
+### [PR-URGENT-13-D03] No boot-time alert when bootstrap fill approaches channel cap (transient miss by 5 s watermark poll)
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/shell/src/main.rs:~54-88`
+**Description:** 5 s watermark polling can miss a bootstrap burst that fills and drains inside the window. A future deploy with 10k retained topics would stall silently again because the 4096 cap is reached faster than the watermark samples.
+**Suggested fix:** Log peak water-level on first drain below 50 %. Or add an explicit bootstrap-completion log including "applied N events, channel cap M". Deferred — low probability, current fix already covers observed floor × 10.
+
+### [PR-URGENT-13-D04] Watermark warn lacks trend direction; operators can't tell climb vs drain from one log line
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/shell/src/main.rs:~78-82`
+**Description:** `warn!("event channel > 75% full ({in_use}/{max})")` — single scalar. Can't infer whether queue is climbing (→ imminent stall) or draining.
+**Suggested fix:** Track `last_in_use` between ticks; include `delta` in the warn. Deferred — not blocking.
+
+### [PR-URGENT-13-D05] Escalation `error!` has no throttle after recovery + re-flap
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs` (escalation arm at `count == 5`)
+**Description:** A flapping service at ~5-tick cadence emits one `error!` per cycle. Correct behaviour but busy log.
+**Suggested fix:** Throttle escalation to once per 5 min per service; log "recovered" INFO on Ok transition to make pairing explicit. Deferred.
+
+### [PR-URGENT-13-D06] No unit test for rate-limiter / escalation state machine
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs`
+**Description:** Executor acknowledged the omission. For a safety-critical diagnostic fix, behavioural test is warranted.
+**Suggested fix:** Extract the state (counts + last_warn) into a standalone struct; table-driven test over a sequence of tick results. Deferred; promote to M-AUDIT-2 if the state machine ever grows.
+
+### [PR-URGENT-13-D07] `error!` message interpolates a `const` via tracing's captured-identifier mechanism
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:~388`
+**Description:** `"periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ ..."`. Works on current Rust/tracing; a structured field (`threshold = RESEED_ESCALATE_AFTER`) is more grep-friendly.
+**Suggested fix:** `error!(service = %svc, threshold = RESEED_ESCALATE_AFTER, "periodic GetItems failing for N+ consecutive ticks; …")`. Deferred — not blocking.
+
+### [PR-URGENT-13-D08] Heartbeat arm is NOT starvation-proof from a blocking poll-arm body; comment overstates the guarantee
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs:~323-325, 370`
+**Description:** The D01 fix comment implies heartbeat fires even if the poll arm stalls. It doesn't: `tokio::select!` picks a ready branch and runs its body to completion before re-entering. If any `seed_service(svc, &tx).await` blocks (e.g. hung D-Bus call on a degraded service), the whole select is parked and the heartbeat arm cannot be polled. The mechanism still ensures heartbeat survives a busy signal stream (the original concern), but not a blocked seed call — which is actually the more likely stall.
+**Suggested fix:** Wrap `seed_service()` in `tokio::time::timeout(Duration::from_secs(5), …)` and treat timeout as a soft failure (bumps the existing fail counter). Restores heartbeat liveness under D-Bus wedge. Deferred — the current fix is still an improvement over round 1; separately addressable.
+
+### [PR-URGENT-13-D09] `routed_signals_since_last_heartbeat` counts per-dispatched-path, not per-signal; name misleads
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:~358`
+**Description:** Venus `ItemsChanged` carries N paths per signal. The counter increments inside the `for (child_path, child_value)` loop, so `routed_signals` can exceed `raw_signals`. Operators seeing `raw_signals=3, routed_signals=12` will be confused.
+**Suggested fix:** Either (a) rename field + log key to `routed_readings`, or (b) move the increment outside the inner loop and count "signals with ≥1 matched route". Deferred — cosmetic.
+**Location:** `crates/shell/src/main.rs:47` (`mpsc::channel(256)`), `crates/shell/src/mqtt/mod.rs:220-240` (bootstrap publishes), `crates/shell/src/dbus/subscriber.rs` (`tx.send(event).await`)
+**Description:** The user's broker carries 431 retained knob-state messages (live bundle confirms `mqtt bootstrap complete; applied=431`). All 431 are translated to `Event::Command { … }` and queued into the 256-capacity mpsc. The subscriber's periodic re-seed calls `tx.send(event).await` too; if the channel is full, the `.await` blocks. Any time-critical re-seed work stalls until the runtime drains the bootstrap flood. Combined with A-69, this produces the "sensors stale, no logs" symptom seen in the field. Root cause also includes the fact that we have ~10× more retained state than our knob schema actually needs (probably stale/obsolete keys on the broker).
+**Suggested fix:**
+1. Enlarge the channel (e.g. `mpsc::channel(4096)`). Observations suggest 431+ is the floor; 4096 gives plenty of headroom.
+2. Or (better) switch bootstrap to a synchronous collect-then-apply pattern: buffer all retained knobs into a `HashMap<KnobId, KnobValue>` on the MQTT subscriber side, then emit a single `Event::BootstrapKnobs(map)` or apply directly via a dedicated high-priority channel. Avoids the per-knob event flood.
+3. Independently: `warn!` when the channel exceeds some watermark (say 75% full) so the operator can see it coming. Related to A-30.
+4. Separately investigate why the broker has 431 retained knobs; clean stale retained state via `mosquitto_pub` with an empty retained payload on obsolete topics.
+
+---
+
+(End of audit backlog. As each PR is opened for a cluster of audits, its
+defects section follows below with review-round findings.)
+
+---
+
+## PR-01 — Review round 1 (executor: `a09e8a816343d33e9`, reviewer: `a2c8b73332f4d1e3b`)
+
+### [PR-01-D01] Subnormal-float sub-case from A-01 not addressed by `f.is_finite()` gate
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs:437-445`
+**Description:** A-01 enumerates "NaN / ±Inf / sub-normal floats". The fix uses `f.is_finite()`, which returns true for all subnormals. Physical sensor readings in this domain should never be subnormal; admitting them is at best "correct by accident" (downstream truncations zero them out).
+**Fix:** Tightened the guard to `Value::F64(f) if f.is_finite() && (*f == 0.0 || f.is_normal()) => Some(*f)` at `subscriber.rs:~437-445`. Added subnormal-rejection assertion `extract_scalar(&Value::F64(f64::MIN_POSITIVE / 2.0)) == None` in the test module.
+
+### [PR-01-D02] Test exercises `extract_scalar` in isolation; A-01's "property test: random NaN → no actuation effects" is not delivered
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs` tests module
+**Description:** End-to-end path (D-Bus signal → `ItemEntry` → `extract_scalar` → `route_to_event` → `Event::Sensor` → core `process` → effects) not covered. A future refactor could route Bool through a new arm and this unit test wouldn't catch it.
+**Suggested fix:** DEFERRED to M-AUDIT-2 as a standalone testing hardening item. Out of scope for PR-01's surgical fix.
+
+### [PR-01-D03] Fix suppresses the event silently; no counter / log of dropped non-finite readings
+**Status:** open
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/subscriber.rs:441-444, caller sites ~291, ~392`
+**Description:** Silent drop on non-finite. Operator debugging "sensor went Stale" has no hint that Venus *is* publishing — just publishing bad data.
+**Suggested fix:** DEFERRED to M-AUDIT-2 (observability). Current fail-safe (stale → 10 W idle) is correct; diagnostic surface is the enhancement.
+
+### [PR-01-D04] Deleted `Value::Bool` arm is not tested for the actual A-02 failure case: `Bool(false)`
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:~481-488`
+**Description:** A-02's documented failure is `Value::Bool(false)` → 0 % SoC. Test only covered `Bool(true)`.
+**Fix:** Added `assert_eq!(extract_scalar(&Value::Bool(false)), None);` to the test at `subscriber.rs:~481-488`.
+
+### [PR-01-D05] `#[allow(clippy::match_same_arms)]` masks future unintentional duplicate arms across the whole match
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:~437-445`
+**Description:** The explicit `Value::F64(_) => None` arm only existed to pair with its guarded sibling; the final `_ => None` wildcard already handles non-finite F64 correctly because Rust tries arms in order and the guard fails over to `_`.
+**Fix:** Removed both the redundant `Value::F64(_) => None` arm and the `#[allow(clippy::match_same_arms)]` attribute. Guard comment retained above the guarded arm. Clippy `-D warnings` green.
+
+### [PR-01-D06] Pre-existing I64/U64 → f64 precision loss in `extract_scalar` surfaced by PR-01's attention to float validity
+**Status:** open
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/subscriber.rs:447-454`
+**Description:** `I64 / U64 → f64` silently loses precision for values > 2^53. Unlikely for current sensor paths but the guarantee "returns some finite f64" is weaker than "returns an exact-value f64".
+**Suggested fix:** DEFERRED to M-AUDIT-2. Add a docstring caveat; not a regression of PR-01.
+
+---
+
+## PR-02 — Review round 1 (executor: `af55a7504fd88c9a3`, reviewer: `ad9616e6dbef38f49`)
+
+### [PR-02-D01] No upper-bound guard on `grid_voltage`; sensor over-voltage glitches pass through as truth
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:43-47` (`effective_grid_v`)
+**Description:** Fix gates only the lower bound. A meter glitch / calibration drift / transient surge reporting `grid_voltage = 300 V` (or `1e6`) is treated as valid. ET340 latches ghost readings occasionally. `grid_current = grid_power / ghost_v` under-estimates real current; `grid_underuse` grows artificially; `input_current_limit` is set looser than reality. Same-class bug as A-03 on the opposite rail.
+**Suggested fix:** Extend the guard: `if !measured.is_finite() || !(MIN_SENSIBLE_GRID_V..=MAX_SENSIBLE_GRID_V).contains(&measured)` with `MAX_SENSIBLE_GRID_V = 260.0` (EN 50160: +10% of 230 V = 253 V; 260 V adds a small safety margin).
+
+### [PR-02-D02] `MIN_SENSIBLE_GRID_V = 180.0` admits 17% sag as "trusted", well outside EN 50160's acceptable band
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:37`
+**Description:** EN 50160 specifies ±10% of nominal (207–253 V for 230 V). 180 V is a sustained brownout reading that should not be used as an arithmetic divisor regardless of whether the line is actually sagging — it's either an untrustworthy measurement or the grid is in a state we shouldn't be computing fine-grained current controls from. 180 V divides to inflated current figures fed into `grid_underuse` and `gridside_consumption_current`.
+**Suggested fix:** Raise `MIN_SENSIBLE_GRID_V` to `207.0` (EN 50160 −10%). Any sub-207 V reading → fallback + decision-factor flag. Brownouts of that magnitude warrant conservative arithmetic with the nominal.
+
+### [PR-02-D03] Decision factor string hard-codes "230.0V" separately from `NOMINAL_GRID_V`
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/current_limit.rs:260-263`
+**Description:** `format!("{:.2}V → 230.0V", input.grid_voltage)` embeds the nominal as a literal string. Retuning `NOMINAL_GRID_V` silently desynchs the decision factor. Violates project "no magic constants" hygiene.
+**Suggested fix:** `format!("{:.2}V → {NOMINAL_GRID_V:.2}V", input.grid_voltage)` or reuse `v_eff`.
+
+### [PR-02-D04] Boundary-at-threshold test missing (exact 180 V / 207 V / 260 V)
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/current_limit.rs` tests (existing: `179.0`, `240.0`)
+**Description:** Predicate is strict `<`. Off-by-one mutation (`<` → `<=`) would not be caught by current tests. Same gap at upper-bound once PR-02-D01 lands.
+**Suggested fix:** Add `current_limit_no_grid_v_fallback_at_exact_threshold` (tests both the lower and eventual upper bound with exact values, asserting the no-fallback path).
+
+### [PR-02-D05] Fallback tests assert presence of `grid_v_fallback` factor but not the numeric value the fallback produced
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/current_limit.rs` fallback tests
+**Description:** `current_limit_grid_v_fallback_on_grid_loss` asserts `is_finite()` + factor present. A silent refactor that swapped `NOMINAL_GRID_V` to 240 V — or broke the helper to return `measured` while still setting `fell_back=true` — would still pass. The "no fallback" sibling has a numeric regression check; the fallback path doesn't.
+**Suggested fix:** With `grid_power = 1000.0, grid_voltage = 0.0`, assert `(out.debug.grid_current - (1000.0 / 230.0)).abs() < EPSILON` (≈ 4.347 A).
+
+### [PR-02-D06] Three `effective_grid_v` calls with the same input is tautological; OR of three flags is always `fell_back_1`
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/controllers/current_limit.rs:156, 192, 205`
+**Description:** All three sites pass `input.grid_voltage` — a single scalar. `v_eff_1 == v_eff_2 == v_eff_3` and all three `fell_back_N` flags are identical by construction. OR reduces to `fell_back_1`.
+**Suggested fix:** Compute once at the top of `evaluate_current_limit`: `let (v_eff, grid_v_fell_back) = effective_grid_v(input.grid_voltage);`. Use `v_eff` at all three sites. Remove the `_1/_2/_3` suffixes and the tautological OR.
+
+### [PR-02-D07] `effective_grid_v` file-private; future controllers that divide by `grid_voltage` will silently re-open A-03
+**Status:** open (deferred)
+**Severity:** nit
+**Note:** Rendered moot if the user picks option (a) on the grid_voltage design question (drop voltage tracking entirely; use 230 V constant + direct grid_current sensor).
+
+### [PR-02-D08] `MAX_SENSIBLE_GRID_V = 260.0` doc comment says "EN 50160 caps at +10% (253 V)" — code/comment mismatch
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/controllers/current_limit.rs:~39`
+**Description:** Comment cites 253 V; code uses 260 V. Either update comment to explain why 260 (headroom above EN 50160 for benign surges) or tighten the constant to 253.
+**Suggested fix:** Update docstring: "EN 50160 caps legitimate readings at +10% of nominal (253 V); we add 7 V of headroom to avoid false fallback on benign surges".
+
+### [PR-02-D09] Test `current_limit_grid_v_fallback_just_below_threshold` is 28 V below the new 207 V floor
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/controllers/current_limit.rs:~683`
+**Description:** Test named "just below threshold" uses 179 V; after PR-02's floor raise to 207, 179 is "well below". Name is stale.
+**Suggested fix:** Either rename to `_well_below_threshold` or add a 206.9 V "just below" companion. Not blocking.
+
+---
+
+## PR-09a — Review round 1 (executor: `a183ad782e39e74a6`, reviewer: `a5a1d3eef8d38c125`)
+
+**Note on scope**: the reviewer sees the full uncommitted working-tree state and reports scope-sprawl (D06/D07). The cause is accumulated pre-review-loop changes (VebusOutputCurrent removal, ChargeBatteryExtendedMode knob, weather_soc decision honesty, sensors_meta, dashboard DOM refactor, MQTT hostname fix, `writes_enabled` cold-start flip) that were never committed. PR-09a's own patch is small and correct; the "sprawl" findings are artifacts of a dirty baseline, not regressions introduced by this PR. Listed below for completeness but marked accordingly.
+
+### [PR-09a-D01] `apply_setpoint_safety` path does not publish a `grid_setpoint` Decision
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~438-440, ~496-511`
+**Description:** On freshness-fail the safety branch proposes 10 W without setting `world.decisions.grid_setpoint`. Pre-existing gap (not a regression). Dashboard shows `None` for grid_setpoint Decision until a Fresh tick arrives.
+**Suggested fix:** Add a Decision in `apply_setpoint_safety` ("Safety 10 W — required sensors not fresh") with factors listing which sensor failed the freshness gate. Deferred pending PR-05 (observer→live invariant) which will touch the same branch.
+
+### [PR-09a-D02] Three clamp factors always emitted, even when clamp didn't alter the value
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~475-481`
+**Description:** `pre_clamp_setpoint_W`, `clamp_bounds_W`, `post_clamp_setpoint_W` added unconditionally. Common case `pre == post`; three noise rows per tick. PR-02 pattern emits its `grid_v_fallback` factor only when fallback fires.
+**Suggested fix:** Emit only when `pre_clamp != capped`. Or collapse into a single factor `clamp = "X W → Y W (bounds [-E, +I])"` — one row, self-describing.
+
+### [PR-09a-D03] `setpoint_clamps_to_export_cap` test is not a regression test; redundant with existing
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:~1848-1866`
+**Description:** Asserts post-PR behaviour, not pre-PR. Existing `grid_export_cap_is_absolute_for_setpoint_target` already covers the invariant.
+**Suggested fix:** Delete as redundant, or convert to a property test (pre-clamp arbitrary negative → post-clamp ≥ -export_cap).
+
+### [PR-09a-D04] `setpoint_decision_has_pre_and_post_clamp_factors` verifies factor names only, not values
+**Status:** open
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~1868-1890`
+**Description:** Test checks factor presence, not whether `pre_clamp_setpoint_W == out.setpoint_target (pre-clamp)` or `post_clamp_setpoint_W == world.grid_setpoint.target.value`. Factor correctness is not defended.
+**Suggested fix:** Add value-level assertions: set `grid_import_limit_w=7`, `grid_export_limit_w=3000`, `force_disable_export=true`; assert the three factor values match the expected "10", "[-3000, +7]", "7".
+
+### [PR-09a-D05] SPEC §7 row for `grid_import_limit_w` is flavorless
+**Status:** open
+**Severity:** nit
+**Location:** `SPEC.md:442`
+**Description:** Row reads "new knob — user-configurable import cap (W)". Doesn't explain the symmetric relationship with `grid_export_limit_w`, doesn't mention the behaviour change (positive targets now cap at 10 W by default — was unclamped), doesn't reference A-10.
+**Suggested fix:** Rewrite as "Symmetric counterpart to `grid_export_limit_w`; hard ceiling on positive (import) setpoint. Default `10` preserves idle-bleed behaviour as explicit bound." Cross-reference `grid_export_limit_w` row.
+
+### [PR-09a-D06] PR scope sprawl: diff includes material unrelated to the setpoint clamp
+**Status:** resolved (mis-attributed; see note)
+**Severity:** major (for PR hygiene; not a correctness bug)
+**Location:** whole diff
+**Description:** The reviewer's `git diff` captured not only PR-09a's scoped changes but also substantial pre-existing uncommitted state from before the review-loop started: `VebusOutputCurrent` removal, `ChargeBatteryExtendedMode` knob, weather_soc honesty decisions, `sensors_meta` provenance, dashboard DOM delegated-handler refactor, MQTT hostname fix, `writes_enabled` cold-start flip (which was applied days ago, not by this PR).
+**Fix:** Not a PR-09a defect — pre-review-loop session state. Orchestrator action: propose a **baseline commit** checkpointing the dirty tree before the review-loop began, so subsequent PR commits are atomic.
+
+### [PR-09a-D07] Observer-mode default `writes_enabled: true → false` is in the diff
+**Status:** resolved (mis-attributed; see note)
+**Severity:** major (for PR hygiene)
+**Location:** `crates/core/src/knobs.rs:144-150`, three test fixtures
+**Description:** The flip happened in an earlier session; it's in the reviewer's diff because it was never committed. A-37 in defects.md already tracks this (SPEC §7 says `true`; code says `false`).
+**Fix:** Not a PR-09a defect. A-37 remains open and the resolution (update SPEC §7) will land separately.
+
+### [PR-09a-D08] `grid_import_limit_w as i32` silent `u32 → i32` truncation — same family as A-34
+**Status:** open (deferred to PR-09b)
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:~418`
+**Description:** Clones the A-34 pattern rather than avoiding it. Addressed together in PR-09b.
+**Suggested fix:** PR-09b: `i32::try_from(k.grid_import_limit_w).unwrap_or(i32::MAX)`, same pattern as A-34's fix for the export side.
+
+### [PR-09a-D09] No test for `grid_import_limit_w = 0` edge case
+**Status:** open (deferred to PR-09b)
+**Severity:** nit
+**Location:** tests module
+**Description:** Retained-MQTT `"0"` parses to u32 0 → `clamp(-export_cap, 0)` pins positive targets at 0, breaking idle-bleed (same family as A-10 for the export side).
+**Suggested fix:** PR-09b: validate non-zero `grid_import_limit_w` at ingress, OR document the 0-case idle-promotion explicitly as part of A-10's fix.
+**Location:** `crates/core/src/controllers/current_limit.rs` (private consts + helper)
+**Description:** The fix is local. A reviewer adding a new controller that does `grid_power / input.grid_voltage` is not visually reminded that the gated form exists.
+**Suggested fix:** DEFERRED to M-AUDIT-2. Lift `effective_grid_v` + the consts into `crates/core/src/controllers/mod.rs` or a new `util.rs`. Add a module-level doc forbidding direct `/ grid_voltage` in any controller.

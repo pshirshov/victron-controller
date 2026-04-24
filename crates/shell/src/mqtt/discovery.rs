@@ -143,6 +143,7 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         (KnobId::ZappiLimit, "number", json!({"min": 1.0, "max": 100.0, "step": 1.0, "unit_of_measurement": "%"})),
         (KnobId::ZappiEmergencyMargin, "number", json!({"min": 0.0, "max": 10.0, "step": 0.5, "unit_of_measurement": "A"})),
         (KnobId::GridExportLimitW, "number", json!({"min": 0, "max": 10000, "step": 50, "unit_of_measurement": "W"})),
+        (KnobId::GridImportLimitW, "number", json!({"min": 0, "max": 10000, "step": 10, "unit_of_measurement": "W"})),
         (KnobId::EddiEnableSoc, "number", json!({"min": 50, "max": 100, "step": 1, "unit_of_measurement": "%"})),
         (KnobId::EddiDisableSoc, "number", json!({"min": 50, "max": 100, "step": 1, "unit_of_measurement": "%"})),
         (KnobId::EddiDwellS, "number", json!({"min": 0, "max": 3600, "step": 5, "unit_of_measurement": "s"})),
@@ -158,6 +159,11 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             KnobId::ForecastDisagreementStrategy,
             "select",
             json!({"options": ["max", "min", "mean", "solcast_if_available_else_mean"]}),
+        ),
+        (
+            KnobId::ChargeBatteryExtendedMode,
+            "select",
+            json!({"options": ["auto", "forced", "disabled"]}),
         ),
     ]
 }

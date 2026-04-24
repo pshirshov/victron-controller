@@ -140,6 +140,13 @@ pub struct MyenergiConfig {
     /// value freshness.
     #[serde(default = "default_myenergi_poll", with = "humantime_serde_compat")]
     pub poll_period: Duration,
+    /// When `true`, `CallMyenergi(SetZappiMode|SetEddiMode)` effects are
+    /// executed. When `false`, they are logged but not emitted —
+    /// mirrors `[dbus] writes_enabled` but for the myenergi cloud
+    /// HTTP path. Distinct from the runtime `writes_enabled` kill
+    /// switch (which also gates these effects at the core layer).
+    #[serde(default = "default_true")]
+    pub writes_enabled: bool,
 }
 
 impl Default for MyenergiConfig {
@@ -151,6 +158,7 @@ impl Default for MyenergiConfig {
             zappi_serial: None,
             eddi_serial: None,
             poll_period: default_myenergi_poll(),
+            writes_enabled: true,
         }
     }
 }
@@ -254,7 +262,11 @@ impl Default for OpenMeteoProviderConfig {
 }
 
 fn default_open_meteo_cadence() -> Duration {
-    Duration::from_secs(15 * 60)
+    // 30 min. Covers both the solar-irradiance forecast (slow-moving,
+    // no need to hit it more often) and the current-temperature poll,
+    // which feeds `freshness_outdoor_temperature = 40 min` in the core
+    // topology — one fetch every cadence, ~10 min of fresh headroom.
+    Duration::from_secs(30 * 60)
 }
 
 /// One PV plane from config. `azimuth_deg` follows the compass
@@ -350,7 +362,7 @@ mod humantime_serde_compat {
         }
     }
 
-    fn parse_human(s: &str) -> Result<Duration, String> {
+    pub(crate) fn parse_human(s: &str) -> Result<Duration, String> {
         let s = s.trim();
         if let Some(n) = s.strip_suffix("ms") {
             n.trim()
@@ -366,6 +378,16 @@ mod humantime_serde_compat {
             n.trim()
                 .parse::<u64>()
                 .map(|m| Duration::from_secs(m * 60))
+                .map_err(|e| e.to_string())
+        } else if let Some(n) = s.strip_suffix('h') {
+            n.trim()
+                .parse::<u64>()
+                .map(|h| Duration::from_secs(h * 3600))
+                .map_err(|e| e.to_string())
+        } else if let Some(n) = s.strip_suffix('d') {
+            n.trim()
+                .parse::<u64>()
+                .map(|d| Duration::from_secs(d * 86400))
                 .map_err(|e| e.to_string())
         } else {
             s.parse::<u64>()
@@ -449,6 +471,15 @@ mod tests {
         assert_eq!(c.dashboard.port, 9000);
         assert_eq!(c.dashboard.bind, "127.0.0.1");
         assert_eq!(c.tuning.tick_period, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn parses_hour_and_day_suffixes() {
+        use super::humantime_serde_compat::parse_human;
+        assert_eq!(parse_human("2h"), Ok(Duration::from_secs(7200)));
+        assert_eq!(parse_human("1h"), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_human("15m"), Ok(Duration::from_secs(900)));
+        assert_eq!(parse_human("1d"), Ok(Duration::from_secs(86400)));
     }
 
     #[test]

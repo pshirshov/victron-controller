@@ -2,6 +2,7 @@
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {Knobs, Knobs_UEBACodec} from './Knobs'
 import {Bookkeeping, Bookkeeping_UEBACodec} from './Bookkeeping'
+import {SensorMeta, SensorMeta_UEBACodec} from './SensorMeta'
 import {Actuated, Actuated_UEBACodec} from './Actuated'
 import {Sensors, Sensors_UEBACodec} from './Sensors'
 import {Forecasts, Forecasts_UEBACodec} from './Forecasts'
@@ -11,16 +12,18 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _captured_at_epoch_ms: bigint;
     private readonly _captured_at_naive_iso: string;
     private readonly _sensors: Sensors;
+    private readonly _sensors_meta: Record<string, SensorMeta>;
     private readonly _actuated: Actuated;
     private readonly _knobs: Knobs;
     private readonly _bookkeeping: Bookkeeping;
     private readonly _forecasts: Forecasts;
     private readonly _decisions: Decisions;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
+        this._sensors_meta = sensors_meta
         this._actuated = actuated
         this._knobs = knobs
         this._bookkeeping = bookkeeping
@@ -36,6 +39,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     }
     public get sensors(): Sensors {
         return this._sensors;
+    }
+    public get sensors_meta(): Record<string, SensorMeta> {
+        return this._sensors_meta;
     }
     public get actuated(): Actuated {
         return this._actuated;
@@ -58,6 +64,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             captured_at_epoch_ms: this._captured_at_epoch_ms,
             captured_at_naive_iso: this._captured_at_naive_iso,
             sensors: this._sensors,
+            sensors_meta: this._sensors_meta,
             actuated: this._actuated,
             knobs: this._knobs,
             bookkeeping: this._bookkeeping,
@@ -66,11 +73,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
             'sensors' in overrides ? overrides.sensors! : this._sensors,
+            'sensors_meta' in overrides ? overrides.sensors_meta! : this._sensors_meta,
             'actuated' in overrides ? overrides.actuated! : this._actuated,
             'knobs' in overrides ? overrides.knobs! : this._knobs,
             'bookkeeping' in overrides ? overrides.bookkeeping! : this._bookkeeping,
@@ -79,11 +87,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
             obj.sensors,
+            obj.sensors_meta,
             obj.actuated,
             obj.knobs,
             obj.bookkeeping,
@@ -140,6 +149,20 @@ export class WorldSnapshot_UEBACodec {
             {
                 const before = buffer.position();
                 BinTools.writeI32(writer, before);
+                {
+                const entries = Object.entries(value.sensors_meta);
+                BinTools.writeI32(buffer, entries.length);
+                for (const [k, v] of entries) {
+                    BinTools.writeString(buffer, k);
+                    SensorMeta_UEBACodec.instance.encode(ctx, v, buffer);
+                }
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
                 Actuated_UEBACodec.instance.encode(ctx, value.actuated, buffer);
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
@@ -172,6 +195,14 @@ export class WorldSnapshot_UEBACodec {
             BinTools.writeI64(writer, value.captured_at_epoch_ms);
             BinTools.writeString(writer, value.captured_at_naive_iso);
             Sensors_UEBACodec.instance.encode(ctx, value.sensors, writer);
+            {
+                const entries = Object.entries(value.sensors_meta);
+                BinTools.writeI32(writer, entries.length);
+                for (const [k, v] of entries) {
+                    BinTools.writeString(writer, k);
+                    SensorMeta_UEBACodec.instance.encode(ctx, v, writer);
+                }
+            }
             Actuated_UEBACodec.instance.encode(ctx, value.actuated, writer);
             Knobs_UEBACodec.instance.encode(ctx, value.knobs, writer);
             Bookkeeping_UEBACodec.instance.encode(ctx, value.bookkeeping, writer);
@@ -188,7 +219,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < 7; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -196,6 +227,7 @@ export class WorldSnapshot_UEBACodec {
         const captured_at_epoch_ms = BinTools.readI64(reader);
         const captured_at_naive_iso = BinTools.readString(reader);
         const sensors = Sensors_UEBACodec.instance.decode(ctx, reader);
+        const sensors_meta = Object.fromEntries(Array.from({ length: BinTools.readI32(reader) }, () => [BinTools.readString(reader), SensorMeta_UEBACodec.instance.decode(ctx, reader)] as const));
         const actuated = Actuated_UEBACodec.instance.decode(ctx, reader);
         const knobs = Knobs_UEBACodec.instance.decode(ctx, reader);
         const bookkeeping = Bookkeeping_UEBACodec.instance.decode(ctx, reader);
@@ -205,6 +237,7 @@ export class WorldSnapshot_UEBACodec {
             captured_at_epoch_ms,
             captured_at_naive_iso,
             sensors,
+            sensors_meta,
             actuated,
             knobs,
             bookkeeping,

@@ -22,6 +22,7 @@ use crate::dashboard::SnapshotBroadcast;
 use crate::dashboard::convert::world_to_snapshot;
 use crate::dbus::Writer;
 use crate::mqtt::Publisher as MqttPublisher;
+use crate::dashboard::convert::MetaContext;
 use crate::myenergi::Writer as MyenergiWriter;
 
 #[derive(Debug)]
@@ -33,6 +34,7 @@ pub struct Runtime {
     myenergi: MyenergiWriter,
     mqtt: Option<MqttPublisher>,
     snapshot_stream: Arc<SnapshotBroadcast>,
+    meta: MetaContext,
 }
 
 impl Runtime {
@@ -43,6 +45,7 @@ impl Runtime {
         mqtt: Option<MqttPublisher>,
         topology: Topology,
         snapshot_stream: Arc<SnapshotBroadcast>,
+        meta: MetaContext,
     ) -> Self {
         Self {
             world,
@@ -52,6 +55,7 @@ impl Runtime {
             myenergi,
             mqtt,
             snapshot_stream,
+            meta,
         }
     }
 
@@ -81,7 +85,7 @@ impl Runtime {
             let (effects, snapshot) = {
                 let mut world = self.world.lock().await;
                 let effects = process(&event, &mut world, &self.clock, &self.topology);
-                let snapshot = world_to_snapshot(&world);
+                let snapshot = world_to_snapshot(&world, &self.meta);
                 (effects, snapshot)
             };
             // Fan the fresh snapshot out to every WebSocket client.

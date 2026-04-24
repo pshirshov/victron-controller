@@ -37,6 +37,22 @@ pub enum ForecastDisagreementStrategy {
     SolcastIfAvailableElseMean,
 }
 
+/// Override for the `charge_battery_extended` bit that the schedules
+/// controller consults. Legacy derivation is
+/// `!disable_night_grid_discharge || charge_to_full_required`, but the
+/// user sometimes wants to pin it on or off regardless.
+///
+///   * `Auto` — use the legacy-derived value (default).
+///   * `Forced` — always `true`, even when nothing else would set it.
+///   * `Disabled` — always `false`, even when derivation says yes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChargeBatteryExtendedMode {
+    #[default]
+    Auto,
+    Forced,
+    Disabled,
+}
+
 /// User-controlled knobs. One struct, one source of truth.
 ///
 /// Defaults come from [`Knobs::safe_defaults`]; see SPEC §7.
@@ -70,6 +86,8 @@ pub struct Knobs {
     // --- New knobs (SPEC §2.10a) ---
     /// Hard cap on negative setpoint magnitude (grid-side export limit, W).
     pub grid_export_limit_w: u32,
+    /// Hard cap on positive setpoint magnitude (grid-side import limit, W).
+    pub grid_import_limit_w: u32,
     /// Optionally allow discharging DC battery into the EV during Zappi-active
     /// windows. Always boots `false` regardless of retained value.
     pub allow_battery_to_car: bool,
@@ -90,6 +108,9 @@ pub struct Knobs {
     // --- Ops ---
     pub writes_enabled: bool,
     pub forecast_disagreement_strategy: ForecastDisagreementStrategy,
+    /// Manual override for the legacy `charge_battery_extended`
+    /// derivation. Default `Auto` → use the derived value.
+    pub charge_battery_extended_mode: ChargeBatteryExtendedMode,
 }
 
 impl Knobs {
@@ -115,6 +136,7 @@ impl Knobs {
             zappi_limit: 100.0,
             zappi_emergency_margin: 5.0,
             grid_export_limit_w: 4900,
+            grid_import_limit_w: 10,
             allow_battery_to_car: false,
             eddi_enable_soc: 96.0,
             eddi_disable_soc: 94.0,
@@ -124,8 +146,14 @@ impl Knobs {
             weathersoc_ok_energy_threshold: 20.0,
             weathersoc_high_energy_threshold: 80.0,
             weathersoc_too_much_energy_threshold: 80.0,
-            writes_enabled: true,
+            // Safe cold-start: no actuation effects until either a
+            // retained MQTT `<root>/writes_enabled/state = true` seeds us
+            // or a user flips the kill switch explicitly from the
+            // dashboard. Bias-to-safety per SPEC §7; observer-mode is
+            // the default, opt-in to act.
+            writes_enabled: false,
             forecast_disagreement_strategy: ForecastDisagreementStrategy::SolcastIfAvailableElseMean,
+            charge_battery_extended_mode: ChargeBatteryExtendedMode::Auto,
         }
     }
 }
@@ -157,7 +185,9 @@ mod tests {
         assert!((k.eddi_enable_soc - 96.0).abs() < f64::EPSILON);
         assert!((k.eddi_disable_soc - 94.0).abs() < f64::EPSILON);
         assert_eq!(k.eddi_dwell_s, 60);
-        assert!(k.writes_enabled);
+        // Cold-start safety: observer-mode by default; user/MQTT must
+        // explicitly enable writes.
+        assert!(!k.writes_enabled);
     }
 
     #[test]

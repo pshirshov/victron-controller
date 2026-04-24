@@ -1,3 +1,4 @@
+use crate::victron_controller::dashboard::charge_battery_extended_mode::ChargeBatteryExtendedMode;
 use crate::victron_controller::dashboard::debug_full_charge::DebugFullCharge;
 use crate::victron_controller::dashboard::discharge_time::DischargeTime;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
@@ -69,6 +70,13 @@ pub struct SetDebugFullCharge {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct SetForecastDisagreementStrategy {
     pub value: ForecastDisagreementStrategy,
+}
+
+
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct SetChargeBatteryExtendedMode {
+    pub value: ChargeBatteryExtendedMode,
 }
 
 
@@ -323,6 +331,41 @@ impl crate::baboon_runtime::BaboonBinDecode for SetForecastDisagreementStrategy 
     }
 }
 
+impl crate::baboon_runtime::BaboonBinCodecIndexed for SetChargeBatteryExtendedMode {
+    fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
+        0
+    }
+}
+
+impl crate::baboon_runtime::BaboonBinEncode for SetChargeBatteryExtendedMode {
+    fn encode_ueba(&self, ctx: &crate::baboon_runtime::BaboonCodecContext, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
+        let value = self;
+        if ctx.use_indices() {
+            crate::baboon_runtime::bin_tools::write_byte(writer, 0x01)?;
+            let mut buffer: Vec<u8> = Vec::new();
+            value.value.encode_ueba(ctx, &mut buffer)?;
+            writer.write_all(&buffer)?;
+        } else {
+            crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
+            value.value.encode_ueba(ctx, writer)?;
+        }
+        Ok(())
+    }
+}
+
+impl crate::baboon_runtime::BaboonBinDecode for SetChargeBatteryExtendedMode {
+    fn decode_ueba(ctx: &crate::baboon_runtime::BaboonCodecContext, reader: &mut dyn std::io::Read) -> Result<Self, Box<dyn std::error::Error>> {
+        let (_header, index) = <Self as crate::baboon_runtime::BaboonBinCodecIndexed>::read_index(ctx, reader)?;
+        if ctx.use_indices() {
+            assert_eq!(index.len(), <Self as crate::baboon_runtime::BaboonBinCodecIndexed>::index_elements_count(ctx) as usize);
+        }
+        let value = ChargeBatteryExtendedMode::decode_ueba(ctx, reader)?;
+        Ok(SetChargeBatteryExtendedMode {
+            value,
+        })
+    }
+}
+
 impl crate::baboon_runtime::BaboonBinCodecIndexed for SetKillSwitch {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
         0
@@ -366,6 +409,7 @@ pub enum Command {
     SetDischargeTime(SetDischargeTime),
     SetDebugFullCharge(SetDebugFullCharge),
     SetForecastDisagreementStrategy(SetForecastDisagreementStrategy),
+    SetChargeBatteryExtendedMode(SetChargeBatteryExtendedMode),
     SetKillSwitch(SetKillSwitch),
 }
 
@@ -391,6 +435,9 @@ impl serde::Serialize for Command {
             }
             Command::SetForecastDisagreementStrategy(v) => {
                 map.serialize_entry("SetForecastDisagreementStrategy", v)?;
+            }
+            Command::SetChargeBatteryExtendedMode(v) => {
+                map.serialize_entry("SetChargeBatteryExtendedMode", v)?;
             }
             Command::SetKillSwitch(v) => {
                 map.serialize_entry("SetKillSwitch", v)?;
@@ -418,8 +465,9 @@ impl<'de> serde::Deserialize<'de> for Command {
                     "SetDischargeTime" => Ok(Command::SetDischargeTime(map.next_value()?)),
                     "SetDebugFullCharge" => Ok(Command::SetDebugFullCharge(map.next_value()?)),
                     "SetForecastDisagreementStrategy" => Ok(Command::SetForecastDisagreementStrategy(map.next_value()?)),
+                    "SetChargeBatteryExtendedMode" => Ok(Command::SetChargeBatteryExtendedMode(map.next_value()?)),
                     "SetKillSwitch" => Ok(Command::SetKillSwitch(map.next_value()?)),
-                    _ => Err(serde::de::Error::unknown_variant(&key, &["SetBoolKnob", "SetFloatKnob", "SetUintKnob", "SetDischargeTime", "SetDebugFullCharge", "SetForecastDisagreementStrategy", "SetKillSwitch"])),
+                    _ => Err(serde::de::Error::unknown_variant(&key, &["SetBoolKnob", "SetFloatKnob", "SetUintKnob", "SetDischargeTime", "SetDebugFullCharge", "SetForecastDisagreementStrategy", "SetChargeBatteryExtendedMode", "SetKillSwitch"])),
                 }
             }
         }
@@ -436,6 +484,7 @@ impl std::fmt::Display for Command {
             Command::SetDischargeTime(v) => write!(f, "Command::SetDischargeTime({:?})", v),
             Command::SetDebugFullCharge(v) => write!(f, "Command::SetDebugFullCharge({:?})", v),
             Command::SetForecastDisagreementStrategy(v) => write!(f, "Command::SetForecastDisagreementStrategy({:?})", v),
+            Command::SetChargeBatteryExtendedMode(v) => write!(f, "Command::SetChargeBatteryExtendedMode({:?})", v),
             Command::SetKillSwitch(v) => write!(f, "Command::SetKillSwitch({:?})", v),
         }
     }
@@ -476,8 +525,12 @@ impl crate::baboon_runtime::BaboonBinEncode for Command {
                 crate::baboon_runtime::bin_tools::write_byte(writer, 5)?;
                 v.encode_ueba(ctx, writer)?;
             }
-            Command::SetKillSwitch(v) => {
+            Command::SetChargeBatteryExtendedMode(v) => {
                 crate::baboon_runtime::bin_tools::write_byte(writer, 6)?;
+                v.encode_ueba(ctx, writer)?;
+            }
+            Command::SetKillSwitch(v) => {
+                crate::baboon_runtime::bin_tools::write_byte(writer, 7)?;
                 v.encode_ueba(ctx, writer)?;
             }
         }
@@ -514,6 +567,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Command {
                 Ok(Command::SetForecastDisagreementStrategy(v))
             }
             6 => {
+                let v = SetChargeBatteryExtendedMode::decode_ueba(ctx, reader)?;
+                Ok(Command::SetChargeBatteryExtendedMode(v))
+            }
+            7 => {
                 let v = SetKillSwitch::decode_ueba(ctx, reader)?;
                 Ok(Command::SetKillSwitch(v))
             }

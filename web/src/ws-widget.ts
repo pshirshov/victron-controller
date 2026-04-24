@@ -27,7 +27,6 @@ export class WsWidget {
   private indicator: HTMLElement;
   private arc: SVGCircleElement;
   private tooltip: HTMLElement;
-  private logList: HTMLElement;
   private rafScheduled = false;
 
   constructor(manager: ConnectionManager, root: HTMLElement) {
@@ -36,7 +35,6 @@ export class WsWidget {
     this.indicator = root.querySelector(".ws-indicator") as HTMLElement;
     this.arc = this.indicator.querySelector(".ws-indicator-arc") as SVGCircleElement;
     this.tooltip = this.indicator.querySelector(".ws-indicator-tooltip") as HTMLElement;
-    this.logList = root.querySelector(".ws-widget-log") as HTMLElement;
     // Retry button (visible only in terminal state) wired once.
     const retry = root.querySelector(".ws-retry") as HTMLButtonElement;
     retry.addEventListener("click", () => this.manager.retryNow());
@@ -79,15 +77,12 @@ export class WsWidget {
       this.arc.style.strokeDashoffset = String(dashOffset);
     }
 
-    // Tooltip.
-    this.tooltip.innerHTML = renderTooltipHtml(stats, widgetState);
+    // Unified hover card: stats + event log in one popup.
+    this.tooltip.innerHTML = renderTooltipHtml(stats, widgetState, this.manager.getLog());
 
     // Retry button visibility.
     const retry = this.indicator.querySelector(".ws-retry") as HTMLElement;
     retry.style.display = stats.isTerminal ? "inline-block" : "none";
-
-    // Event log.
-    this.logList.innerHTML = renderLog(this.manager.getLog());
 
     // document.title mirror (V7).
     const alive = stats.connections.filter((c) => c.state === ConnectionState.ALIVE).length;
@@ -111,7 +106,6 @@ function markup(): string {
       <button class="ws-retry" title="Retry now">retry</button>
       <div class="ws-indicator-tooltip" role="tooltip"></div>
     </div>
-    <ul class="ws-widget-log"></ul>
   `;
 }
 
@@ -166,7 +160,11 @@ function computeRingRemaining(
 
 // --- tooltip ---
 
-function renderTooltipHtml(stats: ManagerStats, widgetState: WidgetState): string {
+function renderTooltipHtml(
+  stats: ManagerStats,
+  widgetState: WidgetState,
+  log: ReadonlyArray<LogEntry>,
+): string {
   const active = pickActive(stats);
   const parts: string[] = [];
 
@@ -214,6 +212,14 @@ function renderTooltipHtml(stats: ManagerStats, widgetState: WidgetState): strin
     parts.push(
       `<div>last close: <code>${lastDead.closeCode ?? "?"}</code> ${esc(lastDead.closeReason ?? "")}</div>`,
     );
+  }
+
+  // Recent events. Most-recent first — the manager's log is already
+  // ordered that way.
+  if (log.length > 0) {
+    parts.push(`<div class="ws-tt-sep"></div>`);
+    parts.push(`<div class="ws-tt-subhead">events</div>`);
+    parts.push(`<ul class="ws-tt-log">${renderLog(log)}</ul>`);
   }
 
   return parts.join("");

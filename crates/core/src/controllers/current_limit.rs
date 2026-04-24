@@ -32,6 +32,26 @@ const WAIT_TIMEOUT_MIN: f64 = 5.0;
 /// Margin of the `zappi_amps > N` fallback that triggers `zappi_active`
 /// even when the state machine disagrees. Matches legacy NR flow.
 const ZAPPI_AMPS_FALLBACK_THRESHOLD: f64 = 1.0;
+/// Lower sanity bound on grid voltage. EN 50160 caps legitimate readings
+/// at -10% of nominal (207 V). Below this we treat the measurement as
+/// grid loss / sensor glitch / NaN and fall back to [`NOMINAL_GRID_V`].
+const MIN_SENSIBLE_GRID_V: f64 = 207.0;
+/// Upper sanity bound on grid voltage. EN 50160 caps legitimate readings
+/// at +10% of nominal (253 V). Above this we treat the measurement as
+/// a sensor glitch / transient surge and fall back to NOMINAL_GRID_V.
+const MAX_SENSIBLE_GRID_V: f64 = 260.0;
+/// UK nominal mains voltage — used when the measured value is unusable.
+const NOMINAL_GRID_V: f64 = 230.0;
+
+/// Sanity gate for grid-voltage-based arithmetic.
+/// Returns (effective_voltage, fell_back).
+fn effective_grid_v(measured: f64) -> (f64, bool) {
+    if !measured.is_finite() || !(MIN_SENSIBLE_GRID_V..=MAX_SENSIBLE_GRID_V).contains(&measured) {
+        (NOMINAL_GRID_V, true)
+    } else {
+        (measured, false)
+    }
+}
 
 /// Inputs — all D-Bus sensor values plus cross-cutting globals.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -138,7 +158,18 @@ pub fn evaluate_current_limit(
     let battery_charging = input.battery_power > 0.0;
     let battery_charged = battery_soc >= g.battery_soc_target - 1.0;
 
-    let grid_current = input.grid_power / input.grid_voltage;
+    // NOTE: we deliberately derive `grid_current` from `grid_power / grid_voltage`
+    // rather than consuming the direct `/Ac/L1/Current` reading from the ET112
+    // meter. The ET112 current sensor on this install is known to report
+    // phantom current (non-zero A with near-zero real power), so the derived
+    // form is the trusted source. `grid_power` comes from the system-aggregate
+    // `/Ac/Grid/L1/Power` which is reliable. `v_eff` is the sanity-gated
+    // grid voltage (see `effective_grid_v`) — bias-to-safety 230 V nominal
+    // if the meter reports something physically implausible. If you are
+    // tempted to "simplify" by using the direct grid_current sensor, DON'T:
+    // it will silently report ghost amps and starve the controller.
+    let (v_eff, grid_v_fell_back) = effective_grid_v(input.grid_voltage);
+    let grid_current = input.grid_power / v_eff;
     let grid_underuse = (MAX_GRID_CURRENT_A - grid_current).ceil().max(0.0);
 
     // --- Zappi activity classification ---
@@ -173,7 +204,7 @@ pub fn evaluate_current_limit(
     // --- PV availability ---
     let full_pv_power = mppt_power + soltaro_power;
     let available_pv_power = (full_pv_power - input.offgrid_power).max(0.0);
-    let available_pv_current = round2(available_pv_power / input.grid_voltage);
+    let available_pv_current = round2(available_pv_power / v_eff);
     let available_pv_power_as_gridside_amps = available_pv_current;
 
     // --- Grid-side load accounting ---
@@ -185,7 +216,7 @@ pub fn evaluate_current_limit(
     };
     let gridside_consumption_power =
         input.consumption_power - input.offgrid_power + soltaro_inflow_power;
-    let gridside_consumption_current = round2(gridside_consumption_power / input.grid_voltage);
+    let gridside_consumption_current = round2(gridside_consumption_power / v_eff);
 
     let tariff = tariff_band(now);
     let is_boost = tariff == TariffBand::BOOST;
@@ -227,7 +258,7 @@ pub fn evaluate_current_limit(
 
     let input_current_limit = target.clamp(0.0, MAX_GRID_CURRENT_A);
 
-    let decision = Decision::new(branch)
+    let mut decision = Decision::new(branch)
         .with_factor("tariff", format!("{tariff:?}"))
         .with_factor("battery_charging", format!("{battery_charging}"))
         .with_factor("zappi_active", format!("{zappi_active}"))
@@ -237,6 +268,12 @@ pub fn evaluate_current_limit(
         .with_factor("available_pv_A", format!("{available_pv_power_as_gridside_amps:.2}"))
         .with_factor("fitted_target_A", format!("{fitted_target:.2}"))
         .with_factor("final_limit_A", format!("{input_current_limit:.2}"));
+    if grid_v_fell_back {
+        decision = decision.with_factor(
+            "grid_v_fallback",
+            format!("{:.2}V → {NOMINAL_GRID_V:.2}V", input.grid_voltage),
+        );
+    }
 
     CurrentLimitOutput {
         input_current_limit,
@@ -613,6 +650,101 @@ mod tests {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // Grid-voltage ÷0 guard (defect A-03)
+    // ------------------------------------------------------------------
+
+    fn has_factor(dec: &Decision, name: &str) -> bool {
+        dec.factors.iter().any(|f| f.name == name)
+    }
+
+    #[test]
+    fn current_limit_grid_v_fallback_on_grid_loss() {
+        let mut input = base_input();
+        input.grid_voltage = 0.0;
+        input.grid_power = 1000.0;
+        input.mppt_power_0 = 1500.0;
+        input.mppt_power_1 = 1500.0;
+        input.offgrid_power = 500.0;
+        input.zappi_current = 5.0; // make zappi_active so PV branch runs
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(out.input_current_limit.is_finite());
+        assert!(out.debug.grid_current.is_finite());
+        assert!(out.debug.available_pv_power_as_gridside_amps.is_finite());
+        assert!(out.debug.gridside_consumption_current.is_finite());
+        assert!(has_factor(&out.decision, "grid_v_fallback"));
+        let expected_current = input.grid_power / 230.0;
+        assert!(
+            (out.debug.grid_current - expected_current).abs() < f64::EPSILON,
+            "fallback must use NOMINAL_GRID_V (230.0V)"
+        );
+    }
+
+    #[test]
+    fn current_limit_no_grid_v_fallback_on_nominal() {
+        let mut input = base_input();
+        input.grid_voltage = 240.0;
+        input.grid_power = 2400.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(!has_factor(&out.decision, "grid_v_fallback"));
+        // Pre-PR arithmetic: grid_current = 2400 / 240 = 10.0
+        assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn current_limit_grid_v_fallback_on_nan() {
+        let mut input = base_input();
+        input.grid_voltage = f64::NAN;
+        input.grid_power = 1000.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(out.input_current_limit.is_finite());
+        assert!(has_factor(&out.decision, "grid_v_fallback"));
+    }
+
+    #[test]
+    fn current_limit_grid_v_fallback_just_below_threshold() {
+        let mut input = base_input();
+        input.grid_voltage = 179.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(has_factor(&out.decision, "grid_v_fallback"));
+    }
+
+    #[test]
+    fn current_limit_no_grid_v_fallback_at_exact_min_threshold() {
+        // 207.0 V exactly — guard is `< MIN_SENSIBLE_GRID_V`; 207 should be accepted.
+        let mut input = base_input();
+        input.grid_voltage = 207.0;
+        input.grid_power = 2070.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(!has_factor(&out.decision, "grid_v_fallback"));
+        // grid_current = 2070 / 207.0 = 10.0
+        assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn current_limit_no_grid_v_fallback_at_exact_max_threshold() {
+        // 260.0 V exactly — guard inclusive-on-max; 260 should be accepted.
+        let mut input = base_input();
+        input.grid_voltage = 260.0;
+        input.grid_power = 2600.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(!has_factor(&out.decision, "grid_v_fallback"));
+        assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn current_limit_grid_v_fallback_on_over_voltage() {
+        // 270.0 V surge glitch → fallback engaged.
+        let mut input = base_input();
+        input.grid_voltage = 270.0;
+        input.grid_power = 2300.0;
+        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        assert!(has_factor(&out.decision, "grid_v_fallback"));
+        // grid_current uses 230.0 V nominal
+        let expected_current = input.grid_power / 230.0;
+        assert!((out.debug.grid_current - expected_current).abs() < f64::EPSILON);
+    }
 
     #[test]
     fn round2_works() {

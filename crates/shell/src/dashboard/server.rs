@@ -20,7 +20,7 @@ use victron_controller_core::world::World;
 use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as ModelCommand;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 
-use super::convert::{command_to_event, world_to_snapshot};
+use super::convert::{command_to_event, world_to_snapshot, MetaContext};
 use super::ws::ws_handler;
 
 /// Shared state: a snapshot of `World` (published by the runtime) and
@@ -33,6 +33,10 @@ pub struct DashboardState {
     /// Broadcast channel used to fan out snapshots from the runtime's
     /// tick to every connected WebSocket client.
     pub snapshot_stream: Arc<SnapshotBroadcast>,
+    /// Inputs needed to build `sensors_meta` (origin, identifier,
+    /// cadence, staleness) for `/api/snapshot` and the ws priming
+    /// snapshot.
+    pub meta: MetaContext,
 }
 
 #[derive(Debug)]
@@ -83,6 +87,7 @@ impl DashboardServer {
         world: Arc<Mutex<World>>,
         events: mpsc::Sender<Event>,
         snapshot_stream: Arc<SnapshotBroadcast>,
+        meta: MetaContext,
     ) -> Self {
         Self {
             bind,
@@ -90,6 +95,7 @@ impl DashboardServer {
                 world,
                 events,
                 snapshot_stream,
+                meta,
             },
         }
     }
@@ -121,7 +127,7 @@ fn router(state: DashboardState) -> Router {
 
 async fn snapshot_handler(State(s): State<DashboardState>) -> Json<WorldSnapshot> {
     let world = s.world.lock().await;
-    Json(world_to_snapshot(&world))
+    Json(world_to_snapshot(&world, &s.meta))
 }
 
 async fn command_handler(

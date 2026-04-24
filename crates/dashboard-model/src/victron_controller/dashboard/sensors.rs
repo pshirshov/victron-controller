@@ -17,7 +17,6 @@ pub struct Sensors {
     pub offgrid_power: ActualF64,
     pub offgrid_current: ActualF64,
     pub vebus_input_current: ActualF64,
-    pub vebus_output_current: ActualF64,
     pub evcharger_ac_power: ActualF64,
     pub evcharger_ac_current: ActualF64,
     pub ess_state: ActualF64,
@@ -28,7 +27,7 @@ pub struct Sensors {
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Sensors {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        20
+        19
     }
 }
 
@@ -161,14 +160,6 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
             {
                 let before = buffer.len();
                 crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                value.vebus_output_current.encode_ueba(ctx, &mut buffer)?;
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
                 value.evcharger_ac_power.encode_ueba(ctx, &mut buffer)?;
                 let after = buffer.len();
                 let length = after - before;
@@ -216,7 +207,6 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
             value.offgrid_power.encode_ueba(ctx, writer)?;
             value.offgrid_current.encode_ueba(ctx, writer)?;
             value.vebus_input_current.encode_ueba(ctx, writer)?;
-            value.vebus_output_current.encode_ueba(ctx, writer)?;
             value.evcharger_ac_power.encode_ueba(ctx, writer)?;
             value.evcharger_ac_current.encode_ueba(ctx, writer)?;
             value.ess_state.encode_ueba(ctx, writer)?;
@@ -247,7 +237,6 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
         let offgrid_power = ActualF64::decode_ueba(ctx, reader)?;
         let offgrid_current = ActualF64::decode_ueba(ctx, reader)?;
         let vebus_input_current = ActualF64::decode_ueba(ctx, reader)?;
-        let vebus_output_current = ActualF64::decode_ueba(ctx, reader)?;
         let evcharger_ac_power = ActualF64::decode_ueba(ctx, reader)?;
         let evcharger_ac_current = ActualF64::decode_ueba(ctx, reader)?;
         let ess_state = ActualF64::decode_ueba(ctx, reader)?;
@@ -268,7 +257,6 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
             offgrid_power,
             offgrid_current,
             vebus_input_current,
-            vebus_output_current,
             evcharger_ac_power,
             evcharger_ac_current,
             ess_state,

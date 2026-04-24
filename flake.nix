@@ -39,6 +39,9 @@
             patchelf   # used by install-victron.sh to rewrite the ELF
                        # interpreter path from the nix-store default
                        # to /lib/ld-linux-armhf.so.3 for Venus.
+            upx        # optional binary compression — shrinks the 4-5 MB
+                       # release ELF to ~1.5 MB, halving the bytes
+                       # pushed on every dev-cycle scp and eMMC write.
             baboon.packages.${system}.baboon  # data model compiler for
                                               # the dashboard wire format
             # Frontend build toolchain.

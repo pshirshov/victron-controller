@@ -65,7 +65,11 @@ director_url = "https://s18.myenergi.net"
 # eddi_serial  = "87654321"
 # Poll cadence. myenergi data is ~5 min granular per SPEC, so 15 s is
 # mostly for plug-state transition reactivity.
-poll_period  = "15s"
+poll_period    = "15s"
+# When false, CallMyenergi effects are logged but not POSTed. Mirrors
+# [dbus] writes_enabled. Flip to true once you trust the shadow run.
+# Default if omitted: true.
+writes_enabled = false
 
 # =============================================================================
 # Forecast providers — Solcast + Forecast.Solar + Open-Meteo (SPEC §5.7)
@@ -98,7 +102,7 @@ cadence     = "1h"
 # planes    = [
 #   { tilt_deg = 35, azimuth_deg = 180, kwp = 2.0 },
 # ]
-cadence     = "15m"
+cadence     = "30m"
 
 # =============================================================================
 # Local dashboard — not implemented yet (per user deferral); reserved.

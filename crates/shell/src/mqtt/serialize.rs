@@ -9,7 +9,9 @@ use std::time::Instant;
 use serde_json::json;
 use tracing::warn;
 
-use victron_controller_core::knobs::{DebugFullCharge, DischargeTime, ForecastDisagreementStrategy};
+use victron_controller_core::knobs::{
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
+};
 use victron_controller_core::types::{
     ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue, PublishPayload,
 };
@@ -162,6 +164,7 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::ZappiLimit => "zappi_limit",
         KnobId::ZappiEmergencyMargin => "zappi_emergency_margin",
         KnobId::GridExportLimitW => "grid_export_limit_w",
+        KnobId::GridImportLimitW => "grid_import_limit_w",
         KnobId::AllowBatteryToCar => "allow_battery_to_car",
         KnobId::EddiEnableSoc => "eddi_enable_soc",
         KnobId::EddiDisableSoc => "eddi_disable_soc",
@@ -172,6 +175,7 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::WeathersocHighEnergyThreshold => "weathersoc_high_energy_threshold",
         KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc_too_much_energy_threshold",
         KnobId::ForecastDisagreementStrategy => "forecast_disagreement_strategy",
+        KnobId::ChargeBatteryExtendedMode => "charge_battery_extended_mode",
     }
 }
 
@@ -193,6 +197,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi_limit" => KnobId::ZappiLimit,
         "zappi_emergency_margin" => KnobId::ZappiEmergencyMargin,
         "grid_export_limit_w" => KnobId::GridExportLimitW,
+        "grid_import_limit_w" => KnobId::GridImportLimitW,
         "allow_battery_to_car" => KnobId::AllowBatteryToCar,
         "eddi_enable_soc" => KnobId::EddiEnableSoc,
         "eddi_disable_soc" => KnobId::EddiDisableSoc,
@@ -203,6 +208,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc_high_energy_threshold" => KnobId::WeathersocHighEnergyThreshold,
         "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
         "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
+        "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
         _ => return None,
     })
 }
@@ -248,6 +254,11 @@ fn encode_knob_value(v: KnobValue) -> String {
                 "solcast_if_available_else_mean".to_string()
             }
         },
+        KnobValue::ChargeBatteryExtendedMode(m) => match m {
+            ChargeBatteryExtendedMode::Auto => "auto".to_string(),
+            ChargeBatteryExtendedMode::Forced => "forced".to_string(),
+            ChargeBatteryExtendedMode::Disabled => "disabled".to_string(),
+        },
     }
 }
 
@@ -275,7 +286,7 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
         | KnobId::WeathersocTooMuchEnergyThreshold => body.parse::<f64>().ok().map(KnobValue::Float),
-        KnobId::GridExportLimitW | KnobId::EddiDwellS => {
+        KnobId::GridExportLimitW | KnobId::GridImportLimitW | KnobId::EddiDwellS => {
             body.parse::<u32>().ok().map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body {
@@ -304,6 +315,18 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
             )),
             "solcast_if_available_else_mean" => Some(KnobValue::ForecastDisagreementStrategy(
                 ForecastDisagreementStrategy::SolcastIfAvailableElseMean,
+            )),
+            _ => None,
+        },
+        KnobId::ChargeBatteryExtendedMode => match body {
+            "auto" => Some(KnobValue::ChargeBatteryExtendedMode(
+                ChargeBatteryExtendedMode::Auto,
+            )),
+            "forced" => Some(KnobValue::ChargeBatteryExtendedMode(
+                ChargeBatteryExtendedMode::Forced,
+            )),
+            "disabled" => Some(KnobValue::ChargeBatteryExtendedMode(
+                ChargeBatteryExtendedMode::Disabled,
             )),
             _ => None,
         },

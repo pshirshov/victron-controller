@@ -16,13 +16,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::knobs::{
-    DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Knobs,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Knobs,
 };
+use std::collections::BTreeMap;
+use std::time::Duration;
+
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
+use victron_controller_core::topology::ControllerParams;
 use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue};
 use victron_controller_core::world::World;
 use victron_controller_core::Owner;
+
+use crate::config::DbusServices;
+use crate::dbus::subscriber::DBUS_POLL_PERIOD;
+
+/// Runtime inputs needed to build `sensors_meta`. Bundled so callers
+/// can pass one reference rather than juggling four arguments.
+#[derive(Debug, Clone)]
+pub struct MetaContext {
+    pub services: DbusServices,
+    pub open_meteo_cadence: Duration,
+    pub controller_params: ControllerParams,
+}
 
 use victron_controller_dashboard_model::victron_controller::dashboard::actuated::Actuated as ModelActuated;
 use victron_controller_dashboard_model::victron_controller::dashboard::actuated_enum_name::ActuatedEnumName;
@@ -38,6 +54,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::decision_
 use victron_controller_dashboard_model::victron_controller::dashboard::decisions::Decisions as ModelDecisions;
 use victron_controller_dashboard_model::victron_controller::dashboard::debug_full_charge::DebugFullCharge as ModelDebugFullCharge;
 use victron_controller_dashboard_model::victron_controller::dashboard::discharge_time::DischargeTime as ModelDischargeTime;
+use victron_controller_dashboard_model::victron_controller::dashboard::charge_battery_extended_mode::ChargeBatteryExtendedMode as ModelCbeMode;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy as ModelForecastStrategy;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecast_snapshot::ForecastSnapshot as ModelForecastSnapshot;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecasts::Forecasts as ModelForecasts;
@@ -45,6 +62,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::freshness
 use victron_controller_dashboard_model::victron_controller::dashboard::knobs::Knobs as ModelKnobs;
 use victron_controller_dashboard_model::victron_controller::dashboard::owner::Owner as ModelOwner;
 use victron_controller_dashboard_model::victron_controller::dashboard::schedule_spec::ScheduleSpec as ModelScheduleSpec;
+use victron_controller_dashboard_model::victron_controller::dashboard::sensor_meta::SensorMeta as ModelSensorMeta;
 use victron_controller_dashboard_model::victron_controller::dashboard::sensors::Sensors as ModelSensors;
 use victron_controller_dashboard_model::victron_controller::dashboard::target_phase::TargetPhase as ModelTargetPhase;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
@@ -108,6 +126,14 @@ fn forecast_strategy(s: ForecastDisagreementStrategy) -> ModelForecastStrategy {
         ForecastDisagreementStrategy::SolcastIfAvailableElseMean => {
             ModelForecastStrategy::SolcastIfAvailableElseMean
         }
+    }
+}
+
+fn cbe_mode(m: ChargeBatteryExtendedMode) -> ModelCbeMode {
+    match m {
+        ChargeBatteryExtendedMode::Auto => ModelCbeMode::Auto,
+        ChargeBatteryExtendedMode::Forced => ModelCbeMode::Forced,
+        ChargeBatteryExtendedMode::Disabled => ModelCbeMode::Disabled,
     }
 }
 
@@ -211,7 +237,7 @@ fn actuated_schedule(a: &Actuated<ScheduleSpec>) -> ModelActuatedSchedule {
 // --- top-level mapping ----------------------------------------------------
 
 #[must_use]
-pub fn world_to_snapshot(world: &World) -> WorldSnapshot {
+pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
     let s = &world.sensors;
     let a = world.actuated();
     let k = &world.knobs;
@@ -241,12 +267,12 @@ pub fn world_to_snapshot(world: &World) -> WorldSnapshot {
             offgrid_power: actual_f64(&s.offgrid_power),
             offgrid_current: actual_f64(&s.offgrid_current),
             vebus_input_current: actual_f64(&s.vebus_input_current),
-            vebus_output_current: actual_f64(&s.vebus_output_current),
             evcharger_ac_power: actual_f64(&s.evcharger_ac_power),
             evcharger_ac_current: actual_f64(&s.evcharger_ac_current),
             ess_state: actual_f64(&s.ess_state),
             outdoor_temperature: actual_f64(&s.outdoor_temperature),
         },
+        sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
             grid_setpoint: actuated_i32(a.grid_setpoint),
             input_current_limit: actuated_f64(a.input_current_limit),
@@ -283,6 +309,66 @@ pub fn world_to_snapshot(world: &World) -> WorldSnapshot {
         },
         decisions: decisions_to_model(&world.decisions),
     }
+}
+
+/// Static provenance per sensor: where the value comes from (`dbus` /
+/// `open-meteo` / ...), a source-specific identifier, and the timing
+/// contract (how often we refresh it, after how long we treat it as
+/// Stale). Mirrors `dbus::subscriber::routing_table` but keyed by the
+/// snapshot field name so the dashboard can show Origin + a copy
+/// button + timing columns.
+fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
+    let s = &ctx.services;
+    let dbus_cadence_ms: i64 = DBUS_POLL_PERIOD.as_millis().try_into().unwrap_or(i64::MAX);
+    let dbus_stale_ms: i64 = ctx
+        .controller_params
+        .freshness_local_dbus
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX);
+    let om_cadence_ms: i64 = ctx.open_meteo_cadence.as_millis().try_into().unwrap_or(i64::MAX);
+    let om_stale_ms: i64 = ctx
+        .controller_params
+        .freshness_outdoor_temperature
+        .as_millis()
+        .try_into()
+        .unwrap_or(i64::MAX);
+
+    let dbus = |svc: &str, path: &str| ModelSensorMeta {
+        origin: "dbus".to_string(),
+        identifier: format!("{svc}{path}"),
+        cadence_ms: dbus_cadence_ms,
+        staleness_ms: dbus_stale_ms,
+    };
+    let mut m: BTreeMap<String, ModelSensorMeta> = BTreeMap::new();
+    m.insert("battery_soc".into(), dbus(&s.battery, "/Soc"));
+    m.insert("battery_soh".into(), dbus(&s.battery, "/Soh"));
+    m.insert("battery_installed_capacity".into(), dbus(&s.battery, "/InstalledCapacity"));
+    m.insert("battery_dc_power".into(), dbus(&s.battery, "/Dc/0/Power"));
+    m.insert("mppt_power_0".into(), dbus(&s.mppt_0, "/Yield/Power"));
+    m.insert("mppt_power_1".into(), dbus(&s.mppt_1, "/Yield/Power"));
+    m.insert("soltaro_power".into(), dbus(&s.pvinverter_soltaro, "/Ac/Power"));
+    m.insert("power_consumption".into(), dbus(&s.system, "/Ac/Consumption/L1/Power"));
+    m.insert("grid_power".into(), dbus(&s.system, "/Ac/Grid/L1/Power"));
+    m.insert("grid_voltage".into(), dbus(&s.grid, "/Ac/L1/Voltage"));
+    m.insert("grid_current".into(), dbus(&s.grid, "/Ac/L1/Current"));
+    m.insert("consumption_current".into(), dbus(&s.system, "/Ac/Consumption/L1/Current"));
+    m.insert("offgrid_power".into(), dbus(&s.vebus, "/Ac/Out/L1/P"));
+    m.insert("offgrid_current".into(), dbus(&s.vebus, "/Ac/Out/L1/I"));
+    m.insert("vebus_input_current".into(), dbus(&s.vebus, "/Ac/ActiveIn/L1/I"));
+    m.insert("evcharger_ac_power".into(), dbus(&s.evcharger, "/Ac/Power"));
+    m.insert("evcharger_ac_current".into(), dbus(&s.evcharger, "/Ac/Current"));
+    m.insert("ess_state".into(), dbus(&s.settings, "/Settings/CGwacs/BatteryLife/State"));
+    m.insert(
+        "outdoor_temperature".into(),
+        ModelSensorMeta {
+            origin: "open-meteo".to_string(),
+            identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
+            cadence_ms: om_cadence_ms,
+            staleness_ms: om_stale_ms,
+        },
+    );
+    m
 }
 
 fn decision(d: &Decision) -> ModelDecision {
@@ -329,6 +415,7 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         zappi_limit: k.zappi_limit,
         zappi_emergency_margin: k.zappi_emergency_margin,
         grid_export_limit_w: k.grid_export_limit_w as i32,
+        grid_import_limit_w: k.grid_import_limit_w as i32,
         allow_battery_to_car: k.allow_battery_to_car,
         eddi_enable_soc: k.eddi_enable_soc,
         eddi_disable_soc: k.eddi_disable_soc,
@@ -340,6 +427,7 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         weathersoc_too_much_energy_threshold: k.weathersoc_too_much_energy_threshold,
         writes_enabled: k.writes_enabled,
         forecast_disagreement_strategy: forecast_strategy(k.forecast_disagreement_strategy),
+        charge_battery_extended_mode: cbe_mode(k.charge_battery_extended_mode),
     }
 }
 
@@ -429,6 +517,14 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
                 }
             }),
         },
+        C::SetChargeBatteryExtendedMode(c) => Command::Knob {
+            id: KnobId::ChargeBatteryExtendedMode,
+            value: KnobValue::ChargeBatteryExtendedMode(match c.value {
+                ModelCbeMode::Auto => ChargeBatteryExtendedMode::Auto,
+                ModelCbeMode::Forced => ChargeBatteryExtendedMode::Forced,
+                ModelCbeMode::Disabled => ChargeBatteryExtendedMode::Disabled,
+            }),
+        },
         C::SetKillSwitch(c) => Command::KillSwitch(c.value),
     };
     Some(Event::Command {
@@ -459,6 +555,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi_limit" => KnobId::ZappiLimit,
         "zappi_emergency_margin" => KnobId::ZappiEmergencyMargin,
         "grid_export_limit_w" => KnobId::GridExportLimitW,
+        "grid_import_limit_w" => KnobId::GridImportLimitW,
         "allow_battery_to_car" => KnobId::AllowBatteryToCar,
         "eddi_enable_soc" => KnobId::EddiEnableSoc,
         "eddi_disable_soc" => KnobId::EddiDisableSoc,
@@ -469,6 +566,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc_high_energy_threshold" => KnobId::WeathersocHighEnergyThreshold,
         "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
         "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
+        "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
         _ => return None,
     })
 }

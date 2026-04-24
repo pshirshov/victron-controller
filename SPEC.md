@@ -439,6 +439,7 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `zappi_limit` | `100` | Unchanged |
 | `zappi_emergency_margin` | `5.0` A | Unchanged |
 | `grid_export_limit_w` | `4900` | **NEW** grid-meter-side hard cap |
+| `grid_import_limit_w` | `10` | new knob — user-configurable import cap (W) |
 | `allow_battery_to_car` | `false` | **NEW**. Boot-resets regardless of retained value |
 | `eddi_enable_soc` | `96` | **NEW** |
 | `eddi_disable_soc` | `94` | **NEW** |

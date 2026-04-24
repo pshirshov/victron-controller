@@ -237,15 +237,23 @@ impl Poller {
 #[derive(Debug, Clone)]
 pub struct Writer {
     client: Client,
+    /// When false, actions are logged but not executed. Honours the
+    /// config-file `[myenergi] writes_enabled` gate, independent of the
+    /// core's `knobs.writes_enabled` kill switch.
+    dry_run: bool,
 }
 
 impl Writer {
     #[must_use]
-    pub const fn new(client: Client) -> Self {
-        Self { client }
+    pub const fn new(client: Client, dry_run: bool) -> Self {
+        Self { client, dry_run }
     }
 
     pub async fn execute(&self, action: MyenergiAction) {
+        if self.dry_run {
+            debug!(?action, "DRY-RUN myenergi action (myenergi.writes_enabled=false)");
+            return;
+        }
         let res = match action {
             MyenergiAction::SetZappiMode(m) => self.client.set_zappi_mode(m).await,
             MyenergiAction::SetEddiMode(m) => self.client.set_eddi_mode(m).await,

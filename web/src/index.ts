@@ -3,6 +3,7 @@
 
 import { ConnectionManager, DEFAULT_CONFIG } from "./manager.js";
 import {
+  installCopyHandler,
   renderActuated,
   renderBookkeeping,
   renderDecisions,
@@ -40,7 +41,6 @@ function onServerMessage(raw: unknown): void {
 }
 
 function applySnapshot(snap: WorldSnapshot): void {
-  (document.getElementById("captured-at") as HTMLElement).textContent = String(snap.captured_at_naive_iso);
   const writesBadge = document.getElementById("writes-badge") as HTMLElement;
   if (snap.knobs.writes_enabled) {
     writesBadge.textContent = "WRITES ON";
@@ -67,6 +67,8 @@ function init(): void {
 
   const widget = new WsWidget(manager, document.getElementById("ws-indicator-slot") as HTMLElement);
   widgetRef = widget;
+
+  installCopyHandler();
 
   manager.start();
 }

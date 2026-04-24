@@ -4,6 +4,21 @@
 // Adapted from pshirshov/ws-reconnect-demo (src/client/connection.ts),
 // with our baboon-typed WsClientMessage / WsServerMessage envelope.
 
+// Generate a ping nonce. `crypto.randomUUID()` is only available on
+// secure contexts (HTTPS or localhost). When the dashboard is served
+// over plain HTTP to a LAN IP — our default — Chrome/Firefox throw
+// from randomUUID, which happens *before* our ping-sent bookkeeping
+// increments and silently kills all ping traffic. Fall back to a
+// timestamp + Math.random nonce; uniqueness only needs to hold across
+// the few pings in flight at once.
+function makeNonce(): string {
+  const g = (globalThis as { crypto?: { randomUUID?: () => string } });
+  if (g.crypto && typeof g.crypto.randomUUID === "function") {
+    try { return g.crypto.randomUUID(); } catch { /* secure-context error */ }
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export enum ConnectionState {
   NEW = "NEW",
   ALIVE = "ALIVE",
@@ -164,7 +179,7 @@ export class ManagedConnection {
     if (this.state === ConnectionState.DEAD) return;
     if (this.ws.readyState !== WebSocket.OPEN) return;
 
-    const nonce = crypto.randomUUID();
+    const nonce = makeNonce();
     const now = Date.now();
     this.pendingPings.set(nonce, now);
     this.lastPingSentAt = now;

@@ -44,7 +44,48 @@ async fn main() -> Result<()> {
         .unwrap_or_else(DbusServices::default_venus_3_70);
 
     // D-Bus subscriber → event channel → runtime → D-Bus writer.
-    let (tx, rx) = mpsc::channel(256);
+    //
+    // Capacity sized for the MQTT bootstrap flood: a populated broker can
+    // replay several hundred retained knob-state messages (observed 431
+    // in the field) before the runtime starts draining — the subscriber
+    // and other producers block on `.await send` while this drains, so
+    // undersized capacity stalls sensor re-seed and produces the
+    // "sensors stale, no logs" symptom (A-70).
+    let (tx, rx) = mpsc::channel(4096);
+
+    // Watermark warning: once per minute, log if the channel is > 75%
+    // full. Gives operators a heads-up before backpressure bites.
+    {
+        let tx_watch = tx.clone();
+        tokio::spawn(async move {
+            let max = tx_watch.max_capacity();
+            let threshold = max * 3 / 4;
+            let mut last_warn: Option<Instant> = None;
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                if tx_watch.is_closed() {
+                    break;
+                }
+                let remaining = tx_watch.capacity();
+                let in_use = max - remaining;
+                if in_use > threshold {
+                    let now = Instant::now();
+                    let should_warn = last_warn.is_none_or(|t| {
+                        now.duration_since(t) >= std::time::Duration::from_secs(60)
+                    });
+                    if should_warn {
+                        tracing::warn!(
+                            in_use,
+                            max,
+                            "event channel > 75% full ({in_use}/{max})"
+                        );
+                        last_warn = Some(now);
+                    }
+                }
+            }
+        });
+    }
 
     info!("connecting D-Bus subscriber");
     let subscriber = Subscriber::connect(&services)
@@ -52,12 +93,16 @@ async fn main() -> Result<()> {
         .context("connect D-Bus subscriber")?;
 
     info!("connecting D-Bus writer (dry_run={})", !cfg.dbus.writes_enabled);
-    let writer = Writer::connect(services, !cfg.dbus.writes_enabled)
+    let writer = Writer::connect(services.clone(), !cfg.dbus.writes_enabled)
         .await
         .context("connect D-Bus writer")?;
 
     let myenergi_client = MyenergiClient::new(cfg.myenergi.clone());
-    let myenergi_writer = MyenergiWriter::new(myenergi_client.clone());
+    info!(
+        "myenergi writer (dry_run={})",
+        !cfg.myenergi.writes_enabled
+    );
+    let myenergi_writer = MyenergiWriter::new(myenergi_client.clone(), !cfg.myenergi.writes_enabled);
     let myenergi_poller = MyenergiPoller::new(myenergi_client, cfg.myenergi.poll_period);
 
     // MQTT (optional; skipped when host is empty).
@@ -85,6 +130,11 @@ async fn main() -> Result<()> {
     };
 
     let topology = Topology::defaults();
+    let meta = victron_controller_shell::dashboard::convert::MetaContext {
+        services: services.clone(),
+        open_meteo_cadence: cfg.forecast.open_meteo.cadence,
+        controller_params: topology.controller_params,
+    };
     let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
     let snapshot_stream = SnapshotBroadcast::new(64);
     let runtime = Runtime::new(
@@ -94,6 +144,7 @@ async fn main() -> Result<()> {
         mqtt_publisher,
         topology,
         snapshot_stream.clone(),
+        meta.clone(),
     );
 
     // Spawn subscriber + myenergi poller + runtime; all linked via
@@ -162,20 +213,39 @@ async fn main() -> Result<()> {
         .copied()
         .map(Into::into)
         .collect();
+    let om_lat = cfg.forecast.open_meteo.latitude;
+    let om_lon = cfg.forecast.open_meteo.longitude;
+    let om_cadence = cfg.forecast.open_meteo.cadence;
     let om_client = OpenMeteoClient::new(
-        http,
-        cfg.forecast.open_meteo.latitude,
-        cfg.forecast.open_meteo.longitude,
+        http.clone(),
+        om_lat,
+        om_lon,
         om_planes,
     );
     if om_client.is_configured() {
         let tx_f = tx.clone();
-        let cadence = cfg.forecast.open_meteo.cadence;
         forecast_tasks.push(tokio::spawn(async move {
-            let _ = forecast::run_scheduler(Box::new(om_client), cadence, tx_f).await;
+            let _ = forecast::run_scheduler(Box::new(om_client), om_cadence, tx_f).await;
         }));
     } else {
         info!("forecast: Open-Meteo disabled (no planes configured)");
+    }
+
+    // Outdoor temperature from Open-Meteo. Runs whenever Open-Meteo has
+    // valid coordinates, independent of plane config — this is the
+    // placeholder source for `outdoor_temperature` until the MQTT
+    // weather-sensor binding (SPEC §10.2) is wired up.
+    if om_lat != 0.0 || om_lon != 0.0 {
+        let tx_t = tx.clone();
+        let http_t = http;
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ = forecast::current_weather::run_open_meteo_temperature(
+                http_t, om_lat, om_lon, om_cadence, tx_t,
+            )
+            .await;
+        }));
+    } else {
+        info!("weather: Open-Meteo temperature poller disabled (no coordinates)");
     }
 
     // NB: rumqttc's EventLoop is !Send on some feature configs, so the
@@ -205,6 +275,7 @@ async fn main() -> Result<()> {
         world.clone(),
         tx.clone(),
         snapshot_stream,
+        meta,
     );
     let dashboard_task = tokio::spawn(async move {
         if let Err(e) = dashboard.run().await {

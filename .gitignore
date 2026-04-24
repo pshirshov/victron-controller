@@ -4,6 +4,9 @@
 result
 result-*
 
+# Host-specific config — filled in on the GX, never committed
+/config.toml
+
 # Discovery artifacts live under legacy/discovery-*
 legacy/discovery-*/
 
