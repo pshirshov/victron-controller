@@ -260,7 +260,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `i32::try_from(...).unwrap_or(i32::MAX)`.
 
 ### [A-36] Observer mode (`writes_enabled=false`) suppresses `eddi_last_transition_at` bookkeeping
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/process.rs:963-965`
 **Description:** The bookkeeping write is gated by the same `writes_enabled` check that gates the HTTP call. During the M11 shadow-run week the dwell clock never advances → every Eddi proposal logs "first transition (no dwell)". Decision factors the user is verifying are all lies.

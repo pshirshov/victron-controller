@@ -1095,6 +1095,14 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
         phase: world.eddi_mode.target.phase,
     }));
 
+    // A-36: record the transition BEFORE the writes_enabled gate. The
+    // dwell clock tracks "time since last proposed mode transition" —
+    // it's TASS intent state, not actuation. Gating it behind
+    // writes_enabled means observer mode perpetually reports "first
+    // transition (no dwell)" and every Decision factor the operator is
+    // verifying during the shadow run is a lie.
+    world.bookkeeping.eddi_last_transition_at = Some(now);
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -1108,7 +1116,6 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
 
     effects.push(Effect::CallMyenergi(MyenergiAction::SetEddiMode(desired)));
     world.eddi_mode.mark_commanded(now);
-    world.bookkeeping.eddi_last_transition_at = Some(now);
     effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
         id: ActuatedId::EddiMode,
         phase: world.eddi_mode.target.phase,
