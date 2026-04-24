@@ -647,8 +647,15 @@ fn maybe_propose_setpoint(
 ) {
     // Dead-band filter: don't restart the phase cycle if the current
     // target is within deadband and we're already confirmed.
+    // A-31: promote to i64 before subtracting. Even with PR-09b's
+    // SAFE_MAX_GRID_LIMIT_W clamp the setpoint values come from
+    // `evaluate_setpoint` and could theoretically reach i32::MIN/MAX
+    // via a controller bug; `i32::MIN - i32::MAX` panics in debug and
+    // wraps in release. `i64::from(...) - i64::from(...)` cannot
+    // overflow for any i32 inputs.
     if let Some(current_target) = world.grid_setpoint.target.value {
-        if (current_target - value).abs() < params.setpoint_retarget_deadband_w {
+        let delta = (i64::from(current_target) - i64::from(value)).abs();
+        if delta < i64::from(params.setpoint_retarget_deadband_w) {
             return;
         }
     }

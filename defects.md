@@ -225,7 +225,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Stamp events with the receive time on the consumer; add a queue-depth metric/log when >50% full.
 
 ### [A-31] `i32 - i32` for setpoint retarget deadband can overflow if C1 allows pathological grid_cap
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:513-516`
 **Description:** `current_target - value` on i32 panics in debug / wraps in release if either operand is near extrema. Combined with A-09 this becomes reachable.
