@@ -1016,6 +1016,26 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-15 — Deploy-time wedge: rumqttc 64-slot queue + PR-SCHED0 observer publishes saturate → subscriber starvation
+
+### [PR-URGENT-15-D01] Field wedge on `3f0821c`: D-Bus sensors go Stale after ~27s, no heartbeats, runtime dispatching blocked on MQTT publish
+**Status:** resolved
+**Severity:** CRITICAL (deployed binary is broken)
+**Location:** `crates/shell/src/mqtt/mod.rs:115` (`AsyncClient::new(opts, 64)` — bounded 64-slot request queue); `crates/shell/src/runtime.rs::dispatch` (effect-application loop awaits `mqtt.publish(...)`).
+**Description:** Field report: user deployed `3f0821c`, dashboard shows all D-Bus sensors Stale and both schedules disabled. Log bundle (`/tmp/exchange/victron-bundle-20260424-173111.txt`) shows service running 186s but last log at 27s uptime; no heartbeat INFO messages (`subscriber.rs:420-425` fires every 60s); no `periodic GetItems failed` warnings. Service alive but dispatch wedged.
+**Root cause (chain):**
+1. rumqttc's `AsyncClient` internal request channel is bounded at 64 slots (`mqtt/mod.rs:115`).
+2. Drained only by `EventLoop::poll()` which runs inline on the main task (`main.rs:302-324`).
+3. PR-SCHED0 lifted `Effect::Publish(ActuatedPhase)` above the `writes_enabled` gate in all five propose sites (`process.rs:602-631, 746-751, 882-905`). Startup emits ≥6 ActuatedPhase publishes (one per actuator with target change).
+4. Startup also publishes 35 HA discovery entities + 5 retained-knob bootstrap + a continuous stream of observer-mode `Effect::Log` entries routed through the MqttLogLayer into the same 64-slot queue.
+5. Queue fills → `client.publish(...).await` in the runtime's dispatch loop blocks.
+6. Runtime stops consuming from the 4096-slot event channel (`main.rs:60-88` has a 75%-full watermark — would have warned, but wasn't in the log window).
+7. Subscriber's `tx.send(event).await` at `subscriber.rs:361` eventually blocks once downstream backs up.
+8. No poll ticks, no heartbeat, no sensor refresh.
+9. Controllers bail on `is_usable()` checks → observer logs stop firing → the visible "silent freeze" matches the bundle exactly.
+**Why PR-05 (`df3ae4d`) didn't hit this:** observer mode then skipped `propose_target` entirely, so no `Publish(ActuatedPhase)` emitted — startup publish volume stayed well under 64.
+**Fix:** (1) `AsyncClient::new(opts, 4096)` at `mqtt/mod.rs:115-116`. (2) `Effect::Publish` arm in `runtime.rs:112-126` wraps `mqtt.publish(payload)` in `tokio::time::timeout(Duration::from_secs(1), …)`; on `Err(_)` emits `warn!(?payload, "mqtt publish stuck >1s; dropping")` and continues. `PublishPayload` is `Copy`, so the log reference after the timeout is valid. (3) Log publisher in `mqtt/log_layer.rs:132` already used `try_send` — no change needed (the spec's minimum-bar was already satisfied). Verification: 50 shell tests + 212 core + 11 property green; clippy -D warnings clean; ARMv7 release ok; web bundle ok.
+
 ## PR-DAG-B — zappi_active as a first-class derivation core
 
 ### [PR-DAG-B-D01] Reviewer-flagged plan scope creep on semantic edges

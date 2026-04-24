@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use victron_controller_core::types::{Effect, Event};
 use victron_controller_core::{process, Topology, World};
@@ -111,7 +111,21 @@ impl Runtime {
             }
             Effect::Publish(payload) => {
                 if let Some(mqtt) = &self.mqtt {
-                    mqtt.publish(payload).await;
+                    // Never block the dispatch loop longer than 1s on a single
+                    // publish. If rumqttc's request queue is saturated (HA
+                    // discovery burst, observer-mode ActuatedPhase spam, broker
+                    // stall), drop the publish rather than wedge the runtime.
+                    match tokio::time::timeout(
+                        Duration::from_secs(1),
+                        mqtt.publish(payload),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(_) => {
+                            warn!(?payload, "mqtt publish stuck >1s; dropping");
+                        }
+                    }
                 } else {
                     debug!(?payload, "Publish dropped (no MQTT broker configured)");
                 }

@@ -112,7 +112,8 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
         info!(%ca_path, "mqtt TLS enabled");
     }
 
-    let (client, event_loop) = AsyncClient::new(opts, 64);
+    // 4096-slot request queue — sized to absorb startup HA discovery + retained bootstrap + observer-mode Publish(ActuatedPhase) bursts without backpressuring the runtime dispatch loop.
+    let (client, event_loop) = AsyncClient::new(opts, 4096);
     info!(host = %config.host, port = config.port, "mqtt connected (session will establish on first loop iteration)");
     let publisher = Publisher {
         client: client.clone(),

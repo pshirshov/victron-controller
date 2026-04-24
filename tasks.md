@@ -127,6 +127,17 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-15** — Deploy-time wedge hotfix: rumqttc request-queue
+  bump 64→4096 + 1s timeout on runtime dispatch's Publish await.
+  Found post-deploy of `3f0821c`: all D-Bus sensors Stale, both
+  schedules showing disabled, no heartbeats in log. Root cause:
+  PR-SCHED0 lifted `Publish(ActuatedPhase)` above the writes_enabled
+  gate → startup publish burst + HA discovery + retained bootstrap +
+  MqttLogLayer stream saturated rumqttc's 64-slot request channel →
+  `publish().await` blocked the runtime dispatch loop → event channel
+  backed up → subscriber's `tx.send().await` blocked → no poll ticks,
+  no heartbeats, sensors decay.
+
 - [x] **PR-SCHED0** — Observer-mode target-mutation inversion. Root
   cause (b+a hybrid): observer mode left target=Unset while Node-RED
   legacy `days=-7` was the visible `actual`; dashboard rendered the
@@ -338,6 +349,37 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-15** (2026-04-24) — MQTT publish backpressure hotfix.
+  Field-observed wedge: user deployed `3f0821c`, dashboard showed
+  all D-Bus sensors Stale + both schedules disabled after 27 s of
+  uptime; no heartbeat logs. Root cause: rumqttc's `AsyncClient`
+  internal request queue was bounded at 64 slots. Drained only by
+  `EventLoop::poll()` on the main task. PR-SCHED0 lifted
+  `Effect::Publish(ActuatedPhase)` above the writes_enabled gate,
+  so startup emitted ~6 ActuatedPhase + 35 HA discovery + 5 retained-
+  knob bootstrap + ongoing MqttLogLayer traffic all sharing that
+  64-slot queue. Queue filled → `client.publish(...).await` in
+  runtime::dispatch blocked → event channel backed up → subscriber's
+  `tx.send(event).await` in the signal arm blocked → poll/heartbeat
+  arms of the `tokio::select!` starved → no sensor refresh → sensors
+  decayed → controllers bailed.
+  Fix: (1) `AsyncClient::new(opts, 4096)` at `mqtt/mod.rs:115-116`
+  (per-slot memory cost ~tens of KB on ARMv7, negligible). (2) 1 s
+  `tokio::time::timeout` guard around the `Effect::Publish` await in
+  `runtime.rs:112-126`; on timeout emits
+  `warn!(?payload, "mqtt publish stuck >1s; dropping")` and
+  continues — the runtime dispatch loop can never deadlock on a
+  publish again. (3) `log_layer.rs:132` already used `try_send`; no
+  change. PR-05 (`df3ae4d`) didn't hit this because observer mode
+  then skipped `propose_target` entirely; zero `Publish(ActuatedPhase)`
+  in observer mode. Verification: 50 shell + 212 core + 11 property
+  tests green; clippy clean; ARMv7 release ok; web bundle ok.
+  Constraint for future work: NEVER `.await` an MQTT publish from
+  the runtime dispatch loop without a timeout. The 1 s budget is
+  generous for a healthy broker on the LAN; consider shortening
+  after observation. Rate-limited warn on the log publisher's
+  try_send drop-counter is still a nice-to-have — deferred.
 
 - **PR-DAG-B** (2026-04-24) — `zappi_active` as a first-class TASS
   derivation core. Completes the user's architectural request:
