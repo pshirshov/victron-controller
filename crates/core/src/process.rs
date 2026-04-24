@@ -1138,7 +1138,12 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
 /// still publish a Decision explaining why it didn't evaluate — the
 /// last real decision otherwise stays stuck at `None` all day and the
 /// dashboard looks broken.
-pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+pub(crate) fn run_weather_soc(
+    world: &mut World,
+    clock: &dyn Clock,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
     let now = clock.naive();
     if !(now.hour() == 1 && now.minute() == 55) {
         // Only overwrite with a "didn't run" decision if weather_soc
@@ -1190,19 +1195,34 @@ pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mu
         return;
     }
 
-    // Fuse forecasts across providers. We don't track provider-level
-    // freshness in World yet (would need another Actual per provider);
-    // treat all snapshots as fresh — the shell is responsible for only
-    // ever publishing fresh data and stopping republishes when stale.
+    // Fuse forecasts across providers, excluding any snapshot older
+    // than `ControllerParams::freshness_forecast` (A-16: previously
+    // treated all snapshots as fresh, so a week-old Solcast fetch +
+    // API-key expiry would still drive tomorrow's planning). The
+    // snapshot's `fetched_at: Instant` is stamped by the shell-side
+    // fetcher on every successful fetch, so staleness survives the
+    // shell layer's "don't republish stale" contract.
     let strategy = world.knobs.forecast_disagreement_strategy;
+    let now_mono = clock.monotonic();
+    let freshness_threshold = topology.controller_params.freshness_forecast;
+    let is_fresh = |_provider: ForecastProvider, snap: &crate::world::ForecastSnapshot| {
+        now_mono.saturating_duration_since(snap.fetched_at) <= freshness_threshold
+    };
     let Some(today_kwh) = crate::controllers::forecast_fusion::fused_today_kwh(
         &world.typed_sensors,
         strategy,
-        |_provider, _snap| true,
+        is_fresh,
     ) else {
         world.decisions.weather_soc = Some(
-            Decision::new("Skipped: no fused forecast available".to_string())
-                .with_factor("strategy", format!("{strategy:?}")),
+            Decision::new(
+                "Skipped: no fresh fused forecast available (all providers stale or missing)"
+                    .to_string(),
+            )
+            .with_factor("strategy", format!("{strategy:?}"))
+            .with_factor(
+                "freshness_forecast_s",
+                format!("{}", freshness_threshold.as_secs()),
+            ),
         );
         return;
     };

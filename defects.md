@@ -120,7 +120,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Don't `|=`. Either (a) add a separate bookkeeping field `charge_battery_extended_today` with daily reset at midnight, or (b) recompute `charge_to_full_required` each tick from ingredients (weekly rollover OR today's weather_soc) rather than latching.
 
 ### [A-16] Forecast fusion's `is_fresh` predicate is `|_,_| true` — SPEC §5.13 12h/48h rules not implemented
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/process.rs:1028`, `crates/core/src/controllers/forecast_fusion.rs:20-21`
 **Description:** `run_weather_soc` passes an always-true filter. `typed_sensors.forecast_*` is only overwritten on successful fetch, never cleared. A three-day-old Solcast snapshot followed by API-key expiry is still "fresh" at tomorrow's 01:55.

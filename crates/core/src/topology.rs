@@ -25,6 +25,14 @@ pub struct ControllerParams {
     // `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`).
     // Only myenergi (single-cadence poller) is kept here as a scalar.
     pub freshness_myenergi: Duration,
+
+    /// Per-provider forecast snapshot freshness. A snapshot older than
+    /// this is excluded from the weather-SoC fusion (A-16). 12 h is
+    /// generous — Solcast fetches hourly, Forecast.Solar and Open-Meteo
+    /// every 30 min; 12 h is 24+ missed fetches. The goal is to catch
+    /// long-running failures (API-key expiry, network partition) without
+    /// tripping on routine intermittent outages.
+    pub freshness_forecast: Duration,
 }
 
 impl ControllerParams {
@@ -41,6 +49,7 @@ impl ControllerParams {
             current_limit_confirm_tolerance_a: 0.5,
             current_limit_retarget_deadband_a: 0.5,
             freshness_myenergi: Duration::from_secs(300),
+            freshness_forecast: Duration::from_secs(12 * 60 * 60),
         }
     }
 }

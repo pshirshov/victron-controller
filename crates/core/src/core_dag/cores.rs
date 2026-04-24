@@ -170,10 +170,10 @@ impl Core for WeatherSocCore {
         &self,
         world: &mut World,
         clock: &dyn Clock,
-        _topology: &Topology,
+        topology: &Topology,
         effects: &mut Vec<Effect>,
     ) {
-        run_weather_soc(world, clock, effects);
+        run_weather_soc(world, clock, topology, effects);
     }
 }
 
