@@ -141,17 +141,37 @@ async fn command_handler(
             Json(serde_json::json!({"accepted": false, "error_message": "unknown knob or invalid value"})),
         );
     };
-    if let Err(e) = s.events.send(event).await {
-        error!(error = %e, "failed to forward dashboard command to runtime");
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"accepted": false, "error_message": "runtime channel closed"})),
-        );
+    // A-58: try_send + distinct 503 responses for channel-full vs
+    // channel-closed. Previously `.send(event).await` with no timeout
+    // could tie up axum workers during any runtime slowdown; since the
+    // handler runs on every dashboard POST, a burst could fill the
+    // tokio worker pool. try_send returns immediately either way.
+    match s.events.try_send(event) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"accepted": true, "error_message": null})),
+        ),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            warn!("dashboard command dropped: runtime event channel full");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "accepted": false,
+                    "error_message": "runtime event channel full; retry in a moment"
+                })),
+            )
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            error!("dashboard command dropped: runtime event channel closed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "accepted": false,
+                    "error_message": "runtime channel closed"
+                })),
+            )
+        }
     }
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"accepted": true, "error_message": null})),
-    )
 }
 
 async fn version_handler() -> impl IntoResponse {

@@ -410,7 +410,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Serialise the 5-write burst in the writer; on any failure, reset `target = unset` so TASS re-proposes. Treat the burst as atomic at the controller layer.
 
 ### [A-58] Event channel send stalls runtime indefinitely on slow MQTT publish
-**Status:** open
+**Status:** resolved (dashboard side; forecast/myenergi poller backpressure remains as separate concerns — A-28 already addresses HTTP-driven stalls)
 **Severity:** minor
 **Location:** `crates/shell/src/main.rs:47`
 **Description:** Dashboard POSTs use `tx.send(event).await` without timeout. Slow runtime + burst of POSTs → tied-up Axum workers.

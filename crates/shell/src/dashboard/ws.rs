@@ -121,13 +121,24 @@ async fn handle_client_msg(
         }
         WsClientMessage::SendCommand(c) => {
             let event = command_to_event(&c.body, Instant::now());
+            // A-58: try_send instead of .send().await. A WS client that
+            // keeps the connection open through a runtime slowdown
+            // shouldn't tie up the per-client task indefinitely; if the
+            // event channel is full we ack `accepted: false` and let
+            // the client retry.
             let ack = match event {
-                Some(ev) => match state.events.send(ev).await {
+                Some(ev) => match state.events.try_send(ev) {
                     Ok(()) => CommandAck {
                         accepted: true,
                         error_message: None,
                     },
-                    Err(_) => CommandAck {
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => CommandAck {
+                        accepted: false,
+                        error_message: Some(
+                            "runtime event channel full; retry in a moment".to_string(),
+                        ),
+                    },
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => CommandAck {
                         accepted: false,
                         error_message: Some("runtime channel closed".to_string()),
                     },
