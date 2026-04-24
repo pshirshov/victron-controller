@@ -286,11 +286,14 @@ fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // Temperature (°C)
         KnobId::WeathersocWinterTemperatureThreshold => (-30.0, 40.0),
 
-        // Energy thresholds (kWh)
+        // Energy thresholds (kWh). A-44: SPEC §3.6 is 0..1000; previously
+        // the knob_range and HA discovery both said 500 — the ceiling is
+        // unreachable for a ~15 kWp system anyway, but consistency with
+        // SPEC matters for users reading the dashboard's knob metadata.
         KnobId::WeathersocLowEnergyThreshold
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
-        | KnobId::WeathersocTooMuchEnergyThreshold => (0.0, 500.0),
+        | KnobId::WeathersocTooMuchEnergyThreshold => (0.0, 1000.0),
 
         // Power (W)
         KnobId::GridExportLimitW | KnobId::GridImportLimitW => (0.0, 10_000.0),
@@ -821,9 +824,9 @@ mod tests {
             // Temperature
             (KnobId::WeathersocWinterTemperatureThreshold, "-31"),
             (KnobId::WeathersocWinterTemperatureThreshold, "41"),
-            // Energy
+            // Energy (A-44: range widened 500 → 1000 to match SPEC §3.6)
             (KnobId::WeathersocLowEnergyThreshold, "-1"),
-            (KnobId::WeathersocTooMuchEnergyThreshold, "501"),
+            (KnobId::WeathersocTooMuchEnergyThreshold, "1001"),
             // Pessimism multiplier
             (KnobId::PessimismMultiplierModifier, "-0.1"),
             (KnobId::PessimismMultiplierModifier, "2.01"),

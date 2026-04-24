@@ -316,7 +316,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Expose as `[forecast.open_meteo] system_efficiency = 0.75`; document bias in SPEC §5.7; show per-provider today_kwh in dashboard.
 
 ### [A-44] HA discovery `weathersoc_*_energy_threshold` max=500; SPEC §3.6 says 0..1000
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/discovery.rs:150-153`
 **Description:** UI caps at 500 kWh; SPEC says 1000. Physical kWh/day for 15 kWp never hits even 100, so benign — still a three-way divergence to reconcile.
