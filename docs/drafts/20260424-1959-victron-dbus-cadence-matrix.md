@@ -48,6 +48,20 @@ Legend:
 - **Poll cadence** = recommended *safety-net* `GetItems` interval; 0 (or "none") means "rely on `ItemsChanged` alone after initial seed".
 - **Staleness window** = recommended `freshness_*` threshold for this sensor.
 
+### Relationship between staleness window and reseed cadence
+
+**Invariant:** `staleness > max(organic-signal-gap, safety-net-reseed-cadence)` under *healthy* operation — otherwise freshness decays spuriously while everything's fine.
+
+Two regimes apply, driven by which mechanism is the *primary* freshness source for a given path:
+
+**Fast metrics** (e.g. `/Ac/Grid/L1/Power`, ~1 Hz organic signals):
+Signals drive freshness. The reseed is pure belt-and-suspenders — it only catches "signals were transiently down". Here `staleness ≪ reseed` is correct: if signals stop we want to FAIL FAST (e.g. 5 s) so controllers bail on stale data, even though the next safety-net reseed won't fire for another 55 s. The reseed still resets freshness whenever it lands a value, so the sensor un-Stales as soon as the signal stream recovers or the reseed succeeds — whichever comes first.
+
+**Slow / static metrics** (e.g. `/Soh`, `/InstalledCapacity`):
+Organic signals essentially never fire. The reseed IS the freshness source. Here `staleness > reseed` is mandatory: if staleness < reseed, the sensor ping-pongs Stale → Fresh → Stale on every reseed cycle and controllers bail half the time. Pick `staleness ≈ 2× reseed` for comfortable headroom.
+
+Every entry in the matrix below should satisfy the invariant under whichever regime applies. If a future entry violates it, either the staleness is wrong (too tight for a slow path) or the reseed is wrong (too sparse for the freshness budget).
+
 ### system — `com.victronenergy.system`
 
 Produced by `dbus-systemcalc-py`; all values update at ≤1 Hz on the timer tick (source §4).
