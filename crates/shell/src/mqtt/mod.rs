@@ -25,6 +25,7 @@ pub use discovery::publish_ha_discovery;
 pub use log_layer::{log_channel, spawn_log_publisher, LogRecord, MqttLogLayer};
 pub use serialize::{decode_knob_set, decode_state_message, encode_publish_payload};
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -194,10 +195,21 @@ impl Subscriber {
         info!("mqtt bootstrap: collecting retained /state for {:?}", BOOTSTRAP_WINDOW);
         let deadline = Instant::now() + BOOTSTRAP_WINDOW;
         let mut applied = 0_usize;
+        let mut applied_topics: HashSet<String> = HashSet::new();
+        let mut duplicate_count = 0_usize;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match timeout(remaining, self.event_loop.poll()).await {
                 Ok(Ok(MqttEvent::Incoming(Packet::Publish(p)))) => {
+                    // Skip a duplicate retained delivery within the bootstrap
+                    // window. Broker/rumqttc redelivery amplification (A-71)
+                    // can produce ~50× duplicates per retained topic. Our
+                    // canonical retained value is one-per-topic by definition,
+                    // so first-observed wins; subsequent copies are wasteful.
+                    if !applied_topics.insert(p.topic.clone()) {
+                        duplicate_count += 1;
+                        continue;
+                    }
                     if let Some(event) = serialize::decode_state_message(
                         &self.topic_root,
                         &p.topic,
@@ -217,7 +229,12 @@ impl Subscriber {
                 Err(_) => break, // deadline reached
             }
         }
-        info!(applied, "mqtt bootstrap complete; seeded knobs from retained state");
+        info!(
+            applied,
+            unique_topics = applied_topics.len(),
+            duplicates_suppressed = duplicate_count,
+            "mqtt bootstrap complete; seeded knobs from retained state"
+        );
 
         // Unconditional post-bootstrap override: SPEC §5.9 requires
         // `allow_battery_to_car` to boot `false` every single time,

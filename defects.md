@@ -553,7 +553,29 @@ reviewing a specific PR's patch.
 **Description:** The D01 fix comment implies heartbeat fires even if the poll arm stalls. It doesn't: `tokio::select!` picks a ready branch and runs its body to completion before re-entering. If any `seed_service(svc, &tx).await` blocks (e.g. hung D-Bus call on a degraded service), the whole select is parked and the heartbeat arm cannot be polled. The mechanism still ensures heartbeat survives a busy signal stream (the original concern), but not a blocked seed call — which is actually the more likely stall.
 **Suggested fix:** Wrap `seed_service()` in `tokio::time::timeout(Duration::from_secs(5), …)` and treat timeout as a soft failure (bumps the existing fail counter). Restores heartbeat liveness under D-Bus wedge. Deferred — the current fix is still an improvement over round 1; separately addressable.
 
-### [PR-URGENT-13-D09] `routed_signals_since_last_heartbeat` counts per-dispatched-path, not per-signal; name misleads
+### [A-71] MQTT bootstrap applies each retained message ~40× — decoder amplification, not stale broker state
+**Status:** resolved (PR-URGENT-14)
+**Severity:** major
+**Field confirmation (2026-04-24 instrumented run):** broker delivered 5 unique retained topics (3 knob, 2 bookkeeping) but our counter logged `applied=287` — ~57× amplification per topic over a 140 ms window. Diagnostic warn logs show the same 5 topics cycling repeatedly. This is redelivery (broker-side or rumqttc-side), not decode or filter-scope bugs. Root cause between rumqttc session-replay, QoS 1 PUBACK timing, and Mosquitto persistence behaviour remains unknown; dedup by topic in the bootstrap window is a safe universal fix regardless.
+**Fix:** PR-URGENT-14. `HashSet<String>` of applied topics inside the bootstrap loop; first delivery per topic wins, subsequent duplicates increment a `duplicate_count` and `continue`. Completion log now emits `applied`, `unique_topics`, `duplicates_suppressed`. Temporary A-71 diagnostic warn! removed. Verification green (cargo test, clippy, ARMv7 cross-compile).
+**Location:** `crates/shell/src/mqtt/mod.rs:187-220`
+**Description:** Field diagnostic (2026-04-24) confirmed the broker carries only **11 retained topics** under `victron-controller/` (3 knob/*/state, 2 bookkeeping/*/state, 6 entity/*/phase — the last of which aren't bootstrap-matched). Yet `mqtt bootstrap complete; applied=431` on the same run. The 3+2 bootstrap-matched topics are being applied ~86× each.
+
+Likely root causes, in order of plausibility:
+1. **Session replay on reconnect within the 2 s window.** `clean_session` default is probably `false`; if rumqttc reconnects mid-window (transient network hiccup, broker keep-alive timing), each reconnect re-delivers all retained messages matching the subscription filters. 86× in 2 s = ~23 ms per reconnect — feasible on a lossy link.
+2. **Subscription duplication via rumqttc's internal session state.** If the service was restarted many times before this run, the broker's stored session could be replaying accumulated queued messages.
+3. **Wildcard overlap** — ruled out; the three state filters don't overlap by construction.
+
+Why it matters:
+- **Masks A-70's original severity** (a channel flood we attributed to broker state is actually a client-side amplification).
+- Each amplified apply re-overwrites the core's knob state — if a user writes to dashboard at the same moment, their intent is clobbered N times.
+- Bootstrap logs show a false "large retained state" picture, hiding the real topology.
+
+**Suggested fix:** Instrument first. Log each `Packet::Publish` topic + payload-prefix inside the bootstrap loop at `debug!` so we can tell whether the broker is redelivering the same topic N times or something else. Then pick one:
+- Deduplicate within the bootstrap window — keep a `HashSet<String>` of `(topic, payload_hash)` and skip re-applies within the same window.
+- Set `clean_session = true` for the bootstrap phase, reconnect clean for phase 2 with a stable client-id.
+- Cap retries explicitly.
+Fastest safe fix: dedupe by `topic` in the bootstrap window. A topic is retained → a single canonical value per topic exists; applying N identical values is wasteful and introduces the amplified noise.
 **Status:** open (deferred)
 **Severity:** nit
 **Location:** `crates/shell/src/dbus/subscriber.rs:~358`

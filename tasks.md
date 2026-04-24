@@ -30,6 +30,11 @@ following PRs:
   (resolves A-03).
 - [ ] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (resolves
   A-04, A-24).
+- [x] **PR-URGENT-14** — Dedup retained-knob bootstrap apply by topic.
+  Resolves A-71. Field confirmed 5 retained topics × 57 redeliveries =
+  287 applies; fix uses `HashSet<String>` to keep first-seen per topic
+  within the bootstrap window. Completion log reports `applied`,
+  `unique_topics`, `duplicates_suppressed`. Diagnostic warn! removed.
 - [x] **PR-URGENT-13** — Silent stale-sensor observability fix (resolves
   A-69 + A-70; PR-URGENT-13-D01/D02 resolved; D03-D09 deferred).
   warn-level rate-limited re-seed failures + error escalation at 5
@@ -157,6 +162,23 @@ decides which ride along.
   test deferred, D06/D07 scope-sprawl misattributed to pre-review-loop
   state, D08/D09 deferred to PR-09b). Verification: green (196+10+45
   tests, clippy, ARMv7, web bundle 26.8kb).
+
+- **PR-URGENT-14** (2026-04-24) — Retained-knob bootstrap dedup by topic.
+  Resolves A-71. Field data showed 5 broker-retained topics redelivered
+  ~57× each, inflating `applied` from 11→287. Fix: `HashSet<String>`
+  tracks first-seen topic in the bootstrap window; duplicates increment
+  a counter and are skipped before decode. Completion log now honest:
+  `applied=11, unique_topics=11, duplicates_suppressed=0` expected on
+  a clean run; anomalies visible at a glance. Root cause of redelivery
+  remains unattributed (rumqttc/Mosquitto session interaction); the
+  dedup is robust to whichever it turns out to be. Also removed the
+  temporary A-71 diagnostic warn! and its explanatory comment.
+  Verification: 199 core + 46 shell + 10 dashboard-model tests green;
+  clippy clean; ARMv7 cross-compile ok. Adversarial review round 1
+  returned clean with no defects. Constraint for future work: do NOT
+  add other HashSets keyed on `String` derived from `p.topic` without
+  first considering whether the underlying rumqttc type is `String` or
+  `Bytes` — it's currently `String` (rumqttc 0.24.0).
 
 - **PR-URGENT-13** (2026-04-24) — Silent stale-sensor observability fix.
   Resolves A-69 (debug!→warn! periodic re-seed failures with 30s
