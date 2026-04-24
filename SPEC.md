@@ -306,6 +306,7 @@ Controller impact:
 
 - `solar_export_w` gains a `max(0, −evcharger_35.ac_power)` term (Hoymiles through EV branch counts as PV).
 - `zappi_active` fallback uses `ac_power > 500 W` instead of `ac_current > 1 A`.
+- `zappi_active` is `false` when both typed Zappi state and `ac_power` are unusable (`Stale` / `Unknown`); no cross-tick latching (PR-DAG-B: departs from PR-04's bookkeeping-latched behavior, surfaces sensor loss honestly).
 
 No Hoymiles DTU integration — the ET112 is the low-latency source of truth.
 

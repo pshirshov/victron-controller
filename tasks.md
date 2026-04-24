@@ -115,11 +115,17 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     `run_all` and passed by reference to each core. 2 review rounds
     (round 1 blocked on ship-critical D01; round 2 clean + 3 info
     notes).
-  - [ ] **PR-DAG-B** — Migrate `zappi_active` to first-class
-    `ZappiActiveCore` writing to `world.derived.zappi_active`; delete
-    `DerivedView`, `compute_derived_view`, `bookkeeping.zappi_active`;
-    tear-down invariants: `rg "DerivedView|bookkeeping\.zappi_active"`
-    empty in `crates/core`.
+  - [x] **PR-DAG-B** — `zappi_active` migrated to first-class
+    `ZappiActiveCore` (topo-sort root, `depends_on=[]`) writing to
+    `world.derived.zappi_active`. `DerivedView`, `compute_derived_view`,
+    `bookkeeping.zappi_active`, `CurrentLimitBookkeeping.zappi_active`,
+    all `*InputGlobals.zappi_active` fields, and the removed `Core::run
+    &DerivedView` parameter all deleted. Dashboard wire-compat preserved
+    (`ModelBookkeeping.zappi_active` sourced from `world.derived`).
+    Semantic choice locked + documented: no cross-tick latching on
+    stale sensors (departs from PR-04's latched-via-bookkeeping);
+    SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
+    D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
 - [x] **PR-SCHED0** — Observer-mode target-mutation inversion. Root
   cause (b+a hybrid): observer mode left target=Unset while Node-RED
@@ -332,6 +338,59 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-DAG-B** (2026-04-24) — `zappi_active` as a first-class TASS
+  derivation core. Completes the user's architectural request:
+  "if two TASS cores need to agree on a classifier, the derivation
+  should be its own core; cores form a DAG executed in topological
+  order". `ZappiActiveCore` (zero-sized struct, `depends_on=[]`)
+  writes `world.derived.zappi_active` from a single canonical
+  `classify_zappi_active(world, clock)` call per tick. `DerivedView`
+  / `compute_derived_view` / `bookkeeping.zappi_active` /
+  `CurrentLimitBookkeeping.zappi_active` / every `*InputGlobals.zappi_active`
+  field / the `Core::run &DerivedView` parameter all deleted.
+  `depends_on` wiring post-PR: ZappiActive `[]`, Setpoint
+  `[ZappiActive]`, CurrentLimit `[ZappiActive, Setpoint]`, Schedules
+  `[ZappiActive, CurrentLimit]`, ZappiMode `[Schedules]`, EddiMode
+  `[ZappiMode]`, WeatherSoc `[EddiMode]`. Topological order
+  `[ZappiActive, Setpoint, CurrentLimit, Schedules, ZappiMode,
+  EddiMode, WeatherSoc]`. **Semantic choice locked with tests +
+  docs:** when both typed Zappi state and `evcharger_ac_power`
+  are unusable (Stale/Unknown), `world.derived.zappi_active=false`
+  — no cross-tick latching. This is a deliberate departure from
+  PR-04's bookkeeping-latched behavior (which masked sensor loss
+  because `run_current_limit` early-returned on the freshness gate
+  and left the stored global untouched). New behavior surfaces
+  sensor loss honestly and is safer — don't hog EV current for a
+  car we can't see. Locked by
+  `zappi_active_drops_to_false_when_both_sensor_paths_unusable`
+  and `zappi_active_uses_power_fallback_when_typed_state_is_stale`
+  in `core_dag::tests`. SPEC §5.8 updated. Dashboard wire-compat
+  preserved (`ModelBookkeeping.zappi_active` sourced from
+  `world.derived`). Tear-down invariants: `rg "DerivedView|
+  compute_derived_view|bookkeeping\.zappi_active|bk\.zappi_active"`
+  in `crates/core` returns only doc-comment history references;
+  `rg "zappi_active" crates/shell` returns one match
+  (dashboard/convert.rs) properly sourced from `world.derived`.
+  Touched: `crates/core/src/world.rs` (new `DerivedState`; removed
+  `Bookkeeping.zappi_active`), `core_dag/{mod.rs,cores.rs,tests.rs}`
+  (new `ZappiActiveCore` + semantic edges + 2 new tests),
+  `process.rs` (deleted DerivedView/compute_derived_view; updated
+  all zappi_active reads to `world.derived`; rewrote 2 A-05 tests),
+  `controllers/current_limit.rs` (removed field from
+  `CurrentLimitBookkeeping`; rewrote 2 tests),
+  `controllers/zappi_active.rs` (doc update),
+  `shell/src/dashboard/convert.rs` (wire-compat), `SPEC.md` (§5.8).
+  Verification: 212 core + 11 property + 50 shell + 2 new = 275
+  tests green; clippy clean; ARMv7 release ok; web bundle 26.8kB.
+  Review rounds: 2 (round 1: D01 reviewer-misread plan dismissed,
+  D02 real semantic change fixed in round 2; D03 nit — call-counting
+  clock assertion — deferred).
+  Constraint for future work: do NOT add controller-local calls
+  to `classify_zappi_active`. Read `world.derived.zappi_active`.
+  PR-DAG-C will add remaining semantic `depends_on` edges for the
+  other cross-core bookkeeping reads (`charge_to_full_required`,
+  `battery_selected_soc_target`, `charge_battery_extended_today`).
 
 - **PR-DAG-A** (2026-04-24) — TASS core DAG infrastructure. Zero-
   behavior-change refactor wrapping the six existing `run_*`

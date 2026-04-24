@@ -5,7 +5,6 @@
 //! graphs (cycles, missing deps, duplicates).
 
 use crate::Clock;
-use crate::process::DerivedView;
 use crate::topology::Topology;
 use crate::types::Effect;
 use crate::world::World;
@@ -32,7 +31,6 @@ impl Core for StubCore {
     fn run(
         &self,
         _world: &mut World,
-        _derived: &DerivedView,
         _clock: &dyn Clock,
         _topology: &Topology,
         _effects: &mut Vec<Effect>,
@@ -52,6 +50,7 @@ fn stub(id: CoreId, deps: &'static [CoreId]) -> Box<dyn Core> {
 /// produce. If this changes, the runtime order of `run_*` has
 /// changed — pause and confirm that's intentional.
 const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
+    CoreId::ZappiActive,
     CoreId::Setpoint,
     CoreId::CurrentLimit,
     CoreId::Schedules,
@@ -150,19 +149,24 @@ fn tie_break_follows_coreid_discriminant_order() {
 }
 
 // -----------------------------------------------------------------------------
-// PR-DAG-A-D02 — `compute_derived_view` runs exactly once per tick.
+// PR-DAG-B-D02 — `classify_zappi_active` runs exactly once per tick.
 // -----------------------------------------------------------------------------
 //
-// Regression harness for the reintroduced A-05 hazard: when each core
-// recomputes `DerivedView` independently, `classify_zappi_active` can
-// straddle the `WAIT_TIMEOUT_MIN = 5 min` boundary between two
-// uncached `clock.naive()` reads — setpoint sees "active" and
-// current-limit sees "inactive" (or vice versa). The test uses an
-// `AdvancingClock` that returns a DIFFERENT naive datetime on every
-// call, straddling the boundary, and then asserts that the setpoint
-// decision's `zappi_active` factor and the `bookkeeping.zappi_active`
-// value current-limit wrote are CONSISTENT. With the D01 fix they
-// must match because both reads came from a single `DerivedView`.
+// Successor to the PR-DAG-A-D01 regression guard. The original hazard:
+// `classify_zappi_active` runs more than once per tick and straddles the
+// `WAIT_TIMEOUT_MIN = 5 min` boundary between `clock.naive()` reads,
+// so setpoint sees "active" and a downstream actuator sees "inactive"
+// (or vice versa).
+//
+// PR-DAG-B moves ownership of that classification into `ZappiActiveCore`,
+// which writes `world.derived.zappi_active` once at the top of the tick.
+// Consumers then read the struct field — no further calls into the
+// classifier occur within the same tick.
+//
+// The check: the `zappi_active` factor recorded on the grid-setpoint
+// decision must match the value sitting in `world.derived.zappi_active`
+// at the end of the tick. If any consumer ever starts re-deriving
+// independently they would diverge here.
 
 mod d02_boundary_consistency {
     use std::cell::Cell;
@@ -224,19 +228,119 @@ mod d02_boundary_consistency {
     }
 
     #[test]
-    fn setpoint_and_current_limit_agree_across_wait_timeout_boundary() {
-        // Straddle the 5 min WAIT_TIMEOUT boundary between two
-        // hypothetical `compute_derived_view` calls.
+    fn zappi_active_drops_to_false_when_both_sensor_paths_unusable() {
+        // Regression guard for the PR-DAG-B semantic change: the old
+        // bookkeeping-backed path latched the last-known `zappi_active`
+        // across sensor loss because `run_current_limit` early-returned
+        // on the freshness gate. The new DAG-resident derivation re-runs
+        // the classifier every tick and returns `false` when neither
+        // input is usable — no latching. This test locks that choice.
+        use std::time::Instant;
+        use chrono::NaiveDate;
+
+        use crate::clock::FixedClock;
+        use crate::core_dag::Core;
+        use crate::core_dag::cores::ZappiActiveCore;
+        use crate::topology::Topology;
+        use crate::types::Effect;
+        use crate::world::World;
+
+        let mono = Instant::now();
+        let naive = NaiveDate::from_ymd_opt(2026, 4, 24)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let clk = FixedClock::new(mono, naive);
+
+        let mut world = World::fresh_boot(mono);
+
+        // Both inputs unusable: typed_sensors.zappi_state stays at the
+        // fresh-boot `Unknown`, and evcharger_ac_power likewise. No
+        // `on_reading` call — both remain `Freshness::Unknown`.
+        assert!(!world.typed_sensors.zappi_state.is_usable());
+        assert!(!world.sensors.evcharger_ac_power.is_usable());
+
+        // Pre-seed `derived.zappi_active = true` — the value a prior
+        // tick would have published (and which the old bookkeeping
+        // path would have "latched" into this tick).
+        world.derived.zappi_active = true;
+
+        let mut effects: Vec<Effect> = Vec::new();
+        ZappiActiveCore.run(&mut world, &clk, &Topology::defaults(), &mut effects);
+
+        assert!(
+            !world.derived.zappi_active,
+            "zappi_active must drop to false when both the typed state \
+             and evcharger_ac_power sensor are unusable — no cross-tick \
+             latching. Got true, which would mean the classifier (or a \
+             new bookkeeping path) is latching through sensor loss.",
+        );
+    }
+
+    #[test]
+    fn zappi_active_uses_power_fallback_when_typed_state_is_stale() {
+        // Companion to the drops-to-false test: when typed state is
+        // unusable but evcharger_ac_power is fresh and above the
+        // fallback threshold, the classifier must fire `true`. This
+        // documents that the derivation is not a blanket "stale ⇒
+        // false" guard — it genuinely falls back to power (SPEC §5.8 /
+        // §5.11) when that signal is available.
+        use std::time::Instant;
+        use chrono::NaiveDate;
+
+        use crate::clock::FixedClock;
+        use crate::core_dag::Core;
+        use crate::core_dag::cores::ZappiActiveCore;
+        use crate::topology::Topology;
+        use crate::types::Effect;
+        use crate::world::World;
+
+        let mono = Instant::now();
+        let naive = NaiveDate::from_ymd_opt(2026, 4, 24)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let clk = FixedClock::new(mono, naive);
+
+        let mut world = World::fresh_boot(mono);
+
+        // typed_sensors.zappi_state: untouched → Unknown/unusable.
+        assert!(!world.typed_sensors.zappi_state.is_usable());
+
+        // evcharger_ac_power: 800 W fresh, comfortably above the 500 W
+        // SPEC §5.8 fallback threshold.
+        world.sensors.evcharger_ac_power.on_reading(800.0, mono);
+        assert!(world.sensors.evcharger_ac_power.is_usable());
+
+        // Pre-set derived.zappi_active = false to prove the positive
+        // transition is actually produced by the classifier, not
+        // inherited from the prior tick.
+        world.derived.zappi_active = false;
+
+        let mut effects: Vec<Effect> = Vec::new();
+        ZappiActiveCore.run(&mut world, &clk, &Topology::defaults(), &mut effects);
+
+        assert!(
+            world.derived.zappi_active,
+            "zappi_active must be true when typed state is unusable but \
+             evcharger_ac_power is fresh above the 500 W fallback \
+             threshold. Got false — the power-based fallback path is \
+             broken.",
+        );
+    }
+
+    #[test]
+    fn setpoint_decision_matches_world_derived_zappi_active_across_boundary() {
+        // Straddle the 5 min WAIT_TIMEOUT boundary.
         //
         // Clock starts at 12:04:59.990; Zappi entered `WaitingForEv`
         // at 12:00:00.000 (4 min 59.990 s prior). AdvancingClock steps
-        // `naive()` forward by 1 s on every call. With the pre-D01
-        // code each actuator core recomputes the view independently,
-        // so classify runs twice: call 1 sees delta=4:59.990
-        // (active=true), call 2 (after several intervening controller
-        // `naive()` reads) sees delta well over 5 min (active=false)
-        // — the two cores then disagree. With the D01 fix, classify
-        // runs exactly ONCE and both cores read the same value.
+        // `naive()` forward by 1 s on every call, so any *second*
+        // invocation of `classify_zappi_active` would land past the
+        // 5 min threshold and return `false` — disagreeing with the
+        // first invocation. With PR-DAG-B, `ZappiActiveCore` is the
+        // sole caller: it classifies once and every consumer reads
+        // from `world.derived.zappi_active`.
         let base_naive = NaiveDate::from_ymd_opt(2026, 4, 21)
             .unwrap()
             .and_hms_milli_opt(12, 4, 59, 990)
@@ -260,10 +364,6 @@ mod d02_boundary_consistency {
 
         let mut world = World::fresh_boot(mono);
         seed_required_sensors(&mut world, mono);
-        // Live Zappi state: WaitingForEv with last_change 4:59.990
-        // before the clock's initial naive(). The classifier's
-        // `delta_min > WAIT_TIMEOUT_MIN` check is the boundary we
-        // want to straddle.
         world.typed_sensors.zappi_state.on_reading(
             ZappiState {
                 zappi_mode: ZappiMode::Eco,
@@ -273,9 +373,6 @@ mod d02_boundary_consistency {
             },
             mono,
         );
-        // Bookkeeping starts at the cold-boot default so the two
-        // controllers can't accidentally agree via the stale latch.
-        world.bookkeeping.zappi_active = false;
 
         let _ = process(
             &Event::Tick { at: mono },
@@ -284,8 +381,8 @@ mod d02_boundary_consistency {
             &Topology::defaults(),
         );
 
-        // --- Observation 1: setpoint recorded a factor "zappi_active"
-        //     with the value DerivedView gave it.
+        // Setpoint's `zappi_active` factor must match the single
+        // derivation `ZappiActiveCore` published at the top of the tick.
         let decision = world
             .decisions
             .grid_setpoint
@@ -295,33 +392,29 @@ mod d02_boundary_consistency {
             .factors
             .iter()
             .any(|f| f.name == "zappi_active" && f.value == "true");
-
-        // --- Observation 2: current-limit wrote bookkeeping.zappi_active
-        //     from its own DerivedView input.
-        let current_limit_wrote_active = world.bookkeeping.zappi_active;
+        let derived_active = world.derived.zappi_active;
 
         assert_eq!(
-            setpoint_saw_active, current_limit_wrote_active,
-            "PR-DAG-A-D01 regression: setpoint (factor zappi_active={}) \
-             and current_limit (bookkeeping.zappi_active={}) disagreed \
-             across the WAIT_TIMEOUT_MIN boundary — they must both \
-             read from a single per-tick DerivedView. \
-             (naive() was called {} times this tick)",
+            setpoint_saw_active, derived_active,
+            "PR-DAG-B regression: setpoint factor zappi_active={} \
+             disagreed with world.derived.zappi_active={} — the \
+             derivation core's single-write-per-tick contract is \
+             violated. (naive() was called {} times)",
             setpoint_saw_active,
-            current_limit_wrote_active,
+            derived_active,
             clk.naive_calls.get(),
         );
 
         // Stronger claim: at the boundary constructed above, the
         // FIRST naive() read is under the timeout so the classifier
-        // must return `true`. If the test observed `false` for both
-        // it would silently pass without exercising the hazard.
+        // must return `true`. If both observations showed `false` the
+        // test would silently pass without exercising the hazard.
         assert!(
             setpoint_saw_active,
             "test mis-configured: the first naive() read should place \
              delta_min under WAIT_TIMEOUT_MIN (zappi_active=true). Got \
              false — the boundary wasn't straddled, so this test is \
-             not exercising D01.",
+             not exercising the regression.",
         );
     }
 }

@@ -1,30 +1,23 @@
-//! Zero-sized `Core` impls wrapping each existing `run_*` controller.
+//! Zero-sized `Core` impls wrapping each existing `run_*` controller
+//! plus the first derivation core.
 //!
-//! **PR-DAG-A `depends_on` wiring is a placeholder.** Each actuator
-//! core declares a single edge back to the previous entry in today's
-//! hand-rolled execution order:
+//! PR-DAG-B: `ZappiActiveCore` is a first-class derivation core that
+//! writes `world.derived.zappi_active` at the top of every tick. The
+//! three actuator cores that read it (`Setpoint`, `CurrentLimit`,
+//! `Schedules`) declare `depends_on = [ZappiActive]` so the topological
+//! sort runs the derivation first.
 //!
-//!   Setpoint → CurrentLimit → Schedules → ZappiMode → EddiMode → WeatherSoc
-//!
-//! These edges are NOT semantically meaningful yet — they only exist
-//! to force the topological sort to reproduce the pre-refactor order
-//! byte-for-byte. PR-DAG-C replaces them with real edges derived from
-//! the bookkeeping-write/read audit in
+//! The residual `Setpoint → CurrentLimit → Schedules → ZappiMode →
+//! EddiMode → WeatherSoc` chain is still a PR-DAG-A placeholder —
+//! PR-DAG-C replaces each of those edges with a semantic one derived
+//! from the bookkeeping-write/read audit in
 //! `docs/drafts/20260424-1700-m-audit-2-pr-dag-plan.md` §4.
-//!
-//! **PR-DAG-A-D01:** `DerivedView` is computed ONCE per tick by
-//! `CoreRegistry::run_all` and threaded in as a parameter. Cores that
-//! don't consume it still accept it (`_derived`) so the trait signature
-//! stays uniform. Computing `DerivedView` twice per tick — as a
-//! previous revision did from SetpointCore/CurrentLimitCore
-//! independently — re-opened the A-05 hazard across the
-//! `WAIT_TIMEOUT_MIN` boundary: two uncached `clock.naive()` reads
-//! could straddle 5 min and make the two cores disagree.
 
 use crate::Clock;
+use crate::controllers::zappi_active::classify_zappi_active;
 use crate::process::{
-    DerivedView, run_current_limit, run_eddi_mode, run_schedules, run_setpoint,
-    run_weather_soc, run_zappi_mode,
+    run_current_limit, run_eddi_mode, run_schedules, run_setpoint, run_weather_soc,
+    run_zappi_mode,
 };
 use crate::topology::Topology;
 use crate::types::Effect;
@@ -32,23 +25,56 @@ use crate::world::World;
 
 use super::{Core, CoreId};
 
+pub(crate) struct ZappiActiveCore;
+impl Core for ZappiActiveCore {
+    fn id(&self) -> CoreId {
+        CoreId::ZappiActive
+    }
+    fn depends_on(&self) -> &'static [CoreId] {
+        &[]
+    }
+    /// Writes `world.derived.zappi_active` from a single canonical
+    /// `classify_zappi_active` call per tick.
+    ///
+    /// Semantic choice: when BOTH `typed_sensors.zappi_state` and
+    /// `sensors.evcharger_ac_power` are unusable (`Stale` / `Unknown`),
+    /// the classifier returns `false`. The prior-tick value is NOT
+    /// latched — this is a deliberate departure from PR-04's
+    /// `bookkeeping.zappi_active`, which effectively latched through
+    /// sensor loss because `run_current_limit` early-returned on the
+    /// freshness gate and left the stored global untouched. Latching
+    /// hid sensor loss; the new semantic surfaces it honestly and is
+    /// safer — don't hog EV current for a car we can't see. Locked by
+    /// `zappi_active_drops_to_false_when_both_sensor_paths_unusable`
+    /// and `zappi_active_uses_power_fallback_when_typed_state_is_stale`
+    /// in `core_dag::tests`.
+    fn run(
+        &self,
+        world: &mut World,
+        clock: &dyn Clock,
+        _topology: &Topology,
+        _effects: &mut Vec<Effect>,
+    ) {
+        world.derived.zappi_active = classify_zappi_active(world, clock);
+    }
+}
+
 pub(crate) struct SetpointCore;
 impl Core for SetpointCore {
     fn id(&self) -> CoreId {
         CoreId::Setpoint
     }
     fn depends_on(&self) -> &'static [CoreId] {
-        &[]
+        &[CoreId::ZappiActive]
     }
     fn run(
         &self,
         world: &mut World,
-        derived: &DerivedView,
         clock: &dyn Clock,
         topology: &Topology,
         effects: &mut Vec<Effect>,
     ) {
-        run_setpoint(world, *derived, clock, topology, effects);
+        run_setpoint(world, clock, topology, effects);
     }
 }
 
@@ -58,17 +84,18 @@ impl Core for CurrentLimitCore {
         CoreId::CurrentLimit
     }
     fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::Setpoint]
+        // Semantic edge on ZappiActive (reads `world.derived.zappi_active`);
+        // the edge on Setpoint is PR-DAG-A placeholder chain preservation.
+        &[CoreId::ZappiActive, CoreId::Setpoint]
     }
     fn run(
         &self,
         world: &mut World,
-        derived: &DerivedView,
         clock: &dyn Clock,
         topology: &Topology,
         effects: &mut Vec<Effect>,
     ) {
-        run_current_limit(world, *derived, clock, topology, effects);
+        run_current_limit(world, clock, topology, effects);
     }
 }
 
@@ -78,12 +105,13 @@ impl Core for SchedulesCore {
         CoreId::Schedules
     }
     fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::CurrentLimit]
+        // Semantic edge on ZappiActive (reads `world.derived.zappi_active`);
+        // the edge on CurrentLimit is PR-DAG-A placeholder chain preservation.
+        &[CoreId::ZappiActive, CoreId::CurrentLimit]
     }
     fn run(
         &self,
         world: &mut World,
-        _derived: &DerivedView,
         clock: &dyn Clock,
         _topology: &Topology,
         effects: &mut Vec<Effect>,
@@ -103,7 +131,6 @@ impl Core for ZappiModeCore {
     fn run(
         &self,
         world: &mut World,
-        _derived: &DerivedView,
         clock: &dyn Clock,
         _topology: &Topology,
         effects: &mut Vec<Effect>,
@@ -123,7 +150,6 @@ impl Core for EddiModeCore {
     fn run(
         &self,
         world: &mut World,
-        _derived: &DerivedView,
         clock: &dyn Clock,
         _topology: &Topology,
         effects: &mut Vec<Effect>,
@@ -143,7 +169,6 @@ impl Core for WeatherSocCore {
     fn run(
         &self,
         world: &mut World,
-        _derived: &DerivedView,
         clock: &dyn Clock,
         _topology: &Topology,
         effects: &mut Vec<Effect>,
@@ -152,14 +177,12 @@ impl Core for WeatherSocCore {
     }
 }
 
-/// The production list of actuator cores, in registration order. The
-/// registry reorders them topologically — registration order is
-/// irrelevant for correctness.
-///
-/// PR-DAG-A does NOT yet include any derivation cores. `CoreId::ZappiActive`
-/// is reserved but its `Core` impl lands in PR-DAG-B.
+/// The production list of cores, in registration order. The registry
+/// reorders them topologically — registration order is irrelevant for
+/// correctness.
 pub(crate) fn production_cores() -> Vec<Box<dyn Core>> {
     vec![
+        Box::new(ZappiActiveCore),
         Box::new(SetpointCore),
         Box::new(CurrentLimitCore),
         Box::new(SchedulesCore),

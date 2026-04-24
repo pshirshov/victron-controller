@@ -296,7 +296,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             next_full_charge_iso: b.next_full_charge.map(|dt| dt.to_string()),
             above_soc_date_iso: b.above_soc_date.map(|d| d.to_string()),
             prev_ess_state: b.prev_ess_state,
-            zappi_active: b.zappi_active,
+            zappi_active: world.derived.zappi_active,
             charge_to_full_required: b.charge_to_full_required,
             soc_end_of_day_target: b.soc_end_of_day_target,
             effective_export_soc_threshold: b.effective_export_soc_threshold,

@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::Clock;
-use crate::process::{DerivedView, compute_derived_view};
 use crate::topology::Topology;
 use crate::types::Effect;
 use crate::world::World;
@@ -40,11 +39,9 @@ pub enum CoreId {
 
 /// A single unit of orchestrated work. One impl per `run_*` today.
 ///
-/// `DerivedView` is `pub(crate)` because PR-DAG-B removes it in favour
-/// of first-class derivation cores writing to a `DerivedState` on
-/// `World`. Exposing it any wider now would lock us into a shape we
-/// intend to delete.
-#[allow(private_interfaces)]
+/// PR-DAG-B: cross-core derivations live in `World::derived` (see
+/// [`crate::world::DerivedState`]); each derivation is written by a
+/// dedicated `Core` that runs ahead of its consumers via `depends_on`.
 pub trait Core: Send + Sync {
     fn id(&self) -> CoreId;
 
@@ -55,7 +52,6 @@ pub trait Core: Send + Sync {
     fn run(
         &self,
         world: &mut World,
-        derived: &DerivedView,
         clock: &dyn Clock,
         topology: &Topology,
         effects: &mut Vec<Effect>,
@@ -162,12 +158,12 @@ impl CoreRegistry {
 
     /// Execute every core in topological order.
     ///
-    /// `DerivedView` is computed exactly once per tick, before any core
-    /// runs, and the same reference is threaded through every
-    /// `Core::run`. This prevents the A-05 hazard from resurfacing when
-    /// cores read clock-dependent derivations (e.g. the
-    /// `WAIT_TIMEOUT_MIN` boundary inside `classify_zappi_active`) —
-    /// PR-DAG-A-D01.
+    /// PR-DAG-B: derivation cores run ahead of their consumers (enforced
+    /// by `depends_on` edges validated in `build`) and write their
+    /// outputs into `world.derived`. `classify_zappi_active` is invoked
+    /// exactly once per tick by `ZappiActiveCore` — closing the A-05
+    /// hazard the previous `DerivedView` plumbing addressed
+    /// (PR-DAG-A-D01).
     pub fn run_all(
         &self,
         world: &mut World,
@@ -175,9 +171,8 @@ impl CoreRegistry {
         topology: &Topology,
         effects: &mut Vec<Effect>,
     ) {
-        let derived = compute_derived_view(world, clock);
         for &idx in &self.order {
-            self.cores[idx].run(world, &derived, clock, topology, effects);
+            self.cores[idx].run(world, clock, topology, effects);
         }
     }
 

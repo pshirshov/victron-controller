@@ -77,10 +77,10 @@ pub struct CurrentLimitInputGlobals {
     pub zappi_current_target: f64,
     pub zappi_emergency_margin: f64,
     pub zappi_state: ZappiState,
-    /// Pre-computed by the canonical [`crate::controllers::zappi_active::classify_zappi_active`]
-    /// classifier. PR-04-D01/D02/D03: single source of truth shared with
-    /// the setpoint controller's `DerivedView`, so the two controllers
-    /// cannot disagree on `zappi_active` within one tick.
+    /// PR-DAG-B: read from `world.derived.zappi_active`, which
+    /// `ZappiActiveCore` writes once per tick via
+    /// [`crate::controllers::zappi_active::classify_zappi_active`] —
+    /// the single source of truth every consumer shares.
     pub zappi_active: bool,
     pub extended_charge_required: bool,
     pub disable_night_grid_discharge: bool,
@@ -127,9 +127,6 @@ pub struct CurrentLimitDebug {
 pub struct CurrentLimitBookkeeping {
     /// Updated prev_ess_state (unchanged unless ess_state != 9 and changed).
     pub prev_ess_state: Option<i32>,
-    /// Current-limit's view of "is the EV actively consuming?" — published
-    /// as a global for the setpoint controller's Zappi-active branch.
-    pub zappi_active: bool,
 }
 
 /// Round a value to 2 decimal places — matches the legacy `tools.round2`.
@@ -179,11 +176,10 @@ pub fn evaluate_current_limit(
     let grid_underuse = (MAX_GRID_CURRENT_A - grid_current).ceil().max(0.0);
 
     // --- Zappi activity classification ---
-    // PR-04-D01/D02/D03: `zappi_active` now flows in via
-    // [`CurrentLimitInputGlobals::zappi_active`], computed once per
-    // tick by the canonical
-    // [`crate::controllers::zappi_active::classify_zappi_active`] so
-    // setpoint and current-limit always agree.
+    // PR-DAG-B: `zappi_active` flows in via
+    // [`CurrentLimitInputGlobals::zappi_active`], sourced from
+    // `world.derived.zappi_active` which `ZappiActiveCore` wrote at the
+    // top of the tick — single source of truth for every consumer.
     let ZappiState {
         zappi_mode,
         zappi_plug_state,
@@ -304,7 +300,6 @@ pub fn evaluate_current_limit(
         },
         bookkeeping: CurrentLimitBookkeeping {
             prev_ess_state,
-            zappi_active,
         },
         decision,
     }
@@ -413,12 +408,11 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn zappi_active_true_propagates_to_debug_and_bookkeeping() {
+    fn zappi_active_true_propagates_to_debug() {
         let mut input = base_input();
         input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(out.debug.zappi_active);
-        assert!(out.bookkeeping.zappi_active);
     }
 
     #[test]
@@ -560,12 +554,15 @@ mod tests {
     }
 
     #[test]
-    fn zappi_active_is_exported_in_bookkeeping() {
+    fn zappi_active_is_surfaced_in_debug() {
+        // PR-DAG-B: `zappi_active` is no longer part of the controller's
+        // bookkeeping output (that field was hosted by `world.bookkeeping`
+        // and is now owned by `ZappiActiveCore` via `world.derived`).
+        // The debug field is still populated for dashboard parity.
         let mut input = base_input();
         input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
-        assert!(out.bookkeeping.zappi_active);
-        assert_eq!(out.bookkeeping.zappi_active, out.debug.zappi_active);
+        assert!(out.debug.zappi_active);
     }
 
     // ------------------------------------------------------------------

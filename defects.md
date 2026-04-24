@@ -1014,6 +1014,31 @@ defects section follows below with review-round findings.)
 **Description:** Comment says "call 1 sees delta=4:59.990 (active=true)" but the first `clock.naive()` in the production pipeline is `apply_tick`'s (`process.rs:448`), not the classifier's. Classifier actually runs on the second `naive()` read. Assertion is still correct; comment is just fuzzy. Also brittle to future changes in `apply_tick`'s `naive()` call count.
 **Suggested fix:** Update the comment to state "delta at classifier call is driven by apply_tick's naive() read + setpoint's now = clock.naive()". Trivial.
 
+---
+
+## PR-DAG-B — zappi_active as a first-class derivation core
+
+### [PR-DAG-B-D01] Reviewer-flagged plan scope creep on semantic edges
+**Status:** resolved (false positive — reviewer misread plan)
+**Severity:** medium (dismissed)
+**Location:** `crates/core/src/core_dag/cores.rs`.
+**Description:** Reviewer claimed `CurrentLimit.depends_on = [ZappiActive, Setpoint]` and `Schedules.depends_on = [ZappiActive, CurrentLimit]` smuggled PR-DAG-C semantic edges into PR-DAG-B scope.
+**Resolution:** Plan §5.B explicitly names "Add `ZappiActive` edge to `Setpoint`, `CurrentLimit`, `Schedules`" as PR-DAG-B scope — the flagship semantic edges of the zappi_active migration. The placeholder linear-chain edges from PR-DAG-A (`Setpoint → CurrentLimit → Schedules → …`) are kept as-is. Reviewer misread the plan. No action required. PR-DAG-C adds the *other* semantic edges (`CurrentLimit ← Setpoint` for `charge_to_full_required`, `Schedules ← WeatherSoc` for `charge_battery_extended_today`, etc.).
+
+### [PR-DAG-B-D02] Semantic behavior change on stale-sensor tick: old code latched last-known zappi_active; new code drops to false
+**Status:** resolved
+**Severity:** major (semantic — the "no-op refactor" claim is false)
+**Location:** `crates/core/src/core_dag/cores.rs::ZappiActiveCore::run`.
+**Description:** Pre-refactor, `run_current_limit` early-returned when `typed_sensors.zappi_state.is_usable()` was false (`process.rs:677-679` area), which meant `bk.zappi_active` retained its prior-tick value. `run_schedules` then read that latched last-known value on the stale-sensor tick. Post-refactor, `ZappiActiveCore` runs unconditionally and `classify_zappi_active` returns `false` when both the typed state and the power fallback (`evcharger_ac_power > 500 W`) are unusable. On a tick where both go stale simultaneously, old = latched-true-from-previous-tick, new = false-immediately. This is arguably more honest (we should not hog current for an EV we can't see), but it IS a behavior change the PR claimed not to have.
+**Fix:** (1) Doc comment added to `ZappiActiveCore::run` in `crates/core/src/core_dag/cores.rs` explaining the semantic choice + citing the two lock-in tests. (2) Two regression tests in `core_dag::tests::d02_boundary_consistency`: `zappi_active_drops_to_false_when_both_sensor_paths_unusable` (pre-seeds `derived.zappi_active=true`, both sensors Unknown, runs core, asserts false — would fail if latching were reintroduced) + `zappi_active_uses_power_fallback_when_typed_state_is_stale` (typed Unknown, power 800W Fresh, pre-set false, asserts flip to true — documents positive fallback path). Both tests use direct `ZappiActiveCore::run` on isolated `World::fresh_boot`. (3) SPEC §5.8 line added: "`zappi_active` is `false` when both typed Zappi state and `ac_power` are unusable (`Stale`/`Unknown`); no cross-tick latching (PR-DAG-B: departs from PR-04's bookkeeping-latched behavior, surfaces sensor loss honestly)."
+
+### [PR-DAG-B-D03] D02 boundary test doesn't actively count `classify_zappi_active` invocations per tick
+**Status:** open
+**Severity:** nit
+**Location:** `crates/core/src/core_dag/tests.rs` — `setpoint_decision_matches_world_derived_zappi_active_across_boundary`.
+**Description:** The test compares setpoint's decision factor against `world.derived.zappi_active` at tick end. It asserts consistency — but nothing proves the classifier was only called ONCE per tick. A regression where a future actuator core calls `classify_zappi_active(world, clock)` locally (a la PR-04's `DerivedView`) would still produce a matching factor most of the time and pass the test on most clock fixtures.
+**Suggested fix:** Add a call-counting clock wrapper (increment a `Cell<u32>` on every `naive()` call). Assert that across a tick, the counter reflects only the expected call sites (apply_tick + ZappiActiveCore classify + whatever `run_*` call `clock.naive()` for their own reasons). Deferable — can fold into a broader "tick-budget" invariant when useful.
+
 ### [PR-DAG-A-R2-I03] Lazy `OnceLock` registry builds on first call, not startup — lost startup-time validation if `production_cores()` ever becomes data-dependent
 **Status:** open
 **Severity:** nit (informational / future concern)

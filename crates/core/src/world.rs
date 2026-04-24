@@ -106,9 +106,6 @@ pub struct Bookkeeping {
     pub next_full_charge: Option<NaiveDateTime>,
     pub above_soc_date: Option<NaiveDate>,
     pub prev_ess_state: Option<i32>,
-    /// Last-known Zappi-active classification from current-limit controller;
-    /// consumed by the setpoint controller's Zappi-active branch.
-    pub zappi_active: bool,
     pub charge_to_full_required: bool,
     pub soc_end_of_day_target: f64,
     /// Effective export SoC threshold (charge-to-full overrides when active).
@@ -134,7 +131,6 @@ impl Bookkeeping {
             next_full_charge: None,
             above_soc_date: None,
             prev_ess_state: None,
-            zappi_active: false,
             charge_to_full_required: false,
             soc_end_of_day_target: 80.0,
             effective_export_soc_threshold: 80.0,
@@ -144,6 +140,17 @@ impl Bookkeeping {
             charge_battery_extended_today_date: None,
         }
     }
+}
+
+/// Pure per-tick derivations. Owned by derivation cores (see
+/// `core_dag::cores`), not by `Bookkeeping`. Recomputed every tick from
+/// sensors; never retained on MQTT. Consumed by actuator cores that
+/// declare a `depends_on` edge on the producing derivation core.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DerivedState {
+    /// Written by `ZappiActiveCore` at the top of every tick; read by
+    /// `SetpointCore`, `CurrentLimitCore`, and `SchedulesCore`.
+    pub zappi_active: bool,
 }
 
 /// Latest "why?" explanation per controller. Overwritten on every
@@ -196,6 +203,10 @@ pub struct World {
     // Derived / cross-controller
     pub bookkeeping: Bookkeeping,
 
+    /// Per-tick derivations, written by derivation cores at the top of
+    /// each tick. See [`DerivedState`].
+    pub derived: DerivedState,
+
     /// Latest human-readable explanation for each controller. See
     /// SPEC §5.12 and `types::Decision`.
     pub decisions: Decisions,
@@ -218,6 +229,7 @@ impl World {
             sensors: Sensors::unknown(now),
             typed_sensors: TypedSensors::unknown(now),
             bookkeeping: Bookkeeping::fresh_boot(),
+            derived: DerivedState::default(),
             decisions: Decisions::default(),
         }
     }

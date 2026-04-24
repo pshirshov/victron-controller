@@ -32,7 +32,6 @@ use crate::core_dag::cores::production_cores;
 use crate::controllers::current_limit::{
     CurrentLimitInput, CurrentLimitInputGlobals, evaluate_current_limit,
 };
-use crate::controllers::zappi_active::classify_zappi_active;
 use crate::controllers::eddi_mode::{
     EddiModeInput, EddiModeKnobs, evaluate_eddi_mode,
 };
@@ -455,25 +454,6 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
 // Controllers
 // =============================================================================
 
-/// Values derived from `world` once per tick, before controllers run.
-/// Avoids stale-bookkeeping reads across controllers within one cycle
-/// (A-05: `run_setpoint` previously consumed `bookkeeping.zappi_active`
-/// which `run_current_limit` writes later in the same tick).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DerivedView {
-    pub(crate) zappi_active: bool,
-}
-
-/// Derive `zappi_active` via the canonical classifier so setpoint and
-/// current-limit see exactly the same value within a tick. The
-/// classifier itself handles freshness and the WaitingForEv timeout
-/// (PR-04-D01/D02/D03).
-pub(crate) fn compute_derived_view(world: &World, clock: &dyn Clock) -> DerivedView {
-    DerivedView {
-        zappi_active: classify_zappi_active(world, clock),
-    }
-}
-
 /// Lazily-initialized production `CoreRegistry`. Construction is
 /// infallible for the statically-defined production core list — the
 /// validation checks inside `CoreRegistry::build` catch programmer
@@ -499,7 +479,6 @@ fn run_controllers(
 
 pub(crate) fn run_setpoint(
     world: &mut World,
-    derived: DerivedView,
     clock: &dyn Clock,
     topology: &Topology,
     effects: &mut Vec<Effect>,
@@ -526,11 +505,11 @@ pub(crate) fn run_setpoint(
             discharge_soc_target: k.discharge_soc_target,
             full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
             full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
-            // A-05: consume the derived-view `zappi_active` (computed
-            // once per tick, before any controller) rather than
-            // `bk.zappi_active` which is written later in the pipeline
-            // by `run_current_limit`.
-            zappi_active: derived.zappi_active,
+            // A-05 (PR-DAG-B): read `world.derived.zappi_active`, written
+            // at the top of the tick by `ZappiActiveCore` (which runs
+            // first per its `depends_on = []` root status). Never read
+            // `bookkeeping` for this — that field was deleted.
+            zappi_active: world.derived.zappi_active,
             allow_battery_to_car: k.allow_battery_to_car,
             discharge_time: k.discharge_time,
             debug_full_charge: k.debug_full_charge,
@@ -674,7 +653,6 @@ fn update_bookkeeping_from_setpoint(
 
 pub(crate) fn run_current_limit(
     world: &mut World,
-    derived: DerivedView,
     clock: &dyn Clock,
     topology: &Topology,
     effects: &mut Vec<Effect>,
@@ -707,9 +685,10 @@ pub(crate) fn run_current_limit(
             zappi_current_target: k.zappi_current_target,
             zappi_emergency_margin: k.zappi_emergency_margin,
             zappi_state: world.typed_sensors.zappi_state.value.unwrap(),
-            // PR-04-D01/D02/D03: share the DerivedView's `zappi_active`
-            // so setpoint and current-limit agree within a tick.
-            zappi_active: derived.zappi_active,
+            // PR-DAG-B: read `world.derived.zappi_active` (written by
+            // `ZappiActiveCore` at the top of the tick) so setpoint and
+            // current-limit see the same value within a tick.
+            zappi_active: world.derived.zappi_active,
             extended_charge_required: k.charge_car_extended
                 || world.bookkeeping.charge_to_full_required,
             disable_night_grid_discharge: k.disable_night_grid_discharge,
@@ -743,8 +722,6 @@ pub(crate) fn run_current_limit(
             BookkeepingValue::OptionalInt(out.bookkeeping.prev_ess_state),
         )));
     }
-    world.bookkeeping.zappi_active = out.bookkeeping.zappi_active;
-
     // Propose target.
     let value = out.input_current_limit;
     let now = clock.monotonic();
@@ -829,7 +806,7 @@ pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut 
             charge_car_extended: k.charge_car_extended,
             charge_to_full_required: bk.charge_to_full_required,
             disable_night_grid_discharge: k.disable_night_grid_discharge,
-            zappi_active: bk.zappi_active,
+            zappi_active: world.derived.zappi_active,
             above_soc_date: bk.above_soc_date,
             battery_soc_target: k.battery_soc_target,
         },
@@ -1457,7 +1434,7 @@ mod tests {
                 charge_car_extended: k.charge_car_extended,
                 charge_to_full_required: bk.charge_to_full_required,
                 disable_night_grid_discharge: k.disable_night_grid_discharge,
-                zappi_active: bk.zappi_active,
+                zappi_active: world.derived.zappi_active,
                 above_soc_date: bk.above_soc_date,
                 battery_soc_target: k.battery_soc_target,
             },
@@ -2467,22 +2444,21 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // PR-04: DerivedView + A-15 cbe derivation
+    // PR-DAG-B: ZappiActiveCore → world.derived.zappi_active + A-15 cbe derivation
     // ------------------------------------------------------------------
 
     #[test]
     fn setpoint_first_tick_sees_derived_zappi_active() {
-        // A-05 regression: on the very first tick the controllers run,
-        // `bookkeeping.zappi_active` is still its default false. Setpoint
-        // must nevertheless see zappi_active=true because the per-tick
-        // DerivedView derives it from typed_sensors. Without the fix,
-        // setpoint would pick a branch that doesn't set the
-        // `zappi_active="true"` factor.
+        // A-05 regression: on the very first tick, no prior state has
+        // classified the Zappi. `world.derived.zappi_active` is the
+        // default `false`. Setpoint must nevertheless see
+        // zappi_active=true because `ZappiActiveCore` writes
+        // `world.derived.zappi_active` from `typed_sensors` BEFORE
+        // setpoint runs (enforced by `SetpointCore.depends_on =
+        // [ZappiActive]`).
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
-        // Force bookkeeping to the stale value the bug exhibited.
-        world.bookkeeping.zappi_active = false;
         // Stamp the typed-sensor ZappiState as actively charging.
         world.typed_sensors.zappi_state.on_reading(
             ZappiState {
@@ -2504,6 +2480,10 @@ mod tests {
             &Topology::defaults(),
         );
 
+        assert!(
+            world.derived.zappi_active,
+            "ZappiActiveCore must classify from typed_sensors on the first tick"
+        );
         let decision = world
             .decisions
             .grid_setpoint
@@ -2522,19 +2502,20 @@ mod tests {
     }
 
     #[test]
-    fn setpoint_follows_live_state_over_stale_bookkeeping_zappi_active() {
-        // PR-04-D04: the residual hazard is the opposite direction —
-        // bookkeeping is LATCHED true (from a prior tick when the car
-        // was charging) but the LIVE typed sensor says the car is now
-        // disconnected. Setpoint must follow the live state (via the
-        // canonical classifier), not the stale bookkeeping.
+    fn setpoint_follows_derived_state_not_stale_classification() {
+        // PR-DAG-B successor to the A-05/PR-04-D04 regression: even if a
+        // prior tick's classification (now erased with
+        // `bookkeeping.zappi_active`) had reported "active", setpoint
+        // must follow the live typed state through `ZappiActiveCore`'s
+        // per-tick write to `world.derived.zappi_active`. Here we seed
+        // the derived field as `true` directly and assert the top-of-tick
+        // `ZappiActiveCore` overwrites it from live sensors.
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
 
-        // Stale latch: pretend current_limit classified the car as
-        // active on a previous tick.
-        world.bookkeeping.zappi_active = true;
+        // Simulate a stale derivation from a hypothetical earlier tick.
+        world.derived.zappi_active = true;
 
         // Live state NOW: plug disconnected (definitively inactive).
         world.typed_sensors.zappi_state.on_reading(
@@ -2559,6 +2540,10 @@ mod tests {
             &Topology::defaults(),
         );
 
+        assert!(
+            !world.derived.zappi_active,
+            "ZappiActiveCore must recompute and clear the stale `true`"
+        );
         let decision = world
             .decisions
             .grid_setpoint
@@ -2570,7 +2555,7 @@ mod tests {
             .any(|f| f.name == "zappi_active" && f.value == "true");
         assert!(
             !has_zappi_factor,
-            "setpoint followed stale bookkeeping.zappi_active=true when \
+            "setpoint followed stale world.derived.zappi_active=true when \
              live typed state said EvDisconnected (factors: {:?})",
             decision.factors
         );

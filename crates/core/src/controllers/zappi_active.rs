@@ -1,9 +1,9 @@
 //! Single canonical classifier for "is the Zappi actively charging?".
 //!
-//! Consumed by both `run_setpoint` (via `DerivedView`) and
-//! `run_current_limit` so the two controllers cannot disagree for the
-//! same tick — which was the residual hazard after PR-04's first pass
-//! (defects PR-04-D01 / D02 / D03).
+//! PR-DAG-B: invoked by `ZappiActiveCore` once per tick, which writes
+//! `world.derived.zappi_active`. Every consumer (`run_setpoint`,
+//! `run_current_limit`, `run_schedules`) reads that field — the two
+//! controllers cannot disagree for the same tick.
 //!
 //! Semantics: match the legacy current-limit classifier 1:1 for the
 //! state-machine terms (mode / plug / status / waiting-for-EV timeout),
