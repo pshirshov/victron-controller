@@ -204,7 +204,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Use `period_end − period` (bucket start) for attribution, or midpoint.
 
 ### [A-28] 401 / 403 / 429 not distinguished from timeouts; we keep hammering rate-limited endpoints
-**Status:** resolved (forecast side only; myenergi scope-deferred)
+**Status:** resolved (both forecast and myenergi sides)
 **Severity:** major
 **Location:** `crates/shell/src/forecast/mod.rs:121-138`, `crates/shell/src/myenergi/mod.rs:70-88`
 **Description:** Solcast free tier: 10 calls/day; we burn it in 10 ticks on a 429. No exponential backoff.
@@ -424,7 +424,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Once A-06 lands, verify deadband behaviour in tests.
 
 ### [A-60] `CallMyenergi` dispatched via `tokio::spawn` without timeout; multiple in-flight races
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/runtime.rs:104-110`
 **Description:** reqwest has 15s timeout; runtime doesn't enforce. Multiple mode-changes → last-writer-wins across spawns, undefined.

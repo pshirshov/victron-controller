@@ -28,7 +28,7 @@ use diqwest::WithDigestAuth;
 use reqwest::Client as HttpClient;
 use tokio::sync::mpsc;
 use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use victron_controller_core::myenergi::{EddiMode, ZappiMode, ZappiPlugState, ZappiStatus};
 use victron_controller_core::types::{Event, MyenergiAction, TypedReading};
@@ -67,6 +67,11 @@ impl Client {
 
     /// GET with HTTP Digest authentication. Callers get the response
     /// as a JSON blob.
+    ///
+    /// A-28 (myenergi side): non-2xx responses are classified into
+    /// [`MyenergiHttpFailure`] so the Poller can back off on 429 /
+    /// disable the task on 401-403 rather than hammering the director
+    /// at full cadence.
     async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
         let url = self.url(path);
         debug!(%url, "myenergi GET");
@@ -79,9 +84,18 @@ impl Client {
         let status = resp.status();
         let body = resp.text().await.context("read body")?;
         if !status.is_success() {
-            return Err(anyhow::anyhow!(
-                "myenergi {url} returned {status}: {body}"
-            ));
+            let ctx = anyhow::anyhow!("myenergi {url} returned {status}: {body}");
+            let code = status.as_u16();
+            let failure = if code == 401 || code == 403 {
+                MyenergiHttpFailure::AuthFailed(ctx)
+            } else if code == 429 {
+                MyenergiHttpFailure::RateLimited(ctx)
+            } else if status.is_server_error() {
+                MyenergiHttpFailure::ServerError(ctx)
+            } else {
+                MyenergiHttpFailure::Other(ctx)
+            };
+            return Err(anyhow::Error::from(failure));
         }
         serde_json::from_str(&body)
             .with_context(|| format!("parse myenergi JSON from {url}"))
@@ -195,6 +209,30 @@ fn interpret_eddi_mode_response(body: &serde_json::Value) -> Result<()> {
     }
 }
 
+/// Classification of myenergi-HTTP failures. Downcast-able from the
+/// anyhow chain in the Poller's error handler so we back off correctly
+/// rather than hammering a rate-limited / auth-failed director.
+#[derive(Debug)]
+pub enum MyenergiHttpFailure {
+    AuthFailed(anyhow::Error),
+    RateLimited(anyhow::Error),
+    ServerError(anyhow::Error),
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for MyenergiHttpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MyenergiHttpFailure::AuthFailed(e) => write!(f, "AuthFailed: {e:#}"),
+            MyenergiHttpFailure::RateLimited(e) => write!(f, "RateLimited: {e:#}"),
+            MyenergiHttpFailure::ServerError(e) => write!(f, "ServerError: {e:#}"),
+            MyenergiHttpFailure::Other(e) => write!(f, "Other: {e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for MyenergiHttpFailure {}
+
 /// Myenergi Zappi mode codes from their API spec.
 const fn zappi_mode_code(m: ZappiMode) -> u8 {
     match m {
@@ -216,6 +254,42 @@ const fn eddi_mode_code(m: EddiMode) -> u8 {
 // -----------------------------------------------------------------------------
 // Poller
 // -----------------------------------------------------------------------------
+
+/// The worst-case classification of a single poll cycle (zappi + eddi).
+/// The Poller uses this to drive adaptive backoff (A-28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollOutcome {
+    Ok,
+    Other,
+    ServerError,
+    RateLimited,
+    AuthFailed,
+}
+
+impl PollOutcome {
+    fn severity(self) -> u8 {
+        match self {
+            PollOutcome::Ok => 0,
+            PollOutcome::Other => 1,
+            PollOutcome::ServerError => 2,
+            PollOutcome::RateLimited => 3,
+            PollOutcome::AuthFailed => 4,
+        }
+    }
+
+    fn worst(self, other: Self) -> Self {
+        if other.severity() > self.severity() { other } else { self }
+    }
+
+    fn from_error(e: &anyhow::Error) -> Self {
+        match e.downcast_ref::<MyenergiHttpFailure>() {
+            Some(MyenergiHttpFailure::AuthFailed(_)) => PollOutcome::AuthFailed,
+            Some(MyenergiHttpFailure::RateLimited(_)) => PollOutcome::RateLimited,
+            Some(MyenergiHttpFailure::ServerError(_)) => PollOutcome::ServerError,
+            Some(MyenergiHttpFailure::Other(_)) | None => PollOutcome::Other,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Poller {
@@ -248,14 +322,56 @@ impl Poller {
             "myenergi poller started"
         );
         let mut ticker = interval(self.poll_period);
+        // A-28 (myenergi side): extra backoff added on top of
+        // `poll_period` when the director signals rate-limit or server
+        // error. Reset on a successful poll.
+        let mut extra_backoff = Duration::ZERO;
+        const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(15 * 60);
+        const SERVER_ERROR_BACKOFF_START: Duration = Duration::from_secs(30);
+        const SERVER_ERROR_BACKOFF_MAX: Duration = Duration::from_secs(10 * 60);
         loop {
             ticker.tick().await;
-            self.poll_once(&tx).await;
+            if extra_backoff > Duration::ZERO {
+                info!(sleep_s = extra_backoff.as_secs(), "myenergi poller backoff");
+                tokio::time::sleep(extra_backoff).await;
+            }
+            let had_failure = self.poll_once(&tx).await;
+            match had_failure {
+                PollOutcome::Ok => extra_backoff = Duration::ZERO,
+                PollOutcome::AuthFailed => {
+                    error!(
+                        "myenergi poller: auth failed (401/403); disabling — check credentials"
+                    );
+                    return Ok(());
+                }
+                PollOutcome::RateLimited => {
+                    warn!(
+                        backoff_s = RATE_LIMIT_BACKOFF.as_secs(),
+                        "myenergi rate-limited (429); long backoff"
+                    );
+                    extra_backoff = RATE_LIMIT_BACKOFF;
+                }
+                PollOutcome::ServerError => {
+                    extra_backoff = if extra_backoff == Duration::ZERO {
+                        SERVER_ERROR_BACKOFF_START
+                    } else {
+                        (extra_backoff * 2).min(SERVER_ERROR_BACKOFF_MAX)
+                    };
+                    warn!(backoff_s = extra_backoff.as_secs(), "myenergi 5xx; exponential backoff");
+                }
+                PollOutcome::Other => { /* normal cadence */ }
+            }
         }
     }
 
-    async fn poll_once(&mut self, tx: &mpsc::Sender<Event>) {
+    async fn poll_once(&mut self, tx: &mpsc::Sender<Event>) -> PollOutcome {
         let now = Instant::now();
+        let mut outcome = PollOutcome::Ok;
+        let mut upgrade = |o: PollOutcome| {
+            // Keep the "worst" outcome across zappi + eddi polls, per
+            // severity order Auth > RateLimit > ServerErr > Other > Ok.
+            outcome = outcome.worst(o);
+        };
         match self.client.poll_zappi_raw().await {
             Ok(Some(body)) => match parse_zappi_signature(&body) {
                 Some(tuple) => {
@@ -269,7 +385,7 @@ impl Poller {
                             .await
                             .is_err()
                         {
-                            return;
+                            return outcome;
                         }
                     } else {
                         warn!("zappi poll: signature parsed but observation did not");
@@ -278,7 +394,10 @@ impl Poller {
                 None => debug!("zappi poll: no zappi entry in body"),
             },
             Ok(None) => debug!("zappi poll: no credentials/serial"),
-            Err(e) => warn!(error = %e, "zappi poll failed"),
+            Err(e) => {
+                upgrade(PollOutcome::from_error(&e));
+                warn!(error = %e, "zappi poll failed");
+            }
         }
 
         match self.client.poll_eddi().await {
@@ -290,8 +409,12 @@ impl Poller {
                 {}
             }
             Ok(None) => debug!("eddi poll: no credentials/serial"),
-            Err(e) => warn!(error = %e, "eddi poll failed"),
+            Err(e) => {
+                upgrade(PollOutcome::from_error(&e));
+                warn!(error = %e, "eddi poll failed");
+            }
         }
+        outcome
     }
 
     /// Latches the zappi change-detection tracker and returns the

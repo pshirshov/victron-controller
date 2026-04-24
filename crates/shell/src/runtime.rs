@@ -103,10 +103,26 @@ impl Runtime {
             }
             Effect::CallMyenergi(action) => {
                 // Spawn so a slow HTTP call (myenergi cloud) doesn't
-                // block the event loop.
+                // block the event loop. A-60: wrap the spawned work in
+                // a 20 s timeout — reqwest's default is 15 s but the
+                // runtime cannot enforce that across multiple in-flight
+                // spawns, and without an upper bound a stuck mode-change
+                // could accumulate spawns (observed as "last-writer-
+                // wins" races across tokio tasks).
                 let my = self.myenergi.clone();
                 tokio::spawn(async move {
-                    my.execute(action).await;
+                    match tokio::time::timeout(
+                        Duration::from_secs(20),
+                        my.execute(action),
+                    )
+                    .await
+                    {
+                        Ok(()) => {}
+                        Err(_) => warn!(
+                            ?action,
+                            "myenergi call stuck >20s; dropping"
+                        ),
+                    }
                 });
             }
             Effect::Publish(payload) => {
