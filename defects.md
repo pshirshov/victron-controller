@@ -1016,6 +1016,49 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-16 — WS client holds world mutex across network send; one stalled browser wedges the whole runtime
+
+### [PR-URGENT-16-D01] `ws::client_task` initial-snapshot block holds `world.lock()` across `send_json` (WebSocket TCP write); a paused browser tab deadlocks the runtime
+**Status:** resolved
+**Severity:** CRITICAL (pre-existing latent bug, exposed now)
+**Location:** `crates/shell/src/dashboard/ws.rs:54-61`.
+**Description:** Second field bundle on `530f5b6` (PR-URGENT-15 shipped) still shows the wedge: all sensors Stale, both schedules disabled, log goes silent after ~15s. No `mqtt publish stuck >1s` warnings fire → the MQTT-publish timeout is NOT the bug. The actual wedge point is:
+```rust
+let w = state.world.lock().await;
+let snap = world_to_snapshot(&w, &state.meta);
+let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
+if send_json(&mut tx_ws, &out).await.is_err() {   // <— awaited inside lock scope
+    return;
+}
+```
+The `w` MutexGuard drops at the end of the block, which means the `send_json(...).await` happens with the lock STILL HELD. If the WS client's TCP receive buffer fills (paused tab, throttled background tab, stalled client, lossy network), the axum WebSocket writer stalls; the MutexGuard never drops; the runtime's next `self.world.lock().await` at `runtime.rs:86` blocks forever.
+Only the runtime's tick arm is affected — subscriber poll + heartbeat still run in their own task. That matches the bundle perfectly: controllers stop ticking (no new observer logs), `Effect::Log` also stops firing (nothing to dispatch), subscriber heartbeats may or may not still fire but don't land because runtime can't drain the event channel.
+Why PR-URGENT-15 didn't fix: PR-URGENT-15 fixed a different bug (MQTT publish backpressure) that could have contributed to the first wedge; this ws.rs bug is a second, independent wedge that triggers whenever a browser opens the dashboard and any condition stalls the initial-snapshot WS send.
+**Suggested fix:** Minimize the lock scope — build the snapshot inside a tight `{ ... }` block that drops the guard before the network send:
+```rust
+let snap = {
+    let w = state.world.lock().await;
+    world_to_snapshot(&w, &state.meta)
+};  // lock released here
+let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
+if send_json(&mut tx_ws, &out).await.is_err() {
+    return;
+}
+```
+Apply the same pattern to any future handler that builds a snapshot before an awaited network send. Grep confirms only this one site needs the fix (`runtime.rs:86` is inside sync `process()`, fine; `server.rs:129` returns `Json<WorldSnapshot>` owned before the response body is serialized, also fine).
+**Fix:** Scoped the MutexGuard to snapshot construction only; released before `send_json().await`:
+```rust
+let snap = {
+    let w = state.world.lock().await;
+    world_to_snapshot(&w, &state.meta)
+};  // guard released here
+let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
+if send_json(&mut tx_ws, &out).await.is_err() {
+    return;
+}
+```
+Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 26.8kB.
+
 ## PR-URGENT-15 — Deploy-time wedge: rumqttc 64-slot queue + PR-SCHED0 observer publishes saturate → subscriber starvation
 
 ### [PR-URGENT-15-D01] Field wedge on `3f0821c`: D-Bus sensors go Stale after ~27s, no heartbeats, runtime dispatching blocked on MQTT publish

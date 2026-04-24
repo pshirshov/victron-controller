@@ -50,14 +50,16 @@ async fn client_task(socket: WebSocket, state: DashboardState) {
     }
 
     // Send an initial snapshot right away so the dashboard populates
-    // before the runtime's first tick.
-    {
+    // before the runtime's first tick. Build the snapshot inside a
+    // tight scope that drops the MutexGuard BEFORE the network send —
+    // otherwise a stalled WS client wedges the whole runtime (PR-URGENT-16).
+    let snap = {
         let w = state.world.lock().await;
-        let snap = world_to_snapshot(&w, &state.meta);
-        let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
-        if send_json(&mut tx_ws, &out).await.is_err() {
-            return;
-        }
+        world_to_snapshot(&w, &state.meta)
+    };
+    let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
+    if send_json(&mut tx_ws, &out).await.is_err() {
+        return;
     }
 
     // Subscribe to the broadcast AFTER sending the priming snapshot —

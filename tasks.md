@@ -127,6 +127,19 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-16** — Second wedge hotfix: WS client held world
+  mutex across the initial-snapshot `send_json` (axum WS TCP write).
+  A stalled browser tab (paused, throttled, backpressured) → WS send
+  stalls → MutexGuard never drops → runtime's `self.world.lock().await`
+  blocks forever → tick loop wedges. Controllers stop ticking → sensors
+  go Stale (2s freshness) → schedules bail → dashboard shows disabled.
+  Pre-existing latent bug in `crates/shell/src/dashboard/ws.rs:54-61`;
+  became visible because the user had the dashboard open while
+  redeploying PR-URGENT-15. Fix: scope the MutexGuard to snapshot
+  construction only; release before the network send. PR-URGENT-15's
+  MQTT-queue fix is still a net improvement (avoids a separate wedge
+  class) but was not the root cause this time.
+
 - [x] **PR-URGENT-15** — Deploy-time wedge hotfix: rumqttc request-queue
   bump 64→4096 + 1s timeout on runtime dispatch's Publish await.
   Found post-deploy of `3f0821c`: all D-Bus sensors Stale, both
@@ -349,6 +362,28 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-16** (2026-04-24) — WS initial-snapshot lock scoping
+  hotfix. User redeployed PR-URGENT-15 (commit `530f5b6`); field
+  regression persisted. Second log bundle
+  (`victron-bundle-20260424-175032.txt`) showed NO `mqtt publish
+  stuck >1s` warnings — proving MQTT backpressure wasn't the root
+  cause this time. Log fell silent after ~15s uptime, service still
+  running. Diagnosed by grepping `world.lock().await` call sites:
+  `crates/shell/src/dashboard/ws.rs:54-61` held the `MutexGuard`
+  across the awaited `send_json()` for the initial-connection
+  Snapshot message. Paused / throttled / dead browser tab stalls
+  the TCP send → guard never drops → next `Runtime::run` tick
+  blocks on `self.world.lock().await` at `runtime.rs:86` → tick
+  loop freezes → sensor-stale decay at 2s → controllers bail →
+  dashboard shows empty. One-file surgical fix: scope the guard
+  to snapshot construction only. Verified: 275 tests green, clippy
+  clean, ARMv7 release ok. Constraint for future work: NEVER hold
+  `world.lock()` across any `.await` that touches network I/O or
+  another async boundary with unknown latency.
+  (PR-URGENT-15's 4096-slot queue + 1s publish timeout still
+  warranted — it closes a separate wedge class that would have
+  surfaced under heavier publish load.)
 
 - **PR-URGENT-15** (2026-04-24) — MQTT publish backpressure hotfix.
   Field-observed wedge: user deployed `3f0821c`, dashboard showed
