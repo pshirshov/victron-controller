@@ -94,10 +94,21 @@ pub fn parse_zappi(
 ) -> Option<ZappiObservation> {
     let entry = body.get("zappi").and_then(|v| v.as_array())?.first()?;
 
-    let zmo = entry.get("zmo")?.as_u64()? as u8;
-    let sta = entry.get("sta")?.as_u64()? as u8;
+    // A-25: reject out-of-range zmo/sta instead of silently wrapping.
+    // `as_u64() as u8` wraps on ≥256 → sta=257 would decode as sta=1
+    // (Paused) and we'd trust the wrong state. `try_from` + ? returns
+    // None for the whole poll, which the poller treats as a missed
+    // poll rather than bogus data.
+    let zmo = u8::try_from(entry.get("zmo")?.as_u64()?).ok()?;
+    let sta = u8::try_from(entry.get("sta")?.as_u64()?).ok()?;
     let pst = entry.get("pst")?.as_str()?;
-    let che = entry.get("che").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    // A-51: `che` is session-kWh; accept finite non-negative numbers,
+    // reject NaN / Inf / negative firmware bugs.
+    let che = entry
+        .get("che")
+        .and_then(|v| v.as_f64())
+        .filter(|n| n.is_finite() && *n >= 0.0)
+        .unwrap_or(0.0);
 
     Some(ZappiObservation {
         state: ZappiState {
@@ -119,8 +130,8 @@ pub fn parse_zappi_signature(
     body: &serde_json::Value,
 ) -> Option<(ZappiMode, ZappiStatus, ZappiPlugState)> {
     let entry = body.get("zappi").and_then(|v| v.as_array())?.first()?;
-    let zmo = entry.get("zmo")?.as_u64()? as u8;
-    let sta = entry.get("sta")?.as_u64()? as u8;
+    let zmo = u8::try_from(entry.get("zmo")?.as_u64()?).ok()?;
+    let sta = u8::try_from(entry.get("sta")?.as_u64()?).ok()?;
     let pst = entry.get("pst")?.as_str()?;
     Some((
         zappi_mode_from_code(zmo),
@@ -137,7 +148,7 @@ pub fn parse_zappi_signature(
 /// - anything else ⇒ Stopped (safe direction)
 pub fn parse_eddi(body: &serde_json::Value) -> Option<EddiMode> {
     let entry = body.get("eddi").and_then(|v| v.as_array())?.first()?;
-    let sta = entry.get("sta")?.as_u64()? as u8;
+    let sta = u8::try_from(entry.get("sta")?.as_u64()?).ok()?;
     Some(match sta {
         1 => EddiMode::Normal,
         _ => EddiMode::Stopped,

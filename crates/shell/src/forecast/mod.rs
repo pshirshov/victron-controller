@@ -108,12 +108,18 @@ pub struct Plane {
 
 /// Helper: extract a number from `serde_json::Value`, coercing
 /// common shapes.
+///
+/// A-48: NaN / ±Inf and out-of-range strings are rejected. Rust's
+/// `"NaN".parse::<f64>()` / `"inf".parse::<f64>()` happily succeed,
+/// so a provider leaking those strings would previously feed non-
+/// finite values into forecast totals and thence into weather_soc.
 pub(crate) fn as_f64(v: &serde_json::Value) -> Option<f64> {
-    match v {
+    let raw = match v {
         serde_json::Value::Number(n) => n.as_f64(),
         serde_json::Value::String(s) => s.parse().ok(),
         _ => None,
-    }
+    };
+    raw.filter(|f| f.is_finite())
 }
 
 /// Helper used by all three providers: tag a fetch error with the

@@ -183,7 +183,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Return `None` from `parse_zappi` on any parse failure; treat the whole poll as failed. Removes the `unwrap_or("01-01-2026")` / `unwrap_or("00:00:00")` too.
 
 ### [A-25] `parse_zappi` / `parse_eddi` use `as u8` truncation on `zmo`/`sta` integers
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/myenergi/types.rs:39-41, 66`
 **Description:** `as_u64() as u8` wraps on ≥256 (firmware bug or future extension). `sta=257 → 1 → Paused`; we trust the wrong state.
@@ -295,7 +295,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `poll_period_ms = poll_period.as_millis()`; rename the field in the log.
 
 ### [A-41] `forecast_fusion` passes NaN through `Max`/`Min`/`Mean` (non-total ordering leaks)
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/controllers/forecast_fusion.rs:56-77`
 **Description:** Any provider NaN (e.g. Open-Meteo outage mapping `null → 0/0`) contaminates fusion. Rust `f64::max(NaN, x) = x` hides it partly, but `reduce(f64::max)` isn't total on NaN; subtly non-deterministic.
@@ -340,7 +340,7 @@ reviewing a specific PR's patch.
 *(Duplicate of A-31; kept for cross-reference.)*
 
 ### [A-48] `as_f64` accepts scientific-notation / "NaN" / "inf" strings
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/forecast/mod.rs:111-117`
 **Description:** `"NaN".parse::<f64>() = NAN`; `"inf" = INFINITY`. Forecast totals sum these; fused kWh becomes non-finite and silently feeds weather_soc.
@@ -361,7 +361,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Add `[forecast] timezone = "…"` config; use it both when querying and bucketing. Don't trust machine TZ for solar boundaries.
 
 ### [A-51] myenergi `che` parsed with `unwrap_or(0.0)`; NaN / negative passthrough
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/myenergi/types.rs:44`
 **Description:** Firmware bug returning `"NaN"` or negative kWh becomes 0.0 / NaN. Once A-13 wires `che` into the controller, this becomes a failure mode.

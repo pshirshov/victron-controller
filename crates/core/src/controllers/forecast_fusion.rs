@@ -43,10 +43,16 @@ pub fn fused_today_kwh(
         .forecast_open_meteo
         .filter(|s| is_fresh(ForecastProvider::OpenMeteo, s));
 
+    // A-41: filter non-finite values before reducing. A provider that
+    // leaks NaN (Open-Meteo null → 0/0, schema drift, ring-arithmetic
+    // bug) would otherwise contaminate Max/Min/Mean — f64::max(NaN, x)
+    // = x partly hides it, but reduce(f64::max) isn't total on NaN and
+    // the result is subtly non-deterministic.
     let mut fresh: Vec<f64> = [solcast, fs, om]
         .into_iter()
         .flatten()
         .map(|s| s.today_kwh)
+        .filter(|v| v.is_finite())
         .collect();
 
     if fresh.is_empty() {
