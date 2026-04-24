@@ -144,12 +144,19 @@ fn period_to_hours(s: &str) -> Option<f64> {
     }
 }
 
-/// `period_end` is a UTC timestamp marking the end of the period.
-/// For a calendar-local bucket we convert to Local and take the date.
+/// `period_end` is a UTC timestamp marking the END of the period.
+/// Using it directly misattributes boundary periods — the 23:30–00:00
+/// bucket's `period_end` is 00:00 of the next day, so 30 min of
+/// Monday's production gets bucketed into Tuesday. A-27: use the
+/// period's midpoint (= `period_end - period/2`) for day attribution.
 fn item_day_local(item: &Value) -> Option<NaiveDate> {
     let s = item.get("period_end").and_then(|v| v.as_str())?;
     let utc: DateTime<Utc> = s.parse().ok()?;
-    let local = utc.with_timezone(&Local);
+    let period_str = item.get("period").and_then(|v| v.as_str()).unwrap_or("PT30M");
+    let period_hours = period_to_hours(period_str).unwrap_or(0.5);
+    let half = chrono::Duration::milliseconds((period_hours * 1_800_000.0) as i64);
+    let midpoint_utc = utc.checked_sub_signed(half)?;
+    let local = midpoint_utc.with_timezone(&Local);
     Some(local.date_naive())
 }
 

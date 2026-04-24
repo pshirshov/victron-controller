@@ -197,7 +197,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Require ≥ N parseable items per day-bucket; else return `Err`. Distinguish a truly zero forecast from schema drift.
 
 ### [A-27] Solcast `period_end` used for day bucketing misattributes boundary periods
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/forecast/solcast.rs:125-130`
 **Description:** `period_end = 00:00 next_day` after a 23:30–00:00 bucket puts 30 min of Monday production into Tuesday. Few kWh/day systematic shift.
@@ -323,7 +323,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Update SPEC to 500, or lift the UI caps. Low-priority.
 
 ### [A-45] Topology comment + dashboard cadence disagree with SPEC §5.3 (5 s vs code 2 s)
-**Status:** open
+**Status:** resolved (stale comment updated; per-sensor thresholds are now on SensorId::freshness_threshold per PR-CADENCE)
 **Severity:** nit
 **Location:** `crates/core/src/topology.rs:41`, `crates/shell/src/dbus/subscriber.rs:275`, SPEC §5.3
 **Description:** SPEC says 5 s; code changed to 2 s (G3 tuning). Stale SPEC + stale comment.
@@ -452,7 +452,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Use `.to_std()` fallibly and reject.
 
 ### [A-64] Boost-window match `(2..5)` branch "redundant with final else but preserved for decision log" — benign, comment misleading
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/core/src/controllers/setpoint.rs:424-428`
 **Description:** Branches are distinguished only for decision-log clarity; not redundant mechanically.

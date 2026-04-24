@@ -440,7 +440,11 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
                 .with_factor("export_power_W", format!("{export_power:.0}"));
         }
     } else if (2..5).contains(&hour) {
-        // Boost window (redundant with the final else but preserved from TS).
+        // Boost window — the (2..5) and final-else branches both set
+        // the same setpoint (IDLE_SETPOINT_W), but they emit different
+        // Decision text so the operator dashboard can tell which window
+        // produced "idle 10 W" today. Not mechanically redundant; the
+        // separation is for decision-log honesty (A-64).
         setpoint_target = IDLE_SETPOINT_W;
         decision = Decision::new("Boost window (02:00–05:00) → idle 10 W")
             .with_factor("hour", format!("{hour:02}:{minute:02}"));

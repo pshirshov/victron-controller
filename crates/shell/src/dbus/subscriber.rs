@@ -30,7 +30,10 @@ use crate::config::DbusServices;
 /// periodic safety-net `GetItems` stable values would eventually time
 /// out of the per-sensor freshness window. Every data-bearing service
 /// (system, battery, vebus, solarcharger.*, pvinverter.*, grid,
-/// evcharger) is reseeded on this cadence. Authoritative per
+/// evcharger) is reseeded on this cadence. Per-sensor freshness
+/// windows are defined on `SensorId::freshness_threshold` (A-45, was
+/// previously "5 s (G3 tuning)" in SPEC §5.3 — superseded by the
+/// per-path matrix). Authoritative per
 /// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
 pub const SEED_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
 /// Reseed cadence for `com.victronenergy.settings`. Schedule / setpoint
