@@ -68,7 +68,7 @@ fn seeded_world(t0: Instant) -> World {
             zappi_mode: ZappiMode::Off,
             zappi_plug_state: ZappiPlugState::EvDisconnected,
             zappi_status: ZappiStatus::Paused,
-            zappi_last_change_signature: naive_noon(),
+            zappi_last_change_signature: t0,
         },
         t0,
     );
@@ -687,7 +687,7 @@ proptest! {
                     zappi_mode: mode,
                     zappi_plug_state: ZappiPlugState::Charging,
                     zappi_status: ZappiStatus::DivertingOrCharging,
-                    zappi_last_change_signature: naive_noon(),
+                    zappi_last_change_signature: t0,
                 },
                 at: t0 + Duration::from_secs(delta_s),
             }),

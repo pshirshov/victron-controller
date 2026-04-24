@@ -36,7 +36,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Gate all `/grid_voltage` divisions: if `grid_voltage < MIN_SENSIBLE_GRID_V (180 V)` fall back to nominal 230 V (with a decision factor noting the fallback). Apply at `:141`, `:176`, `:188`.
 
 ### [A-04] Zappi `time_in_state_min` mixes Local clock with UTC myenergi timestamps — off by TZ offset during BST
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/controllers/current_limit.rs:153-154`, `crates/shell/src/myenergi/types.rs:107-113`
 **Description:** `clock.naive()` returns `Local::now().naive_local()`; `zappi_last_change_signature` is parsed from myenergi's UTC `dat`+`tim` into bare `NaiveDateTime`. Subtraction in London summer is off by 1 h → 5-min `WAIT_TIMEOUT_MIN` fires immediately every invocation in BST. After DST fall-back, delta goes negative and the timeout never fires.
@@ -176,7 +176,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Return a distinguishable `Err("not configured")`; Writer::execute logs at `warn!`; Runtime publishes `ActuatedPhase{Unset}` to reset UI state.
 
 ### [A-24] `parse_myenergi_ts` falls back to `(2026-01-01, 00:00:00)` on parse failure; every poll thereafter looks identical
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/shell/src/myenergi/types.rs:107-113` + `:42-43`
 **Description:** Missing/unparseable `dat` or `tim` silently coerces to sentinel. Change-detection using `zappi_last_change_signature` blinds: same value across polls → "not a new event".

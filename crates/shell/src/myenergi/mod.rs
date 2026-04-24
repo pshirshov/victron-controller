@@ -19,7 +19,7 @@
 
 mod types;
 
-pub use types::{parse_eddi, parse_zappi};
+pub use types::{parse_eddi, parse_zappi, parse_zappi_signature, ZappiChangeTracker};
 
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-use victron_controller_core::myenergi::{EddiMode, ZappiMode};
+use victron_controller_core::myenergi::{EddiMode, ZappiMode, ZappiPlugState, ZappiStatus};
 use victron_controller_core::types::{Event, MyenergiAction, TypedReading};
 
 use crate::config::MyenergiConfig;
@@ -89,7 +89,11 @@ impl Client {
 
     // --- Polls ---
 
-    pub async fn poll_zappi(&self) -> Result<Option<types::ZappiObservation>> {
+    /// Raw body fetch — the caller (the Poller) owns the change tracker
+    /// and supplies the latched `Instant` before building a
+    /// `ZappiObservation`. Returns `None` when there's no configured
+    /// Zappi serial.
+    pub async fn poll_zappi_raw(&self) -> Result<Option<serde_json::Value>> {
         if !self.has_credentials() {
             return Ok(None);
         }
@@ -97,7 +101,7 @@ impl Client {
             return Ok(None);
         };
         let body = self.get_json(&format!("/cgi-jstatus-Z{serial}")).await?;
-        Ok(parse_zappi(&body))
+        Ok(Some(body))
     }
 
     pub async fn poll_eddi(&self) -> Result<Option<EddiMode>> {
@@ -217,6 +221,11 @@ const fn eddi_mode_code(m: EddiMode) -> u8 {
 pub struct Poller {
     client: Client,
     poll_period: Duration,
+    /// Latches a monotonic `Instant` on every observed
+    /// `(zmo, sta, pst)` change; supplies
+    /// `ZappiState::zappi_last_change_signature`. `None` until the
+    /// first successful poll — see [`ZappiChangeTracker`].
+    zappi_tracker: Option<ZappiChangeTracker>,
 }
 
 impl Poller {
@@ -225,10 +234,11 @@ impl Poller {
         Self {
             client,
             poll_period,
+            zappi_tracker: None,
         }
     }
 
-    pub async fn run(self, tx: mpsc::Sender<Event>) -> Result<()> {
+    pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
         if !self.client.has_credentials() {
             info!("myenergi poller disabled (no credentials configured)");
             return Ok(());
@@ -244,21 +254,29 @@ impl Poller {
         }
     }
 
-    async fn poll_once(&self, tx: &mpsc::Sender<Event>) {
+    async fn poll_once(&mut self, tx: &mpsc::Sender<Event>) {
         let now = Instant::now();
-        match self.client.poll_zappi().await {
-            Ok(Some(obs)) => {
-                if tx
-                    .send(Event::TypedSensor(TypedReading::Zappi {
-                        state: obs.state,
-                        at: now,
-                    }))
-                    .await
-                    .is_err()
-                {
-                    return;
+        match self.client.poll_zappi_raw().await {
+            Ok(Some(body)) => match parse_zappi_signature(&body) {
+                Some(tuple) => {
+                    let stamp = self.stamp_zappi_change(tuple, now);
+                    if let Some(obs) = parse_zappi(&body, stamp) {
+                        if tx
+                            .send(Event::TypedSensor(TypedReading::Zappi {
+                                state: obs.state,
+                                at: now,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    } else {
+                        warn!("zappi poll: signature parsed but observation did not");
+                    }
                 }
-            }
+                None => debug!("zappi poll: no zappi entry in body"),
+            },
             Ok(None) => debug!("zappi poll: no credentials/serial"),
             Err(e) => warn!(error = %e, "zappi poll failed"),
         }
@@ -273,6 +291,26 @@ impl Poller {
             }
             Ok(None) => debug!("eddi poll: no credentials/serial"),
             Err(e) => warn!(error = %e, "eddi poll failed"),
+        }
+    }
+
+    /// Latches the zappi change-detection tracker and returns the
+    /// appropriate `Instant` for `zappi_last_change_signature`. On the
+    /// very first poll, stamps `now` as the initial signature — the
+    /// classifier's `WAIT_TIMEOUT_MIN` branch then waits the full
+    /// 5 min before firing, which is correct: we can't assume anything
+    /// about zappi state age at startup.
+    fn stamp_zappi_change(
+        &mut self,
+        tuple: (ZappiMode, ZappiStatus, ZappiPlugState),
+        now: Instant,
+    ) -> Instant {
+        match self.zappi_tracker.as_mut() {
+            Some(tr) => tr.observe(tuple, now),
+            None => {
+                self.zappi_tracker = Some(ZappiChangeTracker::new(tuple, now));
+                now
+            }
         }
     }
 }

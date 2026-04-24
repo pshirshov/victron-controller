@@ -140,6 +140,7 @@ pub fn evaluate_current_limit(
 ) -> CurrentLimitOutput {
     let g = &input.globals;
     let now = clock.naive();
+    let now_mono = clock.monotonic();
 
     let mppt_power = input.mppt_power_0 + input.mppt_power_1;
     let soltaro_power = input.soltaro_power;
@@ -188,10 +189,10 @@ pub fn evaluate_current_limit(
 
     // `zappi_wait_timeout` stays a local computation — it's surfaced
     // in the debug tuple for the dashboard but is not part of the
-    // canonical classifier's contract.
-    #[allow(clippy::cast_precision_loss)]
+    // canonical classifier's contract. A-04/A-24: delta is measured on
+    // monotonic `Instant`s stamped by the poller.
     let time_in_state_min =
-        (now - zappi_last_change_signature).num_seconds() as f64 / 60.0;
+        now_mono.duration_since(zappi_last_change_signature).as_secs_f64() / 60.0;
     let zappi_wait_timeout = time_in_state_min > WAIT_TIMEOUT_MIN
         && zappi_plug_state == ZappiPlugState::WaitingForEv;
 
@@ -345,26 +346,32 @@ mod tests {
     use super::*;
     use crate::clock::FixedClock;
     use crate::myenergi::ZappiStatus;
-    use chrono::{NaiveDate, TimeDelta};
+    use chrono::NaiveDate;
+    use std::time::{Duration as StdDuration, Instant};
+
+    /// A fixed monotonic anchor for tests — far enough from `Instant::now()`
+    /// that we can safely subtract large durations without going negative.
+    fn fixed_mono_anchor() -> Instant {
+        Instant::now() + StdDuration::from_secs(86_400)
+    }
 
     fn clock_at(h: u32, m: u32) -> FixedClock {
         let nt = NaiveDate::from_ymd_opt(2026, 4, 21)
             .unwrap()
             .and_hms_opt(h, m, 0)
             .unwrap();
-        FixedClock::at(nt)
+        FixedClock::new(fixed_mono_anchor(), nt)
     }
 
     fn base_zappi_state() -> ZappiState {
-        let nt = NaiveDate::from_ymd_opt(2026, 4, 21)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
         ZappiState {
             zappi_mode: ZappiMode::Off,
             zappi_plug_state: ZappiPlugState::EvDisconnected,
             zappi_status: ZappiStatus::Paused,
-            zappi_last_change_signature: nt,
+            // 1 min ago — arbitrary pre-tick stamp.
+            zappi_last_change_signature: fixed_mono_anchor()
+                .checked_sub(StdDuration::from_secs(60))
+                .unwrap(),
         }
     }
 
@@ -414,7 +421,11 @@ mod tests {
     #[test]
     fn zappi_wait_timeout_still_surfaced_in_debug() {
         let mut input = base_input();
-        let six_min_ago = clock_at(12, 0).naive - TimeDelta::minutes(6);
+        let clk = clock_at(12, 0);
+        let six_min_ago = clk
+            .monotonic
+            .checked_sub(StdDuration::from_secs(6 * 60))
+            .unwrap();
         input.globals.zappi_state = ZappiState {
             zappi_mode: ZappiMode::Eco,
             zappi_plug_state: ZappiPlugState::WaitingForEv,
@@ -424,7 +435,7 @@ mod tests {
         // zappi_active is independently supplied; debug should still
         // report the wait-timeout derived locally from state.
         input.globals.zappi_active = false;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clk);
         assert!(out.debug.zappi_wait_timeout);
     }
 
@@ -568,16 +579,20 @@ mod tests {
     #[test]
     fn fit_current_in_fast_mode_subtracts_zappi_target() {
         let mut input = base_input();
+        let clk = clock_at(3, 0);
         input.globals.zappi_state = ZappiState {
             zappi_mode: ZappiMode::Fast,
             zappi_plug_state: ZappiPlugState::Charging,
             zappi_status: ZappiStatus::DivertingOrCharging,
-            zappi_last_change_signature: clock_at(3, 0).naive,
+            zappi_last_change_signature: clk
+                .monotonic
+                .checked_sub(StdDuration::from_secs(60))
+                .unwrap(),
         };
         input.zappi_current = 9.5;
         input.globals.zappi_active = true;
         input.battery_power = 1000.0; // charging, so fitted target is used
-        let out = evaluate_current_limit(&input, &clock_at(3, 0));
+        let out = evaluate_current_limit(&input, &clk);
         // max_system_current becomes 65 - 9.5 = 55.5
         assert!((out.debug.max_system_current - 55.5).abs() < 0.01);
         assert!(out.input_current_limit <= 55.5);
@@ -586,11 +601,15 @@ mod tests {
     #[test]
     fn fit_current_adds_emergency_margin_when_zappi_ramping() {
         let mut input = base_input();
+        let clk = clock_at(3, 0);
         input.globals.zappi_state = ZappiState {
             zappi_mode: ZappiMode::Fast,
             zappi_plug_state: ZappiPlugState::Charging,
             zappi_status: ZappiStatus::DivertingOrCharging,
-            zappi_last_change_signature: clock_at(3, 0).naive,
+            zappi_last_change_signature: clk
+                .monotonic
+                .checked_sub(StdDuration::from_secs(60))
+                .unwrap(),
         };
         input.zappi_current = 2.0; // well below zappi_current_target-1 = 8.5
         input.globals.zappi_active = true;
@@ -598,11 +617,11 @@ mod tests {
         input.battery_power = 1000.0;
         input.consumption_power = 1000.0;
         input.offgrid_power = 0.0;
-        let out_ramping = evaluate_current_limit(&input, &clock_at(3, 0));
+        let out_ramping = evaluate_current_limit(&input, &clk);
 
         // Change to zappi_amps above threshold to disable margin
         input.zappi_current = 9.5;
-        let out_steady = evaluate_current_limit(&input, &clock_at(3, 0));
+        let out_steady = evaluate_current_limit(&input, &clk);
 
         assert!(
             out_ramping.input_current_limit <= out_steady.input_current_limit + 0.001,

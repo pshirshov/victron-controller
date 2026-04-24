@@ -1296,13 +1296,12 @@ mod tests {
         ss.ess_state.on_reading(10.0, at);
         ss.outdoor_temperature.on_reading(15.0, at);
 
-        let nt = naive(12, 0);
         world.typed_sensors.zappi_state.on_reading(
             ZappiState {
                 zappi_mode: ZappiMode::Off,
                 zappi_plug_state: ZappiPlugState::EvDisconnected,
                 zappi_status: ZappiStatus::Paused,
-                zappi_last_change_signature: nt,
+                zappi_last_change_signature: at,
             },
             at,
         );
@@ -2366,7 +2365,7 @@ mod tests {
             zappi_mode: ZappiMode::Eco,
             zappi_plug_state: ZappiPlugState::Charging,
             zappi_status: ZappiStatus::DivertingOrCharging,
-            zappi_last_change_signature: naive(12, 0),
+            zappi_last_change_signature: c.monotonic,
         };
         let _ = process(
             &Event::TypedSensor(TypedReading::Zappi {
@@ -2506,7 +2505,7 @@ mod tests {
                 zappi_mode: ZappiMode::Eco,
                 zappi_plug_state: ZappiPlugState::Charging,
                 zappi_status: ZappiStatus::DivertingOrCharging,
-                zappi_last_change_signature: naive(12, 0),
+                zappi_last_change_signature: c.monotonic,
             },
             c.monotonic,
         );
@@ -2564,7 +2563,7 @@ mod tests {
                 zappi_mode: ZappiMode::Off,
                 zappi_plug_state: ZappiPlugState::EvDisconnected,
                 zappi_status: ZappiStatus::Paused,
-                zappi_last_change_signature: naive(12, 0),
+                zappi_last_change_signature: c.monotonic,
             },
             c.monotonic,
         );

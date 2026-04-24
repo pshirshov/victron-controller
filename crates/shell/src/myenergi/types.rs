@@ -13,14 +13,26 @@
 //!   (plug state A/B1/B2/C1/C2/F), session `che` (kWh).
 //! - **Eddi**: `sta` (status 1=Normal/0=Stopped — actually the mapping
 //!   differs between firmwares; best-effort).
+//!
+//! Note on timestamps: myenergi reports `dat`/`tim` in UTC, but the
+//! core's wait-timeout math runs against `Clock::monotonic()`. Mixing
+//! UTC wall-clock with local naive time produced defects A-04 (1 h
+//! offset in BST) and A-24 (sentinel date collapsing change-detection).
+//! PR-03 removes the wall-clock timestamp from the path: the poller
+//! stamps `Instant::now()` on every observed `(zmo, sta, pst)` change
+//! and passes that `Instant` through as `zappi_last_change_signature`.
 
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use std::time::Instant;
 
 use victron_controller_core::myenergi::{
     EddiMode, ZappiMode, ZappiPlugState, ZappiState, ZappiStatus,
 };
 
 /// One Zappi state observation parsed from `cgi-jstatus-Z*`.
+///
+/// `state.zappi_last_change_signature` is stamped by the poller via
+/// [`ZappiChangeTracker`] — this parser does not touch wall-clock
+/// time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiObservation {
     pub state: ZappiState,
@@ -30,17 +42,61 @@ pub struct ZappiObservation {
     pub session_che_kwh: f64,
 }
 
+/// Per-poller state used to decide whether the observed
+/// `(zmo, sta, pst)` tuple has changed since the previous poll.
+/// Holds the latched monotonic `Instant` at which the last change
+/// was observed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZappiChangeTracker {
+    last: (ZappiMode, ZappiStatus, ZappiPlugState),
+    stamp: Instant,
+}
+
+impl ZappiChangeTracker {
+    /// Initial tracker — stamped with the provided `Instant` (typically
+    /// `Instant::now()` at poller start). The classifier's
+    /// `WAIT_TIMEOUT_MIN` branch will then wait ~5 min before timing
+    /// out, which is correct: we can't assume anything about zappi
+    /// state age at startup.
+    #[must_use]
+    pub fn new(
+        initial: (ZappiMode, ZappiStatus, ZappiPlugState),
+        stamp: Instant,
+    ) -> Self {
+        Self { last: initial, stamp }
+    }
+
+    /// Observe a new tuple. Returns the latched `Instant` — the stamp
+    /// of the most recent change. If `tuple` differs from the previous
+    /// observation, `now` becomes the new stamp.
+    pub fn observe(
+        &mut self,
+        tuple: (ZappiMode, ZappiStatus, ZappiPlugState),
+        now: Instant,
+    ) -> Instant {
+        if tuple != self.last {
+            self.last = tuple;
+            self.stamp = now;
+        }
+        self.stamp
+    }
+}
+
 /// Top-level myenergi status response: either `{"zappi":[...]}` or
 /// `{"eddi":[...]}`. We pull the first entry of whichever array is
 /// present.
-pub fn parse_zappi(body: &serde_json::Value) -> Option<ZappiObservation> {
+///
+/// `stamp` is the monotonic `Instant` the poller has determined for
+/// the mode/plug/status signature — see [`ZappiChangeTracker`].
+pub fn parse_zappi(
+    body: &serde_json::Value,
+    stamp: Instant,
+) -> Option<ZappiObservation> {
     let entry = body.get("zappi").and_then(|v| v.as_array())?.first()?;
 
     let zmo = entry.get("zmo")?.as_u64()? as u8;
     let sta = entry.get("sta")?.as_u64()? as u8;
     let pst = entry.get("pst")?.as_str()?;
-    let dat = entry.get("dat").and_then(|v| v.as_str()).unwrap_or("01-01-2026");
-    let tim = entry.get("tim").and_then(|v| v.as_str()).unwrap_or("00:00:00");
     let che = entry.get("che").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
     Some(ZappiObservation {
@@ -48,10 +104,29 @@ pub fn parse_zappi(body: &serde_json::Value) -> Option<ZappiObservation> {
             zappi_mode: zappi_mode_from_code(zmo),
             zappi_plug_state: zappi_plug_state_from_str(pst),
             zappi_status: zappi_status_from_code(sta),
-            zappi_last_change_signature: parse_myenergi_ts(dat, tim),
+            zappi_last_change_signature: stamp,
         },
         session_che_kwh: che,
     })
+}
+
+/// Extract only the `(zmo, sta, pst)` change-detection tuple from a
+/// `cgi-jstatus-Z*` body. The poller calls this first to decide
+/// whether the signature changed, then calls [`parse_zappi`] with the
+/// resulting latched `Instant`.
+#[must_use]
+pub fn parse_zappi_signature(
+    body: &serde_json::Value,
+) -> Option<(ZappiMode, ZappiStatus, ZappiPlugState)> {
+    let entry = body.get("zappi").and_then(|v| v.as_array())?.first()?;
+    let zmo = entry.get("zmo")?.as_u64()? as u8;
+    let sta = entry.get("sta")?.as_u64()? as u8;
+    let pst = entry.get("pst")?.as_str()?;
+    Some((
+        zappi_mode_from_code(zmo),
+        zappi_status_from_code(sta),
+        zappi_plug_state_from_str(pst),
+    ))
 }
 
 /// Extract the Eddi mode from the `sta` field. This is firmware-
@@ -101,21 +176,16 @@ fn zappi_plug_state_from_str(s: &str) -> ZappiPlugState {
     }
 }
 
-/// Parse `dat = "21-04-2026"` (DD-MM-YYYY) + `tim = "22:38:13"` into
-/// a `NaiveDateTime`. Falls back to epoch on parse failure so the
-/// caller doesn't have to handle a None.
-fn parse_myenergi_ts(dat: &str, tim: &str) -> NaiveDateTime {
-    let date = NaiveDate::parse_from_str(dat, "%d-%m-%Y")
-        .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2_026, 1, 1).unwrap());
-    let time = NaiveTime::parse_from_str(tim, "%H:%M:%S")
-        .unwrap_or_else(|_| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
-    NaiveDateTime::new(date, time)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::Duration;
+
+    fn fixed_stamp() -> Instant {
+        // Any `Instant` works; parser is stamp-agnostic.
+        Instant::now()
+    }
 
     #[test]
     fn parses_zappi_fast_charging() {
@@ -130,10 +200,12 @@ mod tests {
                 "che": 5.3
             }]
         });
-        let obs = parse_zappi(&body).unwrap();
+        let stamp = fixed_stamp();
+        let obs = parse_zappi(&body, stamp).unwrap();
         assert_eq!(obs.state.zappi_mode, ZappiMode::Fast);
         assert_eq!(obs.state.zappi_status, ZappiStatus::DivertingOrCharging);
         assert_eq!(obs.state.zappi_plug_state, ZappiPlugState::Charging);
+        assert_eq!(obs.state.zappi_last_change_signature, stamp);
         assert!((obs.session_che_kwh - 5.3).abs() < f64::EPSILON);
     }
 
@@ -142,7 +214,7 @@ mod tests {
         let body = json!({
             "zappi": [{"zmo": 4, "sta": 1, "pst": "A"}]
         });
-        let obs = parse_zappi(&body).unwrap();
+        let obs = parse_zappi(&body, fixed_stamp()).unwrap();
         assert_eq!(obs.state.zappi_mode, ZappiMode::Off);
         assert_eq!(obs.state.zappi_plug_state, ZappiPlugState::EvDisconnected);
     }
@@ -152,14 +224,15 @@ mod tests {
         let body = json!({
             "zappi": [{"zmo": 2, "sta": 7, "pst": "B1"}]
         });
-        let obs = parse_zappi(&body).unwrap();
+        let obs = parse_zappi(&body, fixed_stamp()).unwrap();
         assert_eq!(obs.state.zappi_status, ZappiStatus::Other(7));
     }
 
     #[test]
     fn parse_zappi_returns_none_on_missing_array() {
-        assert!(parse_zappi(&json!({})).is_none());
-        assert!(parse_zappi(&json!({"zappi": []})).is_none());
+        let stamp = fixed_stamp();
+        assert!(parse_zappi(&json!({}), stamp).is_none());
+        assert!(parse_zappi(&json!({"zappi": []}), stamp).is_none());
     }
 
     #[test]
@@ -181,15 +254,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_myenergi_ts_roundtrip() {
-        let nt = parse_myenergi_ts("21-04-2026", "22:38:13");
-        assert_eq!(nt.date(), NaiveDate::from_ymd_opt(2026, 4, 21).unwrap());
-    }
+    fn change_tracker_latches_stamp_on_tuple_change() {
+        let t0 = Instant::now();
+        let mut tr = ZappiChangeTracker::new(
+            (ZappiMode::Off, ZappiStatus::Paused, ZappiPlugState::EvDisconnected),
+            t0,
+        );
 
-    #[test]
-    fn parse_myenergi_ts_bad_input_falls_back() {
-        let nt = parse_myenergi_ts("garbage", "also garbage");
-        // Doesn't panic; returns the sentinel we defined.
-        assert_eq!(nt.date(), NaiveDate::from_ymd_opt(2_026, 1, 1).unwrap());
+        // Same tuple → stamp unchanged.
+        let t1 = t0 + Duration::from_secs(30);
+        let s = tr.observe(
+            (ZappiMode::Off, ZappiStatus::Paused, ZappiPlugState::EvDisconnected),
+            t1,
+        );
+        assert_eq!(s, t0);
+
+        // Different tuple → stamp latches to t2.
+        let t2 = t0 + Duration::from_secs(60);
+        let s = tr.observe(
+            (ZappiMode::Eco, ZappiStatus::DivertingOrCharging, ZappiPlugState::Charging),
+            t2,
+        );
+        assert_eq!(s, t2);
+
+        // Same-as-just-stored tuple → stamp held at t2.
+        let t3 = t0 + Duration::from_secs(90);
+        let s = tr.observe(
+            (ZappiMode::Eco, ZappiStatus::DivertingOrCharging, ZappiPlugState::Charging),
+            t3,
+        );
+        assert_eq!(s, t2);
     }
 }

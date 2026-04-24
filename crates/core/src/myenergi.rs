@@ -2,7 +2,7 @@
 //! controller (consumes state) and by the zappi/eddi controllers
 //! (produces targets).
 
-use chrono::NaiveDateTime;
+use std::time::Instant;
 
 /// Zappi charge-mode target or actual state. Matches the myenergi API
 /// `zmo` field's four values.
@@ -60,10 +60,13 @@ pub struct ZappiState {
     pub zappi_mode: ZappiMode,
     pub zappi_plug_state: ZappiPlugState,
     pub zappi_status: ZappiStatus,
-    /// Instant (wall-clock) at which the mode/plug/status signature last
+    /// Monotonic `Instant` at which the mode/plug/status signature last
     /// changed — used by current-limit to detect the "waiting 5+ min with
-    /// no EV" timeout.
-    pub zappi_last_change_signature: NaiveDateTime,
+    /// no EV" timeout. Stamped by the shell-side poller when it observes
+    /// a change in the `(zmo, sta, pst)` tuple. Monotonic (not wall-clock)
+    /// so DST flips and tz mismatches (myenergi UTC vs local) cannot
+    /// poison the delta — see defects A-04 and A-24.
+    pub zappi_last_change_signature: Instant,
 }
 
 /// Eddi mode target or actual state.

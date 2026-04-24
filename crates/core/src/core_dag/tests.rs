@@ -333,31 +333,30 @@ mod d02_boundary_consistency {
     fn setpoint_decision_matches_world_derived_zappi_active_across_boundary() {
         // Straddle the 5 min WAIT_TIMEOUT boundary.
         //
-        // Clock starts at 12:04:59.990; Zappi entered `WaitingForEv`
-        // at 12:00:00.000 (4 min 59.990 s prior). AdvancingClock steps
-        // `naive()` forward by 1 s on every call, so any *second*
-        // invocation of `classify_zappi_active` would land past the
-        // 5 min threshold and return `false` — disagreeing with the
-        // first invocation. With PR-DAG-B, `ZappiActiveCore` is the
-        // sole caller: it classifies once and every consumer reads
-        // from `world.derived.zappi_active`.
+        // Zappi entered `WaitingForEv` at `mono - 4m59.990s` — just
+        // under the timeout. With PR-DAG-B, `ZappiActiveCore` is the
+        // sole classifier caller: it classifies once and every consumer
+        // reads from `world.derived.zappi_active`. Even if a consumer
+        // re-classified (hazard), the monotonic clock is fixed per
+        // tick so both observations agree — but the contract we're
+        // defending is no re-derivation at all.
+        //
+        // PR-03: `zappi_last_change_signature` is now a monotonic
+        // `Instant`, so we no longer need the `AdvancingClock` to
+        // simulate naive()-drift across classifier calls; the stamp
+        // is compared against a fixed `clock.monotonic()`.
         let base_naive = NaiveDate::from_ymd_opt(2026, 4, 21)
             .unwrap()
             .and_hms_milli_opt(12, 4, 59, 990)
             .unwrap();
-        let last_change = NaiveDate::from_ymd_opt(2026, 4, 21)
-            .unwrap()
-            .and_hms_milli_opt(12, 0, 0, 0)
-            .unwrap();
 
-        let mono = Instant::now() + StdDuration::from_secs(60);
+        let mono = Instant::now() + StdDuration::from_secs(600);
+        let last_change_mono = mono
+            .checked_sub(StdDuration::from_millis(4 * 60 * 1000 + 59 * 1000 + 990))
+            .unwrap();
         let clk = AdvancingClock {
             monotonic: mono,
             naive: Cell::new(base_naive),
-            // 1 s per naive() call — large enough that any second
-            // classifier call lands comfortably past the 5 min
-            // boundary, regardless of how many intervening `naive()`
-            // reads the controllers make.
             step: chrono::Duration::seconds(1),
             naive_calls: Cell::new(0),
         };
@@ -369,7 +368,7 @@ mod d02_boundary_consistency {
                 zappi_mode: ZappiMode::Eco,
                 zappi_plug_state: ZappiPlugState::WaitingForEv,
                 zappi_status: ZappiStatus::DivertingOrCharging,
-                zappi_last_change_signature: last_change,
+                zappi_last_change_signature: last_change_mono,
             },
             mono,
         );

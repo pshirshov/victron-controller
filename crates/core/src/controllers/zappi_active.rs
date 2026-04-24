@@ -68,14 +68,15 @@ pub fn classify_zappi_active(world: &World, clock: &dyn Clock) -> bool {
     }
 
     // WAIT_TIMEOUT_MIN: if `WaitingForEv` has persisted beyond the
-    // timeout, the car isn't drawing — treat as inactive. Preserves
-    // the existing naive-local arithmetic (A-04 will fix the
-    // Local-vs-UTC mix end to end in a later PR).
+    // timeout, the car isn't drawing — treat as inactive. A-04 / A-24:
+    // `zappi_last_change_signature` is a monotonic `Instant` stamped by
+    // the poller when the `(zmo, sta, pst)` tuple flipped, so this delta
+    // is immune to DST and to the local-vs-UTC mix that previously
+    // fired the timeout on every invocation in BST.
     if matches!(state.zappi_plug_state, ZappiPlugState::WaitingForEv) {
-        let now = clock.naive();
-        #[allow(clippy::cast_precision_loss)]
+        let now = clock.monotonic();
         let delta_min =
-            (now - state.zappi_last_change_signature).num_seconds() as f64 / 60.0;
+            now.duration_since(state.zappi_last_change_signature).as_secs_f64() / 60.0;
         if delta_min > WAIT_TIMEOUT_MIN {
             return false;
         }
