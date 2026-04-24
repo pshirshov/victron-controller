@@ -122,6 +122,12 @@ pub struct Bookkeeping {
     /// Calendar date `charge_battery_extended_today` was last set for, so
     /// the tick-level reset knows when to clear.
     pub charge_battery_extended_today_date: Option<NaiveDate>,
+    /// A-21: last calendar date `run_weather_soc` fired its knob proposals.
+    /// Prevents the 60-tick flood in the 01:55:00–01:55:59 window.
+    /// Stamped only on successful knob application (γ-hold permitting);
+    /// not persisted to retained MQTT today, so a reboot inside the 01:55
+    /// minute may re-fire — accepted tradeoff.
+    pub last_weather_soc_run_date: Option<NaiveDate>,
 }
 
 impl Bookkeeping {
@@ -138,6 +144,7 @@ impl Bookkeeping {
             eddi_last_transition_at: None,
             charge_battery_extended_today: false,
             charge_battery_extended_today_date: None,
+            last_weather_soc_run_date: None,
         }
     }
 }

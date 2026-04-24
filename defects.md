@@ -148,14 +148,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Either (a) delete the field from `CurrentLimitInputGlobals` if it's truly unused — "delete, don't pretend"; or (b) clamp `input_current_limit` to `offgrid_current + small_headroom` when `force_disable_export=true`. Prefer (a) first; revisit semantics before implementing (b).
 
 ### [A-20] Weather-SoC bypasses owner-priority + γ-hold; a dashboard write at 01:54 is clobbered at 01:55
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/process.rs:1054-1077, 1085-1093`
 **Description:** `run_weather_soc` calls `apply_knob` directly (no owner check). γ-hold in `accept_knob_command` protects dashboard writes from HaMqtt for 1 s; nightly planner has no such courtesy and runs for a full minute at 01:55:00–01:55:59.
 **Suggested fix:** Route every planner knob change through the same `accept_knob_command` path (adding a `WeatherSocPlanner`-owned command variant if needed). Or add a γ-hold check in `run_weather_soc` that suppresses if any knob's last_dashboard_write is within N minutes.
 
 ### [A-21] Weather-SoC fires 60 times in the 01:55:00–01:55:59 window, emitting ~300 retained-knob messages
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:980`
 **Description:** Controller runs on every `Event` inside the minute, not once. Flood of identical retained-MQTT messages; any dashboard override mid-minute is overwritten repeatedly.

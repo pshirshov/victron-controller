@@ -333,8 +333,11 @@ fn apply_bookkeeping(
 }
 
 fn accept_knob_command(owner: Owner, at: Instant, world: &World) -> bool {
-    // γ-rule: dashboard writes suppress HA commands within the hold window.
-    if owner == Owner::HaMqtt {
+    // γ-rule: dashboard writes suppress subsystem commands within the
+    // hold window. Applies to HaMqtt AND WeatherSocPlanner — both are
+    // automatic-path writers a user might want to override temporarily
+    // via the dashboard.
+    if matches!(owner, Owner::HaMqtt | Owner::WeatherSocPlanner) {
         if let Some(last) = world.knob_provenance.last_dashboard_write {
             if at.saturating_duration_since(last) < DASHBOARD_HOLD_WINDOW {
                 return false;
@@ -1155,6 +1158,18 @@ pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mu
         return;
     }
 
+    // A-21: the 01:55 check is true for every tick in the 60-second
+    // window 01:55:00–01:55:59. Without a once-per-day guard, every
+    // tick in that window re-fires the knob proposals (~60 retained
+    // MQTT publishes per knob per day). Short-circuit here once we've
+    // already run today.
+    let today = now.date();
+    if world.bookkeeping.last_weather_soc_run_date == Some(today) {
+        // Already ran today; keep the last real decision visible,
+        // don't re-propose.
+        return;
+    }
+
     // Use today's temp if fresh; else skip (with explanation).
     if !world.sensors.outdoor_temperature.is_usable() {
         world.decisions.weather_soc = Some(
@@ -1208,27 +1223,61 @@ pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mu
     let d = evaluate_weather_soc(&input, clock);
     world.decisions.weather_soc = Some(d.decision.clone());
 
+    // A-20: check γ-hold once up-front. If a dashboard write is active
+    // we suppress ALL four planner knobs atomically — either every
+    // knob moves together (coherent planner state) or none of them do
+    // (the operator's manual override stands). Applying knobs one-by-one
+    // with a per-call γ-check would still be safe, but this makes the
+    // "all-or-nothing" contract explicit.
+    let at = clock.monotonic();
+    if !accept_knob_command(Owner::WeatherSocPlanner, at, world) {
+        effects.push(Effect::Log {
+            level: LogLevel::Debug,
+            source: "process::weather_soc",
+            message: format!(
+                "suppressed planner knobs owner={:?} (dashboard γ-hold active)",
+                Owner::WeatherSocPlanner
+            ),
+        });
+        // NOTE: do NOT stamp `last_weather_soc_run_date` when suppressed.
+        // If the operator releases the dashboard knob before the 01:55
+        // window closes, the planner can still fire on a later tick in
+        // the same minute. If the window closes first, we simply missed
+        // today — acceptable: the dashboard write was the most recent
+        // operator intent. See A-21 test
+        // `weather_soc_suppressed_by_dashboard_gamma_hold`.
+        return;
+    }
+
     // Translate decision into knob proposals (owner=WeatherSocPlanner).
     propose_knob(
         world,
+        Owner::WeatherSocPlanner,
+        at,
         KnobId::ExportSocThreshold,
         KnobValue::Float(d.export_soc_threshold),
         effects,
     );
     propose_knob(
         world,
+        Owner::WeatherSocPlanner,
+        at,
         KnobId::DischargeSocTarget,
         KnobValue::Float(d.discharge_soc_target),
         effects,
     );
     propose_knob(
         world,
+        Owner::WeatherSocPlanner,
+        at,
         KnobId::BatterySocTarget,
         KnobValue::Float(d.battery_soc_target),
         effects,
     );
     propose_knob(
         world,
+        Owner::WeatherSocPlanner,
+        at,
         KnobId::DisableNightGridDischarge,
         KnobValue::Bool(d.disable_night_grid_discharge),
         effects,
@@ -1238,15 +1287,36 @@ pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mu
     // schedules sees a fresh decision each day instead of a sticky OR
     // latch on `charge_to_full_required`.
     world.bookkeeping.charge_battery_extended_today = d.charge_battery_extended;
-    world.bookkeeping.charge_battery_extended_today_date = Some(clock.naive().date());
+    world.bookkeeping.charge_battery_extended_today_date = Some(today);
+    // A-21: mark today as handled so the remaining ticks in the
+    // 01:55:00–01:55:59 window short-circuit at the guard above.
+    world.bookkeeping.last_weather_soc_run_date = Some(today);
 }
 
 fn propose_knob(
     world: &mut World,
+    owner: Owner,
+    at: Instant,
     id: KnobId,
     value: KnobValue,
     effects: &mut Vec<Effect>,
 ) {
+    // A-20: route planner knob proposals through the same γ-hold gate
+    // that `apply_command::Knob` uses. Without this, a dashboard write
+    // at 01:54:59.5 would be clobbered by the 01:55 planner tick half
+    // a second later. Callers SHOULD check `accept_knob_command` once
+    // up-front for atomicity (see `run_weather_soc`), but we also
+    // defend per-call so a future caller can't accidentally bypass it.
+    if !accept_knob_command(owner, at, world) {
+        effects.push(Effect::Log {
+            level: LogLevel::Debug,
+            source: "process::weather_soc",
+            message: format!(
+                "suppressed planner knob id={id:?} owner={owner:?} (dashboard γ-hold active)"
+            ),
+        });
+        return;
+    }
     apply_knob(id, value, world, effects);
     effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
 }
@@ -2708,6 +2778,167 @@ mod tests {
         assert!(
             cbe.value.ends_with("= false"),
             "expected cbe to resolve false on fresh boot, got {cbe:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // weather_soc — A-20 (γ-hold bypass) + A-21 (once-per-day guard)
+    // ------------------------------------------------------------------
+
+    /// Build a FixedClock at a specific H:M:S on 2026-04-21.
+    fn clock_at_hms(h: u32, m: u32, s: u32) -> FixedClock {
+        let nt = NaiveDate::from_ymd_opt(2026, 4, 21)
+            .unwrap()
+            .and_hms_opt(h, m, s)
+            .unwrap();
+        FixedClock::new(Instant::now(), nt)
+    }
+
+    /// Build a FixedClock at H:M:S on the given calendar date.
+    fn clock_on(date: NaiveDate, h: u32, m: u32, s: u32) -> FixedClock {
+        let nt = date.and_hms_opt(h, m, s).unwrap();
+        FixedClock::new(Instant::now(), nt)
+    }
+
+    /// Seed the minimal state `run_weather_soc` needs to fire its full
+    /// decision path: outdoor_temperature fresh, and at least one fused
+    /// forecast snapshot so `fused_today_kwh` returns Some.
+    fn seed_weather_soc_inputs(world: &mut World, at: Instant) {
+        world.sensors.outdoor_temperature.on_reading(10.0, at);
+        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh: 25.0,
+            tomorrow_kwh: 25.0,
+            fetched_at: at,
+        });
+    }
+
+    /// Count Publish(Knob) effects produced by a single `process()` call.
+    fn knob_publish_count(effects: &[Effect]) -> usize {
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Publish(PublishPayload::Knob { .. })))
+            .count()
+    }
+
+    #[test]
+    fn weather_soc_runs_once_per_day() {
+        // A-21: the 01:55:00–01:55:59 window has ~60 ticks. Without the
+        // per-day guard, each tick would re-emit four Publish(Knob)
+        // effects (one per planner knob). With the guard: exactly one
+        // tick in that minute actually fires; the rest short-circuit.
+        // The following day at 01:55 fires again.
+        let c0 = clock_at_hms(1, 55, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        seed_weather_soc_inputs(&mut world, c0.monotonic);
+
+        // First tick at 01:55:00 — knobs must propose.
+        let e1 = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+        assert_eq!(
+            knob_publish_count(&e1),
+            4,
+            "first 01:55 tick must publish all four planner knobs, got: {e1:#?}"
+        );
+        assert_eq!(
+            world.bookkeeping.last_weather_soc_run_date,
+            Some(c0.naive.date()),
+            "run-date must be stamped on successful run"
+        );
+
+        // Second tick at 01:55:30 — already ran today, no knob publishes.
+        let c1 = clock_on(c0.naive.date(), 1, 55, 30);
+        let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
+        assert_eq!(
+            knob_publish_count(&e2), 0,
+            "second tick in same 01:55 minute must not re-publish knobs: {e2:#?}"
+        );
+
+        // Third tick at 01:56:00 — outside the window anyway, still no knob publishes.
+        let c2 = clock_on(c0.naive.date(), 1, 56, 0);
+        let e3 = process(&Event::Tick { at: c2.monotonic }, &mut world, &c2, &Topology::defaults());
+        assert_eq!(
+            knob_publish_count(&e3), 0,
+            "post-01:55 tick must not publish knobs: {e3:#?}"
+        );
+
+        // Next day 01:55:00 — planner fires again. `apply_tick`'s
+        // midnight rollover doesn't itself touch
+        // `last_weather_soc_run_date`; the new date simply doesn't match
+        // yesterday's, so the guard lets us through.
+        let tomorrow = c0.naive.date().succ_opt().unwrap();
+        let c3 = clock_on(tomorrow, 1, 55, 0);
+        // Re-seed forecast freshness against the new clock — forecasts
+        // are kept-Some; run_weather_soc treats them all as fresh.
+        seed_weather_soc_inputs(&mut world, c3.monotonic);
+        let e4 = process(&Event::Tick { at: c3.monotonic }, &mut world, &c3, &Topology::defaults());
+        assert_eq!(
+            knob_publish_count(&e4),
+            4,
+            "next-day 01:55 tick must publish all four planner knobs again: {e4:#?}"
+        );
+        assert_eq!(world.bookkeeping.last_weather_soc_run_date, Some(tomorrow));
+    }
+
+    #[test]
+    fn weather_soc_suppressed_by_dashboard_gamma_hold() {
+        // A-20: a dashboard knob write at 01:54:59.5 must suppress the
+        // planner knob proposals at 01:55:00 (within the 1-s γ-hold).
+        //
+        // Semantic choice (documented in `run_weather_soc`): when the
+        // planner is suppressed by the γ-hold we do NOT stamp
+        // `last_weather_soc_run_date`. Rationale: if the operator
+        // releases the dashboard knob before the 01:55 minute closes,
+        // the planner still has a chance to run on a later tick in the
+        // same window. More operator-friendly; also means the "already
+        // ran today" guard only trips on a truly successful run.
+        let c0 = clock_at_hms(1, 55, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        seed_weather_soc_inputs(&mut world, c0.monotonic);
+
+        // Simulate a dashboard write 500 ms before the planner tick.
+        world.knob_provenance.last_dashboard_write = Some(
+            c0.monotonic
+                .checked_sub(StdDuration::from_millis(500))
+                .expect("monotonic Instant::now() - 500 ms stays positive"),
+        );
+
+        let effects = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        // No Publish(Knob) for any planner knob.
+        assert_eq!(
+            knob_publish_count(&effects),
+            0,
+            "γ-hold must suppress all planner Publish(Knob) effects: {effects:#?}"
+        );
+        // A Debug-level suppression log must have fired.
+        let has_suppress_log = effects.iter().any(|e| matches!(
+            e,
+            Effect::Log { level: LogLevel::Debug, source: "process::weather_soc", .. }
+        ));
+        assert!(
+            has_suppress_log,
+            "expected a Debug suppression log from process::weather_soc: {effects:#?}"
+        );
+        // And `last_weather_soc_run_date` must NOT have advanced — the
+        // planner didn't really run today yet.
+        assert_eq!(
+            world.bookkeeping.last_weather_soc_run_date, None,
+            "suppressed planner must not stamp last_weather_soc_run_date"
+        );
+
+        // If the dashboard hold expires (clear provenance) and we tick
+        // again inside the 01:55 minute, the planner can still fire —
+        // this validates the "try again next tick" semantic.
+        world.knob_provenance.last_dashboard_write = None;
+        let c1 = clock_on(c0.naive.date(), 1, 55, 30);
+        let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
+        assert_eq!(
+            knob_publish_count(&e2),
+            4,
+            "after γ-hold clears, the planner must still fire later in the 01:55 window: {e2:#?}"
+        );
+        assert_eq!(
+            world.bookkeeping.last_weather_soc_run_date,
+            Some(c0.naive.date())
         );
     }
 }
