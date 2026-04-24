@@ -21,7 +21,29 @@ use tracing::{debug, info};
 
 use victron_controller_core::types::{ActuatedId, KnobId};
 
-use super::serialize::knob_name;
+use super::serialize::{knob_name, knob_range};
+
+/// Build an HA discovery schema for a `number`-component knob that's
+/// validated by `parse_knob_value`. Reuses `knob_range` as the
+/// authoritative min/max so discovery and ingest validation can't
+/// drift.
+fn number_knob(
+    id: KnobId,
+    step: f64,
+    unit: Option<&'static str>,
+) -> (KnobId, &'static str, serde_json::Value) {
+    let (min, max) = knob_range(id).unwrap_or_else(|| {
+        panic!("knob_range missing for {id:?} — extend knob_range in serialize.rs first")
+    });
+    let mut extra = json!({ "min": min, "max": max, "step": step });
+    if let Some(u) = unit {
+        extra
+            .as_object_mut()
+            .expect("json object")
+            .insert("unit_of_measurement".to_string(), json!(u));
+    }
+    (id, "number", extra)
+}
 
 const HA_ROOT: &str = "homeassistant";
 const NODE_ID: &str = "victron_controller";
@@ -133,25 +155,28 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         (KnobId::ChargeCarExtended, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::AllowBatteryToCar, "switch", json!({"payload_on": "true", "payload_off": "false"})),
 
-        (KnobId::ExportSocThreshold, "number", json!({"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::DischargeSocTarget, "number", json!({"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::BatterySocTarget, "number", json!({"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::FullChargeDischargeSocTarget, "number", json!({"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::FullChargeExportSocThreshold, "number", json!({"min": 0, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::PessimismMultiplierModifier, "number", json!({"min": 0.0, "max": 2.0, "step": 0.05})),
-        (KnobId::ZappiCurrentTarget, "number", json!({"min": 6.0, "max": 32.0, "step": 0.5, "unit_of_measurement": "A"})),
-        (KnobId::ZappiLimit, "number", json!({"min": 1.0, "max": 100.0, "step": 1.0, "unit_of_measurement": "%"})),
-        (KnobId::ZappiEmergencyMargin, "number", json!({"min": 0.0, "max": 10.0, "step": 0.5, "unit_of_measurement": "A"})),
-        (KnobId::GridExportLimitW, "number", json!({"min": 0, "max": 10000, "step": 50, "unit_of_measurement": "W"})),
-        (KnobId::GridImportLimitW, "number", json!({"min": 0, "max": 10000, "step": 10, "unit_of_measurement": "W"})),
-        (KnobId::EddiEnableSoc, "number", json!({"min": 50, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::EddiDisableSoc, "number", json!({"min": 50, "max": 100, "step": 1, "unit_of_measurement": "%"})),
-        (KnobId::EddiDwellS, "number", json!({"min": 0, "max": 3600, "step": 5, "unit_of_measurement": "s"})),
-        (KnobId::WeathersocWinterTemperatureThreshold, "number", json!({"min": -30, "max": 40, "step": 0.5, "unit_of_measurement": "°C"})),
-        (KnobId::WeathersocLowEnergyThreshold, "number", json!({"min": 0, "max": 500, "step": 1, "unit_of_measurement": "kWh"})),
-        (KnobId::WeathersocOkEnergyThreshold, "number", json!({"min": 0, "max": 500, "step": 1, "unit_of_measurement": "kWh"})),
-        (KnobId::WeathersocHighEnergyThreshold, "number", json!({"min": 0, "max": 500, "step": 1, "unit_of_measurement": "kWh"})),
-        (KnobId::WeathersocTooMuchEnergyThreshold, "number", json!({"min": 0, "max": 500, "step": 1, "unit_of_measurement": "kWh"})),
+        // PR-06-D01: min/max come from knob_range() — the single
+        // source of truth shared with parse_knob_value's ingest
+        // validation. Only step + unit are owned here.
+        number_knob(KnobId::ExportSocThreshold, 1.0, Some("%")),
+        number_knob(KnobId::DischargeSocTarget, 1.0, Some("%")),
+        number_knob(KnobId::BatterySocTarget, 1.0, Some("%")),
+        number_knob(KnobId::FullChargeDischargeSocTarget, 1.0, Some("%")),
+        number_knob(KnobId::FullChargeExportSocThreshold, 1.0, Some("%")),
+        number_knob(KnobId::PessimismMultiplierModifier, 0.05, None),
+        number_knob(KnobId::ZappiCurrentTarget, 0.5, Some("A")),
+        number_knob(KnobId::ZappiLimit, 1.0, Some("%")),
+        number_knob(KnobId::ZappiEmergencyMargin, 0.5, Some("A")),
+        number_knob(KnobId::GridExportLimitW, 50.0, Some("W")),
+        number_knob(KnobId::GridImportLimitW, 10.0, Some("W")),
+        number_knob(KnobId::EddiEnableSoc, 1.0, Some("%")),
+        number_knob(KnobId::EddiDisableSoc, 1.0, Some("%")),
+        number_knob(KnobId::EddiDwellS, 5.0, Some("s")),
+        number_knob(KnobId::WeathersocWinterTemperatureThreshold, 0.5, Some("°C")),
+        number_knob(KnobId::WeathersocLowEnergyThreshold, 1.0, Some("kWh")),
+        number_knob(KnobId::WeathersocOkEnergyThreshold, 1.0, Some("kWh")),
+        number_knob(KnobId::WeathersocHighEnergyThreshold, 1.0, Some("kWh")),
+        number_knob(KnobId::WeathersocTooMuchEnergyThreshold, 1.0, Some("kWh")),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["none", "force", "forbid"]})),

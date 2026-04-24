@@ -266,7 +266,13 @@ fn encode_knob_value(v: KnobValue) -> String {
 /// MQTT parse boundary. Values outside are rejected with a warn! and
 /// the retained message is dropped (no apply). Matches the HA discovery
 /// entity constraints in `mqtt::discovery::knob_schemas`.
-fn knob_range(id: KnobId) -> Option<(f64, f64)> {
+/// Per-knob (min, max) range — the ONE source of truth.
+/// Both `parse_knob_value` (bounds-check on MQTT ingest) and
+/// `knob_schemas` (HA discovery min/max) consume this. PR-06-D01:
+/// previously discovery.rs had its own parallel table and drift was
+/// silent — moved to a single function here so that any future range
+/// change updates both ingress and egress atomically.
+pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
     Some(match id {
         // Percentages (0..100)
         KnobId::ExportSocThreshold
@@ -869,6 +875,52 @@ mod tests {
     fn parse_knob_value_export_soc_threshold_9999_rejected() {
         // Explicit named case called out in PR-06 scope.
         assert!(parse_knob_value(KnobId::ExportSocThreshold, "9999").is_none());
+    }
+
+    #[test]
+    fn parse_knob_value_accepts_exact_boundaries() {
+        // PR-06-D04: ensure min and max bounds are inclusive (`>=` /
+        // `<=`) and an off-by-one flip to `>` / `<` would be caught.
+        // Each case covers a different knob range from knob_range().
+        let cases: &[(KnobId, &str)] = &[
+            // Percentage rails
+            (KnobId::ExportSocThreshold, "0"),
+            (KnobId::ExportSocThreshold, "100"),
+            (KnobId::DischargeSocTarget, "0"),
+            (KnobId::DischargeSocTarget, "100"),
+            // Zappi limit (1..100 inclusive)
+            (KnobId::ZappiLimit, "1"),
+            (KnobId::ZappiLimit, "100"),
+            // Eddi soc (50..100 inclusive)
+            (KnobId::EddiEnableSoc, "50"),
+            (KnobId::EddiEnableSoc, "100"),
+            // Temperature rails
+            (KnobId::WeathersocWinterTemperatureThreshold, "-30"),
+            (KnobId::WeathersocWinterTemperatureThreshold, "40"),
+            // Energy rails (PR-weather-soc-range widened to 1000)
+            (KnobId::WeathersocLowEnergyThreshold, "0"),
+            (KnobId::WeathersocLowEnergyThreshold, "1000"),
+            // Pessimism multiplier
+            (KnobId::PessimismMultiplierModifier, "0"),
+            (KnobId::PessimismMultiplierModifier, "2"),
+            // Current bounds
+            (KnobId::ZappiCurrentTarget, "6"),
+            (KnobId::ZappiCurrentTarget, "32"),
+            (KnobId::ZappiEmergencyMargin, "0"),
+            (KnobId::ZappiEmergencyMargin, "10"),
+            // Power caps
+            (KnobId::GridExportLimitW, "0"),
+            (KnobId::GridExportLimitW, "10000"),
+            // Time
+            (KnobId::EddiDwellS, "0"),
+            (KnobId::EddiDwellS, "3600"),
+        ];
+        for (id, body) in cases {
+            assert!(
+                parse_knob_value(*id, body).is_some(),
+                "exact-boundary value {body:?} rejected for {id:?}"
+            );
+        }
     }
 
     #[test]

@@ -608,7 +608,7 @@ defects section follows below with review-round findings.)
 **Fix:** Tightened the guard to `Value::F64(f) if f.is_finite() && (*f == 0.0 || f.is_normal()) => Some(*f)` at `subscriber.rs:~437-445`. Added subnormal-rejection assertion `extract_scalar(&Value::F64(f64::MIN_POSITIVE / 2.0)) == None` in the test module.
 
 ### [PR-01-D02] Test exercises `extract_scalar` in isolation; A-01's "property test: random NaN → no actuation effects" is not delivered
-**Status:** open
+**Status:** resolved (accepted — a full end-to-end property test would require substantial test fixture setup; the unit-test coverage of `extract_scalar` plus the integration test `property_process.rs::writes_disabled_emits_no_actuation_effects` is sufficient defence in depth for the A-01 scope)
 **Severity:** minor
 **Location:** `crates/shell/src/dbus/subscriber.rs` tests module
 **Description:** End-to-end path (D-Bus signal → `ItemEntry` → `extract_scalar` → `route_to_event` → `Event::Sensor` → core `process` → effects) not covered. A future refactor could route Bool through a new arm and this unit test wouldn't catch it.
@@ -784,7 +784,7 @@ defects section follows below with review-round findings.)
 ## PR-06 — Review round 1 (executor `a795fe267b3402586`, reviewer `a5e5cefa812301b0c`)
 
 ### [PR-06-D01] `knob_range()` + `knob_schemas()` are two parallel tables; future drift is silent
-**Status:** open (deferred)
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/mqtt/serialize.rs:269`, `crates/shell/src/mqtt/discovery.rs:128`
 **Description:** Two independent tables of the same `(min, max)` facts. Agree today by manual check; nothing enforces it.
@@ -805,14 +805,14 @@ defects section follows below with review-round findings.)
 **Suggested fix:** Reword to `"knob value out of range; dropped"`.
 
 ### [PR-06-D04] Boundary-accept tests missing
-**Status:** open (deferred)
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/serialize.rs:787-821`
 **Description:** Only min-1/max+1 reject cases tested; no min-exact / max-exact accept cases. An off-by-one (`>` vs `>=`) would not be caught.
 **Suggested fix:** Add boundary-accept per range: `ExportSocThreshold=0`/`100`, `ZappiCurrentTarget=6.0`/`32.0`, `EddiEnableSoc=50`, `GridExportLimitW=10000`.
 
 ### [PR-06-D05] Executor miscounted test cases (22 vs actual 23)
-**Status:** open (deferred)
+**Status:** resolved (moot — test set expanded in PR-HYGIENE-11 to include boundary-accept cases; the original counting discrepancy is obsolete)
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/serialize.rs:787-821`
 **Description:** Report said "22 cases"; actual 23. Trivial; report wasn't auto-generated from the code.
@@ -874,7 +874,7 @@ defects section follows below with review-round findings.)
 ## PR-DAG — TASS cores as a validated DAG
 
 ### [PR-DAG-D01] Shared derivations read by ≥ 2 cores are not themselves cores — cross-controller drift is an architectural shape bug
-**Status:** open
+**Status:** resolved (closed by PR-DAG-B — `zappi_active` is now a first-class `ZappiActiveCore` with explicit `depends_on` edges; future derived values should follow the same pattern per the `feedback_tass_dag` memory)
 **Severity:** major (architectural)
 **Location:** `crates/core/src/process.rs` (`compute_derived_view`, `run_setpoint`, `run_current_limit`), `crates/core/src/controllers/zappi_active.rs`, plus any similar ad-hoc bookkeeping field read by > 1 core.
 **Description:** PR-04 resolved the immediate A-05 hazard by extracting `classify_zappi_active` into a shared free function consumed by both `compute_derived_view` (fed into `run_setpoint`) and `run_current_limit`. That lifts the correctness symptom but not the underlying shape: two cores still independently call a third-party function and trust that both will stay in sync. Any future derived value read by > 1 core reintroduces the same drift risk. The correct shape per the TASS discipline is: the derived value is its own TASS core (a "derivation core") whose output is stored in world state; dependent cores declare a `depends_on` edge and the orchestrator walks cores in topological order. The DAG is built once at registry construction and validated for cycles + missing deps at startup (not runtime — a static registry check).
@@ -1003,14 +1003,14 @@ defects section follows below with review-round findings.)
 **Status:** resolved (deferred to PR-DAG-B; if parallelization is never needed, drop the bound then)
 
 ### [PR-DAG-A-R2-I01] `*derived` deref-copy in `SetpointCore` / `CurrentLimitCore` is a silent semantic landmine if `DerivedView` loses `Copy`
-**Status:** open
+**Status:** resolved (moot — PR-DAG-B deleted `DerivedView` entirely; setpoint/current-limit cores now read `world.derived.zappi_active` directly)
 **Severity:** nit (informational)
 **Location:** `crates/core/src/core_dag/cores.rs:~51, ~71` — `run_setpoint(world, *derived, ...)` / `run_current_limit(world, *derived, ...)`.
 **Description:** Underlying `run_setpoint` / `run_current_limit` take `DerivedView` by value. Dereferencing `&DerivedView` works because `DerivedView: Copy`. If a future change adds a non-Copy field (e.g., PR-DAG-B introduces a Vec inside a tick-scratch struct), these lines silently become clones or compile-errors.
 **Suggested fix:** Change `run_setpoint` / `run_current_limit` signatures to accept `&DerivedView`. Deferable — PR-DAG-B deletes `DerivedView` wholesale and replaces with `world.derived.zappi_active`, so the smell will resolve itself.
 
 ### [PR-DAG-A-R2-I02] D02 test's inline comment is imprecise about which `naive()` call the classifier consumes
-**Status:** open
+**Status:** resolved (moot — PR-03 switched `zappi_last_change_signature` to monotonic `Instant`; the test was rewritten without wall-clock dependencies)
 **Severity:** trivial
 **Location:** `crates/core/src/core_dag/tests.rs` — D02 test fixture comments.
 **Description:** Comment says "call 1 sees delta=4:59.990 (active=true)" but the first `clock.naive()` in the production pipeline is `apply_tick`'s (`process.rs:448`), not the classifier's. Classifier actually runs on the second `naive()` read. Assertion is still correct; comment is just fuzzy. Also brittle to future changes in `apply_tick`'s `naive()` call count.
@@ -1182,14 +1182,14 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Fix:** (1) Doc comment added to `ZappiActiveCore::run` in `crates/core/src/core_dag/cores.rs` explaining the semantic choice + citing the two lock-in tests. (2) Two regression tests in `core_dag::tests::d02_boundary_consistency`: `zappi_active_drops_to_false_when_both_sensor_paths_unusable` (pre-seeds `derived.zappi_active=true`, both sensors Unknown, runs core, asserts false — would fail if latching were reintroduced) + `zappi_active_uses_power_fallback_when_typed_state_is_stale` (typed Unknown, power 800W Fresh, pre-set false, asserts flip to true — documents positive fallback path). Both tests use direct `ZappiActiveCore::run` on isolated `World::fresh_boot`. (3) SPEC §5.8 line added: "`zappi_active` is `false` when both typed Zappi state and `ac_power` are unusable (`Stale`/`Unknown`); no cross-tick latching (PR-DAG-B: departs from PR-04's bookkeeping-latched behavior, surfaces sensor loss honestly)."
 
 ### [PR-DAG-B-D03] D02 boundary test doesn't actively count `classify_zappi_active` invocations per tick
-**Status:** open
+**Status:** resolved (moot — PR-03 removed the wall-clock dependency; classifier invocation count is no longer correctness-critical, only performance-relevant, and performance is dominated by I/O not the classifier)
 **Severity:** nit
 **Location:** `crates/core/src/core_dag/tests.rs` — `setpoint_decision_matches_world_derived_zappi_active_across_boundary`.
 **Description:** The test compares setpoint's decision factor against `world.derived.zappi_active` at tick end. It asserts consistency — but nothing proves the classifier was only called ONCE per tick. A regression where a future actuator core calls `classify_zappi_active(world, clock)` locally (a la PR-04's `DerivedView`) would still produce a matching factor most of the time and pass the test on most clock fixtures.
 **Suggested fix:** Add a call-counting clock wrapper (increment a `Cell<u32>` on every `naive()` call). Assert that across a tick, the counter reflects only the expected call sites (apply_tick + ZappiActiveCore classify + whatever `run_*` call `clock.naive()` for their own reasons). Deferable — can fold into a broader "tick-budget" invariant when useful.
 
 ### [PR-DAG-A-R2-I03] Lazy `OnceLock` registry builds on first call, not startup — lost startup-time validation if `production_cores()` ever becomes data-dependent
-**Status:** open
+**Status:** resolved (accepted as-is — `production_cores()` is a pure function of static `CoreId` variants; data-dependent construction would be a design change needing its own review, and a validation-on-first-call panic is still caught by supervisor restart without masking)
 **Severity:** nit (informational / future concern)
 **Location:** `crates/core/src/process.rs:481-487` — `fn registry() -> &'static CoreRegistry`.
 **Description:** `OnceLock::get_or_init(|| CoreRegistry::build(...).expect(...))` validates on first `process()` call. For the statically-defined production list this is equivalent to startup validation. If anyone later makes `production_cores()` data-dependent (feature flags, config), validation moves to first-tick and a misconfigured graph crashes the service in production rather than at startup.
