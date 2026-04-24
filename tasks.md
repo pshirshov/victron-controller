@@ -127,6 +127,15 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-17** — Log publisher timeout hotfix. Adversarial
+  review of PR-URGENT-16 caught the sibling bug: `spawn_log_publisher`
+  had raw `client.publish(...).await` with no timeout. Broker stall →
+  log publisher blocks → log mpsc (cap 256) fills → subsequent
+  `try_send`s drop — including PR-URGENT-15's "mqtt publish stuck
+  >1s" warn from the runtime. Diagnostic self-silencing. Fix:
+  1 s `tokio::time::timeout` with `eprintln!` on fire (NOT tracing —
+  avoid re-entry into the wedge pipeline).
+
 - [x] **PR-URGENT-16** — Second wedge hotfix: WS client held world
   mutex across the initial-snapshot `send_json` (axum WS TCP write).
   A stalled browser tab (paused, throttled, backpressured) → WS send
@@ -362,6 +371,27 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-17** (2026-04-24) — MQTT log publisher timeout hotfix.
+  Caught during adversarial review of PR-URGENT-16. `spawn_log_publisher`
+  in `crates/shell/src/mqtt/log_layer.rs` had raw
+  `client.publish(...).await` with no timeout. Broker backpressure on
+  rumqttc's request channel (even at 4096 slots) → publisher blocks
+  → the log-forwarding mpsc (cap 256) fills → subsequent `try_send`s
+  drop tracing records silently — including PR-URGENT-15's
+  `warn!("mqtt publish stuck >1s; dropping")` diagnostic from
+  `Runtime::dispatch`. Self-silencing wedge: the only diagnostic that
+  would tell us the runtime was wedged was itself swallowed by the
+  wedge. Explains why the field bundle showed zero warn lines despite
+  the tick loop being frozen. Fix: `tokio::time::timeout(Duration::
+  from_secs(1), client.publish(...))` with `eprintln!` on fire
+  (emphatically NOT `tracing::warn!` — that would re-enter MqttLogLayer
+  and feed the very wedge we're reporting on). Original publish-error
+  `eprintln!` preserved. No rate-limiting; the bounded mpsc bounds
+  eprintln rate to one per second of stall. Verified: 275 tests green,
+  clippy clean, ARMv7 release ok. Constraint for future work: any
+  async code inside `spawn_log_publisher` must use `eprintln!` for
+  diagnostics — tracing macros inside this task are a re-entry hazard.
 
 - **PR-URGENT-16** (2026-04-24) — WS initial-snapshot lock scoping
   hotfix. User redeployed PR-URGENT-15 (commit `530f5b6`); field

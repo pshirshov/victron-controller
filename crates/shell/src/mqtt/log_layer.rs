@@ -12,7 +12,7 @@
 //! actual publish happens on the tokio runtime.
 
 use std::fmt::Write as _;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use rumqttc::{AsyncClient, QoS};
@@ -44,12 +44,17 @@ pub fn spawn_log_publisher(
                 target = record.target,
             );
             let payload = record.to_json();
-            if let Err(e) = client
-                .publish(&topic, QoS::AtMostOnce, false, payload.as_bytes())
-                .await
+            // Don't use tracing! here — it'd loop back into this same task
+            // via MqttLogLayer and could wedge under broker stalls.
+            match tokio::time::timeout(
+                Duration::from_secs(1),
+                client.publish(&topic, QoS::AtMostOnce, false, payload.as_bytes()),
+            )
+            .await
             {
-                // Don't use tracing! here — it'd loop.
-                eprintln!("mqtt log publish failed on {topic}: {e}");
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("mqtt log publish failed on {topic}: {e}"),
+                Err(_) => eprintln!("mqtt log publish stuck >1s on {topic}; dropping log record"),
             }
         }
     });

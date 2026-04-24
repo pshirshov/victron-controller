@@ -1016,6 +1016,15 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-17 — Log publisher's raw `client.publish().await` can wedge + eat the diagnostic that would report it
+
+### [PR-URGENT-17-D01] `spawn_log_publisher` awaits `client.publish()` without a timeout; rumqttc stalls → tracing log channel fills → `mqtt publish stuck >1s` warn itself gets dropped
+**Status:** resolved
+**Severity:** major (silent-diagnostic hazard — disguises future wedges)
+**Location:** `crates/shell/src/mqtt/log_layer.rs::spawn_log_publisher`.
+**Description:** PR-URGENT-15's `tokio::time::timeout` only bounds publishes in `Runtime::dispatch`. The tracing→MQTT log publisher had a raw `client.publish(...).await` inside its spawned task. If rumqttc's internal request channel fills (large discovery burst, broker stall), that await blocks; the bounded log-forwarding mpsc fills; subsequent `try_send`s drop records — including the `warn!("mqtt publish stuck >1s; dropping")` from the runtime. Net effect: a downstream wedge becomes invisible because the diagnostic tries to go through the same pipe that's stuck.
+**Fix:** Wrap `client.publish(...).await` in `tokio::time::timeout(Duration::from_secs(1), ...)`. On timeout, `eprintln!("mqtt log publish stuck >1s on {topic}; dropping log record")` — using `eprintln!` (not tracing) to avoid re-entering MqttLogLayer. Original publish-error `eprintln!` preserved. No rate-limiting added — the bounded mpsc (cap 256) self-bounds the eprintln rate to one per second of stall.
+
 ## PR-URGENT-16 — WS client holds world mutex across network send; one stalled browser wedges the whole runtime
 
 ### [PR-URGENT-16-D01] `ws::client_task` initial-snapshot block holds `world.lock()` across `send_json` (WebSocket TCP write); a paused browser tab deadlocks the runtime
