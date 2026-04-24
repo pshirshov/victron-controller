@@ -565,10 +565,30 @@ pub(crate) fn run_setpoint(
     let out = evaluate_setpoint(&input, clock);
 
     // SPEC §5.11: grid-side hard cap — two-sided clamp.
-    let export_cap = i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);
-    let import_cap = i32::try_from(k.grid_import_limit_w).unwrap_or(i32::MAX);
+    // SAFE_MAX caps the user knob irrespective of what the MQTT/dashboard
+    // ingest validators accept. A-09: without it, a grid_export_limit_w
+    // above i32::MAX would pass `i32::try_from` → fall to `unwrap_or(i32::MAX)`
+    // and yield effectively unbounded export (since we then unary-minus it).
+    // `.min(SAFE_MAX_GRID_LIMIT_W).try_into()` is guaranteed to succeed.
+    const SAFE_MAX_GRID_LIMIT_W: u32 = 10_000;
+    let export_cap = i32::try_from(k.grid_export_limit_w.min(SAFE_MAX_GRID_LIMIT_W))
+        .expect("SAFE_MAX_GRID_LIMIT_W fits in i32");
+    let import_cap = i32::try_from(k.grid_import_limit_w.min(SAFE_MAX_GRID_LIMIT_W))
+        .expect("SAFE_MAX_GRID_LIMIT_W fits in i32");
     let pre_clamp = out.setpoint_target;
-    let capped = pre_clamp.clamp(-export_cap, import_cap);
+    let clamped = pre_clamp.clamp(-export_cap, import_cap);
+    // A-10: re-assert the idle-bleed invariant AFTER the clamp. With
+    // grid_export_limit_w = 0 the clamp bounds become [-0, +import_cap],
+    // so any negative setpoint is pinned to 0 — which some Victron
+    // firmware treats distinctly from 10 W ("idle"). If the post-clamp
+    // value is >= 0 but the pre-clamp was a real controller decision,
+    // the clamp collapsed it to zero — promote to 10 W so vebus sees
+    // the explicit idle command instead of a raw 0.
+    let capped = if pre_clamp < 0 && clamped == 0 {
+        10
+    } else {
+        clamped
+    };
 
     let decision = out
         .decision

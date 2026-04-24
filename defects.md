@@ -71,14 +71,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** In `parse_knob_value`: `.filter(|f| f.is_finite())` for all float paths. Add per-knob range validation at the boundary, using the table already used by HA discovery. Invalid retained state → drop + warn!, not load.
 
 ### [A-09] `grid_export_limit_w > i32::MAX` silently disables the export cap
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/process.rs:470-471`
 **Description:** `let grid_cap = -i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX);` — for any u32 > i32::MAX, `try_from` fails, `unwrap_or(i32::MAX)` yields +2_147_483_647, then unary-minus gives -2_147_483_647 — i.e., effectively unbounded export.
 **Suggested fix:** Clamp ingest of `grid_export_limit_w` to a SAFE_MAX (e.g. 10000). On the consumer side use `k.grid_export_limit_w.min(10_000) as i32`. Validate at dashboard + MQTT edges.
 
 ### [A-10] `grid_export_limit_w = 0` pins the setpoint at 0 W, losing idle-bleed invariant
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/process.rs:470-471`
 **Description:** Edge case: `grid_cap = 0`, `capped = target.max(0)` — any negative decision becomes 0 W, bypassing the `prepare_setpoint` idle=10 W promotion. Some Victron firmware treats 0 and 10 distinctly.
@@ -246,14 +246,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Widen ladder rungs to half-open ranges: `battery_soc >= balance_soc - 0.5 && battery_soc < balance_soc + 0.5 → 1.0`, etc.
 
 ### [A-34] `grid_export_limit_w as i32` in `convert.rs` silently truncates `u32 → i32`
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/dashboard/convert.rs:417`
 **Description:** Dashboard displays sign-flipped nonsense for u32 above i32::MAX. Combined with A-09 the UI also lies.
 **Suggested fix:** `i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX)`, or change wire type to i64/u32.
 
 ### [A-35] `eddi_dwell_s as i32` silent truncation (same family as A-34)
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/dashboard/convert.rs:421`
 **Description:** Low blast radius (60 s default). Fix for consistency.

@@ -558,12 +558,17 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         zappi_current_target: k.zappi_current_target,
         zappi_limit: k.zappi_limit,
         zappi_emergency_margin: k.zappi_emergency_margin,
-        grid_export_limit_w: k.grid_export_limit_w as i32,
-        grid_import_limit_w: k.grid_import_limit_w as i32,
+        // A-34 / A-35: saturate u32→i32 instead of wrap-on-cast. With
+        // the core-side SAFE_MAX_GRID_LIMIT_W = 10_000 enforcement
+        // these shouldn't actually hit the saturation, but the
+        // dashboard wire types are i32 and we don't want to sign-flip
+        // display values if a knob escapes validation.
+        grid_export_limit_w: i32::try_from(k.grid_export_limit_w).unwrap_or(i32::MAX),
+        grid_import_limit_w: i32::try_from(k.grid_import_limit_w).unwrap_or(i32::MAX),
         allow_battery_to_car: k.allow_battery_to_car,
         eddi_enable_soc: k.eddi_enable_soc,
         eddi_disable_soc: k.eddi_disable_soc,
-        eddi_dwell_s: k.eddi_dwell_s as i32,
+        eddi_dwell_s: i32::try_from(k.eddi_dwell_s).unwrap_or(i32::MAX),
         weathersoc_winter_temperature_threshold: k.weathersoc_winter_temperature_threshold,
         weathersoc_low_energy_threshold: k.weathersoc_low_energy_threshold,
         weathersoc_ok_energy_threshold: k.weathersoc_ok_energy_threshold,
