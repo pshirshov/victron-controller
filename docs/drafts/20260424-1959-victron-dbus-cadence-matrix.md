@@ -62,6 +62,50 @@ Organic signals essentially never fire. The reseed IS the freshness source. Here
 
 Every entry in the matrix below should satisfy the invariant under whichever regime applies. If a future entry violates it, either the staleness is wrong (too tight for a slow path) or the reseed is wrong (too sparse for the freshness budget).
 
+### Summary table (every subscribed path, one row)
+
+One row per subscribed `(service, path)` in `routing_table`. Classifications:
+
+- **Fast**: organic `ItemsChanged` signals arrive at ≥ 1 Hz when the value is moving. Signal stream drives freshness; reseed is belt-and-suspenders. Fail-fast on signal loss.
+- **Slow-signalled**: organic signals arrive when the value changes, but changes are spaced seconds–minutes apart even under normal operation. Staleness must tolerate inter-change gaps.
+- **Reseed-driven**: organic signals almost never fire (static or user-set values). Reseed IS the freshness source → staleness > reseed.
+- **Readback**: changes only when we (or another client) write. Same as reseed-driven for freshness purposes.
+
+| Sensor / readback | Service | Path | Classification | Reseed | Staleness |
+|---|---|---|---|---|---|
+| `PowerConsumption` | system | `/Ac/Consumption/L1/Power` | Fast | 60 s | 5 s |
+| `ConsumptionCurrent` | system | `/Ac/Consumption/L1/Current` | Fast | 60 s | 5 s |
+| `GridPower` | system | `/Ac/Grid/L1/Power` | Fast | 60 s | 5 s |
+| `BatterySoc` | battery | `/Soc` | Slow-signalled (1 Hz changing, minutes idle) | 60 s | 15 s |
+| `BatterySoh` | battery | `/Soh` | Reseed-driven (minutes–hours) | 300 s | 900 s |
+| `BatteryInstalledCapacity` | battery | `/InstalledCapacity` | Reseed-driven (static) | 600 s | 3600 s |
+| `BatteryDcPower` | battery | `/Dc/0/Power` | **Fast** (user: "updates once/sec") | 60 s | 5 s |
+| `MpptPower0` | solarcharger.ttyS2 | `/Yield/Power` | Slow-signalled (sub-second sunny; idle at night) | 60 s | 30 s |
+| `MpptPower1` | solarcharger.ttyUSB1 | `/Yield/Power` | Slow-signalled (same) | 60 s | 30 s |
+| `SoltaroPower` | pvinverter_soltaro | `/Ac/Power` | Fast | 60 s | 5 s |
+| `GridVoltage` | grid | `/Ac/L1/Voltage` | Fast (slow-moving value but regular emissions) | 60 s | 10 s |
+| `GridCurrent` | grid | `/Ac/L1/Current` | Fast | 60 s | 5 s |
+| `OffgridPower` | vebus | `/Ac/Out/L1/P` | Fast | 60 s | 5 s |
+| `OffgridCurrent` | vebus | `/Ac/Out/L1/I` | Fast | 60 s | 5 s |
+| `VebusInputCurrent` | vebus | `/Ac/ActiveIn/L1/I` | Fast | 60 s | 5 s |
+| `EvchargerAcPower` | evcharger | `/Ac/Power` | Fast | 60 s | 5 s |
+| `EvchargerAcCurrent` | evcharger | `/Ac/Current` | Fast | 60 s | 5 s |
+| `EssState` | settings | `/Settings/CGwacs/BatteryLife/State` | Reseed-driven (user/GUI changes) | 300 s | 900 s |
+| **Readback** `CurrentLimit` | vebus | `/Ac/In/1/CurrentLimit` | Readback | 120 s | 600 s |
+| **Readback** `GridSetpoint` | settings | `/Settings/CGwacs/AcPowerSetPoint` | Readback | 300 s | 900 s |
+| **Readback** `Schedule0.Start` | settings | `…/Schedule/Charge/0/Start` | Readback (one of 5 fields) | 300 s | 900 s |
+| **Readback** `Schedule0.Duration` | settings | `…/Schedule/Charge/0/Duration` | Readback | 300 s | 900 s |
+| **Readback** `Schedule0.Soc` | settings | `…/Schedule/Charge/0/Soc` | Readback | 300 s | 900 s |
+| **Readback** `Schedule0.Day` | settings | `…/Schedule/Charge/0/Day` | Readback | 300 s | 900 s |
+| **Readback** `Schedule0.AllowDischarge` | settings | `…/Schedule/Charge/0/AllowDischarge` | Readback | 300 s | 900 s |
+| **Readback** `Schedule1.*` (5 fields) | settings | `…/Schedule/Charge/1/*` | Readback (mirror of above) | 300 s | 900 s |
+
+Worst-case reseed load under this schedule: 9 services × ~1 call / 60 s = **0.15 GetItems/s** across all services — about 120× gentler than the current 500 ms broadcast (18/s), well below anything Victron's reference clients do, and low enough that dbus-flashmq's documented 3-republish/s ceiling isn't approached. The alternative single-path reseed (more surgical than whole-service `GetItems`) would drop load further but is harder to implement; see per-service sections below for discussion.
+
+Every row satisfies the `staleness > max(organic-gap, reseed)` invariant:
+- Fast paths: `staleness ≪ reseed` because the signal stream's ~1 Hz cadence is the freshness driver. The reseed is a safety net for signal outages — but on signal loss we want to fail fast, so staleness is tight.
+- Reseed-driven and readback rows: `staleness ≈ 2–3× reseed` so the next reseed un-Stales the sensor before the current one expires.
+
 ### system — `com.victronenergy.system`
 
 Produced by `dbus-systemcalc-py`; all values update at ≤1 Hz on the timer tick (source §4).
@@ -81,7 +125,7 @@ CAN frames from Pylontech arrive at the SoC update rate of the battery BMS. Pylo
 | `/Soc` | ~1 Hz while changing; seconds–minutes when idle | yes | high — setpoint + Eddi | none; re-seed 60 s | **10 s** (was 2 s) | dbus wiki `com.victronenergy.battery` [wiki](https://github.com/victronenergy/venus/wiki/dbus) |
 | `/Soh` | rarely — minutes to hours | yes (on change only) | low — slow aging metric | none; re-seed 300 s | **600 s** | same |
 | `/InstalledCapacity` | basically static | yes (rarely) | low — constant | none; re-seed 600 s | **3600 s** | same |
-| `/Dc/0/Power` | ~1 Hz | yes | medium — diagnostics, logged | none; re-seed 60 s | 10 s | same |
+| `/Dc/0/Power` | ~1 Hz (user-observed: "updates once/sec") | yes | high — matches MPPT / consumption rate | none; re-seed 60 s | **5 s** | same (user field observation) |
 
 ### solarcharger — `com.victronenergy.solarcharger.ttyS2` / `.ttyUSB1`
 
@@ -213,6 +257,67 @@ The existing `freshness_local_dbus` field on `ControllerParams` should become a 
 ### D4. Drop the tight `GET_ITEMS_TIMEOUT = 2 s` — or keep it, but with fewer calls
 
 If D1 lands, each service is hit at most once per minute, and a 2 s per-call timeout is fine (well, generous). If D1 does *not* land and we keep 500 ms broadcast, the 2 s timeout risks starving the `select!` loop as currently documented. Post-D1, no change needed.
+
+## Rate-limit detection & response
+
+Even with gentler per-path cadences, we can't rule out that the Venus broker (or an intermediate producer) rate-limits us for some reason — broker restart, signal-rate spike from another client, a producer process becoming briefly unresponsive. The controller must notice and respond, not silently stall.
+
+### Signals we can observe
+
+| Signal | Available today? | Meaning |
+|---|---|---|
+| `last_signal_at` age > N seconds | **yes** (PR-URGENT-20) | Every service usually emits `ItemsChanged` within tens of seconds. Total silence across all 9 for > 60 s is strong evidence of rate-limit or broker-side drop. |
+| `GetItems` timeouts on ≥ 2 services within one reseed iteration | **yes** (PR-URGENT-19 + PR-URGENT-22) | Broker is refusing / dropping method calls. |
+| `session_age_s` at reconnect | **yes** (PR-URGENT-20 logs) | Pattern: repeated short sessions (< 60 s) signals rate-limit. Sessions > 1 hr that suddenly drop are more likely network / socket issues. |
+| zbus error variant on stream or method-call | partial | `zbus::Error` distinguishes `NameTaken`, `NoReply`, `InvalidReply`, `Failure`, `MethodError` (`org.freedesktop.DBus.Error.AccessDenied`, `LimitsExceeded`, `NoReply`). Worth inspecting the specific variant when a method call or stream fails — some of these are definitive rate-limit signals. |
+| `org.freedesktop.DBus.NameOwnerChanged` for our own unique name | no | If the broker evicts our connection, it emits `NameOwnerChanged` for our bus name going away. We could listen for this and immediately trigger reconnect. |
+| D-Bus broker side logs (`busctl`, `journalctl -u dbus`) | external | Cannot observe from within the controller; operator diagnostic only. |
+
+### Classification heuristic (for logs only, not for behavior yet)
+
+On each reconnect attempt, log a classification line based on the previous session's metrics:
+
+```
+D-Bus session ended:
+  session_age_s=X
+  last_signal_age_at_failure_s=Y
+  poll_failures_this_session=Z
+  likely_cause={"rate_limit" | "broker_restart" | "network" | "client_defect" | "unknown"}
+  recommended_action={"backoff_more" | "subscribe_less" | "investigate_broker" | "reconnect_normal"}
+```
+
+Heuristic:
+- `session_age < 30 s AND poll_failures > 0 AND last_signal_age > 10 s`: **rate_limit**. We hit some producer/broker limit during initial activity burst.
+- `session_age > 60 s AND last_signal_age > 60 s AND poll_failures on all services`: **broker_restart** or **client_defect**. Check `dbus-daemon` logs externally.
+- `session_age > 3600 s`: **network** (long-healthy connection suddenly dropping is more likely TCP/socket).
+- Other: **unknown**.
+
+This is diagnostic-only; the outer loop still just reconnects with exponential backoff. If we see `rate_limit` repeatedly in logs, that's the cue to widen cadences further.
+
+### Response: progressive degradation (proposal)
+
+If `likely_cause=rate_limit` triggers twice in five minutes, the next reconnect should degrade:
+
+| Level | Change |
+|---|---|
+| 0 (default) | Full matrix cadences (60 s / 300 s / 600 s). |
+| 1 | Drop non-essential reseeds: keep only `system`, `battery`, `vebus`. MPPT/grid/evcharger still get signal-driven updates but no reseed. |
+| 2 | Narrow the match rule: only `ItemsChanged` from `system` + `battery`. Other services' updates are discarded. Controller degrades to "limp-home" with only `battery_soc + grid_power + consumption`. |
+| 3 | Last resort: tear down subscription, seed once, go fully passive (no reseed, no signals). Controller runs on last-known data with long staleness windows until manually reset. |
+
+Each level is a **monotonic** reduction in broker load. Reset to level 0 after a healthy session ≥ 10 minutes.
+
+Implementation notes:
+- Level 0 → 1 is the easiest and probably sufficient. Start there.
+- Level 2 requires rewriting the match rule with a sender filter, which means rebuilding the subscription.
+- Level 3 is a last-ditch fallback; we'd log alarmingly but keep the service running to dashboard clients.
+- Do NOT implement this until we have evidence from the classification logs that rate_limit is the real cause. If it's client-side (zbus connection dying), degradation won't help and we'd be solving the wrong problem.
+
+### Recommended implementation order
+
+1. **First:** land the per-path cadence matrix (D1 + D2 + D3 from "Design proposal" below). This alone drops load 120× and almost certainly resolves the wedge.
+2. **Second:** land the classification logging at each reconnect (observation only, no behavior change). Redeploy, observe for 24 h. See what `likely_cause` values appear.
+3. **Third (only if needed):** land the progressive degradation machinery if logs show repeated `rate_limit` classifications.
 
 ## Open questions for the user
 
