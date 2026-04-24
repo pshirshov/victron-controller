@@ -138,6 +138,30 @@ export function renderSensors(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
+function fmtScheduleTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Render a ScheduleSpec as "ENABLED 02:00–05:00 soc=80" / "DISABLED 02:00–05:00 soc=80" / "—".
+ *  Victron encodes the day mask as 7 = every day enabled, -7 = every day disabled.
+ *  Users read raw JSON `{"days":-7}` as "disabled" (correctly — that IS the wire code for disabled),
+ *  but the JSON view is ambiguous on purpose; this formatter makes the enabled/disabled bit unambiguous. */
+function fmtSchedule(
+  spec: { start_s: number; duration_s: number; discharge: number; soc: number; days: number } | undefined
+): string {
+  if (!spec) return "—";
+  const enabled = spec.days === 7;
+  const label = enabled
+    ? '<span class="freshness-Fresh">ENABLED</span>'
+    : '<span class="freshness-Stale">DISABLED</span>';
+  const start = fmtScheduleTime(spec.start_s);
+  const end = fmtScheduleTime(spec.start_s + spec.duration_s);
+  const soc = Math.round(spec.soc);
+  return `${label} <span class="dim">${start}–${end} soc=${soc}%</span>`;
+}
+
 export function renderActuated(snap: WorldSnapshot) {
   const tbody = document.querySelector("#actuated-table tbody") as HTMLElement;
   const a = snap.actuated;
@@ -208,19 +232,19 @@ export function renderActuated(snap: WorldSnapshot) {
     ),
     mkRow(
       "schedule_0",
-      s0.target ? esc(JSON.stringify(s0.target)) : "—",
+      fmtSchedule(s0.target),
       String(s0.target_owner),
       String(s0.target_phase),
-      s0.actual ? esc(JSON.stringify(s0.actual)) : "—",
+      fmtSchedule(s0.actual),
       String(s0.actual_freshness),
       s0.actual_since_epoch_ms as unknown as number,
     ),
     mkRow(
       "schedule_1",
-      s1.target ? esc(JSON.stringify(s1.target)) : "—",
+      fmtSchedule(s1.target),
       String(s1.target_owner),
       String(s1.target_phase),
-      s1.actual ? esc(JSON.stringify(s1.actual)) : "—",
+      fmtSchedule(s1.actual),
       String(s1.actual_freshness),
       s1.actual_since_epoch_ms as unknown as number,
     ),
