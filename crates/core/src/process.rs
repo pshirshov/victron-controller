@@ -847,8 +847,14 @@ pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut 
     };
 
     let out = evaluate_schedules(&input, clock);
-    let decision = out
-        .decision
+    // Schedule 0 Decision: the unconditional-boost invariant. No cbe
+    // factors — they don't gate Schedule 0.
+    world.decisions.schedule_0 = Some(out.schedule_0_decision.clone());
+    // Schedule 1 Decision: branch-specific; decorate with the cbe
+    // derivation factors the caller knows about (Auto/Forced/Disabled
+    // mode + the underlying bookkeeping).
+    let s1_decision = out
+        .schedule_1_decision
         .clone()
         .with_factor(
             "cbe derivation",
@@ -860,8 +866,7 @@ pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut 
             "cbe mode override",
             format!("{:?} → {charge_battery_extended}", k.charge_battery_extended_mode),
         );
-    world.decisions.schedule_0 = Some(decision.clone());
-    world.decisions.schedule_1 = Some(decision);
+    world.decisions.schedule_1 = Some(s1_decision);
 
     // Bookkeeping updates.
     world.bookkeeping.battery_selected_soc_target = out.bookkeeping.battery_selected_soc_target;
@@ -2648,14 +2653,14 @@ mod tests {
         // resolve to false.
         let d = world
             .decisions
-            .schedule_0
+            .schedule_1
             .as_ref()
-            .expect("schedule decision published after midnight tick");
+            .expect("schedule_1 decision published after midnight tick");
         let cbe = d
             .factors
             .iter()
             .find(|f| f.name == "cbe derivation")
-            .expect("cbe derivation factor present");
+            .expect("cbe derivation factor present on schedule_1");
         assert!(
             cbe.value.ends_with("= false"),
             "cbe must resolve false after midnight reset: {cbe:?}"
@@ -2686,16 +2691,20 @@ mod tests {
         );
 
         // The "cbe derivation" factor must resolve to false on a fresh boot.
+        // After the schedule Decision split (to stop saying "Schedule 1
+        // disabled" on the schedule_0 row), `cbe derivation` lives on
+        // schedule_1's Decision only — schedule_0 is unconditionally
+        // enabled and doesn't need cbe factors.
         let decision = world
             .decisions
-            .schedule_0
+            .schedule_1
             .as_ref()
-            .expect("schedules decision recorded");
+            .expect("schedule_1 decision recorded");
         let cbe = decision
             .factors
             .iter()
             .find(|f| f.name == "cbe derivation")
-            .expect("cbe derivation factor present");
+            .expect("cbe derivation factor present on schedule_1");
         assert!(
             cbe.value.ends_with("= false"),
             "expected cbe to resolve false on fresh boot, got {cbe:?}"

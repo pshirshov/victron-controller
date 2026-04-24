@@ -72,9 +72,15 @@ pub struct SchedulesOutput {
     pub schedule_1: ScheduleSpec,
     pub bookkeeping: SchedulesBookkeeping,
     pub debug: SchedulesDebug,
-    /// Same decision is reused for both schedules — they are driven
-    /// by the same branch logic.
-    pub decision: Decision,
+    /// Decision for Schedule 0 (the unconditional boost window) —
+    /// always "enabled". Kept distinct from `schedule_1_decision`
+    /// because the dashboard row for each schedule shows a Decision;
+    /// sharing one explanation across both rows confused operators
+    /// into reading "Schedule 1 disabled" as "schedule_0 disabled".
+    pub schedule_0_decision: Decision,
+    /// Decision for Schedule 1 (the conditional NightExtended window).
+    /// Text is branch-specific.
+    pub schedule_1_decision: Decision,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,7 +185,17 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
         branch = "no extended-charge flags set → Schedule 1 disabled";
     }
 
-    let decision = Decision::new(branch)
+    // Schedule 0: unconditionally enabled. Its "decision" is a statement
+    // of that invariant, not a branch outcome. Include the SoC target so
+    // operators can verify the boost window is writing the right number.
+    let schedule_0_decision = Decision::new(
+        "Schedule 0 = Boost window 02:00–05:00, unconditionally ENABLED (days=7)",
+    )
+    .with_factor("soc_target", format!("{battery_selected_soc_target:.0}%"))
+    .with_factor("charge_to_full_required", format!("{}", g.charge_to_full_required));
+
+    // Schedule 1: the branch-specific explanation.
+    let schedule_1_decision = Decision::new(branch)
         .with_factor("charge_to_full_required", format!("{}", g.charge_to_full_required))
         .with_factor("charge_battery_extended", format!("{}", g.charge_battery_extended))
         .with_factor("charge_car_extended", format!("{}", g.charge_car_extended))
@@ -196,7 +212,8 @@ pub fn evaluate_schedules(input: &SchedulesInput, clock: &dyn Clock) -> Schedule
             battery_selected_soc_target,
             new_above_soc_date,
         },
-        decision,
+        schedule_0_decision,
+        schedule_1_decision,
         debug: SchedulesDebug {
             above_soc,
             above_soc_date: g.above_soc_date,
