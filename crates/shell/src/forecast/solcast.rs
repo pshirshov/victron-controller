@@ -63,6 +63,14 @@ impl ForecastFetcher for SolcastClient {
         let today = now.date_naive();
         let tomorrow = today.succ_opt().context("today.succ_opt")?;
 
+        // A-26: distinguish a truly zero forecast from schema drift.
+        // We count total and parseable items across all sites. If the
+        // API returned items but we couldn't parse ANY of them, the
+        // schema has changed and we must not silently report 0 kWh —
+        // that would trigger battery-saver behaviour on a sunny day.
+        let mut total_items = 0usize;
+        let mut parsed_items = 0usize;
+
         for site in &self.site_ids {
             let url = format!("https://api.solcast.com.au/rooftop_sites/{site}/forecasts");
             let body = fetch_json(
@@ -75,6 +83,7 @@ impl ForecastFetcher for SolcastClient {
             let Some(items) = body.get("forecasts").and_then(|v| v.as_array()) else {
                 continue;
             };
+            total_items += items.len();
             for item in items {
                 let Some(kwh_contrib) = item_to_kwh(item) else {
                     continue;
@@ -83,12 +92,27 @@ impl ForecastFetcher for SolcastClient {
                     Some(d) => d,
                     None => continue,
                 };
+                parsed_items += 1;
                 if day == today {
                     totals_today += kwh_contrib;
                 } else if day == tomorrow {
                     totals_tomorrow += kwh_contrib;
                 }
             }
+        }
+
+        if total_items == 0 {
+            anyhow::bail!(
+                "Solcast response had no forecast items across {} site(s); \
+                 treating as fetch failure (A-26)",
+                self.site_ids.len()
+            );
+        }
+        if parsed_items == 0 {
+            anyhow::bail!(
+                "Solcast returned {total_items} forecast items but none \
+                 parsed (schema drift?); refusing to emit 0 kWh (A-26)"
+            );
         }
 
         Ok(ForecastTotals {

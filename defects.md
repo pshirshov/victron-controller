@@ -190,7 +190,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `u8::try_from(...).ok()?`; out-of-range returns `None` for the whole poll.
 
 ### [A-26] Solcast schema drift / zero-items response silently emits 0 kWh as a fresh forecast
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/shell/src/forecast/solcast.rs:78-91`
 **Description:** Failed-item skip is silent. If every item has an unknown `period` or `pv_estimate:null`, we return `Ok(ForecastTotals{today:0, tomorrow:0})` — "no sun today" — triggering battery-saver behaviour on a sunny day.
