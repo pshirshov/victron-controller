@@ -16,3 +16,4 @@ web/dist/
 # The built bundle IS checked in so `cargo build` works without a
 # prior `npm run build` (needed by install-victron.sh and CI).
 # If you want to regenerate, run `./scripts/build-web.sh`.
+.claude/

@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     // every log line forwards to the mpsc queue. The publisher task
     // is spawned later, after MQTT connects, to drain the receiver.
     let (log_tx, log_rx) = log_channel();
-    init_tracing(log_tx);
+    let _tracing_guard = init_tracing(log_tx);
 
     let cfg_path = config_path_from_args();
     info!("loading config: {}", cfg_path.display());
@@ -330,16 +330,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_tracing(log_tx: tokio::sync::mpsc::Sender<mqtt::LogRecord>) {
+fn init_tracing(log_tx: tokio::sync::mpsc::Sender<mqtt::LogRecord>) -> tracing_appender::non_blocking::WorkerGuard {
     use tracing_subscriber::{prelude::*, EnvFilter};
+    // Route stdout writes through a dedicated blocking thread so the
+    // tokio workers never touch the pipe. Under daemontools the pipe
+    // buffer is ~64 KB; when multilog briefly slows, a synchronous
+    // writer would block the worker inside `write_all` and (with
+    // worker_threads=2) can wedge the whole async runtime — which
+    // is exactly what PR-URGENT-15/16/17 each tried to address a
+    // symptom of. The root cause is this synchronous writer.
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_writer(non_blocking);
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
         .with(MqttLogLayer::new(log_tx))
         .init();
+    guard
 }
 
 fn config_path_from_args() -> PathBuf {

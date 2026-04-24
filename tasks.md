@@ -127,6 +127,19 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
   - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+- [x] **PR-URGENT-18** — ROOT CAUSE of the field wedge:
+  `tracing_subscriber::fmt::layer()` default writer is synchronous
+  `io::stdout()`. On daemontools the pipe buffer is ~64 KB;
+  whenever multilog briefly slows, `write_all` blocks the emitting
+  thread. With `worker_threads = 2`, two concurrent tracing events
+  can stall BOTH workers → entire async runtime wedges →
+  PR-URGENT-15/17 timeouts never fire because threads never reach
+  their await points. PR-URGENT-15/16/17 each fixed a real bug but
+  addressed symptoms downstream of this root cause. Fix: route
+  `fmt_layer` through `tracing_appender::non_blocking` — writes
+  queue onto a dedicated blocking thread; tokio workers never
+  touch the pipe.
+
 - [x] **PR-URGENT-17** — Log publisher timeout hotfix. Adversarial
   review of PR-URGENT-16 caught the sibling bug: `spawn_log_publisher`
   had raw `client.publish(...).await` with no timeout. Broker stall →
@@ -371,6 +384,39 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-URGENT-18** (2026-04-24) — **Root cause of the persistent
+  field wedge:** `tracing_subscriber::fmt::layer()` default writer
+  is synchronous `io::stdout()`. Under daemontools (`exec 2>&1`)
+  the stdout/stderr pipe has a ~64 KB kernel buffer; when multilog
+  briefly slows (tmpfs write, signal, load spike), `write_all`
+  blocks whatever thread emitted the tracing event. With only 2
+  tokio worker threads (`#[tokio::main(worker_threads = 2)]`), two
+  concurrent tracing events can stall BOTH workers → entire async
+  runtime freezes. PR-URGENT-15 (MQTT publish timeout) and
+  PR-URGENT-17 (log publisher timeout) never fire because the
+  worker threads never reach those `.await` points — they're stuck
+  inside synchronous `write_all`. `eprintln!` fallback also blocks
+  on the same pipe. Each of those three PRs fixed a real bug
+  (MQTT queue saturation; WS lock across send; log publisher
+  wedge) but they were all SYMPTOMS downstream of the stdout-pipe
+  wedge. **Fix:** route `fmt_layer` through `tracing_appender::
+  non_blocking(std::io::stdout())`. That wraps stdout with a
+  bounded mpsc and drains it on a dedicated BLOCKING thread —
+  tokio workers never touch the pipe. The returned `WorkerGuard`
+  is bound to `_tracing_guard` at the top of `main` so the drain
+  thread survives for the program's lifetime. Touched files:
+  `crates/shell/Cargo.toml` (+`tracing-appender = "0.2"`),
+  `crates/shell/src/main.rs` (init_tracing returns guard; call
+  site binds it). Verification: 50 shell + 212 core + 11 property
+  tests green; clippy clean; ARMv7 release ok; web bundle 26.8kB.
+  Constraint for future work: NEVER use `tracing_subscriber::fmt`
+  with the default writer on a small-worker-count tokio runtime
+  under daemontools or any other pipe-based supervisor. Always
+  wrap via `tracing_appender::non_blocking`. (`eprintln!` fallbacks
+  in `spawn_log_publisher` left as-is — rare diagnostic path; the
+  remaining blocking-stderr risk is acceptable vs. the re-entry
+  hazard of routing through the same tracing pipeline.)
 
 - **PR-URGENT-17** (2026-04-24) — MQTT log publisher timeout hotfix.
   Caught during adversarial review of PR-URGENT-16. `spawn_log_publisher`

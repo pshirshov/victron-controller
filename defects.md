@@ -1016,6 +1016,37 @@ defects section follows below with review-round findings.)
 
 ---
 
+## PR-URGENT-18 — tracing fmt layer uses synchronous stdout writer; pipe backpressure wedges async workers
+
+### [PR-URGENT-18-D01] `tracing_subscriber::fmt::layer()` default writer is `io::stdout()` (synchronous); on a 2-worker tokio runtime, any stdout-pipe stall parks both workers in `write_all`
+**Status:** resolved
+**Severity:** CRITICAL (root cause of persistent field wedge; PR-URGENT-15/16/17 were all real bugs but addressed symptoms)
+**Location:** `crates/shell/src/main.rs:333-343` (`init_tracing`).
+**Description:** Third field bundle on `e185fb3` (PR-URGENT-17 deployed) still wedges after ~21s of uptime. 9 minutes of total log silence. No `mqtt publish stuck >1s; dropping` warns, no `mqtt log publish stuck >1s` eprintlns. PID stable — task didn't panic. Three prior hotfixes didn't reach the root cause.
+Mechanism: `init_tracing` stacks `tracing_subscriber::fmt::layer()` which uses `io::stdout()` as its default writer. `fmt_layer::on_event` is synchronous — it locks `StdoutLock` and calls `write_all` on the thread that emitted the trace. Under daemontools, fd 1 and fd 2 are merged into `pipe:[825694]` (`exec 2>&1`). Kernel pipe buffer is ~64 KB on ARMv7 Linux. When multilog briefly slows (any reason — load spike, signal, tmpfs write), the pipe fills and every `write()` into it blocks the calling thread. With `worker_threads = 2`, two concurrent tracing events can stall BOTH workers. The entire tokio runtime freezes.
+PR-URGENT-15/17 added `tokio::time::timeout(1s, ...)` around MQTT publishes — but the timeouts never fire because the worker threads never reach the await points; they're stuck inside synchronous `write_all`. `eprintln!` (PR-URGENT-17) goes to stderr → same merged pipe → same block. Diagnostics are unobservable by design.
+Once one worker is parked in `write_all`, the async reactor can't tick on that worker. If the other worker is also parked similarly (trivially happens under any tracing burst), the whole process is wedged. `/proc/<pid>/task/*/stack` on a wedged process would show both threads in `pipe_write` / `__schedule`.
+**Suggested fix:** Route all synchronous writers through `tracing_appender::non_blocking`. It buffers writes into a channel and drains them on a dedicated *blocking* thread — the tokio workers no longer touch the pipe at all. Pattern:
+```rust
+fn init_tracing(log_tx: mpsc::Sender<mqtt::LogRecord>) -> tracing_appender::non_blocking::WorkerGuard {
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_writer(non_blocking);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt_layer)
+        .with(MqttLogLayer::new(log_tx))
+        .init();
+    guard   // main must keep this alive for program lifetime
+}
+```
+Main must bind the guard to a `let _guard = init_tracing(...)` at the top so the background thread survives. Drop at end of main is fine.
+Dependency: add `tracing-appender = "0.2"` to `crates/shell/Cargo.toml`.
+Also remove the `eprintln!` fallbacks in `spawn_log_publisher` (PR-URGENT-17) — with non_blocking stdout, `tracing::warn!` is safe to use from inside the log publisher (still re-entry-hazardous if the log mpsc is full and we re-emit through the MqttLogLayer → same queue → drop). Or keep `eprintln!` but route stderr through non_blocking too.
+**Fix:** Added `tracing-appender = "0.2"` to `crates/shell/Cargo.toml`. Rewired `init_tracing` in `crates/shell/src/main.rs` to wrap `std::io::stdout()` with `tracing_appender::non_blocking(...)` and return the `WorkerGuard`. Call site binds `let _tracing_guard = init_tracing(log_tx);` so the drain thread survives for `main`'s lifetime. `spawn_log_publisher`'s `eprintln!` calls left as-is (rare diagnostic path; blocking-stderr risk is acceptable compared to the re-entry risk of routing through tracing). Verified: 50 shell + core + property tests green, clippy clean, ARMv7 release ok, web bundle ok.
+
 ## PR-URGENT-17 — Log publisher's raw `client.publish().await` can wedge + eat the diagnostic that would report it
 
 ### [PR-URGENT-17-D01] `spawn_log_publisher` awaits `client.publish()` without a timeout; rumqttc stalls → tracing log channel fills → `mqtt publish stuck >1s` warn itself gets dropped
