@@ -439,8 +439,8 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `zappi_current_target` | `9.5` A | Unchanged |
 | `zappi_limit` | `100` | Unchanged |
 | `zappi_emergency_margin` | `5.0` A | Unchanged |
-| `grid_export_limit_w` | `4900` | **NEW** grid-meter-side hard cap |
-| `grid_import_limit_w` | `10` | new knob — user-configurable import cap (W) |
+| `grid_export_limit_w` | `4900` | **NEW** grid-meter-side hard cap on export (applied in `_prepare_setpoint` post-processing). See §5.11 / PR-09a. Safe-max clamped to 10 kW at ingest (A-09). |
+| `grid_import_limit_w` | `10` | **NEW** grid-meter-side hard cap on import. Symmetric with `grid_export_limit_w`. Default `10 W` preserves the idle-bleed invariant (§5.11): the setpoint controller never emits `> 10 W` by default, so any positive setpoint (a bug, an operator override, an undetected branch) is pinned at 10 W. Raise explicitly only when the user wants the controller to actively import (e.g. charge-to-full from grid). A-10 / PR-09a. |
 | `allow_battery_to_car` | `false` | **NEW**. Boot-resets regardless of retained value |
 | `eddi_enable_soc` | `96` | **NEW** |
 | `eddi_disable_soc` | `94` | **NEW** |

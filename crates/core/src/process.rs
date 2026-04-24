@@ -599,12 +599,28 @@ pub(crate) fn run_setpoint(
         clamped
     };
 
-    let decision = out
-        .decision
-        .clone()
-        .with_factor("pre_clamp_setpoint_W", format!("{pre_clamp}"))
-        .with_factor("clamp_bounds_W", format!("[-{export_cap}, +{import_cap}]"))
-        .with_factor("post_clamp_setpoint_W", format!("{capped}"));
+    // PR-09a-D02: only add the clamp factors when the clamp actually
+    // altered the value. Previously 3 factors were emitted every tick
+    // even in the common `pre_clamp == capped` case, producing 3
+    // noise rows per tick on the decision panel.
+    //
+    // Factor names distinguish the runtime-wrapper clamp
+    // (grid_cap_*) from the core-setpoint's internal
+    // pre_clamp_setpoint_W factor — they operate at different layers:
+    // the core clamps at max_discharge semantics; the wrapper below
+    // clamps at the user-configurable grid-side export/import caps.
+    let decision = if pre_clamp == capped {
+        out.decision.clone()
+    } else {
+        out.decision
+            .clone()
+            .with_factor("grid_cap_pre_W", format!("{pre_clamp}"))
+            .with_factor(
+                "grid_cap_bounds_W",
+                format!("[-{export_cap}, +{import_cap}]"),
+            )
+            .with_factor("grid_cap_post_W", format!("{capped}"))
+    };
     world.decisions.grid_setpoint = Some(decision);
 
     maybe_propose_setpoint(
@@ -626,6 +642,18 @@ fn apply_setpoint_safety(
     topology: &Topology,
     effects: &mut Vec<Effect>,
 ) {
+    // PR-09a-D01: always populate the grid_setpoint Decision even on
+    // the safety path. The dashboard otherwise shows "None" for
+    // grid_setpoint Decision until a Fresh tick arrives — operator
+    // doesn't know whether the controller is running-without-data or
+    // silent. Honest decision + factors name the missing sensors.
+    let missing = missing_required_setpoint_sensors(world);
+    world.decisions.grid_setpoint = Some(
+        Decision::new("Safety fallback: required sensors not usable → idle 10 W")
+            .with_factor("setpoint_W", "10".to_string())
+            .with_factor("owner", "System".to_string())
+            .with_factor("missing_sensors", missing),
+    );
     // Safety target: 10 W, owned by System.
     maybe_propose_setpoint(
         world,
@@ -635,6 +663,42 @@ fn apply_setpoint_safety(
         topology.controller_params,
         effects,
     );
+}
+
+/// Build a comma-separated list of the required setpoint sensors that
+/// are not `is_usable()`. Used by `apply_setpoint_safety` to populate
+/// the Decision so the operator can see exactly what's missing.
+fn missing_required_setpoint_sensors(world: &World) -> String {
+    let mut missing: Vec<&'static str> = Vec::new();
+    if !world.sensors.battery_soc.is_usable() {
+        missing.push("battery_soc");
+    }
+    if !world.sensors.battery_soh.is_usable() {
+        missing.push("battery_soh");
+    }
+    if !world.sensors.battery_installed_capacity.is_usable() {
+        missing.push("battery_installed_capacity");
+    }
+    if !world.sensors.mppt_power_0.is_usable() {
+        missing.push("mppt_power_0");
+    }
+    if !world.sensors.mppt_power_1.is_usable() {
+        missing.push("mppt_power_1");
+    }
+    if !world.sensors.soltaro_power.is_usable() {
+        missing.push("soltaro_power");
+    }
+    if !world.sensors.power_consumption.is_usable() {
+        missing.push("power_consumption");
+    }
+    if !world.sensors.evcharger_ac_power.is_usable() {
+        missing.push("evcharger_ac_power");
+    }
+    if missing.is_empty() {
+        "<none — safety fallback fired despite all sensors usable; bug>".to_string()
+    } else {
+        missing.join(", ")
+    }
 }
 
 fn maybe_propose_setpoint(
@@ -2603,7 +2667,63 @@ mod tests {
     }
 
     #[test]
-    fn setpoint_decision_has_pre_and_post_clamp_factors() {
+    fn setpoint_decision_has_pre_and_post_clamp_factors_when_clamp_fires() {
+        // PR-09a-D02 + D04: clamp factors are only emitted when the
+        // clamp actually altered the value. Force that by setting an
+        // export cap well below what the controller wants (SoC=99 + big
+        // solar = far-negative pre-clamp; export_cap=2000 → capped to
+        // -2000). Verify the factors are present AND that their
+        // values match the actual pre/post numbers, not just the names.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        world.sensors.battery_soc.on_reading(99.0, c.monotonic);
+        world.sensors.mppt_power_0.on_reading(5000.0, c.monotonic);
+        world.sensors.mppt_power_1.on_reading(5000.0, c.monotonic);
+        world.knobs.grid_export_limit_w = 2000;
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
+        let factor = |name: &str| -> String {
+            decision
+                .factors
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing factor {name}; have {:?}",
+                    decision.factors.iter().map(|f| &f.name).collect::<Vec<_>>()))
+                .value
+                .clone()
+        };
+        let pre = factor("grid_cap_pre_W");
+        let post = factor("grid_cap_post_W");
+        let bounds = factor("grid_cap_bounds_W");
+        // Pre-clamp must be more negative than post-clamp
+        // (= the whole point of the clamp firing).
+        let pre_n: i32 = pre.parse().expect("grid_cap_pre_W factor is an i32");
+        let post_n: i32 = post.parse().expect("grid_cap_post_W factor is an i32");
+        assert_eq!(
+            post_n, -2000,
+            "grid_cap_post_W should equal -export_cap when clamp fires"
+        );
+        assert!(
+            pre_n < post_n,
+            "grid_cap_pre_W ({pre_n}) should be more negative than grid_cap_post_W ({post_n}) when the clamp altered the value"
+        );
+        assert!(
+            bounds.contains("-2000"),
+            "grid_cap_bounds_W factor should mention the export cap: {bounds}"
+        );
+        assert_eq!(
+            post_n, world.grid_setpoint.target.value.expect("target set"),
+            "grid_cap_post_W must match the actual committed target"
+        );
+    }
+
+    #[test]
+    fn setpoint_decision_omits_clamp_factors_when_clamp_didnt_fire() {
+        // PR-09a-D02: common case — pre_clamp is within the export/
+        // import bounds; no clamp factors should be emitted.
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
@@ -2612,18 +2732,12 @@ mod tests {
 
         let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
         let names: Vec<&str> = decision.factors.iter().map(|f| f.name.as_str()).collect();
-        assert!(
-            names.contains(&"pre_clamp_setpoint_W"),
-            "missing pre_clamp_setpoint_W factor in {names:?}"
-        );
-        assert!(
-            names.contains(&"post_clamp_setpoint_W"),
-            "missing post_clamp_setpoint_W factor in {names:?}"
-        );
-        assert!(
-            names.contains(&"clamp_bounds_W"),
-            "missing clamp_bounds_W factor in {names:?}"
-        );
+        for bad in ["grid_cap_pre_W", "grid_cap_post_W", "grid_cap_bounds_W"] {
+            assert!(
+                !names.contains(&bad),
+                "grid-cap factor {bad} emitted without clamp firing; factors = {names:?}"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

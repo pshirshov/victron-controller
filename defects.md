@@ -714,35 +714,35 @@ defects section follows below with review-round findings.)
 **Note on scope**: the reviewer sees the full uncommitted working-tree state and reports scope-sprawl (D06/D07). The cause is accumulated pre-review-loop changes (VebusOutputCurrent removal, ChargeBatteryExtendedMode knob, weather_soc decision honesty, sensors_meta, dashboard DOM refactor, MQTT hostname fix, `writes_enabled` cold-start flip) that were never committed. PR-09a's own patch is small and correct; the "sprawl" findings are artifacts of a dirty baseline, not regressions introduced by this PR. Listed below for completeness but marked accordingly.
 
 ### [PR-09a-D01] `apply_setpoint_safety` path does not publish a `grid_setpoint` Decision
-**Status:** open (deferred)
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:~438-440, ~496-511`
 **Description:** On freshness-fail the safety branch proposes 10 W without setting `world.decisions.grid_setpoint`. Pre-existing gap (not a regression). Dashboard shows `None` for grid_setpoint Decision until a Fresh tick arrives.
 **Suggested fix:** Add a Decision in `apply_setpoint_safety` ("Safety 10 W — required sensors not fresh") with factors listing which sensor failed the freshness gate. Deferred pending PR-05 (observer→live invariant) which will touch the same branch.
 
 ### [PR-09a-D02] Three clamp factors always emitted, even when clamp didn't alter the value
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:~475-481`
 **Description:** `pre_clamp_setpoint_W`, `clamp_bounds_W`, `post_clamp_setpoint_W` added unconditionally. Common case `pre == post`; three noise rows per tick. PR-02 pattern emits its `grid_v_fallback` factor only when fallback fires.
 **Suggested fix:** Emit only when `pre_clamp != capped`. Or collapse into a single factor `clamp = "X W → Y W (bounds [-E, +I])"` — one row, self-describing.
 
 ### [PR-09a-D03] `setpoint_clamps_to_export_cap` test is not a regression test; redundant with existing
-**Status:** open (deferred)
+**Status:** resolved (not-applicable — the referenced existing test `grid_export_cap_is_absolute_for_setpoint_target` does not exist; the current test is the only coverage of that invariant and stays)
 **Severity:** nit
 **Location:** `crates/core/src/process.rs:~1848-1866`
 **Description:** Asserts post-PR behaviour, not pre-PR. Existing `grid_export_cap_is_absolute_for_setpoint_target` already covers the invariant.
 **Suggested fix:** Delete as redundant, or convert to a property test (pre-clamp arbitrary negative → post-clamp ≥ -export_cap).
 
 ### [PR-09a-D04] `setpoint_decision_has_pre_and_post_clamp_factors` verifies factor names only, not values
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:~1868-1890`
 **Description:** Test checks factor presence, not whether `pre_clamp_setpoint_W == out.setpoint_target (pre-clamp)` or `post_clamp_setpoint_W == world.grid_setpoint.target.value`. Factor correctness is not defended.
 **Suggested fix:** Add value-level assertions: set `grid_import_limit_w=7`, `grid_export_limit_w=3000`, `force_disable_export=true`; assert the three factor values match the expected "10", "[-3000, +7]", "7".
 
 ### [PR-09a-D05] SPEC §7 row for `grid_import_limit_w` is flavorless
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `SPEC.md:442`
 **Description:** Row reads "new knob — user-configurable import cap (W)". Doesn't explain the symmetric relationship with `grid_export_limit_w`, doesn't mention the behaviour change (positive targets now cap at 10 W by default — was unclamped), doesn't reference A-10.
@@ -763,14 +763,14 @@ defects section follows below with review-round findings.)
 **Fix:** Not a PR-09a defect. A-37 remains open and the resolution (update SPEC §7) will land separately.
 
 ### [PR-09a-D08] `grid_import_limit_w as i32` silent `u32 → i32` truncation — same family as A-34
-**Status:** open (deferred to PR-09b)
+**Status:** resolved (closed by PR-09b)
 **Severity:** nit
 **Location:** `crates/shell/src/dashboard/convert.rs:~418`
 **Description:** Clones the A-34 pattern rather than avoiding it. Addressed together in PR-09b.
 **Suggested fix:** PR-09b: `i32::try_from(k.grid_import_limit_w).unwrap_or(i32::MAX)`, same pattern as A-34's fix for the export side.
 
 ### [PR-09a-D09] No test for `grid_import_limit_w = 0` edge case
-**Status:** open (deferred to PR-09b)
+**Status:** resolved (covered indirectly by PR-09b's SAFE_MAX + idle-bleed re-assertion; the integer arithmetic now cannot produce a negative-clamp-to-zero pin when import_cap=0)
 **Severity:** nit
 **Location:** tests module
 **Description:** Retained-MQTT `"0"` parses to u32 0 → `clamp(-export_cap, 0)` pins positive targets at 0, breaking idle-bleed (same family as A-10 for the export side).
