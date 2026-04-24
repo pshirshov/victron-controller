@@ -248,6 +248,14 @@ pub struct OpenMeteoProviderConfig {
         with = "humantime_serde_compat"
     )]
     pub cadence: Duration,
+    /// Combined panel × inverter × BOS efficiency, applied to raw
+    /// Open-Meteo irradiance before summing. Default 0.75 matches
+    /// the legacy hard-coded constant. A-43: exposed so the user can
+    /// normalize Open-Meteo's output against Forecast.Solar / Solcast
+    /// when calibrating weather_soc thresholds. Values outside
+    /// [0.1, 1.0] are treated as configuration errors.
+    #[serde(default = "default_open_meteo_system_efficiency")]
+    pub system_efficiency: f64,
 }
 
 impl Default for OpenMeteoProviderConfig {
@@ -257,8 +265,13 @@ impl Default for OpenMeteoProviderConfig {
             longitude: 0.0,
             planes: Vec::new(),
             cadence: default_open_meteo_cadence(),
+            system_efficiency: default_open_meteo_system_efficiency(),
         }
     }
+}
+
+fn default_open_meteo_system_efficiency() -> f64 {
+    0.75
 }
 
 fn default_open_meteo_cadence() -> Duration {

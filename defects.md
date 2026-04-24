@@ -309,7 +309,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Either update the comment to "drop newest on full queue" or implement true drop-oldest (`try_recv` + retry).
 
 ### [A-43] Open-Meteo hidden `SYSTEM_EFFICIENCY=0.75` biases all weather_soc thresholds
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/forecast/open_meteo.rs:37`
 **Description:** Open-Meteo kWh is pre-multiplied by 0.75; Forecast.Solar uses its own model; Solcast its own. Fusion mixes them; user calibrating thresholds against Forecast.Solar misfires when Solcast goes stale and mean falls back.

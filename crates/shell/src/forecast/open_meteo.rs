@@ -32,9 +32,11 @@ use victron_controller_core::types::ForecastProvider;
 use super::forecast_solar::forecast_solar_azimuth_pub;
 use super::{fetch_json, ForecastFetcher, ForecastTotals, Plane};
 
-/// Combined panel + inverter + BOS efficiency. Used to convert plane
-/// irradiance (kW/m²) × kWp → AC kW output.
-const SYSTEM_EFFICIENCY: f64 = 0.75;
+/// Default panel + inverter + BOS efficiency when the user doesn't
+/// set one in config. A-43 made this configurable; 0.75 preserves
+/// pre-PR behavior for users who leave `[forecast.open_meteo]
+/// system_efficiency` unset.
+pub const DEFAULT_SYSTEM_EFFICIENCY: f64 = 0.75;
 
 #[derive(Debug, Clone)]
 pub struct OpenMeteoClient {
@@ -42,16 +44,27 @@ pub struct OpenMeteoClient {
     latitude: f64,
     longitude: f64,
     planes: Vec<Plane>,
+    system_efficiency: f64,
 }
 
 impl OpenMeteoClient {
     #[must_use]
-    pub fn new(http: HttpClient, latitude: f64, longitude: f64, planes: Vec<Plane>) -> Self {
+    pub fn new(
+        http: HttpClient,
+        latitude: f64,
+        longitude: f64,
+        planes: Vec<Plane>,
+        system_efficiency: f64,
+    ) -> Self {
+        // Defensive clamp — config parsing accepts any f64; out-of-range
+        // values would silently skew weather_soc if we didn't clamp.
+        let system_efficiency = system_efficiency.clamp(0.1, 1.0);
         Self {
             http,
             latitude,
             longitude,
             planes,
+            system_efficiency,
         }
     }
 
@@ -114,7 +127,7 @@ impl ForecastFetcher for OpenMeteoClient {
                 let Some(date_part) = t_str.get(..10) else {
                     continue;
                 };
-                let kwh_contrib = (w_f / 1000.0) * SYSTEM_EFFICIENCY * plane.kwp;
+                let kwh_contrib = (w_f / 1000.0) * self.system_efficiency * plane.kwp;
                 if date_part == today.format("%Y-%m-%d").to_string() {
                     totals_today_kwh += kwh_contrib;
                 } else if date_part == tomorrow.format("%Y-%m-%d").to_string() {
@@ -136,7 +149,13 @@ mod tests {
 
     #[test]
     fn not_configured_without_planes() {
-        let c = OpenMeteoClient::new(super::super::http_client(), 50.0, 0.0, vec![]);
+        let c = OpenMeteoClient::new(
+            super::super::http_client(),
+            50.0,
+            0.0,
+            vec![],
+            DEFAULT_SYSTEM_EFFICIENCY,
+        );
         assert!(!c.is_configured());
     }
 }

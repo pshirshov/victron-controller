@@ -224,6 +224,7 @@ async fn main() -> Result<()> {
         om_lat,
         om_lon,
         om_planes,
+        cfg.forecast.open_meteo.system_efficiency,
     );
     if om_client.is_configured() {
         let tx_f = tx.clone();
