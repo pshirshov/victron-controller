@@ -6,6 +6,7 @@
 
 pub mod clock;
 pub mod controllers;
+pub mod core_dag;
 pub mod knobs;
 pub mod myenergi;
 pub mod owner;

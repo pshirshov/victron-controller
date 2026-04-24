@@ -966,6 +966,65 @@ defects section follows below with review-round findings.)
 **Description:** `let _is_phase_publish = matches!(...)` was never read — documentation masquerading as code.
 **Fix:** Replaced with a plain comment citing PR-SCHED0-D03. Orphan `PublishPayload` import removed.
 
+## PR-DAG-A — TASS core DAG infrastructure (round 1)
+
+### [PR-DAG-A-D01] Double `compute_derived_view` per tick re-introduces A-05 across the `WAIT_TIMEOUT_MIN` boundary
+**Status:** resolved
+**Severity:** major (ship-blocker)
+**Location:** `crates/core/src/core_dag/cores.rs` — `SetpointCore::run` and `CurrentLimitCore::run` each call `compute_derived_view(world, clock)` independently. The pre-refactor `run_controllers` called it once at the top of the tick.
+**Description:** Executor argued the classifier is pure over `world` + `clock` and that neither controller mutates the sensors it reads, so two calls produce identical values. That ignores `clock`: `classify_zappi_active` at `crates/core/src/controllers/zappi_active.rs:75` calls `clock.naive()`, and `RealClock::naive()` at `crates/shell/src/clock.rs:17-22` is uncached — `Local::now().naive_local()` on every call. Two invocations within the same tick therefore see different wall-clock values; `delta_min > WAIT_TIMEOUT_MIN` (300s) can flip between them. That is exactly the A-05 cross-controller disagreement PR-04 (commit `e04bba6`) fixed. The executor's existing tests use `FixedClock` (stable `naive()`), so they hide the bug.
+**Root cause:** `Core::run` signature doesn't take a `DerivedView`, so there's no way for the registry to compute it once and share. Each core re-derives locally.
+**Fix:** Added `derived: &DerivedView` parameter to `Core::run` (`crates/core/src/core_dag/mod.rs`). `CoreRegistry::run_all` calls `compute_derived_view(world, clock)` ONCE at the top of the tick and passes it to every core. `SetpointCore` / `CurrentLimitCore` pass it through to `run_setpoint` / `run_current_limit`; the other four cores accept it as `_derived`. `DerivedView` stays `pub(crate)` — `#[allow(private_interfaces)]` applied to the trait with an inline comment tying the smell to PR-DAG-B's removal. Executor verified the fix by temporarily rolling back to round-1 semantics; D02 test failed with "setpoint (factor zappi_active=true) and current_limit (bookkeeping.zappi_active=false) disagreed across the WAIT_TIMEOUT_MIN boundary" — then restored, test passes.
+
+### [PR-DAG-A-D02] No golden test against pre-refactor behaviour — "zero behaviour change" claim rests on inspection
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/core_dag/tests.rs`.
+**Description:** The five unit tests exercise only the registry meta-machinery (build / determinism / cycle / missing / duplicate). None verify `registry().run_all()` produces the same `Vec<Effect>` as the hand-rolled pre-refactor sequence for any canonical input. Without such a test the "zero behaviour change" claim is inspection-only, and inspection missed D01. Existing integration tests use `FixedClock` which masks D01 specifically.
+**Fix:** Added `AdvancingClock` test fixture with 1 s per-`naive()` advance in `crates/core/src/core_dag/tests.rs`. Fixture: Zappi `WaitingForEv`, `last_change_signature=12:00:00.000`, initial clock naive `12:04:59.990`. Asserts `decision.factors["zappi_active"]` (setpoint's live view via DerivedView) matches `bookkeeping.zappi_active` (current_limit's write). Extra `assert!(setpoint_saw_active)` guard prevents vacuous-pass. Executor verified the test catches the D01 regression by rolling back + re-applying.
+
+### [PR-DAG-A-D03] "Deterministic tie-break" is an untested claim
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/core_dag/tests.rs` / `mod.rs`.
+**Description:** The production chain is linear — every core has a unique predecessor, so `BTreeMap` tie-break never fires. `topo_order_is_deterministic` on the linear graph can't exercise tie-break logic. Any future sibling edge (the plan foresees `Setpoint` and `CurrentLimit` both depending on `ZappiActive` in -B) exercises currently-untested code paths.
+**Fix:** Added tie-break test with three stub cores registered in reverse-discriminant order: `EddiMode(5)` with deps on the two roots, `WeatherSoc(6)` (root), `ZappiActive(0)` (root). Asserts `order() == [ZappiActive, WeatherSoc, EddiMode]` — confirms `BTreeMap<CoreId, _>` tie-break fires by discriminant order regardless of registration order.
+
+### [PR-DAG-A-D04] Redundant `EXPECTED_PRODUCTION_ORDER` snapshot — tautological test
+**Status:** resolved (subsumed by D03 tie-break coverage; non-linear graph now exercised)
+**Severity:** nit
+**Location:** `crates/core/src/core_dag/tests.rs`.
+**Description:** `build_succeeds_for_production_registry` and `topo_order_is_deterministic` both assert against the same `const EXPECTED_PRODUCTION_ORDER`. The linear-chain `depends_on` has no tie-break exercise, so the constant is the only thing being checked. Test can only fail if someone edits both the chain and the constant together — a circular proof.
+**Suggested fix:** Deferrable. Once D03 lands a tie-break test with a non-linear fixture, this concern largely resolves. Leave as tracked nit.
+
+### [PR-DAG-A-D05] `Send + Sync` bound on `Core` is load-bearing but unenforced in spirit
+**Status:** resolved (deferred to PR-DAG-B; if parallelization is never needed, drop the bound then)
+
+### [PR-DAG-A-R2-I01] `*derived` deref-copy in `SetpointCore` / `CurrentLimitCore` is a silent semantic landmine if `DerivedView` loses `Copy`
+**Status:** open
+**Severity:** nit (informational)
+**Location:** `crates/core/src/core_dag/cores.rs:~51, ~71` — `run_setpoint(world, *derived, ...)` / `run_current_limit(world, *derived, ...)`.
+**Description:** Underlying `run_setpoint` / `run_current_limit` take `DerivedView` by value. Dereferencing `&DerivedView` works because `DerivedView: Copy`. If a future change adds a non-Copy field (e.g., PR-DAG-B introduces a Vec inside a tick-scratch struct), these lines silently become clones or compile-errors.
+**Suggested fix:** Change `run_setpoint` / `run_current_limit` signatures to accept `&DerivedView`. Deferable — PR-DAG-B deletes `DerivedView` wholesale and replaces with `world.derived.zappi_active`, so the smell will resolve itself.
+
+### [PR-DAG-A-R2-I02] D02 test's inline comment is imprecise about which `naive()` call the classifier consumes
+**Status:** open
+**Severity:** trivial
+**Location:** `crates/core/src/core_dag/tests.rs` — D02 test fixture comments.
+**Description:** Comment says "call 1 sees delta=4:59.990 (active=true)" but the first `clock.naive()` in the production pipeline is `apply_tick`'s (`process.rs:448`), not the classifier's. Classifier actually runs on the second `naive()` read. Assertion is still correct; comment is just fuzzy. Also brittle to future changes in `apply_tick`'s `naive()` call count.
+**Suggested fix:** Update the comment to state "delta at classifier call is driven by apply_tick's naive() read + setpoint's now = clock.naive()". Trivial.
+
+### [PR-DAG-A-R2-I03] Lazy `OnceLock` registry builds on first call, not startup — lost startup-time validation if `production_cores()` ever becomes data-dependent
+**Status:** open
+**Severity:** nit (informational / future concern)
+**Location:** `crates/core/src/process.rs:481-487` — `fn registry() -> &'static CoreRegistry`.
+**Description:** `OnceLock::get_or_init(|| CoreRegistry::build(...).expect(...))` validates on first `process()` call. For the statically-defined production list this is equivalent to startup validation. If anyone later makes `production_cores()` data-dependent (feature flags, config), validation moves to first-tick and a misconfigured graph crashes the service in production rather than at startup.
+**Suggested fix:** Informational only. If the registry gains dynamic inputs later, add an explicit `fn validate_registry()` called from boot.
+**Severity:** nit
+**Location:** `crates/core/src/core_dag/mod.rs`.
+**Description:** Zero-sized structs satisfy trivially today; `run_all` is strictly sequential and doesn't need `Send + Sync`. Once PR-DAG-B adds derivation cores that could cache state, a `!Sync` slip would compile-fail at the `Box<dyn Core>` site — which is the protection, but it's implicit.
+**Suggested fix:** Either drop `Send + Sync` (we don't parallelize), or add a module-level comment stating the future-intent constraint. Defer.
+
 ### [PR-SCHED0-R3-D03] Property test's sibling-test reference is imprecise
 **Status:** resolved
 **Severity:** trivial

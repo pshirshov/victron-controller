@@ -21,11 +21,14 @@
 //! (pure arithmetic), and doing so sidesteps the "which event triggers
 //! which controller" dispatch problem entirely.
 
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use chrono::Timelike;
 
 use crate::Clock;
+use crate::core_dag::CoreRegistry;
+use crate::core_dag::cores::production_cores;
 use crate::controllers::current_limit::{
     CurrentLimitInput, CurrentLimitInputGlobals, evaluate_current_limit,
 };
@@ -457,18 +460,30 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
 /// (A-05: `run_setpoint` previously consumed `bookkeeping.zappi_active`
 /// which `run_current_limit` writes later in the same tick).
 #[derive(Debug, Clone, Copy)]
-struct DerivedView {
-    zappi_active: bool,
+pub(crate) struct DerivedView {
+    pub(crate) zappi_active: bool,
 }
 
 /// Derive `zappi_active` via the canonical classifier so setpoint and
 /// current-limit see exactly the same value within a tick. The
 /// classifier itself handles freshness and the WaitingForEv timeout
 /// (PR-04-D01/D02/D03).
-fn compute_derived_view(world: &World, clock: &dyn Clock) -> DerivedView {
+pub(crate) fn compute_derived_view(world: &World, clock: &dyn Clock) -> DerivedView {
     DerivedView {
         zappi_active: classify_zappi_active(world, clock),
     }
+}
+
+/// Lazily-initialized production `CoreRegistry`. Construction is
+/// infallible for the statically-defined production core list — the
+/// validation checks inside `CoreRegistry::build` catch programmer
+/// errors at process start, not at runtime per tick.
+fn registry() -> &'static CoreRegistry {
+    static REGISTRY: OnceLock<CoreRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        CoreRegistry::build(production_cores())
+            .expect("production core DAG is statically valid")
+    })
 }
 
 fn run_controllers(
@@ -477,18 +492,12 @@ fn run_controllers(
     topology: &Topology,
     effects: &mut Vec<Effect>,
 ) {
-    let derived = compute_derived_view(world, clock);
-    run_setpoint(world, derived, clock, topology, effects);
-    run_current_limit(world, derived, clock, topology, effects);
-    run_schedules(world, clock, effects);
-    run_zappi_mode(world, clock, effects);
-    run_eddi_mode(world, clock, effects);
-    run_weather_soc(world, clock, effects);
+    registry().run_all(world, clock, topology, effects);
 }
 
 // --- Setpoint -----------------------------------------------------------------
 
-fn run_setpoint(
+pub(crate) fn run_setpoint(
     world: &mut World,
     derived: DerivedView,
     clock: &dyn Clock,
@@ -663,7 +672,7 @@ fn update_bookkeeping_from_setpoint(
 
 // --- Current limit ------------------------------------------------------------
 
-fn run_current_limit(
+pub(crate) fn run_current_limit(
     world: &mut World,
     derived: DerivedView,
     clock: &dyn Clock,
@@ -787,7 +796,7 @@ fn run_current_limit(
 
 // --- Schedules ----------------------------------------------------------------
 
-fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
     // Schedules always runs — battery_soc is the only required sensor.
     if !world.sensors.battery_soc.is_usable() {
         return;
@@ -964,7 +973,7 @@ fn maybe_propose_schedule(
 
 // --- Zappi mode ---------------------------------------------------------------
 
-fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
     if !world.typed_sensors.zappi_state.is_usable() {
         return;
     }
@@ -1031,7 +1040,7 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
 
 // --- Eddi mode ----------------------------------------------------------------
 
-fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
     let soc = &world.sensors.battery_soc;
     let current_mode = world
         .typed_sensors
@@ -1104,7 +1113,7 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
 /// still publish a Decision explaining why it didn't evaluate — the
 /// last real decision otherwise stays stuck at `None` all day and the
 /// dashboard looks broken.
-fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+pub(crate) fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
     let now = clock.naive();
     if !(now.hour() == 1 && now.minute() == 55) {
         // Only overwrite with a "didn't run" decision if weather_soc

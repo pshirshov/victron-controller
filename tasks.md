@@ -102,12 +102,25 @@ along.
 Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 (planning subagent writes one per PR at kickoff).
 
-- [~] **PR-DAG** — TASS core DAG orchestrator. Lift shared derivations
-  (starting with `zappi_active`) into first-class derivation cores; wire
-  cores into a registry with explicit `depends_on` edges; topologically
-  sort at construction with cycle detection; `process()` walks the
-  sorted list. Replaces ad-hoc `compute_derived_view` helper from
-  PR-04. **Plan doc** to be seeded by planning subagent.
+- [~] **PR-DAG** — TASS core DAG orchestrator. Splits into PR-DAG-A
+  (infra — zero behavior change), PR-DAG-B (migrate zappi_active →
+  `world.derived.zappi_active` + delete `DerivedView`), PR-DAG-C
+  (remaining `depends_on` edges for cross-core bookkeeping reads).
+  Plan: `docs/drafts/20260424-1700-m-audit-2-pr-dag-plan.md`.
+  - [x] **PR-DAG-A** — Core trait, CoreRegistry, Kahn's topo sort,
+    5+2 tests (build / determinism / cycle / missing / duplicate +
+    boundary-consistency regression guard + tie-break). Six `run_*`
+    wrapped as zero-sized-struct impls with linear-chain `depends_on`
+    preserving today's order. `DerivedView` computed once per tick in
+    `run_all` and passed by reference to each core. 2 review rounds
+    (round 1 blocked on ship-critical D01; round 2 clean + 3 info
+    notes).
+  - [ ] **PR-DAG-B** — Migrate `zappi_active` to first-class
+    `ZappiActiveCore` writing to `world.derived.zappi_active`; delete
+    `DerivedView`, `compute_derived_view`, `bookkeeping.zappi_active`;
+    tear-down invariants: `rg "DerivedView|bookkeeping\.zappi_active"`
+    empty in `crates/core`.
+  - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
 - [x] **PR-SCHED0** — Observer-mode target-mutation inversion. Root
   cause (b+a hybrid): observer mode left target=Unset while Node-RED
   legacy `days=-7` was the visible `actual`; dashboard rendered the
@@ -319,6 +332,44 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-DAG-A** (2026-04-24) — TASS core DAG infrastructure. Zero-
+  behavior-change refactor wrapping the six existing `run_*`
+  controllers as zero-sized-struct `Core` impls with a `CoreRegistry`
+  that validates topological order at build time (cycle / missing
+  dep / duplicate rejection) via Kahn's algorithm with deterministic
+  tie-break (`BTreeMap<CoreId, _>` keyed on discriminant). `depends_on`
+  wiring is a linear chain in -A (preserves today's execution order);
+  PR-DAG-C will replace with semantic edges derived from the §4 audit.
+  Core trait takes `(world, derived, clock, topology, effects)` —
+  `&DerivedView` is computed once per tick in `run_all` and passed by
+  reference to every core, replacing PR-04's ad-hoc plumbing of
+  `DerivedView` through individual function signatures. Only
+  `SetpointCore` / `CurrentLimitCore` consume it today; other four
+  accept `_derived`. **Regression guard landed:** `AdvancingClock`
+  D02 test with a `Cell<NaiveDateTime>`-based clock verified by
+  temporary rollback to fail with `"setpoint (factor zappi_active=true)
+  and current_limit (bookkeeping.zappi_active=false) disagreed across
+  the WAIT_TIMEOUT_MIN boundary"`, then restored. This is the A-05
+  hazard PR-04 originally fixed; the D02 test now traps any future
+  refactor that re-introduces double-derivation-per-tick.
+  Registry `OnceLock` initialized on first `process()` call (lazy;
+  infallible for the static production list — `.expect(...)` on invalid
+  graph). 7 new tests total (5 registry meta + D02 boundary-consistency
+  + D03 tie-break). Touched: `crates/core/src/core_dag/{mod.rs,
+  cores.rs,tests.rs}` (new), `crates/core/src/lib.rs` (module export),
+  `crates/core/src/process.rs` (pub(crate) on run_* + DerivedView +
+  compute_derived_view; `run_controllers` → `registry().run_all(...)`).
+  Review rounds: 2 (round 1 blocked on ship-critical D01 — double
+  `compute_derived_view` reintroduced A-05 with uncached
+  `RealClock::naive()`; round 2 clean with 3 informational notes
+  R2-I01..I03). Verification: 212 core + 11 property + 50 shell
+  tests green; clippy clean; ARMv7 release ok; web bundle 26.8kB.
+  Constraint for future work: any new `Core` impl MUST take
+  `&DerivedView` even if unused — signals participation in the
+  single-source-of-truth discipline. PR-DAG-B replaces `DerivedView`
+  with `world.derived.zappi_active` populated by a dedicated
+  `ZappiActiveCore`.
 
 - **PR-SCHED0** (2026-04-24) — Observer-mode target-mutation inversion.
   User-reported regression: on field deploy of `df3ae4d`, schedule_0
