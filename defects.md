@@ -162,14 +162,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Track `last_weather_soc_run_date` in bookkeeping; run the body only once per wall-day at the first tick within the 01:55 window. Combines naturally with A-20.
 
 ### [A-22] myenergi HTTP writer treats any 2xx as success, ignoring body-level error codes
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/shell/src/myenergi/mod.rs:116-144`
 **Description:** `set_zappi_mode`/`set_eddi_mode` return `Ok` on any HTTP 2xx. myenergi returns 200 with `{"zsh": 3}` on rejected commands. Dashboard shows `Commanded`, user sees "it worked" — but the device didn't change state.
 **Suggested fix:** Parse the JSON; require the success field (`zsh=0` for mode change). Non-zero → `Err`. On `execute`, on error publish `ActuatedPhase{Unset}` so the UI signals failure.
 
 ### [A-23] myenergi writer logs "action ok" when credentials are empty (no HTTP attempted)
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/myenergi/mod.rs:117-119, 134-135`, Writer::execute
 **Description:** Credential guard returns `Ok(())` with no request. Writer::execute logs "myenergi action ok"; TASS target stays in `Commanded` forever; dashboard says "in flight".

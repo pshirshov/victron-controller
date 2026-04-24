@@ -607,6 +607,39 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   async code inside `spawn_log_publisher` must use `eprintln!` for
   diagnostics — tracing macros inside this task are a re-entry hazard.
 
+- **PR-12** (2026-04-24) — myenergi HTTP body-error parsing. Before
+  this PR: `set_zappi_mode` / `set_eddi_mode` returned `Ok(())` on
+  any 2xx, including rejections (myenergi returns 200 with
+  `{"zsh": 3}` on rejected zappi commands; similar `esh` for eddi).
+  Dashboard confirmed; device didn't change. Credential-empty path
+  also silent-succeeded.
+  Fix: after `get_json`, pass the body through new helpers
+  `interpret_zappi_mode_response` / `interpret_eddi_mode_response`.
+  Rules: `zsh`/`esh` integer `0` → `Ok(())`; non-zero → `Err` with
+  code in message; missing/non-numeric → `Err("missing/non-numeric
+  zsh|esh")`. Rejections log the full body at `warn!` for diagnosis.
+  No-credentials / no-serial returns `Err(anyhow!("myenergi not
+  configured (…)"))` instead of `Ok(())`.
+  `Writer::execute` logs revamped:
+  - Dry-run: `info!(?action, "myenergi action (dry-run;
+    writes_enabled=false, not sent)")` — honest.
+  - Live success: `info!(?action, "myenergi action confirmed (zsh=0
+    or esh=0)")`.
+  - Live failure: `warn!(?action, error = %e, "myenergi action
+    failed")` — covers not-configured, HTTP errors, and body-level
+    rejections.
+  7 new unit tests (zsh=0, zsh=non-zero, missing, non-numeric; same
+  four for esh). Writer log tests via inspection only (can't mock
+  HTTP cleanly without a fixture server).
+  Explicit non-goal: publishing `Effect::Publish(ActuatedPhase{Unset})`
+  on failure (A-22's secondary suggestion) — Writers live shell-side
+  and don't speak Effect. That reset signal is a wider refactor for
+  a later PR.
+  Resolves A-22 + A-23. A-24 (ts-parse sentinel), A-25 (u8
+  truncation) still open.
+  Verification: 63 myenergi tests + 214 core + 11 property + 50
+  shell all green; clippy clean; ARMv7 release ok; web bundle ok.
+
 - **PR-08** (2026-04-24) — `SchedulePartial` take-and-clear semantic.
   Resolves A-12. Previously the accumulator persisted across emits:
   initial GetItems filled all 5 fields → emit Schedule0/1 readback →
