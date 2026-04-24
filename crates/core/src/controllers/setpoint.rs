@@ -28,6 +28,14 @@ pub struct SetpointInput {
     pub mppt_power_0: f64,
     pub mppt_power_1: f64,
     pub soltaro_power: f64,
+    /// Signed power flow at the EV-branch CT clamp (`com.victronenergy.
+    /// evcharger`'s `/Ac/Power` — the branch meter, not the Zappi
+    /// proper). Positive when the branch imports (Zappi charging),
+    /// negative when the branch exports (Hoymiles panels on the EV
+    /// circuit pushing onto our grid). A-17: max(0, -evcharger) is
+    /// the Hoymiles export contribution to `solar_export` per SPEC
+    /// §5.8.
+    pub evcharger_ac_power: f64,
     pub capacity: f64,
 }
 
@@ -181,7 +189,17 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     let end_of_day_target = total_capacity * (soc_end_of_day_target / 100.0);
     let mut current_target = end_of_day_target;
 
-    let solar_export = (mppt_power.max(0.0) + soltaro_power.max(0.0)).floor();
+    // SPEC §5.8 / A-17: fold the Hoymiles export on the EV branch into
+    // solar_export. The `evcharger` CT sees the Zappi + Hoymiles branch
+    // combined: positive when the branch imports (Zappi charging on the
+    // car), negative when the branch exports (Hoymiles panels pushing
+    // onto our grid). `max(0, -evcharger_ac_power)` is the net export
+    // contribution. Without this term the setpoint controller under-
+    // exports by the Hoymiles kW in the evening, leaving that power to
+    // sail past the max_discharge cap and onto the grid unaccounted.
+    let hoymiles_export = (-input.evcharger_ac_power).max(0.0);
+    let solar_export =
+        (mppt_power.max(0.0) + soltaro_power.max(0.0) + hoymiles_export).floor();
     let soltaro_export = if soltaro_power > 400.0 {
         (10.0 + soltaro_power - current_consumption).max(0.0)
     } else {
@@ -572,6 +590,10 @@ mod tests {
             mppt_power_0: 2000.0,
             mppt_power_1: 1500.0,
             soltaro_power: 500.0,
+            // A-17: no Hoymiles export in the baseline fixture; the
+            // branch is idle. Tests that want to exercise the Hoymiles
+            // term override with a negative value (export).
+            evcharger_ac_power: 0.0,
             capacity: 100.0,
         }
     }
@@ -617,6 +639,48 @@ mod tests {
         let out = evaluate_setpoint(&input, &c);
         let expected = ((2000.0_f64 + 1500.0).max(0.0) + 800.0_f64.max(0.0)).floor();
         assert!((out.debug.solar_export - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn solar_export_includes_hoymiles_ev_branch_export() {
+        // A-17 / SPEC §5.8: max(0, -evcharger_ac_power) is the Hoymiles
+        // branch contribution. EV branch exporting 1200 W (i.e.
+        // evcharger_ac_power = -1200) + 2000 W from mppt0 + 0 soltaro
+        // should net 3200 W of solar_export.
+        let input = SetpointInput {
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            evcharger_ac_power: -1200.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c);
+        assert!(
+            (out.debug.solar_export - 3200.0).abs() < 1e-9,
+            "expected 3200, got {}",
+            out.debug.solar_export
+        );
+    }
+
+    #[test]
+    fn solar_export_ignores_ev_branch_when_importing() {
+        // Zappi charging on the EV branch → evcharger_ac_power > 0.
+        // max(0, -positive) = 0, so the Hoymiles term contributes zero.
+        let input = SetpointInput {
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            evcharger_ac_power: 1500.0, // Zappi drawing 1.5 kW
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c);
+        assert!(
+            (out.debug.solar_export - 2000.0).abs() < 1e-9,
+            "expected 2000 (mppt only, Zappi import ignored), got {}",
+            out.debug.solar_export
+        );
     }
 
     #[test]

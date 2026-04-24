@@ -127,7 +127,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Compute `is_fresh` from `clock.monotonic().saturating_duration_since(snap.fetched_at) <= topology.controller_params.freshness_forecast`. Add `freshness_forecast: Duration` to `ControllerParams`. Log "all providers stale → conservative preset" when triggered.
 
 ### [A-17] SPEC §5.8 — Hoymiles EV-branch export not folded into `solar_export`
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/controllers/setpoint.rs:184`
 **Description:** SPEC §5.8: `solar_export_w = max(0, mppt_0) + max(0, mppt_1) + max(0, soltaro) + max(0, -evcharger_35.ac_power)`. Code omits the EV-branch term. Hoymiles export sails past the controller unseen → evening discharge under-exports by the Hoymiles kW, `max_discharge` cap is tighter than the SPEC promises.

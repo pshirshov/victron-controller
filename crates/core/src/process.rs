@@ -520,7 +520,9 @@ pub(crate) fn run_setpoint(
     topology: &Topology,
     effects: &mut Vec<Effect>,
 ) {
-    // Required Fresh sensors.
+    // Required Fresh sensors. A-17: evcharger_ac_power joins the
+    // required set — the Hoymiles export term in solar_export depends
+    // on the EV-branch CT reading.
     if !world.sensors.battery_soc.is_usable()
         || !world.sensors.battery_soh.is_usable()
         || !world.sensors.battery_installed_capacity.is_usable()
@@ -528,6 +530,7 @@ pub(crate) fn run_setpoint(
         || !world.sensors.mppt_power_1.is_usable()
         || !world.sensors.soltaro_power.is_usable()
         || !world.sensors.power_consumption.is_usable()
+        || !world.sensors.evcharger_ac_power.is_usable()
     {
         apply_setpoint_safety(world, clock, topology, effects);
         return;
@@ -559,6 +562,7 @@ pub(crate) fn run_setpoint(
         mppt_power_0: world.sensors.mppt_power_0.value.unwrap(),
         mppt_power_1: world.sensors.mppt_power_1.value.unwrap(),
         soltaro_power: world.sensors.soltaro_power.value.unwrap(),
+        evcharger_ac_power: world.sensors.evcharger_ac_power.value.unwrap(),
         capacity: world.sensors.battery_installed_capacity.value.unwrap(),
     };
 
