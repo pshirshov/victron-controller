@@ -397,11 +397,11 @@ reviewing a specific PR's patch.
 **Suggested fix:** Per-knob `last_dashboard_write`; extend γ-hold to `Command::KillSwitch`.
 
 ### [A-56] D-Bus writer: no reconnect, no retry, no SetValue confirmation
-**Status:** open
+**Status:** resolved (PR-writer-reconnect)
 **Severity:** minor
 **Location:** `crates/shell/src/dbus/writer.rs:28-37, 86-104`
 **Description:** Startup-only `Connection::system()`. Venus D-Bus restart → every write fails → TASS stuck in Commanded; MultiPlus retains old value. Fail-closed for device state, fail-open for our narrative.
-**Suggested fix:** Periodic health check + reconnect with backoff. Publish `ActuatedPhase{Unset}` for every target when disconnected.
+**Fix:** `Writer::new` is pure/infallible; lazy `Connection::system()` with bounded backoff (500 ms → 30 s, cap reached in 7 failures). `tokio::sync::Mutex<WriterInner>` lock released before `SetValue` and before `Connection::system()` (per round-1 D01). `set_value` extracted as free function taking `&Connection`. Healthy-reset anchor: `last_healthy_at` cleared on every failure; `mark_healthy` is sole writer (per round-1 D02). Throttled-skip `warn!` deduped via `THROTTLED_WARN_DEDUP`; SetValue-failure `error!` deduped via separate `last_error_at` (per round-1 D03). Writer does NOT publish `ActuatedPhase{Unset}` — phase management stays in core/runtime (justified in `docs/drafts/20260424-2245-pr-writer-reconnect.md` §3). Callsite `main.rs:137` simplified from `Writer::connect(...).await?` to `Writer::new(...)`.
 
 ### [A-57] Schedules: 5 separate writes not atomic; partial writes leave inconsistent schedule on bus
 **Status:** open
@@ -1216,3 +1216,42 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** All five propose sites in `crates/core/src/process.rs` (the unconditional publish block added for D03).
 **Description:** Observed during D03 fix. If a controller oscillates between two proposed values in observer mode, `propose_target` short-circuits on same-value so in steady state there's no repeat; but a rapid oscillation (controller sees value A, then B, then A…) republishes `Pending` each time. The retained MQTT bus sees alternating Pending-phase publishes with no functional change. Harmless (dashboard re-renders idempotently; brokers typically dedup retained payloads) but could become visible noise under load.
 **Suggested fix:** Track last-published phase per Actuated entity and only emit Publish(ActuatedPhase) on an actual phase transition, not on every propose. Defer to M-AUDIT-2 hygiene rollup unless load tests surface it.
+
+---
+
+## PR-writer-reconnect — Review round 1 (executor `a55f45b374c61b070`, reviewer `a91ba9544edd3817d`)
+
+### [PR-writer-reconnect-D01] Mutex held across `Connection::system()` await
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dbus/writer.rs` — `connection()` fn body
+**Description:** Plan §1 says the mutex must not be held across awaits other than state mutation. But `connection()` held `inner` across `tokio::time::timeout(SET_VALUE_TIMEOUT, Connection::system()).await`. On a dead bus this serialised every concurrent caller behind a 2 s connect: a controller burst of writes queued waiting for the lock, defeating throttle/dedup. Also pinned the mutex while doing real I/O.
+**Fix:** `connection()` split into three phases with explicit lock scopes. Phase 1 (under lock): return existing `conn` clone or emit the throttled-warn-and-return-None path. Phase 2 (lock released): call `Connection::system()` outside the lock. Phase 3 (re-acquire lock): first re-check `inner.conn.is_some()` — if a peer won the race, the freshly-built connection is dropped and we return the peer's clone; else commit our result (`conn`/`backoff`/`next_reconnect_earliest`/`last_warn_at`).
+
+### [PR-writer-reconnect-D02] Premature backoff reset on first post-reconnect write
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dbus/writer.rs` — `mark_healthy` + `connection()` success path + `mark_failed`
+**Description:** On successful (re)connect, `last_healthy_at = Some(now)`. But `mark_failed` never cleared it. After a long-healthy session, a transient outage, and a fresh reconnect: `last_healthy_at` still carried the OLD pre-outage timestamp (>60 s ago). The very first successful write after reconnect satisfied `now.duration_since(old_t) > HEALTHY_THRESHOLD`, resetting `backoff` to INITIAL after a single successful write — defeating "evidence the new connection has been usable for 60 s" (plan §4).
+**Fix:** Reset-on-failure anchor. `mark_failed` now clears `last_healthy_at = None`; the connect-success path no longer seeds it (`last_healthy_at` is evidence of a usable bus, set only by `mark_healthy`). Extracted pure helper `should_reset_backoff(last_healthy_at, now, threshold) -> bool` returning `false` when `last_healthy_at == None`. Tests cover the post-reconnect None case and that `mark_failed` clears the stale timestamp and progresses backoff (500 ms → 1 s).
+
+### [PR-writer-reconnect-D03] Write-failure `error!` not deduplicated; log storm during outage
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/writer.rs` — `Ok(Err)` and `Err(_elapsed)` arms after `timeout(SET_VALUE_TIMEOUT, set_value(...))`
+**Description:** Plan §8 promised "subsequent throttled-skip warns collapse". The throttle path was deduped, but the `error!` lines on `Ok(Err)` / timeout emitted every write-attempt. Bus flap where each tick reconnects then `SetValue` fails → one `error!` per controller proposal.
+**Fix:** Separate `last_error_at` field (parallels `last_warn_at` for clarity). `mark_failed` returns a bool indicating whether the caller should emit `error!`; `mark_healthy` clears both `last_warn_at` and `last_error_at` so the next outage's first line fires immediately. Test `mark_failed_throttles_consecutive_errors` verifies log/suppress/recover/log pattern.
+
+### [PR-writer-reconnect-D04] `new_is_infallible` test does not actually assert infallibility
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dbus/writer.rs` — test `new_is_infallible`
+**Description:** Test bound the return to `_w` and discarded. If someone changed the signature back to `-> Result<Self>` the test still compiled (only an unused-must-use lint, not an error).
+**Fix:** Replaced the `#[test] fn new_is_infallible` with a compile-time check at module scope inside `#[cfg(test)] mod tests`: `const _NEW_IS_INFALLIBLE: fn(DbusServices, bool) -> Writer = Writer::new;`. Fails to compile if the signature changes return type or parameters.
+
+### [PR-writer-reconnect-D05] Warn-throttle state split between `connection()` and `mark_*`; easy to break in future edits
+**Status:** resolved (note-only; D03's separate `last_error_at` cleanly divides responsibilities — `last_warn_at` is the connect-throttle dedup, `last_error_at` is the write-failure dedup. Round 2 reviewer confirmed the split is clearer, not worse. No code change warranted)
+**Severity:** nit
+**Location:** `crates/shell/src/dbus/writer.rs` — `last_warn_at` transitions
+**Description:** A successful write sets `last_warn_at = None`. On subsequent failure it's not touched. The dedup state bookkeeping is split between `connection()` and `mark_*` and is easy to break in future edits.
+**Suggested fix:** Centralise warn-throttle state transitions; add a unit test that bursts 20 writes against a "throttled" inner state (manually-constructed with `next_reconnect_earliest = now + 1s`) and asserts only one warn is emitted.

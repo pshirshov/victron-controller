@@ -245,6 +245,10 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 - [ ] **PR-12** — myenergi HTTP body-level error parsing (A-22, A-23).
 - [ ] **PR-MISC** — minor/nit hygiene rollup (A-38, A-42, A-43, A-50,
   A-53-A-68 as appropriate).
+- [x] **PR-writer-reconnect** — D-Bus writer reconnect + bounded
+  `SetValue` + lazy infallible constructor (A-56). Mirrors
+  PR-URGENT-20 subscriber pattern. Plan:
+  `docs/drafts/20260424-2245-pr-writer-reconnect.md`.
 
 ---
 
@@ -289,6 +293,49 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 ---
 
 ## Completed
+
+- **PR-writer-reconnect** (2026-04-24) — D-Bus writer reconnect + bounded
+  SetValue + lazy infallible constructor (`crates/shell/src/dbus/writer.rs`).
+  Resolves **A-56**. Plan:
+  `docs/drafts/20260424-2245-pr-writer-reconnect.md`.
+  Shape: `Writer::new` pure/infallible; lazy `Connection::system()` with
+  exponential backoff (500 ms → 30 s, cap reached in 7 consecutive
+  failures); healthy-reset threshold 60 s (backoff resets after the
+  first successful write following ≥60 s of healthy operation).
+  `tokio::sync::Mutex<WriterInner>` held only for state-mutation spans;
+  released for both `Connection::system()` and `SetValue` awaits (per
+  round-1 D01). `set_value` extracted as free function taking
+  `&Connection`. Separate `last_warn_at` / `last_error_at` dedup fields
+  for connect-throttle vs write-failure log streams (per D03).
+  `main.rs:137` callsite simplified from `Writer::connect(...).await?`
+  to `Writer::new(...)`. Writer intentionally does NOT emit
+  `ActuatedPhase{Unset}` — phase management stays core/runtime
+  concern; sustained outages rely on subscriber reconnect + freshness
+  decay to drive TASS forward once the bus returns (follow-up ticket
+  suggested: core demotes phases on `last_readback_at` staleness).
+  Review rounds: 2. Round 1 surfaced 5 defects — D01/D02 major (lock
+  held across await; premature backoff reset), D03/D04 minor (error
+  dedup; fn-pointer infallibility check), D05 nit. All major/minor
+  resolved; D05 resolved note-only after round-2 reviewer confirmed
+  the `last_warn_at`/`last_error_at` split is clearer, not worse.
+  Round 2: clean. Verification: `cargo test --all` → all green
+  including 4 writer unit tests (`dry_run_skips_dispatch`,
+  `resolve_covers_every_target`, `next_backoff_doubles_capped`,
+  `mark_failed_throttles_consecutive_errors`, plus the compile-time
+  `const _NEW_IS_INFALLIBLE: fn(DbusServices, bool) -> Writer =
+  Writer::new` check); `cargo clippy --all-targets -- -D warnings`
+  clean; ARMv7 cross-compile clean.
+  Notes / constraints for future work:
+  - Keep `Writer::new` infallible. Any future bus-probe must go
+    through the lazy-connect path, never eager-fail `new`.
+  - `zbus::Connection` is internally `Arc`; cloning the handle is
+    cheap and a stale clone fails `SetValue` naturally. Do not
+    add a second layer of liveness probing.
+  - SetValue-failure error dedup window (`THROTTLED_WARN_DEDUP`,
+    5 s) is shared with connect-throttle warns; tune together.
+  - Subscriber's similar N-consecutive-failures-escalate-to-error!
+    path is intentionally NOT mirrored here (plan §8 defers); add
+    only if live-Venus logs show the dedup isn't enough.
 
 - **PR-01** (2026-04-24) — NaN / ±Inf / subnormal / Bool filter in
   `extract_scalar` (crates/shell/src/dbus/subscriber.rs). Resolves A-01,

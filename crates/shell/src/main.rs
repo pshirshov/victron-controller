@@ -133,10 +133,11 @@ async fn main() -> Result<()> {
              regardless of runtime kill switch (A-39 / SPEC §5 three-gate chain)"
         );
     }
-    info!("connecting D-Bus writer (dry_run={})", !cfg.dbus.writes_enabled);
-    let writer = Writer::connect(services.clone(), !cfg.dbus.writes_enabled)
-        .await
-        .context("connect D-Bus writer")?;
+    info!(
+        "creating D-Bus writer (dry_run={}, lazy connect)",
+        !cfg.dbus.writes_enabled
+    );
+    let writer = Writer::new(services.clone(), !cfg.dbus.writes_enabled);
 
     let myenergi_client = MyenergiClient::new(cfg.myenergi.clone());
     info!(
