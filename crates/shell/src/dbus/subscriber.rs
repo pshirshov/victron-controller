@@ -253,6 +253,15 @@ const HEALTHY_SESSION_THRESHOLD: Duration = Duration::from_secs(60);
 /// outer loop to reconnect. Must be > HEARTBEAT_INTERVAL so a single
 /// transient hiccup doesn't trip it.
 const SILENCE_RECONNECT_THRESHOLD: Duration = Duration::from_secs(30);
+/// Upper bound on a single whole poll-arm iteration — the entire
+/// `for svc in services` loop across every configured service. With
+/// 9 services × [`GET_ITEMS_TIMEOUT`] = 18 s worst-case, a dead broker
+/// would otherwise pin the subscriber in timeout-warn mode long
+/// enough to starve the heartbeat arm's dual-silence detector
+/// (PR-URGENT-22). Wrapping the loop in a 5 s budget means a fully
+/// unresponsive broker triggers reconnect in ≤5 s, independent of
+/// heartbeat scheduling.
+const POLL_ITERATION_BUDGET: Duration = Duration::from_secs(5);
 
 impl Subscriber {
     /// Build the subscriber config. Pure — no I/O. The actual D-Bus
@@ -508,58 +517,86 @@ impl Subscriber {
                 _ = poll.tick() => {
                     self.poll_ticks_since_last_heartbeat =
                         self.poll_ticks_since_last_heartbeat.saturating_add(1);
-                    let mut any_success = false;
-                    for svc in &self.service_set {
-                        match seed_service(
-                            &conn,
-                            &self.routes,
-                            &mut self.schedule_accumulators,
-                            svc,
-                            tx,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                any_success = true;
-                                // Success resets both failure tracking
-                                // and the warn-throttle, so the next
-                                // failure warns immediately.
-                                fail_counts.remove(svc);
-                                last_warn.remove(svc);
-                            }
-                            Err(e) => {
-                                let count = fail_counts
-                                    .entry(svc.clone())
-                                    .or_insert(0);
-                                *count += 1;
-                                let count_now = *count;
-                                let now = Instant::now();
-                                let should_warn = last_warn
-                                    .get(svc)
-                                    .is_none_or(|t| {
-                                        now.duration_since(*t) >= RESEED_WARN_THROTTLE
-                                    });
-                                if should_warn {
-                                    warn!(
-                                        service = %svc,
-                                        count = count_now,
-                                        error = %format!("{e:#}"),
-                                        "periodic GetItems failed"
-                                    );
-                                    last_warn.insert(svc.clone(), now);
+                    // Wrap the whole per-service seed loop in an
+                    // iteration-wide budget so an unresponsive broker
+                    // (all 9 GetItems timing out at 2 s each = 18 s)
+                    // can't starve the outer select arms — in
+                    // particular the heartbeat arm that drives the
+                    // dual-silence reconnect trigger. On elapse we
+                    // return Err from connect_and_serve so the outer
+                    // reconnect loop takes over (PR-URGENT-22).
+                    let conn_ref = &conn;
+                    let routes = &self.routes;
+                    let schedule_accumulators = &mut self.schedule_accumulators;
+                    let service_set = &self.service_set;
+                    let fail_counts_ref = &mut fail_counts;
+                    let last_warn_ref = &mut last_warn;
+                    let poll_body = async move {
+                        let mut any_success = false;
+                        for svc in service_set {
+                            match seed_service(
+                                conn_ref,
+                                routes,
+                                schedule_accumulators,
+                                svc,
+                                tx,
+                            )
+                            .await
+                            {
+                                Ok(()) => {
+                                    any_success = true;
+                                    // Success resets both failure tracking
+                                    // and the warn-throttle, so the next
+                                    // failure warns immediately.
+                                    fail_counts_ref.remove(svc);
+                                    last_warn_ref.remove(svc);
                                 }
-                                if count_now == RESEED_ESCALATE_AFTER {
-                                    error!(
-                                        service = %svc,
-                                        "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
-                                         consecutive ticks; sensor freshness unreliable"
-                                    );
+                                Err(e) => {
+                                    let count = fail_counts_ref
+                                        .entry(svc.clone())
+                                        .or_insert(0);
+                                    *count += 1;
+                                    let count_now = *count;
+                                    let now = Instant::now();
+                                    let should_warn = last_warn_ref
+                                        .get(svc)
+                                        .is_none_or(|t| {
+                                            now.duration_since(*t) >= RESEED_WARN_THROTTLE
+                                        });
+                                    if should_warn {
+                                        warn!(
+                                            service = %svc,
+                                            count = count_now,
+                                            error = %format!("{e:#}"),
+                                            "periodic GetItems failed"
+                                        );
+                                        last_warn_ref.insert(svc.clone(), now);
+                                    }
+                                    if count_now == RESEED_ESCALATE_AFTER {
+                                        error!(
+                                            service = %svc,
+                                            "periodic GetItems failing for {RESEED_ESCALATE_AFTER}+ \
+                                             consecutive ticks; sensor freshness unreliable"
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                    if any_success {
-                        self.last_successful_poll_at = Some(Instant::now());
+                        any_success
+                    };
+                    match tokio::time::timeout(POLL_ITERATION_BUDGET, poll_body).await {
+                        Ok(any_success) => {
+                            if any_success {
+                                self.last_successful_poll_at = Some(Instant::now());
+                            }
+                        }
+                        Err(_elapsed) => {
+                            return Err(anyhow!(
+                                "poll iteration exceeded {}s budget — broker \
+                                 unresponsive; reconnecting",
+                                POLL_ITERATION_BUDGET.as_secs()
+                            ));
+                        }
                     }
                 }
                 _ = heartbeat.tick() => {
