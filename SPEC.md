@@ -450,7 +450,7 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `weathersoc_ok_energy_threshold` | `20` kWh | |
 | `weathersoc_high_energy_threshold` | `80` kWh | |
 | `weathersoc_too_much_energy_threshold` | `80` kWh | |
-| `writes_enabled` | `true` | |
+| `writes_enabled` | `false` (G3: safe cold-start; see `Knobs::safe_defaults` in `crates/core/src/knobs.rs`) | |
 | `forecast_disagreement_strategy` | `solcast_if_available_else_mean` | |
 
 ---

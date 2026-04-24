@@ -134,7 +134,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Add `evcharger_ac_power: f64` to `SetpointInput`; include `max(0.0, -evcharger_ac_power)` in `solar_export`; require `evcharger_ac_power.is_usable()` in the freshness guard.
 
 ### [A-18] SPEC §5.8 — `zappi_active` still uses 1 A fallback instead of 500 W
-**Status:** open
+**Status:** resolved (closed by PR-04's canonical `classify_zappi_active` — `ZAPPI_POWER_FALLBACK_W = 500.0` replaces the legacy 1 A threshold)
 **Severity:** major
 **Location:** `crates/core/src/controllers/current_limit.rs:34,168`
 **Description:** SPEC §5.8 replaced `zappi_amps > 1` with `evcharger_ac_power > 500 W` to avoid false-firing on Hoymiles exports. Code still uses amps.
@@ -267,14 +267,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Move the `eddi_last_transition_at = Some(now)` update above the `if !writes_enabled` gate — it's TASS state, not actuation.
 
 ### [A-37] `safe_defaults.writes_enabled = false` contradicts SPEC §7 (documented default: `true`)
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/core/src/knobs.rs:150-151`, SPEC §7
 **Description:** Internal test `safe_defaults_match_spec_7` asserts `!k.writes_enabled`, enshrining the divergence from SPEC. Reader expecting §7's `true` will be surprised.
 **Suggested fix:** Update SPEC §7 row for `writes_enabled` to `false (G3: safe cold-start)`, with a pointer to the rationale comment in `knobs.rs`. Don't flip the code — false is safer.
 
 ### [A-38] MQTT `connect()` logs "mqtt connected" before any TCP handshake; misleads diagnostics
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/mqtt/mod.rs:115`
 **Description:** `AsyncClient::new` doesn't connect; handshake is at first `event_loop.poll().await` inside `Subscriber::run`. Log claims success while the broker might be unreachable.
@@ -347,7 +347,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `.ok().filter(|f| f.is_finite())` in `as_f64`.
 
 ### [A-49] DischargeTime knob rejects HA default `"HH:MM:SS"` format
-**Status:** open
+**Status:** resolved (already accepts both "HH:MM" and "HH:MM:SS" in serialize.rs:404-405 — likely fixed in an earlier pass not attributed to a PR)
 **Severity:** minor
 **Location:** `crates/shell/src/mqtt/serialize.rs:290`
 **Description:** Strict string match on `"02:00"` / `"23:00"`. HA's time selector emits `"02:00:00"` → silently dropped.
@@ -375,7 +375,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Use `uuid::Uuid::new_v4()`.
 
 ### [A-53] Open-Meteo 15-min → 30-min comment drift
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/forecast/current_weather.rs:10`, `config.example.toml:105`, `crates/shell/src/config.rs:264-270`
 **Description:** Docstring says "default: 15 min"; actual default now 30 min.
@@ -438,7 +438,7 @@ reviewing a specific PR's patch.
 **Fix:** PR-06 replaced the silent drop with `Effect::Log { level: LogLevel::Warn, source: "process::command", message: "apply_knob: type mismatch id=... value=..." }`. Shell forwards Effect::Log to tracing. Core stays dependency-free. Apply_knob signature updated to take `&mut Vec<Effect>`; two call sites updated.
 
 ### [A-62] Dashboard "Cadence" column label is wrong for signal-driven D-Bus sensors
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `web/src/render.ts:88-99`, `crates/shell/src/dashboard/convert.rs:337-370`
 **Description:** Displayed value is the poll-floor (500 ms); actual `ItemsChanged` can arrive more often. "Cadence" misleads.
@@ -469,7 +469,7 @@ reviewing a specific PR's patch.
 *(Duplicate of A-02.)*
 
 ### [A-67] `allow_battery_to_car` boot-reset depends on MQTT bootstrap completing
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/mod.rs:223-235`
 **Description:** SPEC §5.9 says "always boots false regardless of retained". Code relies on bootstrap path to send the reset; if MQTT is disabled entirely, `safe_defaults` handles it anyway — but the mechanism is less robust than the SPEC suggests.

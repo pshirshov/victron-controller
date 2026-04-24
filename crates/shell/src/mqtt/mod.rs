@@ -114,7 +114,13 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
 
     // 4096-slot request queue — sized to absorb startup HA discovery + retained bootstrap + observer-mode Publish(ActuatedPhase) bursts without backpressuring the runtime dispatch loop.
     let (client, event_loop) = AsyncClient::new(opts, 4096);
-    info!(host = %config.host, port = config.port, "mqtt connected (session will establish on first loop iteration)");
+    // A-38: wording previously read "mqtt connected" but at this point
+    // we've only constructed the rumqttc AsyncClient — no TCP handshake,
+    // no CONNACK. "mqtt client configured" is the honest description.
+    // The actual connect confirmation arrives asynchronously via the
+    // EventLoop's `Event::Incoming(Packet::ConnAck)`; subscribers that
+    // care log from there.
+    info!(host = %config.host, port = config.port, "mqtt client configured (actual connect fires on first event-loop iteration)");
     let publisher = Publisher {
         client: client.clone(),
         topic_root: config.topic_root.clone(),
@@ -192,6 +198,27 @@ impl Subscriber {
             format!("{}/knob/+/set", self.topic_root),
             format!("{}/writes_enabled/set", self.topic_root),
         ];
+
+        // A-67: queue the AllowBatteryToCar=false reset BEFORE the
+        // bootstrap event loop. SPEC §5.9 says "always boots false
+        // regardless of retained". The post-bootstrap override below
+        // covers the normal path, but if bootstrap crashes mid-way
+        // (event-loop error, deserialize panic), the override never
+        // fires and the runtime inherits whatever the retained
+        // (possibly-true) value set. Queuing the reset first means
+        // the runtime's first knob-update event is false; a later
+        // retained-true message applies temporarily, then the
+        // post-bootstrap override re-forces false. Belt-and-suspenders.
+        let _ = tx
+            .send(Event::Command {
+                command: Command::Knob {
+                    id: KnobId::AllowBatteryToCar,
+                    value: KnobValue::Bool(false),
+                },
+                owner: Owner::System,
+                at: Instant::now(),
+            })
+            .await;
 
         // Phase 1: bootstrap ---------------------------------------------------
         for t in &state_topics {

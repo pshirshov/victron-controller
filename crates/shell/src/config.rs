@@ -242,7 +242,10 @@ pub struct OpenMeteoProviderConfig {
     pub longitude: f64,
     #[serde(default)]
     pub planes: Vec<PlaneConfig>,
-    /// Poll cadence. No rate limit; default 15 min.
+    /// Poll cadence. No rate limit; default 30 min (see
+    /// `default_open_meteo_cadence` below for rationale — Open-Meteo
+    /// is free and the temperature signal moves slowly, so finer-
+    /// grained polls would waste calls without improving control).
     #[serde(
         default = "default_open_meteo_cadence",
         with = "humantime_serde_compat"
