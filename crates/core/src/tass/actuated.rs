@@ -42,11 +42,19 @@ impl<V> Actuated<V> {
         }
     }
 
-    /// Transition `Pending → Commanded`. Idempotent no-op outside `Pending`.
+    /// Transition `Pending → Commanded`, and deprecate any `Fresh`/`Stale`
+    /// actual value (the old reading described the pre-write target; we
+    /// just emitted the write so it's about to be replaced).
+    ///
+    /// Idempotent no-op outside `Pending`. The `actual.deprecate` side
+    /// effect only fires on the write/commit path — observer-mode runs
+    /// that call [`Self::propose_target`] but do *not* emit the effect
+    /// must not call `mark_commanded` either (PR-SCHED0-D02).
     pub fn mark_commanded(&mut self, now: Instant) {
         if matches!(self.target.phase, TargetPhase::Pending) {
             self.target.phase = TargetPhase::Commanded;
             self.target.since = now;
+            self.actual.deprecate(now);
         }
     }
 
@@ -110,9 +118,16 @@ impl<V: PartialEq> Actuated<V> {
     ///   phase is already past `Unset`, this is a no-op and returns `false`.
     /// - Otherwise transitions target phase to `Pending` (regardless of
     ///   whether the previous phase was `Unset`, `Pending`, `Commanded` or
-    ///   `Confirmed`), and deprecates any `Fresh`/`Stale` actual value.
+    ///   `Confirmed`).
     ///
     /// Returns `true` if a change was applied.
+    ///
+    /// PR-SCHED0-D02: this method has **no** side effect on `actual`. The
+    /// deprecation of the old reading moves to [`Self::mark_commanded`],
+    /// which only runs on the write/commit path. Observer-mode ticks
+    /// must call `propose_target` (so the dashboard sees the controller
+    /// intent) but must NOT call `mark_commanded` (no write happened, so
+    /// the existing reading still describes the actual physical state).
     ///
     /// This is the primitive API. Higher-level rules — dead-band filtering
     /// ("don't retarget within ±25 W of current target"), owner-priority
@@ -130,8 +145,6 @@ impl<V: PartialEq> Actuated<V> {
         self.target.owner = owner;
         self.target.phase = TargetPhase::Pending;
         self.target.since = now;
-
-        self.actual.deprecate(now);
 
         true
     }
@@ -323,7 +336,11 @@ mod tests {
     }
 
     #[test]
-    fn propose_deprecates_fresh_actual() {
+    fn propose_does_not_touch_actual_and_commit_deprecates() {
+        // PR-SCHED0-D02: `propose_target` has no side effect on actual.
+        // The deprecation only fires on the write/commit path
+        // (`mark_commanded`), so observer-mode ticks that propose but
+        // suppress effects leave the reading's Fresh/Stale state intact.
         let t0 = Instant::now();
         let mut e: Actuated<i32> = Actuated::new(t0);
         e.propose_target(10, Owner::SetpointController, at(t0, 1));
@@ -331,20 +348,32 @@ mod tests {
         e.on_reading(10, at(t0, 3));
         assert_eq!(e.actual.freshness, Freshness::Fresh);
 
+        // propose_target alone — observer-mode flow — must NOT deprecate.
         e.propose_target(20, Owner::SetpointController, at(t0, 4));
         assert_eq!(
             e.actual.freshness,
+            Freshness::Fresh,
+            "propose_target must not touch actual (observer-mode invariant)"
+        );
+        assert_eq!(e.actual.value, Some(10));
+
+        // mark_commanded (the write-path step) is what deprecates the
+        // old reading.
+        e.mark_commanded(at(t0, 5));
+        assert_eq!(
+            e.actual.freshness,
             Freshness::Deprecated,
-            "old reading describes the old target"
+            "mark_commanded must deprecate the old reading on the write path"
         );
         assert_eq!(e.actual.value, Some(10), "value preserved for diagnostics");
     }
 
     #[test]
-    fn propose_leaves_unknown_actual_alone() {
+    fn commit_leaves_unknown_actual_alone() {
         let t0 = Instant::now();
         let mut e: Actuated<i32> = Actuated::new(t0);
         e.propose_target(10, Owner::SetpointController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
         assert_eq!(
             e.actual.freshness,
             Freshness::Unknown,
@@ -416,9 +445,16 @@ mod tests {
         // 5. Controller reproposes the same value — no-op.
         assert!(!e.propose_target(-2300, Owner::SetpointController, at(t0, 35)));
 
-        // 6. Controller proposes a new value — restart cycle, deprecate stale.
+        // 6. Controller proposes a new value — restart cycle. Stale
+        // reading is still Stale because propose_target no longer
+        // deprecates (PR-SCHED0-D02); deprecation only fires on
+        // mark_commanded.
         assert!(e.propose_target(-2500, Owner::SetpointController, at(t0, 36)));
         assert_eq!(e.target.phase, TargetPhase::Pending);
+        assert_eq!(e.actual.freshness, Freshness::Stale);
+
+        // 7. Shell emits the write — now the old reading is deprecated.
+        e.mark_commanded(at(t0, 37));
         assert_eq!(e.actual.freshness, Freshness::Deprecated);
     }
 }

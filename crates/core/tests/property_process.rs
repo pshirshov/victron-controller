@@ -269,6 +269,64 @@ proptest! {
 // Property 3 — writes_enabled=false kill switch
 // -----------------------------------------------------------------------------
 
+/// R2-D02 companion. Observer-mode (`writes_enabled = false`) must,
+/// on a tick with all sensors Fresh:
+///   - leave `schedule_0.target.phase == Pending` with
+///     `days == DAYS_ENABLED` (7),
+///   - emit at least one `Effect::Log { source: "observer", .. }`,
+///   - emit at least one `Effect::Publish(ActuatedPhase { .. })` per
+///     PR-SCHED0-D03.
+///
+/// This used to be the prelude of the `writes_disabled_emits_no_actuation_effects`
+/// property test, but the property body couldn't actually exercise
+/// these positive assertions — random Ticks sampled 0..600s past
+/// `t0`, and `ControllerParams::freshness_local_dbus = 2s` means the
+/// very first Tick past t0+2s goes Stale and schedules bail. So the
+/// positive assertions only held on the prelude tick, not across the
+/// random body. Split out as a regular unit test so each concern is
+/// honestly scoped.
+#[test]
+fn observer_mode_tick_emits_publish_actuated_phase_but_no_writes() {
+    use victron_controller_core::controllers::schedules::DAYS_ENABLED;
+    use victron_controller_core::types::PublishPayload;
+
+    let t0 = Instant::now();
+    let mut world = seeded_world(t0);
+    let mut k = Knobs::safe_defaults();
+    k.writes_enabled = false;
+    world.knobs = k;
+    let topo = Topology::defaults();
+    let clock = FixedClock::at(naive_noon());
+
+    let eff = process(&Event::Tick { at: t0 }, &mut world, &clock, &topo);
+
+    assert!(
+        eff.iter().any(|f| matches!(f, Effect::Log { source: "observer", .. })),
+        "observer-mode tick must emit at least one Effect::Log {{ source: \"observer\", .. }}: {eff:?}"
+    );
+    assert_eq!(
+        world.schedule_0.target.phase,
+        TargetPhase::Pending,
+        "observer-mode tick with seeded battery_soc must leave schedule_0 in Pending"
+    );
+    let s0 = world.schedule_0.target.value.expect("schedule_0 proposed");
+    assert_eq!(
+        s0.days, DAYS_ENABLED,
+        "schedule_0 must propose days=DAYS_ENABLED (7) in observer mode"
+    );
+    assert!(
+        eff.iter()
+            .any(|f| matches!(f, Effect::Publish(PublishPayload::ActuatedPhase { .. }))),
+        "observer-mode tick must emit ActuatedPhase publishes (PR-SCHED0-D03): {eff:?}"
+    );
+    // Observer-mode contract: no actuation effects.
+    assert!(
+        !eff.iter()
+            .any(|f| matches!(f, Effect::WriteDbus { .. } | Effect::CallMyenergi(_))),
+        "observer-mode tick must not emit WriteDbus/CallMyenergi: {eff:?}"
+    );
+}
+
 proptest! {
     #[test]
     fn writes_disabled_emits_no_actuation_effects(
@@ -285,6 +343,15 @@ proptest! {
         let topo = Topology::defaults();
         let clock = FixedClock::at(naive_noon());
 
+        // Property body: the only invariant that actually holds under
+        // random Ticks sampled up to t0+600s is "no WriteDbus / no
+        // CallMyenergi" — once freshness decays past
+        // ControllerParams::freshness_local_dbus (2s), controllers
+        // early-out anyway. ActuatedPhase publishes are explicitly
+        // allowed (PR-SCHED0-D03). Positive assertions about
+        // phase=Pending / observer logs live in the sibling
+        // non-property test
+        // observer_mode_tick_emits_publish_actuated_phase_but_no_writes.
         for e in &events {
             let effects = process(e, &mut world, &clock, &topo);
             for f in &effects {
@@ -292,6 +359,9 @@ proptest! {
                     !matches!(f, Effect::WriteDbus { .. } | Effect::CallMyenergi(_)),
                     "emitted an actuation effect with writes_enabled=false: {:?}", f
                 );
+                // Note: Effect::Publish(PublishPayload::ActuatedPhase { .. })
+                // is explicitly permitted here under PR-SCHED0-D03 —
+                // observer mode still publishes proposed phases.
             }
         }
     }

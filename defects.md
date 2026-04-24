@@ -866,3 +866,120 @@ defects section follows below with review-round findings.)
 **Severity:** nit (process)
 **Location:** whole diff
 **Description:** PR-04 and PR-06 launched in parallel; reviewer's diff captured both. Honest scope call-out in commit message suffices.
+
+---
+
+## PR-DAG — TASS cores as a validated DAG
+
+### [PR-DAG-D01] Shared derivations read by ≥ 2 cores are not themselves cores — cross-controller drift is an architectural shape bug
+**Status:** open
+**Severity:** major (architectural)
+**Location:** `crates/core/src/process.rs` (`compute_derived_view`, `run_setpoint`, `run_current_limit`), `crates/core/src/controllers/zappi_active.rs`, plus any similar ad-hoc bookkeeping field read by > 1 core.
+**Description:** PR-04 resolved the immediate A-05 hazard by extracting `classify_zappi_active` into a shared free function consumed by both `compute_derived_view` (fed into `run_setpoint`) and `run_current_limit`. That lifts the correctness symptom but not the underlying shape: two cores still independently call a third-party function and trust that both will stay in sync. Any future derived value read by > 1 core reintroduces the same drift risk. The correct shape per the TASS discipline is: the derived value is its own TASS core (a "derivation core") whose output is stored in world state; dependent cores declare a `depends_on` edge and the orchestrator walks cores in topological order. The DAG is built once at registry construction and validated for cycles + missing deps at startup (not runtime — a static registry check).
+**Root cause:** The core registry is currently implicit in `process()`'s hard-coded call order (`run_schedules` → `run_weather_soc` → `run_current_limit` → `run_setpoint` → …). Dependencies between cores are implied by read/write patterns on `world.bookkeeping`; there is no registry that records them, so neither the compiler nor a test can catch a misordering. The `DerivedView` helper was a pragmatic, localized workaround, not the right primitive.
+**Suggested fix:** Introduce a `Core` trait with `fn depends_on(&self) -> &'static [CoreId]` and `fn run(&self, &mut World, &dyn Clock, &mut Vec<Effect>)`. Register all cores (including new derivation cores like `ZappiActiveCore`) in a single `CoreRegistry`; topologically sort at construction; panic on cycles or missing deps. `process()` walks the sorted vector. Migrate `classify_zappi_active` to `ZappiActiveCore` that writes to a dedicated `world.derived.zappi_active` (not `bookkeeping`, which is user-facing retained state). Audit other shared bookkeeping fields — `battery_selected_soc_target`, `charge_to_full_required`, `charge_battery_extended_today` — and lift any read-by-multiple-cores field into its own derivation core.
+
+---
+
+## PR-SCHED0 — schedule_0 observed disabled post-df3ae4d
+
+### [PR-SCHED0-D01] `schedule_0` appears disabled on the dashboard / inverter despite `evaluate_schedules` unconditionally emitting `days=DAYS_ENABLED`
+**Status:** under fix
+**Severity:** major (user-visible regression)
+**Location:** `crates/core/src/process.rs:858-888` (`maybe_propose_schedule` observer-mode early-return); `crates/core/src/controllers/schedules.rs:125-131` (core logic — not the bug site); `crates/shell/src/dashboard/convert.rs:215-235`; `web/src/render.ts:209-226`.
+**Description:** User reports on field deployment of `df3ae4d`: "schedule 0 is now disabled too, but it must be always enabled (low-rate tariff)."
+**Root cause (confirmed by investigation agent `aae28a00667eab38e`):** Observer mode + stale legacy Node-RED readback. PR-05 made `maybe_propose_schedule` (and the other `maybe_propose_*`) early-return BEFORE any `propose_target` call when `writes_enabled=false`. Consequence: `world.schedule_0.target.phase` stays `Unset` with `value: None` in observer mode. Meanwhile the D-Bus readback path is unconditional (`shell/src/dbus/subscriber.rs:115-130, 455-466`); it reads the Venus's current days field — which is whatever legacy Node-RED last wrote (observed: `days=-7`). That value lands in `world.schedule_0.actual`, is serialized to the dashboard verbatim (`shell/src/dashboard/convert.rs:225-235`), and the web renderer JSON-stringifies the spec (`web/src/render.ts:210-217`). User reads `"days":-7` as "disabled" — which is structurally correct but operationally confusing because the controller *wants* it enabled, it just can't write.
+**Evidence:** `crates/core/src/controllers/schedules.rs:125-131` — `schedule_0.days = DAYS_ENABLED` is a literal, no input can override it. Test `schedule_0_is_always_boost_window_enabled` at `:252-260` confirms the invariant. So the core is fine; the bug is in the observer-mode semantic of `maybe_propose_*`.
+**Fix (the right shape):** Reverse half of PR-05's observer-mode change — in observer mode, DO call `propose_target` (so the target shows the intended value), but SKIP the `WriteDbus` / `CallMyenergi` / `mark_commanded` steps. This way the dashboard shows what the controller *wants*; the actual-vs-target divergence is visible as `Pending` phase. A-06 remains fixed because PR-05's `KillSwitch(false→true)` edge-reset (`reset_to_unset` on all six targets) still fires on the flip to live. Apply uniformly to `maybe_propose_setpoint`, `maybe_propose_current_limit`, `maybe_propose_schedule`, `maybe_propose_zappi_mode`, `maybe_propose_eddi_mode`. New test `schedule_0_target_is_always_enabled_in_observer_mode` locks the invariant.
+
+### [PR-SCHED0-D02] `propose_target` calls `self.actual.deprecate(now)` — observer mode now silently deprecates Actual freshness even when nothing is written
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/tass/actuated.rs:134` (`self.actual.deprecate(now)` inside `propose_target`); callers in `crates/core/src/process.rs:609, 743, 884, 978, 1038`.
+**Fix:** Moved the `self.actual.deprecate(now)` side effect out of `propose_target` into `mark_commanded` (`crates/core/src/tass/actuated.rs:50-57`). `propose_target` no longer has any effect on `Actual`. Since every live-path call site already pairs `propose_target` with `mark_commanded` *after* the writes_enabled gate, Actual deprecation is now correctly suppressed in observer mode. No new method was added — folding into `mark_commanded` is the natural semantic. Tests `propose_deprecates_fresh_actual` → renamed `propose_does_not_touch_actual_and_commit_deprecates` with inverted assertion; `propose_leaves_unknown_actual_alone` → `commit_leaves_unknown_actual_alone`; lifecycle integration test extended to cover the two-step flow.
+**Description:** Under PR-05 observer mode never called `propose_target`, so `Actual.freshness` was never forced to `Deprecated` from a controller proposal. PR-SCHED0 now calls `propose_target` unconditionally; whenever value or owner differs, the corresponding `actual` reading is marked `Deprecated`. The dashboard (and any downstream consumer of `Actual::freshness`) now shows stale-confirmed readings as Deprecated even though nothing was written. This is "half an actuation" adjacent to the target mutation and is NOT covered by the stated invariant "target mutation happens; effect emission is gated".
+**Suggested fix:** Either (a) factor the `actual.deprecate(now)` step out of `propose_target` and re-apply it only when an effect (`WriteDbus`/`CallMyenergi`) will actually be emitted; or (b) accept the leak and codify it with a test plus a design note in SPEC. Option (a) is cleaner and more honest — observer mode should not influence Actual's freshness state machine. Implementation sketch: split `propose_target` into `propose_target_no_deprecate(spec, owner, now) -> bool` and `commit_write(now)` which calls `self.actual.deprecate(now)`; observer path calls only the former; live path calls both.
+
+### [PR-SCHED0-D03] Live→observer transition leaks Commanded→Pending phase without publishing to dashboard
+**Status:** resolved
+**Severity:** major
+**Location:** All five propose sites in `crates/core/src/process.rs`; `Command::KillSwitch` handler around `:258-291`.
+**Description:** Scenario: writes are live, target settles `Commanded`. User flips kill switch OFF (live→observer). The KillSwitch edge-reset fires only on the false→true edge, so on true→false no reset happens. Next observer tick the controller proposes a different value or different owner: `propose_target` sets `phase = Pending`, deprecates `actual` (see D02). Then the `writes_enabled=false` gate returns before the `Effect::Publish(ActuatedPhase)` emission runs. Core state now says `Pending`; retained MQTT / dashboard still believes `Commanded`. This is a dashboard-vs-core phase divergence that PR-05's "target stays untouched in observer" guaranteed away.
+**Fix:** `Effect::Publish(ActuatedPhase)` now emits unconditionally above the `writes_enabled` gate in all five propose sites — setpoint (`process.rs:613-618`), current_limit (`:759-763`), schedule (`:904-908`), zappi_mode (`:1006-1010`), eddi_mode (`:1072-1076`). `WriteDbus` / `CallMyenergi` / `mark_commanded` / `actual.deprecate` (now inside `mark_commanded`) stay gated. Each site retains the original post-write publish too, which republishes with `phase=Commanded` after `mark_commanded` on the live path.
+
+### [PR-SCHED0-D04] `schedule_0_target_is_always_enabled_in_observer_mode` test is too narrow
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:1370-1396`.
+**Description:** The test seeds `battery_soc` and checks `schedule_0.target.value.days == DAYS_ENABLED`. It does not assert (a) `schedule_1` is also proposed, (b) full-spec equality on the schedule (if `ScheduleSpec` ever gains a field the `.days` check hides the drift), (c) the observer→live transition where observer already established `Pending` with the same value the live controller would propose (the exact real-world flow that motivated this PR).
+**Fix:** Test extended to compute expected `ScheduleSpec` via `evaluate_schedules` directly and assert full equality for both `schedule_0` and `schedule_1`, plus Pending phase for both. New test `schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick` added: observer tick proposes Pending, KillSwitch(true) resets to Unset, next tick emits 5 WriteDbus effects for schedule_0.
+
+### [PR-SCHED0-D05] Removal of `observer_mode_does_not_mutate_target_phase` dropped cross-controller observer-mode coverage
+**Status:** resolved
+**Severity:** minor
+**Location:** Deleted test in `crates/core/src/process.rs`; replacement only covers setpoint (`observer_mode_propose_target_still_sets_target_but_emits_no_write_effect`) and schedule_0 narrowly.
+**Description:** The removed test positively asserted that all six actuators stayed silent in observer mode with all sensors fully seeded. Its replacements cover setpoint (effects only) and schedule_0 (single-field). The current-limit / zappi / eddi paths could regress (e.g. re-introduce an observer-mode early-return in one but not the others) and only a single-entity test would catch it.
+**Fix:** Added `observer_mode_all_actuators_transition_to_pending_with_expected_values` in `process.rs`. Seeds all required sensors + zappi state; flips `writes_enabled=false`; raises SoC so eddi proposes Normal; runs one tick; asserts: grid_setpoint, input_current_limit, schedule_0, schedule_1, eddi_mode → Pending with expected values; zappi_mode → Unset with comment explaining that `evaluate_zappi_mode` returns `Leave` for the fixture (noon, EV disconnected, no boost flags).
+
+### [PR-SCHED0-D06] Property test `writes_disabled_emits_no_actuation_effects` doesn't cover the new observer-mode semantics
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/tests/property_process.rs:272-298`.
+**Description:** The property forbids `WriteDbus`/`CallMyenergi` but does not (a) forbid `Publish(ActuatedPhase)` — which after D03's fix will be allowed, so the property must positively allow it with a rationale comment; (b) assert `propose_target` IS called for at least the schedules path (the deterministic one); (c) forbid `Actual.freshness → Deprecated` transitions (see D02 — depends on which fix is chosen).
+**Fix:** Property test revised in `crates/core/tests/property_process.rs`: explicitly allows `Publish(ActuatedPhase)` (with inline comment referencing PR-SCHED0-D03); forbids `WriteDbus` / `CallMyenergi` on every emitted effect; adds positive prelude-tick assertions that `schedule_0.target.phase == Pending`, `.value.days == DAYS_ENABLED`, ≥ 1 `Effect::Log { source: "observer" }`, ≥ 1 `Publish(ActuatedPhase)`. Assertions are on the prelude (not the whole event tail) because random Ticks can age battery_soc past freshness, legitimately skipping schedules after that point.
+
+### [PR-SCHED0-R2-D01] D04 "observer → KillSwitch(true) → live" test is satisfied by a hand-synthesized Tick-3 scenario, not the actual next tick
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:1481-1582` (`schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick`).
+**Description:** `process()` re-runs every controller inside the same call that handles `Command::KillSwitch(true)`. So schedule_0 is already `Commanded` from the KillSwitch call; Tick 2's propose_target short-circuits (same value, phase != Unset); Tick 2 produces zero effects. The test discards `eff2` with `let _ = eff2;`, then hand-mutates `world.schedule_0.target` back to Pending/None and ticks `eff3`, asserting 5 WriteDbus there. That measures a synthetic state, not the real observer→KillSwitch→tick sequence.
+**Fix:** `schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick` rewritten to assert on `eff_on` directly — the KillSwitch dispatch re-runs all controllers and emits the 5 `Schedule { index: 0, .. }` WriteDbus effects there. Synthetic Tick-3 block deleted. Tick-1 observer assertions unchanged.
+
+### [PR-SCHED0-R2-D02] Property test's D06 positive assertions only cover the prelude tick — main event loop is untested for the new observer contract
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/tests/property_process.rs:272-345`.
+**Description:** `ControllerParams::freshness_local_dbus = 2s`; random Ticks sample `0..600s`. Once a Tick at t > 2s fires, `battery_soc` goes Stale and `run_schedules` bails on the usability check. The positive assertions "schedule stays Pending", "observer log fires", "ActuatedPhase publishes" are only verified on the single deterministic prelude tick — not on the random-event body. Coverage reduces to "no WriteDbus/CallMyenergi" which is what round 1 had.
+**Fix:** Option A. New non-property unit test `observer_mode_tick_emits_publish_actuated_phase_but_no_writes` in `property_process.rs` owns the positive assertions (observer log, Pending schedule, DAYS_ENABLED, ≥1 ActuatedPhase publish, no writes). The property `writes_disabled_emits_no_actuation_effects` is now narrowly scoped to "no WriteDbus / no CallMyenergi across random events; Publish(ActuatedPhase) allowed". Honest division of coverage.
+
+### [PR-SCHED0-R2-D03] D05 six-actuator test accepts `zappi_mode = Unset` on a fixture that never exercises zappi_mode's propose path
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:1651-1659`.
+**Description:** The test covers 5/6 actuators with Pending assertions and accepts `zappi_mode = Unset` on the grounds that `evaluate_zappi_mode` returns `Leave` for the fixture. That's a comment, not a test — if the zappi_mode dispatch changes so it proposes a mode for this fixture, the test keeps passing.
+**Fix:** Added sibling test `observer_mode_zappi_mode_transitions_to_pending_with_boost`. Fixture: clock in BOOST window (03:00) + `charge_car_boost=true`. Under those conditions `evaluate_zappi_mode` returns `Set(ZappiMode::Fast)`; observer-mode test asserts `zappi_mode.target.phase == Pending` + value == Fast + no `CallMyenergi`. Seals 6/6.
+
+### [PR-SCHED0-R2-D04] Double `Publish(ActuatedPhase)` per live-path tick is not "noise" — it is per-tick constant traffic on the external broker
+**Status:** resolved (deferred to M-AUDIT-2 MQTT hygiene sub-PR; tracked)
+
+### [PR-SCHED0-R3-D01] `schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick` counts by filter, not distinct fields
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs` — the schedule_0 WriteDbus-count assertion in the named test.
+**Description:** Filter + count == 5 would pass if all 5 effects carried the same `ScheduleField` (e.g. 5× `Days`). Doesn't lock the post-reset re-propose to "one WriteDbus per field".
+**Fix:** Replaced the count with a `HashSet<ScheduleField>` equality check against `{Start, Duration, Soc, Days, AllowDischarge}`.
+
+### [PR-SCHED0-R3-D02] Dead `_is_phase_publish` binding in property test
+**Status:** resolved
+**Severity:** trivial
+**Location:** `crates/core/tests/property_process.rs` body of `writes_disabled_emits_no_actuation_effects`.
+**Description:** `let _is_phase_publish = matches!(...)` was never read — documentation masquerading as code.
+**Fix:** Replaced with a plain comment citing PR-SCHED0-D03. Orphan `PublishPayload` import removed.
+
+### [PR-SCHED0-R3-D03] Property test's sibling-test reference is imprecise
+**Status:** resolved
+**Severity:** trivial
+**Location:** `crates/core/tests/property_process.rs` — comment in the property body.
+**Description:** Comment mentioned a "companion unit test" without naming it; harder for future maintainers to locate the positive-assertion coverage.
+**Fix:** Comment updated to name `observer_mode_tick_emits_publish_actuated_phase_but_no_writes` precisely.
+**Severity:** nit
+**Location:** All five propose sites in `crates/core/src/process.rs`.
+**Description:** Live-path shape: Publish(Pending) → WriteDbus → mark_commanded → Publish(Commanded). Two retained publishes per proposed change. At steady-state 1 Hz tick cadence that's ~172,800 publishes/entity/day on an external broker (see MEMORY — there's no local persistence, everything flows through external MQTT). Not harmless. Subsumes the previous PR-SCHED0-D07 nit with a stronger severity case.
+**Suggested fix:** Track `last_published_phase: Option<TargetPhase>` on `Actuated<V>`; emit Publish only on phase transition. Defer to the MQTT hygiene sub-PR of M-AUDIT-2, but block on empirical broker-capacity observation before that sub-PR goes live.
+
+### [PR-SCHED0-D07] Noisy repeated Publish(ActuatedPhase=Pending) in observer mode when controllers cycle between proposals (superseded by R2-D04)
+**Status:** resolved (superseded by PR-SCHED0-R2-D04 which quantifies per-tick traffic)
+**Severity:** nit
+**Location:** All five propose sites in `crates/core/src/process.rs` (the unconditional publish block added for D03).
+**Description:** Observed during D03 fix. If a controller oscillates between two proposed values in observer mode, `propose_target` short-circuits on same-value so in steady state there's no repeat; but a rapid oscillation (controller sees value A, then B, then A…) republishes `Pending` each time. The retained MQTT bus sees alternating Pending-phase publishes with no functional change. Harmless (dashboard re-renders idempotently; brokers typically dedup retained payloads) but could become visible noise under load.
+**Suggested fix:** Track last-published phase per Actuated entity and only emit Publish(ActuatedPhase) on an actual phase transition, not on every propose. Defer to M-AUDIT-2 hygiene rollup unless load tests surface it.

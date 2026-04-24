@@ -10,12 +10,19 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Milestones (high-level)
 
-- [~] **M-AUDIT** — Drain the 68 audit findings (A-01…A-68). Priority is
-  **physical-safety first** (NaN poisoning, stale-bookkeeping ordering,
-  observer→live transition, retained-MQTT range validation), followed by
-  honesty-of-state for observer-mode shadow runs. **All CRITICAL-tier
-  findings closed as of 2026-04-24 Wave 4.** Remaining: MAJOR/minor/nit
-  batchable into M-AUDIT-2.
+- [x] **M-AUDIT** — Drain the CRITICAL-tier of the 68 audit findings
+  (A-01…A-68). All 8 CRITICAL findings closed 2026-04-24; remaining
+  MAJOR/minor/nit backlog rolled into M-AUDIT-2.
+- [~] **M-AUDIT-2** — Remaining backlog from M-AUDIT plus new regressions
+  surfaced by field deployment of `df3ae4d`. Priority items:
+  (1) **PR-DAG** — lift shared classifiers into proper TASS derivation
+  cores with topological orchestrator + cycle-validating registry
+  (the A-05 hazard is architecturally the wrong shape — two cores
+  agreeing on a derivation is a smell; the derivation should be its
+  own core);
+  (2) **PR-SCHED0** — schedule_0 observed disabled post-`df3ae4d`
+  even though `evaluate_schedules` unconditionally sets DAYS_ENABLED
+  on it; determine root cause and lock invariant in a test.
 
 ---
 
@@ -79,15 +86,49 @@ following PRs:
   related A-23, A-24).
 
 Remaining audit items (A-13 Zappi auto-stop wiring; A-14 kWh/% unit fix;
-A-15 `charge_to_full_required` latch reset; A-16 forecast freshness filter;
-A-17/A-18 Hoymiles solar export + 500 W `zappi_active` fallback; A-25–A-28
-myenergi & forecast hardening; A-36 observer-mode `eddi_last_transition_at`
-honesty; A-38 MQTT connect log; A-39 dashboard three-gate badge; A-41
-fusion NaN filter; A-42 log_layer comment; A-43 Open-Meteo efficiency knob;
-A-49 DischargeTime HH:MM:SS; A-50 forecast TZ config; A-53–A-56, A-58,
-A-60, A-62–A-68 hygiene + honesty) are **deferred to a follow-up milestone
-M-AUDIT-2** unless trivially adjacent to a PR above; the planning subagent
-decides which ride along.
+A-16 forecast freshness filter; A-17/A-18 Hoymiles solar export + 500 W
+`zappi_active` fallback; A-25–A-28 myenergi & forecast hardening; A-36
+observer-mode `eddi_last_transition_at` honesty; A-38 MQTT connect log;
+A-39 dashboard three-gate badge; A-41 fusion NaN filter; A-42 log_layer
+comment; A-43 Open-Meteo efficiency knob; A-50 forecast TZ config;
+A-53–A-56, A-58, A-60, A-62–A-68 hygiene + honesty) are rolled into
+M-AUDIT-2 below; the planning subagent for each PR decides which ride
+along.
+
+---
+
+## Milestone M-AUDIT-2 — PR breakdown
+
+Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
+(planning subagent writes one per PR at kickoff).
+
+- [~] **PR-DAG** — TASS core DAG orchestrator. Lift shared derivations
+  (starting with `zappi_active`) into first-class derivation cores; wire
+  cores into a registry with explicit `depends_on` edges; topologically
+  sort at construction with cycle detection; `process()` walks the
+  sorted list. Replaces ad-hoc `compute_derived_view` helper from
+  PR-04. **Plan doc** to be seeded by planning subagent.
+- [x] **PR-SCHED0** — Observer-mode target-mutation inversion. Root
+  cause (b+a hybrid): observer mode left target=Unset while Node-RED
+  legacy `days=-7` was the visible `actual`; dashboard rendered the
+  actual verbatim. Fix: reversed half of PR-05 — in observer mode
+  `propose_target` still runs (target reflects intent), but
+  `WriteDbus`/`CallMyenergi`/`mark_commanded`/`actual.deprecate` stay
+  gated. Also lifted `Publish(ActuatedPhase)` above the gate so the
+  dashboard sees phase transitions honestly. A-06 remains fixed via
+  PR-05's KillSwitch edge-reset. 4 review rounds; 14 defects filed
+  (1 resolved-deferred, 13 resolved in-PR).
+- [ ] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (A-04, A-24).
+- [ ] **PR-07** — `GetNameOwner` re-resolution on `NameOwnerChanged` (A-11).
+- [ ] **PR-08** — `SchedulePartial` accumulator clearing (A-12, A-57).
+- [ ] **PR-09b** — `grid_export_limit_w` hardening follow-up to PR-09a
+  (remainder of A-09, A-10, A-31, A-34/A-35).
+- [ ] **PR-10** — `force_disable_export`: delete the unused field (A-19).
+- [ ] **PR-11** — weather-SoC routed through `accept_knob_command` +
+  γ-hold + once-per-day (A-20, A-21, A-36).
+- [ ] **PR-12** — myenergi HTTP body-level error parsing (A-22, A-23).
+- [ ] **PR-MISC** — minor/nit hygiene rollup (A-38, A-42, A-43, A-50,
+  A-53-A-68 as appropriate).
 
 ---
 
@@ -121,6 +162,13 @@ decides which ride along.
   `SAFE_MAX_GRID_LIMIT_W = 10_000` applied to both. Lands in PR-09.
 - [x] **`force_disable_export` in `CurrentLimitInputGlobals`:** delete
   the field (not yet used; dead code). Lands in PR-10.
+
+- [ ] **TASS cores form a validated DAG.** Any derived value read by
+  more than one core MUST be its own core (derivation core). The
+  orchestrator walks cores in topological order; dependency graph is
+  built at registry construction and validated for cycles + missing
+  deps. Lands in PR-DAG. Applies to `zappi_active` first; review other
+  existing read/write bookkeeping fields for similar shape.
 
 ---
 
@@ -271,6 +319,46 @@ decides which ride along.
   add other HashSets keyed on `String` derived from `p.topic` without
   first considering whether the underlying rumqttc type is `String` or
   `Bytes` — it's currently `String` (rumqttc 0.24.0).
+
+- **PR-SCHED0** (2026-04-24) — Observer-mode target-mutation inversion.
+  User-reported regression: on field deploy of `df3ae4d`, schedule_0
+  appeared "disabled" on the dashboard. Investigation showed the
+  dashboard was rendering `actual.days=-7` (legacy Node-RED residue)
+  because observer mode never proposed a target, so there was no
+  "target: DAYS_ENABLED" to display. Fix reverses half of PR-05:
+  `propose_target` now runs unconditionally; only the physical-write
+  effects (`WriteDbus`, `CallMyenergi`, `mark_commanded`, and — via
+  D02 — `actual.deprecate`) remain gated behind `writes_enabled`.
+  `Effect::Publish(ActuatedPhase)` lifted above the gate so the
+  dashboard sees Unset→Pending and Pending→Commanded transitions in
+  real time. Touched `crates/core/src/tass/actuated.rs` (split
+  `actual.deprecate` out of `propose_target` into `mark_commanded` —
+  cleaner TASS contract: target-phase transitions no longer side-
+  effect on Actual's freshness machine), all five `maybe_propose_*`
+  sites in `crates/core/src/process.rs`, plus extensive test coverage
+  across 4 review rounds. New/revised tests: six-actuator observer
+  Pending assertion (positive across all cores), zappi_mode BOOST-
+  window fixture, observer→KillSwitch(true)→writes real `eff_on`
+  assertion with distinct-field HashSet check, property test split
+  into negative invariants (random events) + positive prelude (unit
+  test). **A-06 regression analysis:** the original A-06 bug was
+  "observer-mode target stuck Pending forever". PR-05's fix had two
+  parts — observer-mode-skip and KillSwitch-edge-reset. PR-SCHED0
+  reverses half of part-1 (target is set), keeps all of part-2 (edge
+  reset). Same-value propose_target short-circuits so stuck-Pending
+  can still form, but the edge-reset clears it on the flip to live.
+  Verified by `schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick`
+  and by the existing `kill_switch_false_to_true_…` test. Verification:
+  205 core + 11 property + 50 shell tests green; clippy clean;
+  ARMv7 release ok; web bundle 26.8kB. Review rounds: 4 (round 1:
+  5 defects D02-D06; round 2: 4 defects R2-D01..D04; round 3:
+  3 defects R3-D01..D03; round 4 clean). One defect deferred to
+  M-AUDIT-2 MQTT hygiene: R2-D04 (double-publish dedup via
+  `last_published_phase` on `Actuated<V>`).
+  Constraint for future work: do NOT put observer-mode-disables on
+  any new propose path — the pattern is "propose_target always;
+  Publish(ActuatedPhase) always; all other effects gated by
+  `writes_enabled`".
 
 - **PR-URGENT-13** (2026-04-24) — Silent stale-sensor observability fix.
   Resolves A-69 (debug!→warn! periodic re-seed failures with 30s

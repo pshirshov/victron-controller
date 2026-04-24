@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 4414411e84f9f668e8decd5b0b2d4ddbd475e2fa2028baae3f62ec23ce0df3af # shrinks to events = [Sensor(SensorReading { id: BatterySoc, value: 0.0, at: Instant { tv_sec: 771544, tv_nsec: 508406717 } })]
+cc 3d5494b268d000cb6bb4de5bc89e2d89951dc0cd9f96770739d572bf0258a561 # shrinks to events = [Tick { at: Instant { tv_sec: 1004166, tv_nsec: 876652222 } }]

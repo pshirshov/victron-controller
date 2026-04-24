@@ -599,11 +599,28 @@ fn maybe_propose_setpoint(
         }
     }
 
-    // Observer mode (PR-05, A-06/A-07): emit the "would be set to X" log
-    // but do NOT mutate target state. Leaving the target in its prior
-    // phase means that when writes flip back on via `Command::KillSwitch`,
-    // the edge-trigger there resets every target to `Unset` and the next
-    // tick forces a clean propose + write.
+    // Propose target unconditionally (PR-SCHED0): target mutation must
+    // happen even in observer mode so the dashboard can show the
+    // controller's intent. The `writes_enabled` gate moves below, so
+    // effect emission (WriteDbus / mark_commanded / ActuatedPhase)
+    // stays suppressed. The `Command::KillSwitch(false→true)` edge
+    // still resets every target to Unset, which prevents the A-06
+    // stuck-Pending hazard when this path runs in observer mode.
+    let changed = world.grid_setpoint.propose_target(value, owner, now);
+    if !changed {
+        return;
+    }
+
+    // PR-SCHED0-D03: publish phase unconditionally. ActuatedPhase is a
+    // state-reporting effect (dashboard retained MQTT), not an
+    // actuation effect. Without this publish the dashboard's retained
+    // phase would go stale across live→observer transitions that move
+    // target Commanded→Pending with no WriteDbus.
+    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+        id: ActuatedId::GridSetpoint,
+        phase: world.grid_setpoint.target.phase,
+    }));
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -612,11 +629,6 @@ fn maybe_propose_setpoint(
                 "GridSetpoint would be set to {value} W (owner={owner:?}); suppressed by writes_enabled=false"
             ),
         });
-        return;
-    }
-
-    let changed = world.grid_setpoint.propose_target(value, owner, now);
-    if !changed {
         return;
     }
 
@@ -735,8 +747,22 @@ fn run_current_limit(
         }
     }
 
-    // Observer mode (PR-05): see `maybe_propose_setpoint` — target stays
-    // untouched; the `Command::KillSwitch(true)` edge-trigger re-arms it.
+    // Propose target unconditionally (PR-SCHED0): see
+    // `maybe_propose_setpoint`. The KillSwitch false→true edge still
+    // resets every target.
+    let changed = world
+        .input_current_limit
+        .propose_target(value, Owner::CurrentLimitController, now);
+    if !changed {
+        return;
+    }
+
+    // PR-SCHED0-D03: publish phase unconditionally; see `maybe_propose_setpoint`.
+    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+        id: ActuatedId::InputCurrentLimit,
+        phase: world.input_current_limit.target.phase,
+    }));
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -745,13 +771,6 @@ fn run_current_limit(
                 "InputCurrentLimit would be set to {value:.2} A; suppressed by writes_enabled=false"
             ),
         });
-        return;
-    }
-
-    let changed = world
-        .input_current_limit
-        .propose_target(value, Owner::CurrentLimitController, now);
-    if !changed {
         return;
     }
 
@@ -873,9 +892,22 @@ fn maybe_propose_schedule(
         ActuatedId::Schedule1
     };
 
-    // Observer mode (PR-05): see `maybe_propose_setpoint`. Skip the
-    // propose + 5 WriteDbus burst entirely. The `Command::KillSwitch(true)`
-    // edge-trigger will reset the target on the way back to live.
+    // Propose target unconditionally (PR-SCHED0): the dashboard reads
+    // `schedule_N.target.value` to display the controller's intent, so
+    // this must run even in observer mode. Effects below stay gated on
+    // `writes_enabled`. The `Command::KillSwitch(true)` edge-trigger
+    // still resets every target on observer→live.
+    let changed = actuated.propose_target(spec, Owner::ScheduleController, now);
+    if !changed {
+        return;
+    }
+
+    // PR-SCHED0-D03: publish phase unconditionally; see `maybe_propose_setpoint`.
+    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+        id,
+        phase: actuated.target.phase,
+    }));
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -884,11 +916,6 @@ fn maybe_propose_schedule(
                 "Schedule{index} would be set to {spec:?}; suppressed by writes_enabled=false"
             ),
         });
-        return;
-    }
-
-    let changed = actuated.propose_target(spec, Owner::ScheduleController, now);
-    if !changed {
         return;
     }
 
@@ -968,7 +995,21 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
 
     let now = clock.monotonic();
 
-    // Observer mode (PR-05): see `maybe_propose_setpoint`.
+    // Propose target unconditionally (PR-SCHED0): see
+    // `maybe_propose_setpoint`.
+    let changed = world
+        .zappi_mode
+        .propose_target(desired, Owner::ZappiController, now);
+    if !changed {
+        return;
+    }
+
+    // PR-SCHED0-D03: publish phase unconditionally; see `maybe_propose_setpoint`.
+    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+        id: ActuatedId::ZappiMode,
+        phase: world.zappi_mode.target.phase,
+    }));
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -977,13 +1018,6 @@ fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect
                 "ZappiMode would be set to {desired:?}; suppressed by writes_enabled=false"
             ),
         });
-        return;
-    }
-
-    let changed = world
-        .zappi_mode
-        .propose_target(desired, Owner::ZappiController, now);
-    if !changed {
         return;
     }
 
@@ -1027,7 +1061,21 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
 
     let now = clock.monotonic();
 
-    // Observer mode (PR-05): see `maybe_propose_setpoint`.
+    // Propose target unconditionally (PR-SCHED0): see
+    // `maybe_propose_setpoint`.
+    let changed = world
+        .eddi_mode
+        .propose_target(desired, Owner::EddiController, now);
+    if !changed {
+        return;
+    }
+
+    // PR-SCHED0-D03: publish phase unconditionally; see `maybe_propose_setpoint`.
+    effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+        id: ActuatedId::EddiMode,
+        phase: world.eddi_mode.target.phase,
+    }));
+
     if !world.knobs.writes_enabled {
         effects.push(Effect::Log {
             level: LogLevel::Info,
@@ -1036,13 +1084,6 @@ fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
                 "EddiMode would be set to {desired:?}; suppressed by writes_enabled=false"
             ),
         });
-        return;
-    }
-
-    let changed = world
-        .eddi_mode
-        .propose_target(desired, Owner::EddiController, now);
-    if !changed {
         return;
     }
 
@@ -1298,13 +1339,17 @@ mod tests {
     }
 
     #[test]
-    fn observer_mode_logs_only_no_target_mutation() {
-        // Observer mode = writes_enabled = false. PR-05 invariant:
-        //   - at least one Info-level `observer` Log
-        //   - NO WriteDbus / CallMyenergi
-        //   - NO Publish(ActuatedPhase) for any controller (target state
-        //     must stay untouched so the KillSwitch false→true edge can
-        //     reset it cleanly)
+    fn observer_mode_propose_target_still_sets_target_but_emits_no_write_effect() {
+        // PR-SCHED0: observer mode (`writes_enabled = false`) must:
+        //   - still call `propose_target` (so the dashboard can show the
+        //     controller's intent via `world.*.target.value`),
+        //   - emit at least one Info-level `observer` Log,
+        //   - emit NO `WriteDbus` / `CallMyenergi` (actuation effects
+        //     stay fully gated by writes_enabled).
+        //
+        // PR-SCHED0-D03 revises the contract: `Publish(ActuatedPhase)`
+        // IS emitted in observer mode because it is a state-reporting
+        // effect (dashboard retained MQTT), not an actuation effect.
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
@@ -1314,6 +1359,13 @@ mod tests {
         world.sensors.battery_soc.on_reading(90.0, c.monotonic);
 
         let effects = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        // Setpoint controller proposed → phase is Pending (not Unset,
+        // not Commanded) because the effect-emission path is suppressed.
+        assert_eq!(
+            world.grid_setpoint.target.phase, TargetPhase::Pending,
+            "observer mode must still propose the target"
+        );
 
         // At least one observer-source log line should fire.
         let observer_logs: Vec<_> = effects
@@ -1332,96 +1384,317 @@ mod tests {
             }
         }
 
-        // No actuation effects and no ActuatedPhase publishes — target
-        // state must stay pristine so the kill-switch edge-trigger works.
+        // No actuation effects — effect emission stays gated by
+        // writes_enabled so the bus never physically changes.
         for e in &effects {
             assert!(
-                !matches!(
-                    e,
-                    Effect::WriteDbus { .. }
-                        | Effect::CallMyenergi(_)
-                        | Effect::Publish(PublishPayload::ActuatedPhase { .. })
-                ),
-                "observer mode must not emit actuation or ActuatedPhase publish: {e:?}"
+                !matches!(e, Effect::WriteDbus { .. } | Effect::CallMyenergi(_)),
+                "observer mode must not emit actuation effects: {e:?}"
             );
         }
+
+        // ActuatedPhase publish for the grid setpoint IS expected
+        // (PR-SCHED0-D03). Verify phase=Pending since observer-mode
+        // didn't call mark_commanded.
+        let grid_publish = effects.iter().find_map(|e| match e {
+            Effect::Publish(PublishPayload::ActuatedPhase {
+                id: ActuatedId::GridSetpoint,
+                phase,
+            }) => Some(*phase),
+            _ => None,
+        });
+        assert_eq!(
+            grid_publish,
+            Some(TargetPhase::Pending),
+            "observer-mode tick must publish ActuatedPhase=Pending for the grid setpoint"
+        );
     }
 
     #[test]
-    fn observer_mode_does_not_mutate_target_phase() {
-        // PR-05, A-06: on a fresh boot (observer mode is the default),
-        // every actuated target must remain `Unset` after a Tick. The
-        // controllers must emit observer logs but skip propose_target
-        // entirely.
+    fn schedule_0_target_is_always_enabled_in_observer_mode() {
+        // PR-SCHED0 regression guard: in observer mode the schedules
+        // controller must still propose schedule_0 with `days = 7`
+        // (DAYS_ENABLED) so the dashboard reflects the controller's
+        // intent. Prior to PR-SCHED0 the observer-mode early-return
+        // skipped propose_target entirely, leaving `schedule_0.target`
+        // at Unset while the bus retained whatever Venus held (e.g.
+        // legacy `days=-7` from Node-RED), producing a
+        // schedule_0-disabled reading on the dashboard.
+        //
+        // PR-SCHED0-D04: assert BOTH schedules land in Pending with
+        // full ScheduleSpec equality, not just .days.
+        use crate::controllers::schedules::DAYS_ENABLED;
+        use crate::controllers::schedules::{
+            evaluate_schedules, SchedulesInput, SchedulesInputGlobals,
+        };
+
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
-        // seed_required_sensors enables writes; don't call it directly —
-        // inline the sensor seeds while leaving writes_enabled at its
-        // fresh-boot default (false).
-        let at = c.monotonic;
-        let ss = &mut world.sensors;
-        ss.battery_soc.on_reading(75.0, at);
-        ss.battery_soh.on_reading(95.0, at);
-        ss.battery_installed_capacity.on_reading(100.0, at);
-        ss.battery_dc_power.on_reading(0.0, at);
-        ss.mppt_power_0.on_reading(1500.0, at);
-        ss.mppt_power_1.on_reading(1000.0, at);
-        ss.soltaro_power.on_reading(500.0, at);
-        ss.power_consumption.on_reading(1200.0, at);
-        ss.grid_power.on_reading(500.0, at);
-        ss.grid_voltage.on_reading(230.0, at);
-        ss.grid_current.on_reading(2.0, at);
-        ss.consumption_current.on_reading(5.0, at);
-        ss.offgrid_power.on_reading(500.0, at);
-        ss.offgrid_current.on_reading(2.2, at);
-        ss.vebus_input_current.on_reading(0.0, at);
-        ss.evcharger_ac_power.on_reading(0.0, at);
-        ss.evcharger_ac_current.on_reading(0.0, at);
-        ss.ess_state.on_reading(10.0, at);
-        ss.outdoor_temperature.on_reading(15.0, at);
-        let nt = naive(12, 0);
-        world.typed_sensors.zappi_state.on_reading(
-            ZappiState {
-                zappi_mode: ZappiMode::Off,
-                zappi_plug_state: ZappiPlugState::EvDisconnected,
-                zappi_status: ZappiStatus::Paused,
-                zappi_last_change_signature: nt,
-            },
-            at,
-        );
-
+        // battery_soc is all run_schedules needs; leave writes_enabled
+        // at its fresh-boot default (false).
+        world.sensors.battery_soc.on_reading(75.0, c.monotonic);
         assert!(!world.knobs.writes_enabled, "fresh boot must be observer mode");
 
-        let effects = process(&Event::Tick { at }, &mut world, &c, &Topology::defaults());
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
 
-        // Every actuated target stays at Unset.
-        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Unset);
-        assert_eq!(world.input_current_limit.target.phase, TargetPhase::Unset);
-        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Unset);
-        assert_eq!(world.eddi_mode.target.phase, TargetPhase::Unset);
-        assert_eq!(world.schedule_0.target.phase, TargetPhase::Unset);
-        assert_eq!(world.schedule_1.target.phase, TargetPhase::Unset);
+        // Compute the expected specs identically to run_schedules so
+        // we can assert full equality (not just a single field).
+        let k = &world.knobs;
+        let bk = &world.bookkeeping;
+        let input = SchedulesInput {
+            globals: SchedulesInputGlobals {
+                charge_battery_extended: bk.charge_to_full_required
+                    || bk.charge_battery_extended_today,
+                charge_car_extended: k.charge_car_extended,
+                charge_to_full_required: bk.charge_to_full_required,
+                disable_night_grid_discharge: k.disable_night_grid_discharge,
+                zappi_active: bk.zappi_active,
+                above_soc_date: bk.above_soc_date,
+                battery_soc_target: k.battery_soc_target,
+            },
+            battery_soc: 75.0,
+        };
+        let expected = evaluate_schedules(&input, &c);
 
-        // At least one observer-source Log emitted.
-        assert!(
-            effects
-                .iter()
-                .any(|e| matches!(e, Effect::Log { source: "observer", .. })),
-            "expected at least one observer log, got {effects:#?}"
+        let s0 = world
+            .schedule_0
+            .target
+            .value
+            .expect("schedule_0 target must be proposed in observer mode");
+        assert_eq!(
+            s0.days, DAYS_ENABLED,
+            "schedule_0 must always be enabled (days=7); got {s0:?}"
+        );
+        assert_eq!(s0, expected.schedule_0, "schedule_0 full-spec mismatch");
+        assert_eq!(world.schedule_0.target.phase, TargetPhase::Pending);
+
+        let s1 = world
+            .schedule_1
+            .target
+            .value
+            .expect("schedule_1 target must be proposed in observer mode");
+        assert_eq!(s1, expected.schedule_1, "schedule_1 full-spec mismatch");
+        assert_eq!(world.schedule_1.target.phase, TargetPhase::Pending);
+    }
+
+    #[test]
+    fn schedule_0_observer_then_kill_switch_true_emits_write_dbus_next_tick() {
+        // PR-SCHED0-D04: two-tick observer → KillSwitch(true) → live
+        // transition. Tick 1 observer mode: schedule_0.target.phase ==
+        // Pending. Apply KillSwitch(true): reset to Unset fires for
+        // every target. Tick 2 live mode: schedule_0.target.phase ==
+        // Pending (fresh) AND a WriteDbus effect for Schedule { 0 } is
+        // emitted. Mirrors
+        // kill_switch_false_to_true_resets_pending_targets_and_forces_rewrite_next_tick
+        // for schedules.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.sensors.battery_soc.on_reading(75.0, c.monotonic);
+        assert!(!world.knobs.writes_enabled, "fresh boot must be observer mode");
+
+        // Tick 1 — observer.
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(
+            world.schedule_0.target.phase,
+            TargetPhase::Pending,
+            "observer tick leaves schedule_0 in Pending"
+        );
+        let observer_target = world
+            .schedule_0
+            .target
+            .value
+            .expect("observer tick proposed schedule_0 target");
+
+        // KillSwitch(true) — edge-trigger resets every target to Unset,
+        // then controllers re-run inside the same process() call and
+        // immediately re-propose with a fresh WriteDbus batch. We
+        // assert against `eff_on` directly (mirroring
+        // kill_switch_false_to_true_resets_pending_targets_and_forces_rewrite_next_tick).
+        let eff_on = process(
+            &Event::Command {
+                command: Command::KillSwitch(true),
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(world.knobs.writes_enabled);
+        assert_eq!(
+            world.schedule_0.target.phase,
+            TargetPhase::Commanded,
+            "post-reset controller run moved schedule_0 to Commanded"
+        );
+        assert_eq!(
+            world.schedule_0.target.value,
+            Some(observer_target),
+            "value unchanged across observer→live transition"
         );
 
-        // Zero WriteDbus / CallMyenergi / ActuatedPhase publishes.
-        for e in &effects {
-            assert!(
-                !matches!(
-                    e,
-                    Effect::WriteDbus { .. }
-                        | Effect::CallMyenergi(_)
-                        | Effect::Publish(PublishPayload::ActuatedPhase { .. })
-                ),
-                "observer mode leaked actuation or phase publish: {e:?}"
-            );
-        }
+        // Five WriteDbus effects for Schedule { index: 0 } (one per
+        // field: Start, Duration, Soc, Days, AllowDischarge) must
+        // appear in the KillSwitch(true) dispatch. Collect the
+        // observed ScheduleFields into a set so we catch regressions
+        // where, e.g., five writes carry the same field.
+        use std::collections::HashSet;
+        let schedule_fields: HashSet<ScheduleField> = eff_on
+            .iter()
+            .filter_map(|e| match e {
+                Effect::WriteDbus {
+                    target: DbusTarget::Schedule { index: 0, field },
+                    ..
+                } => Some(*field),
+                _ => None,
+            })
+            .collect();
+        let expected: HashSet<ScheduleField> = [
+            ScheduleField::Start,
+            ScheduleField::Duration,
+            ScheduleField::Soc,
+            ScheduleField::Days,
+            ScheduleField::AllowDischarge,
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            schedule_fields, expected,
+            "KillSwitch(true) must emit one schedule_0 WriteDbus per ScheduleField on the post-reset re-propose; got {eff_on:#?}"
+        );
+    }
+
+    #[test]
+    fn observer_mode_all_actuators_transition_to_pending_with_expected_values() {
+        // PR-SCHED0-D05: replaces the coverage lost when
+        // `observer_mode_does_not_mutate_target_phase` was deleted.
+        // Seed a fully-populated World (all required sensors, zappi
+        // state, knobs) then tick once in observer mode and assert
+        // each of the six Actuated targets is either:
+        //   - Pending with a sensible value, or
+        //   - explicitly Unset (with a comment explaining why the
+        //     controller has no usable input).
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        // seed_required_sensors enables writes; flip back to observer.
+        world.knobs.writes_enabled = false;
+        // Raise SoC so eddi controller proposes Normal (soc > 96),
+        // setpoint isn't clamped to 10 W floor, and schedules get
+        // full-SoC context.
+        world.sensors.battery_soc.on_reading(97.0, c.monotonic);
+
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        // 1. grid_setpoint — setpoint controller ran with all sensors
+        //    fresh; expect Pending.
+        assert_eq!(
+            world.grid_setpoint.target.phase,
+            TargetPhase::Pending,
+            "grid_setpoint should be Pending in observer mode"
+        );
+        assert!(
+            world.grid_setpoint.target.value.is_some(),
+            "grid_setpoint value must be set"
+        );
+
+        // 2. input_current_limit — current limit controller ran with
+        //    all sensors fresh; expect Pending.
+        assert_eq!(
+            world.input_current_limit.target.phase,
+            TargetPhase::Pending,
+            "input_current_limit should be Pending in observer mode"
+        );
+        assert!(
+            world.input_current_limit.target.value.is_some(),
+            "input_current_limit value must be set"
+        );
+
+        // 3. schedule_0 — always enabled (days=7), Pending.
+        assert_eq!(
+            world.schedule_0.target.phase,
+            TargetPhase::Pending,
+            "schedule_0 should be Pending in observer mode"
+        );
+        assert!(world.schedule_0.target.value.is_some());
+
+        // 4. schedule_1 — ditto, Pending.
+        assert_eq!(
+            world.schedule_1.target.phase,
+            TargetPhase::Pending,
+            "schedule_1 should be Pending in observer mode"
+        );
+        assert!(world.schedule_1.target.value.is_some());
+
+        // 5. zappi_mode — zappi state is seeded to Off/EvDisconnected.
+        //    Without charge_car_boost or charge_car_extended, and with
+        //    the disconnected plug, evaluate_zappi_mode returns Leave
+        //    at noon. Unset is expected.
+        assert_eq!(
+            world.zappi_mode.target.phase,
+            TargetPhase::Unset,
+            "zappi_mode stays Unset: noon + charge_car_boost=false + EV disconnected → Leave"
+        );
+
+        // 6. eddi_mode — SoC=97 > enable_soc=96, so EddiController
+        //    proposes Normal. Pending expected.
+        assert_eq!(
+            world.eddi_mode.target.phase,
+            TargetPhase::Pending,
+            "eddi_mode should be Pending (soc above enable_soc)"
+        );
+        assert!(world.eddi_mode.target.value.is_some());
+    }
+
+    #[test]
+    fn observer_mode_zappi_mode_transitions_to_pending_with_boost() {
+        // PR-SCHED0-D05 companion: the sibling noon-fixture test leaves
+        // zappi_mode at Unset because evaluate_zappi_mode returns Leave
+        // for noon + no boost flags. That's a fragile anti-assertion —
+        // it silently keeps passing if the controller's propose logic
+        // changes. This test exercises the positive path: a 03:00
+        // BOOST-window tick with `charge_car_boost = true` forces
+        // evaluate_zappi_mode to return Set(Fast), so in observer mode
+        // zappi_mode.target must land in Pending with value Fast.
+        let c = clock_at(3, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        // seed_required_sensors enables writes; flip back to observer.
+        world.knobs.writes_enabled = false;
+        world.knobs.charge_car_boost = true;
+
+        let eff = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        assert_eq!(
+            world.zappi_mode.target.phase,
+            TargetPhase::Pending,
+            "03:00 BOOST window + charge_car_boost=true must leave zappi_mode in Pending"
+        );
+        assert_eq!(
+            world.zappi_mode.target.value,
+            Some(ZappiMode::Fast),
+            "BOOST window + charge_car_boost=true → mode=Fast"
+        );
+        // Observer-mode contract: target mutation happens but no
+        // CallMyenergi effect leaks out.
+        assert!(
+            !eff.iter().any(|e| matches!(e, Effect::CallMyenergi(_))),
+            "observer mode must not emit CallMyenergi: {eff:#?}"
+        );
     }
 
     #[test]
