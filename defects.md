@@ -615,7 +615,7 @@ defects section follows below with review-round findings.)
 **Suggested fix:** DEFERRED to M-AUDIT-2 as a standalone testing hardening item. Out of scope for PR-01's surgical fix.
 
 ### [PR-01-D03] Fix suppresses the event silently; no counter / log of dropped non-finite readings
-**Status:** open
+**Status:** resolved
 **Severity:** minor
 **Location:** `crates/shell/src/dbus/subscriber.rs:441-444, caller sites ~291, ~392`
 **Description:** Silent drop on non-finite. Operator debugging "sensor went Stale" has no hint that Venus *is* publishing — just publishing bad data.
@@ -636,7 +636,7 @@ defects section follows below with review-round findings.)
 **Fix:** Removed both the redundant `Value::F64(_) => None` arm and the `#[allow(clippy::match_same_arms)]` attribute. Guard comment retained above the guarded arm. Clippy `-D warnings` green.
 
 ### [PR-01-D06] Pre-existing I64/U64 → f64 precision loss in `extract_scalar` surfaced by PR-01's attention to float validity
-**Status:** open
+**Status:** resolved (documented — all current Victron paths are well within f64's 2^53 exact range; comment points future callers at the hazard)
 **Severity:** nit
 **Location:** `crates/shell/src/dbus/subscriber.rs:447-454`
 **Description:** `I64 / U64 → f64` silently loses precision for values > 2^53. Unlikely for current sensor paths but the guarantee "returns some finite f64" is weaker than "returns an exact-value f64".
@@ -694,14 +694,14 @@ defects section follows below with review-round findings.)
 **Note:** Rendered moot if the user picks option (a) on the grid_voltage design question (drop voltage tracking entirely; use 230 V constant + direct grid_current sensor).
 
 ### [PR-02-D08] `MAX_SENSIBLE_GRID_V = 260.0` doc comment says "EN 50160 caps at +10% (253 V)" — code/comment mismatch
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/core/src/controllers/current_limit.rs:~39`
 **Description:** Comment cites 253 V; code uses 260 V. Either update comment to explain why 260 (headroom above EN 50160 for benign surges) or tighten the constant to 253.
 **Suggested fix:** Update docstring: "EN 50160 caps legitimate readings at +10% of nominal (253 V); we add 7 V of headroom to avoid false fallback on benign surges".
 
 ### [PR-02-D09] Test `current_limit_grid_v_fallback_just_below_threshold` is 28 V below the new 207 V floor
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/core/src/controllers/current_limit.rs:~683`
 **Description:** Test named "just below threshold" uses 179 V; after PR-02's floor raise to 207, 179 is "well below". Name is stale.

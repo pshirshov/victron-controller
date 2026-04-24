@@ -36,9 +36,13 @@ const ZAPPI_AMPS_FALLBACK_THRESHOLD: f64 = 1.0;
 /// at -10% of nominal (207 V). Below this we treat the measurement as
 /// grid loss / sensor glitch / NaN and fall back to [`NOMINAL_GRID_V`].
 const MIN_SENSIBLE_GRID_V: f64 = 207.0;
-/// Upper sanity bound on grid voltage. EN 50160 caps legitimate readings
-/// at +10% of nominal (253 V). Above this we treat the measurement as
-/// a sensor glitch / transient surge and fall back to NOMINAL_GRID_V.
+/// Upper sanity bound on grid voltage. EN 50160 caps legitimate
+/// readings at +10% of nominal (253 V) but we allow a 7 V headroom
+/// band above that for benign sensor noise and short transient
+/// surges (observed on the user's ET340 during kettle-start spikes).
+/// Anything > 260 is treated as a glitch and falls back to
+/// NOMINAL_GRID_V. PR-02-D08: the 260 ceiling vs 253 SPEC spec was
+/// previously a comment/code mismatch — now explained explicitly.
 const MAX_SENSIBLE_GRID_V: f64 = 260.0;
 /// UK nominal mains voltage — used when the measured value is unusable.
 const NOMINAL_GRID_V: f64 = 230.0;
@@ -687,8 +691,10 @@ mod tests {
 
     #[test]
     fn current_limit_grid_v_fallback_just_below_threshold() {
+        // PR-02-D09: tightened from 179 → 205 so the test name
+        // ("just below threshold") matches the post-PR-02 207 V floor.
         let mut input = base_input();
-        input.grid_voltage = 179.0;
+        input.grid_voltage = 205.0;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(has_factor(&out.decision, "grid_v_fallback"));
     }

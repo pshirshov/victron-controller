@@ -990,15 +990,38 @@ struct ItemsChangedBody(HashMap<String, ItemEntry>);
 
 /// Pull an `f64` out of a zvariant value, coercing across the integer
 /// and floating types Venus emits. Returns `None` for unexpected
-/// shapes (e.g. arrays, dicts).
+/// shapes (e.g. arrays, dicts) or for non-finite floats.
+///
+/// PR-01-D06: I64/U64 silently cast to f64 loses precision for values
+/// > 2^53. Victron's actual sensor paths all fit (SoC 0..100%,
+/// currents in amps, powers in single-digit kW) so the cast is safe
+/// in practice. The `#[allow(clippy::cast_precision_loss)]` is
+/// documented here — if a future path starts ingesting values > 2^53
+/// (timestamps? counters?), it needs a different extraction helper.
 fn extract_scalar(v: &Value<'_>) -> Option<f64> {
     // zbus 4 Value has F64 but no F32 variant at the top level (floats
     // are f64 on the wire). Integer variants vary by width.
     match v {
         // Guard admits only finite, non-subnormal floats (plus exact
-        // zero); NaN/±Inf/subnormals fall through to the wildcard
-        // `_ => None` below (sensor dropout, not data).
+        // zero); NaN/±Inf/subnormals are actively logged (PR-01-D03)
+        // then return None so the caller skips the reading. Without
+        // the log, an operator debugging "sensor went Stale" has no
+        // hint that Venus IS publishing — just publishing bad data.
         Value::F64(f) if f.is_finite() && (*f == 0.0 || f.is_normal()) => Some(*f),
+        Value::F64(f) => {
+            debug!(
+                value = %f,
+                "extract_scalar: dropping non-finite/subnormal F64 (NaN/Inf/sensor dropout)"
+            );
+            None
+        }
+        Value::Bool(b) => {
+            debug!(
+                value = %b,
+                "extract_scalar: dropping Value::Bool on a numeric path (A-02 safeguard)"
+            );
+            None
+        }
         Value::I32(n) => Some(f64::from(*n)),
         Value::U32(n) => Some(f64::from(*n)),
         Value::I64(n) => {
