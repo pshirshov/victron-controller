@@ -727,7 +727,6 @@ pub(crate) fn run_current_limit(
                 || world.bookkeeping.charge_to_full_required,
             disable_night_grid_discharge: k.disable_night_grid_discharge,
             battery_soc_target: bk.battery_selected_soc_target,
-            force_disable_export: k.force_disable_export,
             prev_ess_state: bk.prev_ess_state,
         },
         consumption_power: s.power_consumption.value.unwrap(),

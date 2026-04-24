@@ -85,7 +85,6 @@ pub struct CurrentLimitInputGlobals {
     pub extended_charge_required: bool,
     pub disable_night_grid_discharge: bool,
     pub battery_soc_target: f64,
-    pub force_disable_export: bool,
     pub prev_ess_state: Option<i32>,
 }
 
@@ -120,7 +119,6 @@ pub struct CurrentLimitDebug {
     pub max_system_current: f64,
     pub prev_ess_state: Option<i32>,
     pub ess_state: i32,
-    pub force_disable_export: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -296,7 +294,6 @@ pub fn evaluate_current_limit(
             max_system_current,
             prev_ess_state,
             ess_state,
-            force_disable_export: g.force_disable_export,
         },
         bookkeeping: CurrentLimitBookkeeping {
             prev_ess_state,
@@ -381,7 +378,6 @@ mod tests {
                 extended_charge_required: false,
                 disable_night_grid_discharge: false,
                 battery_soc_target: 80.0,
-                force_disable_export: false,
                 prev_ess_state: Some(10),
             },
             consumption_power: 500.0,

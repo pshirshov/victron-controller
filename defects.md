@@ -141,7 +141,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Plumb `evcharger_ac_power` into `CurrentLimitInput`. Replace the `zappi_amps > ZAPPI_AMPS_FALLBACK_THRESHOLD` test with `evcharger_ac_power > 500.0`.
 
 ### [A-19] `force_disable_export` plumbed into `CurrentLimitInputGlobals` but never consulted by any branch of `evaluate_current_limit`
-**Status:** open
+**Status:** resolved
 **Severity:** major
 **Location:** `crates/core/src/controllers/current_limit.rs:62,263`
 **Description:** Defence-in-depth gap. Setpoint forces idle when the flag is on, but current-limit still grants full 65 A AC-in authority — any alternate setpoint writer (future dashboard override) escapes the export kill.
