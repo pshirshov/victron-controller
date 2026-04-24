@@ -127,17 +127,24 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
     Ok(Some((publisher, subscriber)))
 }
 
-/// Simple 8-char suffix derived from PID + ns-since-epoch so each run
-/// of the binary has a distinct clientId.
+/// UUID-v4 suffix for MQTT clientId.
+///
+/// A-52: the prior PID⊕ns implementation had only 32 bits of entropy
+/// and was deterministic given the start-time, so two controllers
+/// restarted within a nanosecond of each other (or on hosts with
+/// identical clocks, during a coordinated restart) could pick the
+/// same clientId. Brokers with `clean_session=false` persistent
+/// subscriptions treat a repeat clientId as a session-takeover and
+/// kick the first connection offline — we saw this behavior in the
+/// earlier field wedges before we had subscriber-reconnect. uuid::v4
+/// gives 122 bits of entropy, collision probability effectively zero.
 fn rand_suffix() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let pid = u128::from(std::process::id());
-    #[allow(clippy::cast_possible_truncation)]
-    let xored = (pid ^ n) as u32;
-    format!("{xored:08x}")
+    // Strip dashes to keep the clientId compact; MQTT 3.1 limits
+    // clientId to 23 chars for strict conformance and "victron-
+    // controller-" prefix is 19 chars, leaving only 4. Brokers in
+    // the field (Mosquitto, rumqttd, FlashMQ) all accept much longer
+    // clientIds, so we send the full 32-hex-char v4.
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 // -----------------------------------------------------------------------------

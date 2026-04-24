@@ -2698,6 +2698,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
  "victron-controller-core",
  "victron-controller-dashboard-model",
  "zbus",

@@ -368,7 +368,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `.and_then(|v| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0)).unwrap_or(0.0)`.
 
 ### [A-52] `mqtt::rand_suffix` is PID⊕ns; collisions possible on fast restart; broker may reject dup client-id
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/mod.rs:130-139`
 **Description:** Low entropy. Clean-session=false persistent subscriptions could confuse the broker.
