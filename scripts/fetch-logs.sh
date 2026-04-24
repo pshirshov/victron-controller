@@ -102,6 +102,27 @@ if [ -n "\$MAIN_PID" ] && [ -d /proc/\$MAIN_PID ]; then
   echo
   echo "-- fds (interested in stdout/stderr = 1/2) --"
   ls -la /proc/\$MAIN_PID/fd/0 /proc/\$MAIN_PID/fd/1 /proc/\$MAIN_PID/fd/2 2>&1 || true
+  echo
+  echo "-- per-thread state (PR-URGENT-18 wedge diagnosis: look for pipe_write / __schedule) --"
+  # Venus /proc/<pid>/task/<tid>/stack requires kernel CONFIG_STACKTRACE;
+  # reads may return "[<0>] ?" on some builds. Always show at least state+wchan
+  # so we know whether threads are Running/Sleeping and what they're waiting on.
+  for tid in /proc/\$MAIN_PID/task/*/; do
+    [ -d "\$tid" ] || continue
+    t=\$(basename "\$tid")
+    name=\$(cat "\$tid/comm" 2>/dev/null || echo '?')
+    state=\$(awk '/^State:/{print \$2" "\$3}' "\$tid/status" 2>/dev/null || echo '?')
+    wchan=\$(cat "\$tid/wchan" 2>/dev/null || echo '?')
+    echo "  tid=\$t comm=\$name state=\$state wchan=\$wchan"
+  done
+  echo
+  echo "-- per-thread kernel stacks (may be unavailable on stripped kernels) --"
+  for tid in /proc/\$MAIN_PID/task/*/; do
+    [ -d "\$tid" ] || continue
+    t=\$(basename "\$tid")
+    echo "--- tid \$t ---"
+    cat "\$tid/stack" 2>&1 | head -20 || true
+  done
 else
   echo "(main service not running)"
 fi
