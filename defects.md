@@ -288,7 +288,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Publish the config-file gates as part of the snapshot (new sensors-meta-like struct or extra fields on the kill-switch state). Render badge as AND of all three gates. On startup, `warn!` once if any config-level gate is off.
 
 ### [A-40] `i64::from(duration.as_secs()).as_secs()` log truncates 500 ms to 0 s
-**Status:** open
+**Status:** resolved (subsumed by PR-CADENCE — the confusing `poll_period_s=0` log was replaced with per-service `default_reseed_s=60 settings_reseed_s=300`, which don't sub-second-truncate)
 **Severity:** nit
 **Location:** `crates/shell/src/dbus/subscriber.rs:286`
 **Description:** `info!(poll_period_s = poll_period.as_secs())` reports 0 for the 500 ms poll — literally says "poll disabled" in logs. Confusing on first read.
@@ -302,7 +302,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** `.filter(|v| v.is_finite())` before reducing. Mean must use the finite count.
 
 ### [A-42] `MQTT log_layer` comment claims "drop oldest" but `try_send` drops newest
-**Status:** open
+**Status:** resolved
 **Severity:** nit
 **Location:** `crates/shell/src/mqtt/log_layer.rs:131`
 **Description:** Flood scenario loses the *most relevant* logs (peak-incident lines), not old ones.
@@ -382,7 +382,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Update the comment.
 
 ### [A-54] `/api/version` stub: `min_supported_version == current_version`
-**Status:** open
+**Status:** resolved (kept as intentional pre-1.0 stub with explanatory comment; revisit at 1.0)
 **Severity:** nit
 **Location:** `crates/shell/src/dashboard/server.rs:159-163`
 **Description:** No consumer; harmless but misleading.

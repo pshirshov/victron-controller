@@ -133,7 +133,11 @@ impl<S: Subscriber> Layer<S> for MqttLogLayer {
             target: meta.target().to_string(),
             message: visitor.message,
         };
-        // try_send: don't block tracing on a full queue — drop oldest.
+        // try_send: don't block tracing on a full queue. tokio's
+        // `mpsc::Sender::try_send` drops the NEW record on Full (not
+        // the oldest). So a flood loses the peak-incident lines, not
+        // the prelude — acceptable trade for non-blocking tracing;
+        // the stdout subscriber still captures everything.
         let _ = self.tx.try_send(record);
     }
 }

@@ -155,6 +155,10 @@ async fn command_handler(
 }
 
 async fn version_handler() -> impl IntoResponse {
+    // `min_supported_version` intentionally equals `current_version`:
+    // the dashboard protocol is still in pre-1.0, no older clients
+    // to support. Revisit when we start tagging releases and the
+    // WebSocket / REST API shape stabilises. (A-54)
     Json(serde_json::json!({
         "current_version": env!("CARGO_PKG_VERSION"),
         "min_supported_version": env!("CARGO_PKG_VERSION"),
