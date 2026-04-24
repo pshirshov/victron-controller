@@ -43,7 +43,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Switch `zappi_last_change_signature` to a monotonic `Instant` stamped by the poller on state-change, not a wall-clock parsed from the cloud. Or: parse myenergi ts as UTC and convert to Local before storing. Option (1) is strictly better — "time since last observed change" is what the controller wants.
 
 ### [A-05] Controller ordering: `run_setpoint` reads bookkeeping that later controllers write
-**Status:** open
+**Status:** resolved (PR-04)
 **Severity:** major
 **Location:** `crates/core/src/process.rs:412-418`
 **Description:** `run_setpoint` consumes `bookkeeping.zappi_active` (written by `run_current_limit`), `battery_selected_soc_target` (written by `run_schedules`), and `charge_to_full_required` (written by `run_weather_soc`). First tick of an evening Zappi charge sees `zappi_active=false` (stale) → setpoint can propose −3.5 kW discharge into the car's grid leg despite `allow_battery_to_car=false`. Dead-band then locks the bad value in.
@@ -64,7 +64,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** On `KillSwitch(true)` transition, reset every target to `Target::unset(at)`: grid_setpoint, input_current_limit, zappi_mode, eddi_mode, schedule_0, schedule_1.
 
 ### [A-08] `parse_knob_value` accepts `"inf"` / `"NaN"` / out-of-range from retained MQTT, promoted to System-owned knobs at boot
-**Status:** open
+**Status:** resolved (PR-06)
 **Severity:** major
 **Location:** `crates/shell/src/mqtt/serialize.rs:263-332`, bootstrap ingest at `:59-112`
 **Description:** `f64::from_str("inf") → Ok(INFINITY)`, `"NaN" → NaN`, `"-50"`/`"9999"`/`u32::MAX` all parse. Bootstrap records these as `Owner::System` knobs, overriding any `HaMqtt` value from a previous run. `ExportSocThreshold=9999` means battery never releases; `BatterySocTarget=-50` starts an infinite discharge.
@@ -113,7 +113,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Keep `session_che_kwh` in kWh; add separate `zappi_limit_kwh` knob; compare kWh-to-kWh. Or have the shell precompute `session_charged_pct = min(100, che/limit*100)` and keep limit as 100 in core.
 
 ### [A-15] `charge_to_full_required |=` is a sticky latch; grid-charging forced on for up to 7 days after one bad morning
-**Status:** open
+**Status:** resolved (PR-04)
 **Severity:** major
 **Location:** `crates/core/src/process.rs:1078`
 **Description:** Weather-SoC ORs `d.charge_battery_extended` into `bookkeeping.charge_to_full_required`. The only reset path is the weekly Sunday-17:00 rollover in `evaluate_setpoint`. Between rollovers one cold morning locks grid-charging schedules on nightly until next Sunday. Dashboard shows `charge_to_full_required=true` with no reason.
@@ -431,11 +431,11 @@ reviewing a specific PR's patch.
 **Suggested fix:** `tokio::time::timeout(20s, …)`; serialize via per-device mutex or single-slot channel.
 
 ### [A-61] `apply_knob` catch-all arm silently drops unknown `(KnobId, KnobValue)` pairs
-**Status:** open
+**Status:** resolved (PR-06)
 **Severity:** nit
 **Location:** `crates/core/src/process.rs:363-367`
 **Description:** MQTT schema-drift keeps the cold-start default silently. `writes_enabled=false` makes this safe-by-default, but drift is invisible.
-**Suggested fix:** `warn!` with both sides of the mismatch.
+**Fix:** PR-06 replaced the silent drop with `Effect::Log { level: LogLevel::Warn, source: "process::command", message: "apply_knob: type mismatch id=... value=..." }`. Shell forwards Effect::Log to tracing. Core stays dependency-free. Apply_knob signature updated to take `&mut Vec<Effect>`; two call sites updated.
 
 ### [A-62] Dashboard "Cadence" column label is wrong for signal-driven D-Bus sensors
 **Status:** open
@@ -776,3 +776,93 @@ defects section follows below with review-round findings.)
 **Location:** `crates/core/src/controllers/current_limit.rs` (private consts + helper)
 **Description:** The fix is local. A reviewer adding a new controller that does `grid_power / input.grid_voltage` is not visually reminded that the gated form exists.
 **Suggested fix:** DEFERRED to M-AUDIT-2. Lift `effective_grid_v` + the consts into `crates/core/src/controllers/mod.rs` or a new `util.rs`. Add a module-level doc forbidding direct `/ grid_voltage` in any controller.
+
+---
+
+## PR-06 — Review round 1 (executor `a795fe267b3402586`, reviewer `a5e5cefa812301b0c`)
+
+### [PR-06-D01] `knob_range()` + `knob_schemas()` are two parallel tables; future drift is silent
+**Status:** open (deferred)
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs:269`, `crates/shell/src/mqtt/discovery.rs:128`
+**Description:** Two independent tables of the same `(min, max)` facts. Agree today by manual check; nothing enforces it.
+**Suggested fix:** `discovery.rs::knob_schemas()` consumes `serialize::knob_range()` as the source, appending step/unit/component. Defer — single-PR scope.
+
+### [PR-06-D02] `parse_ranged_float` silently drops NaN / ±Inf — contradicts A-08's operator-visibility intent
+**Status:** resolved
+**Severity:** minor (medium-impact for the A-08 scope)
+**Location:** `crates/shell/src/mqtt/serialize.rs:321`
+**Description:** Range-check path emits a `warn!`, but the finite-check path uses `?` to return `None` with no log. An operator whose retained state contained `"NaN"` / `"inf"` sees no log explaining why the knob reverted to System default.
+**Suggested fix:** Split — `let parsed = body.parse::<f64>().ok()?; if !parsed.is_finite() { warn!(id, value, "knob non-finite; dropped"); return None; }` before the range check.
+
+### [PR-06-D03] Warn! says "retained knob" but the same path is shared with live HaMqtt writes
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:329, 349`
+**Description:** `parse_knob_value` is called from both `decode_state_message` (Owner::System, retained bootstrap) and `decode_knob_set` (Owner::HaMqtt, live command). The log wording "retained knob out of range" is wrong for the HaMqtt case.
+**Suggested fix:** Reword to `"knob value out of range; dropped"`.
+
+### [PR-06-D04] Boundary-accept tests missing
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:787-821`
+**Description:** Only min-1/max+1 reject cases tested; no min-exact / max-exact accept cases. An off-by-one (`>` vs `>=`) would not be caught.
+**Suggested fix:** Add boundary-accept per range: `ExportSocThreshold=0`/`100`, `ZappiCurrentTarget=6.0`/`32.0`, `EddiEnableSoc=50`, `GridExportLimitW=10000`.
+
+### [PR-06-D05] Executor miscounted test cases (22 vs actual 23)
+**Status:** open (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:787-821`
+**Description:** Report said "22 cases"; actual 23. Trivial; report wasn't auto-generated from the code.
+
+### [PR-06-D06] Scope overlap with in-flight PR-04 — inherent to concurrent PRs on a shared working tree
+**Status:** resolved (informational)
+**Severity:** minor (process)
+**Location:** whole diff
+**Description:** Reviewer's `git diff` saw PR-04's `DerivedView`/midnight-reset alongside PR-06's knob validation. Both executors launched in parallel on disjoint logical scopes but shared process.rs. Overlap is textually disjoint (apply_knob catch-all vs DerivedView), mergeable.
+**Fix:** Commit both PRs together as the Wave-3 rollup with an honest scope statement.
+
+---
+
+## PR-04 — Review round 1 (executor `a42e402f381fe7e3c`, reviewer `af4c40c5f84c94540`)
+
+### [PR-04-D01] DerivedView diverges from current_limit's zappi_active classifier on the 230-500 W window
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:~195-199` vs `crates/core/src/process.rs:~453-458`
+**Description:** current_limit's fallback uses `zappi_amps > 1.0 A` (≈230 W at 230 V). DerivedView uses `evcharger_ac_power > 500 W`. In the 230–500 W window, current_limit classifies active → updates `bk.zappi_active=true`. DerivedView returns false → setpoint picks the no-zappi branch. **Relocates the A-05 hazard from "time-ordering" to "threshold disagreement"**. The two controllers can still make incompatible decisions for the same tick.
+**Suggested fix:** Extract current_limit's real zappi_active classifier into a shared free function `classify_zappi_active(&World, &dyn Clock) -> bool`. Both DerivedView and current_limit consume it. Canonical threshold is 500 W per SPEC §5.8 (A-18); update current_limit to match.
+
+### [PR-04-D02] DerivedView doesn't replicate the `WAIT_TIMEOUT_MIN` branch
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/current_limit.rs:~192-198` (WAIT_TIMEOUT_MIN), `crates/core/src/process.rs:~438-470`
+**Description:** current_limit treats `WaitingForEv` + time-in-state > 5 min as inactive. DerivedView doesn't implement the time-in-state gate. Car plugged + stalled past timeout → current_limit says inactive, setpoint sees active. Same cross-controller disagreement hazard.
+**Suggested fix:** Same as D01 — extract the full classifier including the WAIT_TIMEOUT branch. The shared function takes `&dyn Clock` to compute time-in-state.
+
+### [PR-04-D03] DerivedView reads `zappi_state.value` without `is_usable()` check
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~438-452`
+**Description:** DerivedView reads the last latched typed ZappiState regardless of freshness. current_limit bails when zappi_state is Stale/Unknown. During a myenergi outage, current_limit skips but DerivedView keeps reporting the last-seen state to setpoint — another divergence mode.
+**Suggested fix:** Gate on `world.typed_sensors.zappi_state.is_usable()` inside `classify_zappi_active`. Same guard applied to `evcharger_ac_power`.
+
+### [PR-04-D04] `setpoint_first_tick_sees_derived_zappi_active` doesn't exercise the A-05 ordering semantics
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~1948-2000` (test module)
+**Description:** Test stamps `bk.zappi_active=false` AND a live ZappiState, asserts setpoint saw active=true. Passes because `bk=false` on first tick — but a regression where `DerivedView` merely copies `bk.zappi_active` would also pass (since `bk` is stale false anyway). The test doesn't force setpoint to prefer DerivedView over `bk`.
+**Suggested fix:** Run two consecutive ticks. Tick 1: live state active, `bk.zappi_active=false`. Run current_limit first so it sets `bk.zappi_active=true`. Tick 2: force the live state back to inactive, `bk.zappi_active` stays true (stale). Assert setpoint follows the CURRENT live state, not the latched bk value. Or simpler: run only with live state set and assert setpoint's Decision factor or branch reflects live, not bk.
+
+### [PR-04-D05] `charge_to_full_required_resets_after_midnight_if_weekly_not_active` asserts bookkeeping only
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:~2000-2060`
+**Description:** Test confirms `world.bookkeeping.charge_battery_extended_today` becomes false post-midnight, but does not verify `run_schedules` then derives `charge_battery_extended=false`. A silent regression of the schedules wiring would not be caught because `seed_required_sensors` isn't called → schedules returns early.
+**Suggested fix:** Seed sensors, run schedules, assert the Decision factor shows `charge_battery_extended=false`.
+
+### [PR-04-D06] PR scope creep: diff contains PR-06's serialize/knob work
+**Status:** resolved (inherent to parallel-PR working-tree discipline)
+**Severity:** nit (process)
+**Location:** whole diff
+**Description:** PR-04 and PR-06 launched in parallel; reviewer's diff captured both. Honest scope call-out in commit message suffices.

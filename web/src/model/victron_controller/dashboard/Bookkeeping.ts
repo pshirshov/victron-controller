@@ -10,8 +10,10 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     private readonly _soc_end_of_day_target: number;
     private readonly _effective_export_soc_threshold: number;
     private readonly _battery_selected_soc_target: number;
+    private readonly _charge_battery_extended_today: boolean;
+    private readonly _charge_battery_extended_today_date_iso: string | undefined;
 
-    constructor(next_full_charge_iso: string | undefined, above_soc_date_iso: string | undefined, prev_ess_state: number | undefined, zappi_active: boolean, charge_to_full_required: boolean, soc_end_of_day_target: number, effective_export_soc_threshold: number, battery_selected_soc_target: number) {
+    constructor(next_full_charge_iso: string | undefined, above_soc_date_iso: string | undefined, prev_ess_state: number | undefined, zappi_active: boolean, charge_to_full_required: boolean, soc_end_of_day_target: number, effective_export_soc_threshold: number, battery_selected_soc_target: number, charge_battery_extended_today: boolean, charge_battery_extended_today_date_iso: string | undefined) {
         this._next_full_charge_iso = next_full_charge_iso
         this._above_soc_date_iso = above_soc_date_iso
         this._prev_ess_state = prev_ess_state
@@ -20,6 +22,8 @@ export class Bookkeeping implements BaboonGeneratedLatest {
         this._soc_end_of_day_target = soc_end_of_day_target
         this._effective_export_soc_threshold = effective_export_soc_threshold
         this._battery_selected_soc_target = battery_selected_soc_target
+        this._charge_battery_extended_today = charge_battery_extended_today
+        this._charge_battery_extended_today_date_iso = charge_battery_extended_today_date_iso
     }
 
     public get next_full_charge_iso(): string | undefined {
@@ -46,6 +50,12 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     public get battery_selected_soc_target(): number {
         return this._battery_selected_soc_target;
     }
+    public get charge_battery_extended_today(): boolean {
+        return this._charge_battery_extended_today;
+    }
+    public get charge_battery_extended_today_date_iso(): string | undefined {
+        return this._charge_battery_extended_today_date_iso;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -56,11 +66,13 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             charge_to_full_required: this._charge_to_full_required,
             soc_end_of_day_target: this._soc_end_of_day_target,
             effective_export_soc_threshold: this._effective_export_soc_threshold,
-            battery_selected_soc_target: this._battery_selected_soc_target
+            battery_selected_soc_target: this._battery_selected_soc_target,
+            charge_battery_extended_today: this._charge_battery_extended_today,
+            charge_battery_extended_today_date_iso: this._charge_battery_extended_today_date_iso !== undefined ? this._charge_battery_extended_today_date_iso : undefined
         };
     }
 
-    public with(overrides: {next_full_charge_iso?: string | undefined; above_soc_date_iso?: string | undefined; prev_ess_state?: number | undefined; zappi_active?: boolean; charge_to_full_required?: boolean; soc_end_of_day_target?: number; effective_export_soc_threshold?: number; battery_selected_soc_target?: number}): Bookkeeping {
+    public with(overrides: {next_full_charge_iso?: string | undefined; above_soc_date_iso?: string | undefined; prev_ess_state?: number | undefined; zappi_active?: boolean; charge_to_full_required?: boolean; soc_end_of_day_target?: number; effective_export_soc_threshold?: number; battery_selected_soc_target?: number; charge_battery_extended_today?: boolean; charge_battery_extended_today_date_iso?: string | undefined}): Bookkeeping {
         return new Bookkeeping(
             'next_full_charge_iso' in overrides ? overrides.next_full_charge_iso! : this._next_full_charge_iso,
             'above_soc_date_iso' in overrides ? overrides.above_soc_date_iso! : this._above_soc_date_iso,
@@ -69,11 +81,13 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             'charge_to_full_required' in overrides ? overrides.charge_to_full_required! : this._charge_to_full_required,
             'soc_end_of_day_target' in overrides ? overrides.soc_end_of_day_target! : this._soc_end_of_day_target,
             'effective_export_soc_threshold' in overrides ? overrides.effective_export_soc_threshold! : this._effective_export_soc_threshold,
-            'battery_selected_soc_target' in overrides ? overrides.battery_selected_soc_target! : this._battery_selected_soc_target
+            'battery_selected_soc_target' in overrides ? overrides.battery_selected_soc_target! : this._battery_selected_soc_target,
+            'charge_battery_extended_today' in overrides ? overrides.charge_battery_extended_today! : this._charge_battery_extended_today,
+            'charge_battery_extended_today_date_iso' in overrides ? overrides.charge_battery_extended_today_date_iso! : this._charge_battery_extended_today_date_iso
         );
     }
 
-    public static fromPlain(obj: {next_full_charge_iso: string | undefined; above_soc_date_iso: string | undefined; prev_ess_state: number | undefined; zappi_active: boolean; charge_to_full_required: boolean; soc_end_of_day_target: number; effective_export_soc_threshold: number; battery_selected_soc_target: number}): Bookkeeping {
+    public static fromPlain(obj: {next_full_charge_iso: string | undefined; above_soc_date_iso: string | undefined; prev_ess_state: number | undefined; zappi_active: boolean; charge_to_full_required: boolean; soc_end_of_day_target: number; effective_export_soc_threshold: number; battery_selected_soc_target: number; charge_battery_extended_today: boolean; charge_battery_extended_today_date_iso: string | undefined}): Bookkeeping {
         return new Bookkeeping(
             obj.next_full_charge_iso,
             obj.above_soc_date_iso,
@@ -82,7 +96,9 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             obj.charge_to_full_required,
             obj.soc_end_of_day_target,
             obj.effective_export_soc_threshold,
-            obj.battery_selected_soc_target
+            obj.battery_selected_soc_target,
+            obj.charge_battery_extended_today,
+            obj.charge_battery_extended_today_date_iso
         );
     }
 
@@ -157,6 +173,19 @@ export class Bookkeeping_UEBACodec {
             BinTools.writeF64(buffer, value.soc_end_of_day_target);
             BinTools.writeF64(buffer, value.effective_export_soc_threshold);
             BinTools.writeF64(buffer, value.battery_selected_soc_target);
+            BinTools.writeBool(buffer, value.charge_battery_extended_today);
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.charge_battery_extended_today_date_iso === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeString(buffer, value.charge_battery_extended_today_date_iso);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -183,6 +212,13 @@ export class Bookkeeping_UEBACodec {
             BinTools.writeF64(writer, value.soc_end_of_day_target);
             BinTools.writeF64(writer, value.effective_export_soc_threshold);
             BinTools.writeF64(writer, value.battery_selected_soc_target);
+            BinTools.writeBool(writer, value.charge_battery_extended_today);
+            if (value.charge_battery_extended_today_date_iso === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeString(writer, value.charge_battery_extended_today_date_iso);
+            }
         }
     }
     
@@ -194,7 +230,7 @@ export class Bookkeeping_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 3; i++) {
+            for (let i = 0; i < 4; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -207,6 +243,8 @@ export class Bookkeeping_UEBACodec {
         const soc_end_of_day_target = BinTools.readF64(reader);
         const effective_export_soc_threshold = BinTools.readF64(reader);
         const battery_selected_soc_target = BinTools.readF64(reader);
+        const charge_battery_extended_today = BinTools.readBool(reader);
+        const charge_battery_extended_today_date_iso = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
         return new Bookkeeping(
             next_full_charge_iso,
             above_soc_date_iso,
@@ -216,6 +254,8 @@ export class Bookkeeping_UEBACodec {
             soc_end_of_day_target,
             effective_export_soc_threshold,
             battery_selected_soc_target,
+            charge_battery_extended_today,
+            charge_battery_extended_today_date_iso,
         );
     }
 

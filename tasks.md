@@ -41,19 +41,18 @@ following PRs:
   consecutive fails; mpsc 256→4096 + 75% watermark warning; independent
   heartbeat interval with raw/routed signal counters. **Unblocks field
   diagnostics.**
-- [ ] **PR-04** — Controller ordering hazard + real forecast-derived CBE:
-  derive `zappi_active` at top of process pipeline; replace the
-  placeholder `!disable_night_grid_discharge || charge_to_full_required`
-  cbe derivation with the actual weather-SoC output
-  (`WeatherSocDecision.charge_battery_extended`), persisted as
-  `bookkeeping.charge_battery_extended_today` with midnight reset.
-  Forecast plumbing is already in place — just wire it through
-  (resolves A-05, A-15; partial A-18).
+- [x] **PR-04** — Canonical `classify_zappi_active` shared by
+  `DerivedView` and `current_limit` (single source of truth); real
+  forecast-derived `charge_battery_extended_today` bookkeeping with
+  midnight reset; dropped `!disable_night_grid_discharge` term from
+  cbe derivation. Resolves A-05, A-15; partially A-18 (500 W fallback
+  now canonical across controllers).
 - [ ] **PR-05** — Observer → live transition: only mutate target when
   `writes_enabled=true`; `KillSwitch(true)` invalidates Pending targets
   (resolves A-06, A-07, A-59).
-- [ ] **PR-06** — MQTT retained-knob range + NaN/Inf validation (resolves
-  A-08, partial A-61).
+- [x] **PR-06** — MQTT retained-knob range + NaN/Inf validation + A-49
+  DischargeTime HH:MM:SS + `apply_knob` catch-all warn (resolves A-08,
+  A-61, A-49). Parallel table drift (PR-06-D01) deferred.
 - [ ] **PR-07** — `GetNameOwner` re-resolution on `NameOwnerChanged`
   (resolves A-11).
 - [ ] **PR-08** — `SchedulePartial` accumulator clearing (resolves A-12,
@@ -162,6 +161,65 @@ decides which ride along.
   test deferred, D06/D07 scope-sprawl misattributed to pre-review-loop
   state, D08/D09 deferred to PR-09b). Verification: green (196+10+45
   tests, clippy, ARMv7, web bundle 26.8kb).
+
+- **PR-04** (2026-04-24) — Canonical `classify_zappi_active` + real
+  forecast-derived CBE with midnight reset. Resolves A-05, A-15;
+  partial A-18. Field-observed bug (user saw cbe=true-by-default on
+  fresh boot) eliminated. New module
+  `crates/core/src/controllers/zappi_active.rs` holds the single
+  canonical classifier consumed by both `compute_derived_view`
+  (via `DerivedView`) and `run_current_limit` (via
+  `CurrentLimitInputGlobals.zappi_active`, pre-computed in
+  `process.rs` and passed in). Threshold canonicalised to
+  `evcharger_ac_power > 500 W` per SPEC §5.8. Preserves existing
+  current_limit classifier semantics including `ZappiPlugState`
+  handling, `Fault`/`Complete` inactivity, and
+  `WAIT_TIMEOUT_MIN=5 min` after WaitingForEv. `Bookkeeping` gains
+  `charge_battery_extended_today: bool` and
+  `charge_battery_extended_today_date: Option<NaiveDate>`;
+  `run_weather_soc` writes them at 01:55 from its real forecast
+  decision; `apply_tick` clears the flag on day rollover;
+  `run_schedules` consumes it as one of two OR-inputs to `cbe`
+  (the other is the existing weekly `charge_to_full_required`
+  rollover). `!disable_night_grid_discharge` term dropped —
+  that was the placeholder that made cbe true by default. Two
+  adversarial review rounds; D01 (cross-controller classifier
+  disagreement) was the major finding, resolved by sharing the
+  function. New tests: `setpoint_first_tick_sees_derived_zappi_active`,
+  `setpoint_follows_live_state_over_stale_bookkeeping_zappi_active`,
+  `charge_to_full_required_resets_after_midnight_if_weekly_not_active`,
+  `cbe_is_false_on_fresh_boot_default`. Verification: 199 core + 50
+  shell + 10 property tests green, clippy, ARMv7 release, web bundle.
+  Constraint for future work: do not add new zappi_active
+  classifications inline in any controller — use
+  `classify_zappi_active`. Adding a new `ZappiMode` variant MUST
+  preserve the function's exhaustive handling (the reviewer noted a
+  defensive-fallthrough `power_active` return currently unreachable
+  given 4-variant enum; left in place for future-proofing).
+
+- **PR-06** (2026-04-24) — Retained-knob range + NaN/Inf validation at
+  the MQTT boundary; `apply_knob` silent drop promoted to
+  `Effect::Log`. Resolves A-08, A-49, A-61. `knob_range()` table in
+  `crates/shell/src/mqtt/serialize.rs` (currently duplicating
+  `knob_schemas()` in `mqtt/discovery.rs` — PR-06-D01 deferred).
+  Helpers `parse_ranged_float` / `parse_ranged_u32` split parse and
+  finite-check so NaN / ±Inf emit their own `"knob non-finite;
+  dropped"` warn!, separate from the range violation
+  `"knob value out of range; dropped"` warn!. A-49 ride-along:
+  DischargeTime accepts HH:MM and HH:MM:SS. `apply_knob` catch-all
+  now emits `Effect::Log { level: Warn, source: "process::command",
+  … }` — preserves the core-crate dependency-free invariant (core has
+  no tracing dep; Effect::Log is the established pattern). `apply_knob`
+  signature changed to `&mut Vec<Effect>`; two call sites updated.
+  Review round 1 flagged D02 (silent NaN drop) + D03 (log wording
+  said "retained" on a shared path) as actionable; both fixed in the
+  same pass as PR-04's D01/D02/D03/D04/D05. D04 (boundary-accept
+  tests), D05 (test count miscount), D06 (process/scope)
+  deferred. Verification green alongside PR-04.
+  Constraint for future work: range bounds in `knob_range()` must
+  stay in sync with `mqtt/discovery.rs::knob_schemas()`; a TODO is
+  tracked as PR-06-D01 to make `discovery.rs` consume `knob_range()`
+  as the single source.
 
 - **PR-URGENT-14** (2026-04-24) — Retained-knob bootstrap dedup by topic.
   Resolves A-71. Field data showed 5 broker-retained topics redelivered

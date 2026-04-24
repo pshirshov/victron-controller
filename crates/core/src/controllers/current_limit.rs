@@ -18,7 +18,7 @@
 
 use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, tariff_band};
-use crate::myenergi::{ZappiMode, ZappiPlugState, ZappiState, ZappiStatus};
+use crate::myenergi::{ZappiMode, ZappiPlugState, ZappiState};
 use crate::types::Decision;
 
 // --- Constants ---
@@ -72,10 +72,16 @@ pub struct CurrentLimitInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CurrentLimitInputGlobals {
     pub zappi_current_target: f64,
     pub zappi_emergency_margin: f64,
     pub zappi_state: ZappiState,
+    /// Pre-computed by the canonical [`crate::controllers::zappi_active::classify_zappi_active`]
+    /// classifier. PR-04-D01/D02/D03: single source of truth shared with
+    /// the setpoint controller's `DerivedView`, so the two controllers
+    /// cannot disagree on `zappi_active` within one tick.
+    pub zappi_active: bool,
     pub extended_charge_required: bool,
     pub disable_night_grid_discharge: bool,
     pub battery_soc_target: f64,
@@ -173,30 +179,27 @@ pub fn evaluate_current_limit(
     let grid_underuse = (MAX_GRID_CURRENT_A - grid_current).ceil().max(0.0);
 
     // --- Zappi activity classification ---
+    // PR-04-D01/D02/D03: `zappi_active` now flows in via
+    // [`CurrentLimitInputGlobals::zappi_active`], computed once per
+    // tick by the canonical
+    // [`crate::controllers::zappi_active::classify_zappi_active`] so
+    // setpoint and current-limit always agree.
     let ZappiState {
         zappi_mode,
         zappi_plug_state,
-        zappi_status,
         zappi_last_change_signature,
+        ..
     } = g.zappi_state;
+    let zappi_active = g.zappi_active;
 
+    // `zappi_wait_timeout` stays a local computation — it's surfaced
+    // in the debug tuple for the dashboard but is not part of the
+    // canonical classifier's contract.
     #[allow(clippy::cast_precision_loss)]
     let time_in_state_min =
         (now - zappi_last_change_signature).num_seconds() as f64 / 60.0;
-
-    let is_inactive_plug = matches!(
-        zappi_plug_state,
-        ZappiPlugState::EvDisconnected | ZappiPlugState::Fault
-    );
-
     let zappi_wait_timeout = time_in_state_min > WAIT_TIMEOUT_MIN
         && zappi_plug_state == ZappiPlugState::WaitingForEv;
-
-    let zappi_active = (zappi_mode != ZappiMode::Off
-        && !is_inactive_plug
-        && zappi_status != ZappiStatus::Complete
-        && !zappi_wait_timeout)
-        || zappi_amps > ZAPPI_AMPS_FALLBACK_THRESHOLD;
 
     let zappi_overuse = (zappi_amps - g.zappi_current_target).max(0.0);
     let zappi_underuse = (g.zappi_current_target - zappi_amps).max(0.0);
@@ -349,6 +352,7 @@ fn fit_current(
 mod tests {
     use super::*;
     use crate::clock::FixedClock;
+    use crate::myenergi::ZappiStatus;
     use chrono::{NaiveDate, TimeDelta};
 
     fn clock_at(h: u32, m: u32) -> FixedClock {
@@ -378,6 +382,7 @@ mod tests {
                 zappi_current_target: 9.5,
                 zappi_emergency_margin: 5.0,
                 zappi_state: base_zappi_state(),
+                zappi_active: false,
                 extended_charge_required: false,
                 disable_night_grid_discharge: false,
                 battery_soc_target: 80.0,
@@ -400,52 +405,24 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // zappi_active classification
+    // zappi_active propagation
+    //
+    // Classification itself lives in `controllers::zappi_active`; these
+    // tests only verify that the flag passed in via globals reaches
+    // the debug/bookkeeping outputs and drives the branch correctly.
     // ------------------------------------------------------------------
 
     #[test]
-    fn zappi_off_with_no_current_is_inactive() {
-        let input = base_input();
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
-        assert!(!out.debug.zappi_active);
-    }
-
-    #[test]
-    fn zappi_fast_mode_with_connected_plug_is_active() {
+    fn zappi_active_true_propagates_to_debug_and_bookkeeping() {
         let mut input = base_input();
-        input.globals.zappi_state = ZappiState {
-            zappi_mode: ZappiMode::Fast,
-            zappi_plug_state: ZappiPlugState::Charging,
-            zappi_status: ZappiStatus::DivertingOrCharging,
-            zappi_last_change_signature: clock_at(12, 0).naive,
-        };
+        input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(out.debug.zappi_active);
+        assert!(out.bookkeeping.zappi_active);
     }
 
     #[test]
-    fn zappi_amps_fallback_triggers_active_even_when_state_says_off() {
-        let mut input = base_input();
-        input.zappi_current = 5.0; // > 1 threshold
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
-        assert!(out.debug.zappi_active);
-    }
-
-    #[test]
-    fn zappi_complete_status_is_inactive() {
-        let mut input = base_input();
-        input.globals.zappi_state = ZappiState {
-            zappi_mode: ZappiMode::Eco,
-            zappi_plug_state: ZappiPlugState::Charging,
-            zappi_status: ZappiStatus::Complete,
-            zappi_last_change_signature: clock_at(12, 0).naive,
-        };
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
-        assert!(!out.debug.zappi_active);
-    }
-
-    #[test]
-    fn zappi_waiting_for_ev_5_minutes_times_out() {
+    fn zappi_wait_timeout_still_surfaced_in_debug() {
         let mut input = base_input();
         let six_min_ago = clock_at(12, 0).naive - TimeDelta::minutes(6);
         input.globals.zappi_state = ZappiState {
@@ -454,22 +431,11 @@ mod tests {
             zappi_status: ZappiStatus::Paused,
             zappi_last_change_signature: six_min_ago,
         };
+        // zappi_active is independently supplied; debug should still
+        // report the wait-timeout derived locally from state.
+        input.globals.zappi_active = false;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(out.debug.zappi_wait_timeout);
-        assert!(!out.debug.zappi_active);
-    }
-
-    #[test]
-    fn zappi_disconnected_is_inactive() {
-        let mut input = base_input();
-        input.globals.zappi_state = ZappiState {
-            zappi_mode: ZappiMode::Eco,
-            zappi_plug_state: ZappiPlugState::EvDisconnected,
-            zappi_status: ZappiStatus::Paused,
-            zappi_last_change_signature: clock_at(12, 0).naive,
-        };
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
-        assert!(!out.debug.zappi_active);
     }
 
     // ------------------------------------------------------------------
@@ -491,6 +457,7 @@ mod tests {
         input.offgrid_power = 500.0;
         input.grid_voltage = 230.0;
         input.zappi_current = 5.0;
+        input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         // available_pv = 3000 - 500 = 2500; /230 ≈ 10.87; clamped [0,65]
         assert!(out.input_current_limit > 0.0);
@@ -513,7 +480,8 @@ mod tests {
         let mut input = base_input();
         input.battery_power = 0.0; // not charging
         input.offgrid_current = 3.0;
-        input.zappi_current = 5.0; // makes zappi_active via amps fallback
+        input.zappi_current = 5.0;
+        input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(3, 0));
         assert!((out.input_current_limit - 3.0).abs() < f64::EPSILON);
     }
@@ -594,7 +562,7 @@ mod tests {
     #[test]
     fn zappi_active_is_exported_in_bookkeeping() {
         let mut input = base_input();
-        input.zappi_current = 10.0;
+        input.globals.zappi_active = true;
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(out.bookkeeping.zappi_active);
         assert_eq!(out.bookkeeping.zappi_active, out.debug.zappi_active);
@@ -614,6 +582,7 @@ mod tests {
             zappi_last_change_signature: clock_at(3, 0).naive,
         };
         input.zappi_current = 9.5;
+        input.globals.zappi_active = true;
         input.battery_power = 1000.0; // charging, so fitted target is used
         let out = evaluate_current_limit(&input, &clock_at(3, 0));
         // max_system_current becomes 65 - 9.5 = 55.5
@@ -631,6 +600,7 @@ mod tests {
             zappi_last_change_signature: clock_at(3, 0).naive,
         };
         input.zappi_current = 2.0; // well below zappi_current_target-1 = 8.5
+        input.globals.zappi_active = true;
         input.globals.zappi_emergency_margin = 5.0;
         input.battery_power = 1000.0;
         input.consumption_power = 1000.0;
@@ -667,7 +637,8 @@ mod tests {
         input.mppt_power_0 = 1500.0;
         input.mppt_power_1 = 1500.0;
         input.offgrid_power = 500.0;
-        input.zappi_current = 5.0; // make zappi_active so PV branch runs
+        input.zappi_current = 5.0;
+        input.globals.zappi_active = true; // force PV branch
         let out = evaluate_current_limit(&input, &clock_at(12, 0));
         assert!(out.input_current_limit.is_finite());
         assert!(out.debug.grid_current.is_finite());

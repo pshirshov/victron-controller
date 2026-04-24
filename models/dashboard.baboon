@@ -230,6 +230,8 @@ data Bookkeeping {
   soc_end_of_day_target: f64
   effective_export_soc_threshold: f64
   battery_selected_soc_target: f64
+  charge_battery_extended_today: bit
+  charge_battery_extended_today_date_iso: opt[str]
 }
 
 data ForecastSnapshot {

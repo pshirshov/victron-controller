@@ -262,6 +262,112 @@ fn encode_knob_value(v: KnobValue) -> String {
     }
 }
 
+/// Acceptable inclusive `[min, max]` range for float/int knobs at the
+/// MQTT parse boundary. Values outside are rejected with a warn! and
+/// the retained message is dropped (no apply). Matches the HA discovery
+/// entity constraints in `mqtt::discovery::knob_schemas`.
+fn knob_range(id: KnobId) -> Option<(f64, f64)> {
+    Some(match id {
+        // Percentages (0..100)
+        KnobId::ExportSocThreshold
+        | KnobId::DischargeSocTarget
+        | KnobId::BatterySocTarget
+        | KnobId::FullChargeDischargeSocTarget
+        | KnobId::FullChargeExportSocThreshold => (0.0, 100.0),
+
+        // Percentages with tighter HA-advertised bounds.
+        KnobId::ZappiLimit => (1.0, 100.0),
+        KnobId::EddiEnableSoc | KnobId::EddiDisableSoc => (50.0, 100.0),
+
+        // Currents (A)
+        KnobId::ZappiCurrentTarget => (6.0, 32.0),
+        KnobId::ZappiEmergencyMargin => (0.0, 10.0),
+
+        // Temperature (°C)
+        KnobId::WeathersocWinterTemperatureThreshold => (-30.0, 40.0),
+
+        // Energy thresholds (kWh)
+        KnobId::WeathersocLowEnergyThreshold
+        | KnobId::WeathersocOkEnergyThreshold
+        | KnobId::WeathersocHighEnergyThreshold
+        | KnobId::WeathersocTooMuchEnergyThreshold => (0.0, 500.0),
+
+        // Power (W)
+        KnobId::GridExportLimitW | KnobId::GridImportLimitW => (0.0, 10_000.0),
+
+        // Time (s)
+        KnobId::EddiDwellS => (0.0, 3600.0),
+
+        // Multiplier
+        KnobId::PessimismMultiplierModifier => (0.0, 2.0),
+
+        // Enums + bools don't use this table.
+        KnobId::ForceDisableExport
+        | KnobId::DisableNightGridDischarge
+        | KnobId::ChargeCarBoost
+        | KnobId::ChargeCarExtended
+        | KnobId::AllowBatteryToCar
+        | KnobId::DischargeTime
+        | KnobId::DebugFullCharge
+        | KnobId::ForecastDisagreementStrategy
+        | KnobId::ChargeBatteryExtendedMode => return None,
+    })
+}
+
+/// Parse a float knob body, rejecting non-finite values and values
+/// outside the HA-advertised range. Returns `None` (and logs) on
+/// rejection.
+fn parse_ranged_float(id: KnobId, body: &str) -> Option<f64> {
+    // PR-06-D02: split parse and finiteness so NaN/Inf are logged
+    // before being dropped (rather than silently discarded via
+    // `Option::filter`).
+    let parsed = body.parse::<f64>().ok()?;
+    if !parsed.is_finite() {
+        warn!(
+            id = ?id,
+            value = %body,
+            "knob non-finite; dropped"
+        );
+        return None;
+    }
+    if let Some((min, max)) = knob_range(id) {
+        if parsed < min || parsed > max {
+            // PR-06-D03: wording — this path runs for live HaMqtt
+            // writes too, not just retained knob replay.
+            warn!(
+                id = ?id,
+                value = %body,
+                min,
+                max,
+                "knob value out of range; dropped"
+            );
+            return None;
+        }
+    }
+    Some(parsed)
+}
+
+/// Parse a u32 knob body, rejecting values outside the HA-advertised
+/// range. Returns `None` (and logs) on rejection.
+fn parse_ranged_u32(id: KnobId, body: &str) -> Option<u32> {
+    let parsed = body.parse::<u32>().ok()?;
+    if let Some((min, max)) = knob_range(id) {
+        let as_f = f64::from(parsed);
+        if as_f < min || as_f > max {
+            // PR-06-D03: wording — shared path (live + retained).
+            warn!(
+                id = ?id,
+                value = %body,
+                min,
+                max,
+                "knob value out of range; dropped"
+            );
+            return None;
+        }
+    }
+    Some(parsed)
+}
+
 fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
     // Map each KnobId to its expected value shape.
     match id {
@@ -285,13 +391,15 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::WeathersocLowEnergyThreshold
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
-        | KnobId::WeathersocTooMuchEnergyThreshold => body.parse::<f64>().ok().map(KnobValue::Float),
-        KnobId::GridExportLimitW | KnobId::GridImportLimitW | KnobId::EddiDwellS => {
-            body.parse::<u32>().ok().map(KnobValue::Uint32)
+        | KnobId::WeathersocTooMuchEnergyThreshold => {
+            parse_ranged_float(id, body).map(KnobValue::Float)
         }
-        KnobId::DischargeTime => match body {
-            "02:00" => Some(KnobValue::DischargeTime(DischargeTime::At0200)),
-            "23:00" => Some(KnobValue::DischargeTime(DischargeTime::At2300)),
+        KnobId::GridExportLimitW | KnobId::GridImportLimitW | KnobId::EddiDwellS => {
+            parse_ranged_u32(id, body).map(KnobValue::Uint32)
+        }
+        KnobId::DischargeTime => match body.trim() {
+            "02:00" | "02:00:00" => Some(KnobValue::DischargeTime(DischargeTime::At0200)),
+            "23:00" | "23:00:00" => Some(KnobValue::DischargeTime(DischargeTime::At2300)),
             _ => {
                 warn!("unknown DischargeTime value: {body}");
                 None
@@ -680,5 +788,105 @@ mod tests {
             b"nope"
         )
         .is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // parse_knob_value boundary validation (A-08)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_knob_value_rejects_nan_inf_out_of_range() {
+        // (id, body) pairs that must all be rejected. Chosen to exercise
+        // the main float / int knob ranges from `knob_range`.
+        let cases: &[(KnobId, &str)] = &[
+            // Non-finite
+            (KnobId::ExportSocThreshold, "NaN"),
+            (KnobId::ExportSocThreshold, "inf"),
+            (KnobId::ExportSocThreshold, "-inf"),
+            (KnobId::PessimismMultiplierModifier, "NaN"),
+            // Percentage out-of-range
+            (KnobId::ExportSocThreshold, "101"),
+            (KnobId::ExportSocThreshold, "-1"),
+            (KnobId::DischargeSocTarget, "9999"),
+            // ZappiLimit (HA advertises 1..100)
+            (KnobId::ZappiLimit, "0"),
+            (KnobId::ZappiLimit, "101"),
+            // Eddi soc (HA advertises 50..100)
+            (KnobId::EddiEnableSoc, "49"),
+            (KnobId::EddiDisableSoc, "101"),
+            // Current
+            (KnobId::ZappiCurrentTarget, "5"),
+            (KnobId::ZappiCurrentTarget, "33"),
+            (KnobId::ZappiEmergencyMargin, "11"),
+            // Temperature
+            (KnobId::WeathersocWinterTemperatureThreshold, "-31"),
+            (KnobId::WeathersocWinterTemperatureThreshold, "41"),
+            // Energy
+            (KnobId::WeathersocLowEnergyThreshold, "-1"),
+            (KnobId::WeathersocTooMuchEnergyThreshold, "501"),
+            // Pessimism multiplier
+            (KnobId::PessimismMultiplierModifier, "-0.1"),
+            (KnobId::PessimismMultiplierModifier, "2.01"),
+            // Power (u32)
+            (KnobId::GridExportLimitW, "10001"),
+            (KnobId::GridImportLimitW, "10001"),
+            // Dwell (u32)
+            (KnobId::EddiDwellS, "3601"),
+        ];
+        for (id, body) in cases {
+            assert!(
+                parse_knob_value(*id, body).is_none(),
+                "expected reject for id={id:?} body={body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_knob_value_accepts_in_range() {
+        // Sanity: valid values still parse.
+        assert!(matches!(
+            parse_knob_value(KnobId::ExportSocThreshold, "80"),
+            Some(KnobValue::Float(f)) if (f - 80.0).abs() < f64::EPSILON
+        ));
+        assert!(matches!(
+            parse_knob_value(KnobId::ZappiCurrentTarget, "16"),
+            Some(KnobValue::Float(_))
+        ));
+        assert!(matches!(
+            parse_knob_value(KnobId::GridExportLimitW, "4900"),
+            Some(KnobValue::Uint32(4900))
+        ));
+        assert!(matches!(
+            parse_knob_value(KnobId::EddiDwellS, "0"),
+            Some(KnobValue::Uint32(0))
+        ));
+    }
+
+    #[test]
+    fn parse_knob_value_export_soc_threshold_9999_rejected() {
+        // Explicit named case called out in PR-06 scope.
+        assert!(parse_knob_value(KnobId::ExportSocThreshold, "9999").is_none());
+    }
+
+    #[test]
+    fn parse_knob_value_accepts_hhmmss_discharge_time() {
+        // A-49 ride-along: HA's default time-selector sends "HH:MM:SS".
+        assert!(matches!(
+            parse_knob_value(KnobId::DischargeTime, "02:00:00"),
+            Some(KnobValue::DischargeTime(DischargeTime::At0200))
+        ));
+        assert!(matches!(
+            parse_knob_value(KnobId::DischargeTime, "23:00:00"),
+            Some(KnobValue::DischargeTime(DischargeTime::At2300))
+        ));
+        // The existing short forms must still work.
+        assert!(matches!(
+            parse_knob_value(KnobId::DischargeTime, "02:00"),
+            Some(KnobValue::DischargeTime(DischargeTime::At0200))
+        ));
+        assert!(matches!(
+            parse_knob_value(KnobId::DischargeTime, "23:00"),
+            Some(KnobValue::DischargeTime(DischargeTime::At2300))
+        ));
     }
 }

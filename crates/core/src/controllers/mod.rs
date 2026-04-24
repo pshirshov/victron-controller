@@ -11,6 +11,7 @@ pub mod schedules;
 pub mod setpoint;
 pub mod tariff_band;
 pub mod weather_soc;
+pub mod zappi_active;
 pub mod zappi_mode;
 
 pub use tariff_band::{TariffBand, TariffBandKind, TariffBandSubKind, tariff_band};

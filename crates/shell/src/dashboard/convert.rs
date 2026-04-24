@@ -301,6 +301,10 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             soc_end_of_day_target: b.soc_end_of_day_target,
             effective_export_soc_threshold: b.effective_export_soc_threshold,
             battery_selected_soc_target: b.battery_selected_soc_target,
+            charge_battery_extended_today: b.charge_battery_extended_today,
+            charge_battery_extended_today_date_iso: b
+                .charge_battery_extended_today_date
+                .map(|d| d.to_string()),
         },
         forecasts: ModelForecasts {
             solcast: f.forecast_solcast.as_ref().map(forecast_snapshot),

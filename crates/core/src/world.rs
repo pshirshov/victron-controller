@@ -116,6 +116,15 @@ pub struct Bookkeeping {
     pub battery_selected_soc_target: f64,
     /// Last Eddi mode transition time (used by Eddi controller's dwell check).
     pub eddi_last_transition_at: Option<Instant>,
+    /// True if today's weather_soc decided the night charge should
+    /// extend through NightExtended (05:00-08:00). Set by `run_weather_soc`
+    /// at 01:55; reset to false on every calendar-day rollover (by
+    /// `apply_tick`). Read by `run_schedules` as the ONLY signal driving
+    /// `charge_battery_extended` (combined with a manual override knob).
+    pub charge_battery_extended_today: bool,
+    /// Calendar date `charge_battery_extended_today` was last set for, so
+    /// the tick-level reset knows when to clear.
+    pub charge_battery_extended_today_date: Option<NaiveDate>,
 }
 
 impl Bookkeeping {
@@ -131,6 +140,8 @@ impl Bookkeeping {
             effective_export_soc_threshold: 80.0,
             battery_selected_soc_target: 80.0,
             eddi_last_transition_at: None,
+            charge_battery_extended_today: false,
+            charge_battery_extended_today_date: None,
         }
     }
 }

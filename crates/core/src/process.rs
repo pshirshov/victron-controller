@@ -29,6 +29,7 @@ use crate::Clock;
 use crate::controllers::current_limit::{
     CurrentLimitInput, CurrentLimitInputGlobals, evaluate_current_limit,
 };
+use crate::controllers::zappi_active::classify_zappi_active;
 use crate::controllers::eddi_mode::{
     EddiModeInput, EddiModeKnobs, evaluate_eddi_mode,
 };
@@ -248,7 +249,7 @@ fn apply_command(
                 });
                 return;
             }
-            apply_knob(id, value, world);
+            apply_knob(id, value, world, effects);
             if owner == Owner::Dashboard {
                 world.knob_provenance.last_dashboard_write = Some(at);
             }
@@ -311,7 +312,7 @@ fn accept_knob_command(owner: Owner, at: Instant, world: &World) -> bool {
 }
 
 #[allow(clippy::too_many_lines)]
-fn apply_knob(id: KnobId, value: KnobValue, world: &mut World) {
+fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec<Effect>) {
     let k = &mut world.knobs;
     match (id, value) {
         (KnobId::ForceDisableExport, KnobValue::Bool(v)) => k.force_disable_export = v,
@@ -363,13 +364,18 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World) {
             k.charge_battery_extended_mode = v;
         }
         _ => {
-            // Type mismatch — silently drop. Could log, but this only
-            // happens if the shell constructs an invalid KnobValue.
+            effects.push(Effect::Log {
+                level: LogLevel::Warn,
+                source: "process::command",
+                message: format!(
+                    "apply_knob: KnobId/KnobValue type mismatch — silently dropped (schema drift?) id={id:?} value={value:?}"
+                ),
+            });
         }
     }
 }
 
-fn apply_tick(at: Instant, world: &mut World, _clock: &dyn Clock, topology: &Topology) {
+fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topology) {
     let p = topology.controller_params;
     let local = p.freshness_local_dbus;
     let myenergi = p.freshness_myenergi;
@@ -398,11 +404,41 @@ fn apply_tick(at: Instant, world: &mut World, _clock: &dyn Clock, topology: &Top
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
+
+    // A-15: midnight reset of the per-day weather_soc flag. If the date
+    // the flag was stamped for isn't today, clear it. Intentionally
+    // leave `charge_battery_extended_today_date` alone — it only advances
+    // when `run_weather_soc` fires at 01:55, so before the first run on a
+    // new day this field still points at yesterday (which is fine: the
+    // date mismatch is exactly what drives the reset).
+    let today = clock.naive().date();
+    if world.bookkeeping.charge_battery_extended_today_date != Some(today) {
+        world.bookkeeping.charge_battery_extended_today = false;
+    }
 }
 
 // =============================================================================
 // Controllers
 // =============================================================================
+
+/// Values derived from `world` once per tick, before controllers run.
+/// Avoids stale-bookkeeping reads across controllers within one cycle
+/// (A-05: `run_setpoint` previously consumed `bookkeeping.zappi_active`
+/// which `run_current_limit` writes later in the same tick).
+#[derive(Debug, Clone, Copy)]
+struct DerivedView {
+    zappi_active: bool,
+}
+
+/// Derive `zappi_active` via the canonical classifier so setpoint and
+/// current-limit see exactly the same value within a tick. The
+/// classifier itself handles freshness and the WaitingForEv timeout
+/// (PR-04-D01/D02/D03).
+fn compute_derived_view(world: &World, clock: &dyn Clock) -> DerivedView {
+    DerivedView {
+        zappi_active: classify_zappi_active(world, clock),
+    }
+}
 
 fn run_controllers(
     world: &mut World,
@@ -410,8 +446,9 @@ fn run_controllers(
     topology: &Topology,
     effects: &mut Vec<Effect>,
 ) {
-    run_setpoint(world, clock, topology, effects);
-    run_current_limit(world, clock, topology, effects);
+    let derived = compute_derived_view(world, clock);
+    run_setpoint(world, derived, clock, topology, effects);
+    run_current_limit(world, derived, clock, topology, effects);
     run_schedules(world, clock, effects);
     run_zappi_mode(world, clock, effects);
     run_eddi_mode(world, clock, effects);
@@ -422,6 +459,7 @@ fn run_controllers(
 
 fn run_setpoint(
     world: &mut World,
+    derived: DerivedView,
     clock: &dyn Clock,
     topology: &Topology,
     effects: &mut Vec<Effect>,
@@ -448,7 +486,11 @@ fn run_setpoint(
             discharge_soc_target: k.discharge_soc_target,
             full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
             full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
-            zappi_active: bk.zappi_active,
+            // A-05: consume the derived-view `zappi_active` (computed
+            // once per tick, before any controller) rather than
+            // `bk.zappi_active` which is written later in the pipeline
+            // by `run_current_limit`.
+            zappi_active: derived.zappi_active,
             allow_battery_to_car: k.allow_battery_to_car,
             discharge_time: k.discharge_time,
             debug_full_charge: k.debug_full_charge,
@@ -579,6 +621,7 @@ fn update_bookkeeping_from_setpoint(
 
 fn run_current_limit(
     world: &mut World,
+    derived: DerivedView,
     clock: &dyn Clock,
     topology: &Topology,
     effects: &mut Vec<Effect>,
@@ -611,6 +654,9 @@ fn run_current_limit(
             zappi_current_target: k.zappi_current_target,
             zappi_emergency_margin: k.zappi_emergency_margin,
             zappi_state: world.typed_sensors.zappi_state.value.unwrap(),
+            // PR-04-D01/D02/D03: share the DerivedView's `zappi_active`
+            // so setpoint and current-limit agree within a tick.
+            zappi_active: derived.zappi_active,
             extended_charge_required: k.charge_car_extended
                 || world.bookkeeping.charge_to_full_required,
             disable_night_grid_discharge: k.disable_night_grid_discharge,
@@ -700,14 +746,19 @@ fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
 
     let k = &world.knobs;
     let bk = &world.bookkeeping;
-    // NB: legacy flow treated `charge_battery_extended` as a separately
-    // tracked global set by weather_soc / HA. Here we derive it from
-    // `!disable_night_grid_discharge OR charge_to_full_required`, then
-    // optionally override via `charge_battery_extended_mode`. Both the
-    // components and the mode are surfaced as decision factors below.
-    let cbe_from_dngd = k.disable_night_grid_discharge.not_eq(true);
+    // A-15: `charge_battery_extended` in Auto mode is true when EITHER:
+    //   - the weekly Sunday-17:00 full-charge scheduler fired
+    //     (`bk.charge_to_full_required`), or
+    //   - today's weather_soc decision requires extended charging
+    //     (`bk.charge_battery_extended_today`, set at 01:55 from the
+    //     forecast + temperature ladder in `evaluate_weather_soc`;
+    //     reset each midnight via `apply_tick`).
+    // The legacy `!disable_night_grid_discharge` term was dropped — it
+    // made cbe permanently true by default and was never the right
+    // semantic.
     let cbe_from_full = bk.charge_to_full_required;
-    let cbe_derived = cbe_from_dngd || cbe_from_full;
+    let cbe_from_weather = bk.charge_battery_extended_today;
+    let cbe_derived = cbe_from_full || cbe_from_weather;
     let charge_battery_extended = match k.charge_battery_extended_mode {
         crate::knobs::ChargeBatteryExtendedMode::Auto => cbe_derived,
         crate::knobs::ChargeBatteryExtendedMode::Forced => true,
@@ -734,7 +785,7 @@ fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>
         .with_factor(
             "cbe derivation",
             format!(
-                "!disable_night_grid_discharge={cbe_from_dngd} || charge_to_full_required={cbe_from_full} = {cbe_derived}"
+                "charge_to_full_required={cbe_from_full} || charge_battery_extended_today={cbe_from_weather} = {cbe_derived}"
             ),
         )
         .with_factor(
@@ -1085,11 +1136,12 @@ fn run_weather_soc(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effec
         KnobValue::Bool(d.disable_night_grid_discharge),
         effects,
     );
-    world.bookkeeping.charge_to_full_required |= d.charge_battery_extended; // legacy collapsed
-    // (The legacy flow wrote `charge_battery_extended` as a separate global
-    //  that the schedules controller consults; we treat it here as folded
-    //  into charge_to_full_required for simplicity — see the comment in
-    //  run_schedules.)
+    // A-15: record today's weather_soc decision on a dedicated per-day
+    // field. `apply_tick` clears this on calendar-day rollover, so
+    // schedules sees a fresh decision each day instead of a sticky OR
+    // latch on `charge_to_full_required`.
+    world.bookkeeping.charge_battery_extended_today = d.charge_battery_extended;
+    world.bookkeeping.charge_battery_extended_today_date = Some(clock.naive().date());
 }
 
 fn propose_knob(
@@ -1098,20 +1150,8 @@ fn propose_knob(
     value: KnobValue,
     effects: &mut Vec<Effect>,
 ) {
-    apply_knob(id, value, world);
+    apply_knob(id, value, world, effects);
     effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
-}
-
-// --- Misc ---------------------------------------------------------------------
-
-/// Tiny bool-neq helper just to make the `run_schedules` call readable.
-trait BoolNot {
-    fn not_eq(self, other: bool) -> bool;
-}
-impl BoolNot for bool {
-    fn not_eq(self, other: bool) -> bool {
-        self != other
-    }
 }
 
 // =============================================================================
@@ -1886,6 +1926,217 @@ mod tests {
         assert!(
             names.contains(&"clamp_bounds_W"),
             "missing clamp_bounds_W factor in {names:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-04: DerivedView + A-15 cbe derivation
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn setpoint_first_tick_sees_derived_zappi_active() {
+        // A-05 regression: on the very first tick the controllers run,
+        // `bookkeeping.zappi_active` is still its default false. Setpoint
+        // must nevertheless see zappi_active=true because the per-tick
+        // DerivedView derives it from typed_sensors. Without the fix,
+        // setpoint would pick a branch that doesn't set the
+        // `zappi_active="true"` factor.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        // Force bookkeeping to the stale value the bug exhibited.
+        world.bookkeeping.zappi_active = false;
+        // Stamp the typed-sensor ZappiState as actively charging.
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Eco,
+                zappi_plug_state: ZappiPlugState::Charging,
+                zappi_status: ZappiStatus::DivertingOrCharging,
+                zappi_last_change_signature: naive(12, 0),
+            },
+            c.monotonic,
+        );
+        // Raise SoC above export threshold so the zappi-active branch
+        // actually fires.
+        world.sensors.battery_soc.on_reading(90.0, c.monotonic);
+
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        let decision = world
+            .decisions
+            .grid_setpoint
+            .as_ref()
+            .expect("grid_setpoint decision recorded");
+        let has_zappi_factor = decision
+            .factors
+            .iter()
+            .any(|f| f.name == "zappi_active" && f.value == "true");
+        assert!(
+            has_zappi_factor,
+            "setpoint did not see derived zappi_active=true on the first tick \
+             (factors: {:?})",
+            decision.factors
+        );
+    }
+
+    #[test]
+    fn setpoint_follows_live_state_over_stale_bookkeeping_zappi_active() {
+        // PR-04-D04: the residual hazard is the opposite direction —
+        // bookkeeping is LATCHED true (from a prior tick when the car
+        // was charging) but the LIVE typed sensor says the car is now
+        // disconnected. Setpoint must follow the live state (via the
+        // canonical classifier), not the stale bookkeeping.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        // Stale latch: pretend current_limit classified the car as
+        // active on a previous tick.
+        world.bookkeeping.zappi_active = true;
+
+        // Live state NOW: plug disconnected (definitively inactive).
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Off,
+                zappi_plug_state: ZappiPlugState::EvDisconnected,
+                zappi_status: ZappiStatus::Paused,
+                zappi_last_change_signature: naive(12, 0),
+            },
+            c.monotonic,
+        );
+        // Live power reading: comfortably below the 500 W fallback.
+        world.sensors.evcharger_ac_power.on_reading(0.0, c.monotonic);
+        // Raise SoC above export threshold so the branch choice actually
+        // moves between zappi-active vs the daytime default.
+        world.sensors.battery_soc.on_reading(90.0, c.monotonic);
+
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        let decision = world
+            .decisions
+            .grid_setpoint
+            .as_ref()
+            .expect("grid_setpoint decision recorded");
+        let has_zappi_factor = decision
+            .factors
+            .iter()
+            .any(|f| f.name == "zappi_active" && f.value == "true");
+        assert!(
+            !has_zappi_factor,
+            "setpoint followed stale bookkeeping.zappi_active=true when \
+             live typed state said EvDisconnected (factors: {:?})",
+            decision.factors
+        );
+    }
+
+    #[test]
+    fn charge_to_full_required_resets_after_midnight_if_weekly_not_active() {
+        // A-15 regression: weather_soc sets `charge_battery_extended_today`
+        // on day N; after the calendar-day rollover, `apply_tick` must
+        // clear it so `run_schedules` no longer derives cbe from
+        // yesterday's weather decision.
+        let day1 = FixedClock::at(naive(2, 0));
+        let mut world = World::fresh_boot(day1.monotonic);
+        seed_required_sensors(&mut world, day1.monotonic);
+        // Seed the bookkeeping as if weather_soc fired yesterday (day1).
+        world.bookkeeping.charge_battery_extended_today = true;
+        world.bookkeeping.charge_battery_extended_today_date = Some(day1.naive().date());
+
+        // Tick on the same day — flag stays set.
+        let _ = process(
+            &Event::Tick { at: day1.monotonic },
+            &mut world,
+            &day1,
+            &Topology::defaults(),
+        );
+        assert!(world.bookkeeping.charge_battery_extended_today);
+
+        // Advance to the next day; tick; the flag must clear.
+        let day2_clock = FixedClock::new(
+            day1.monotonic + StdDuration::from_secs(24 * 3600),
+            NaiveDate::from_ymd_opt(2026, 4, 22)
+                .unwrap()
+                .and_hms_opt(2, 0, 0)
+                .unwrap(),
+        );
+        seed_required_sensors(&mut world, day2_clock.monotonic);
+        let _ = process(
+            &Event::Tick { at: day2_clock.monotonic },
+            &mut world,
+            &day2_clock,
+            &Topology::defaults(),
+        );
+        assert!(
+            !world.bookkeeping.charge_battery_extended_today,
+            "midnight rollover must clear charge_battery_extended_today"
+        );
+
+        // PR-04-D05: also assert the downstream schedules decision
+        // reflects the reset — the "cbe derivation" factor must now
+        // resolve to false.
+        let d = world
+            .decisions
+            .schedule_0
+            .as_ref()
+            .expect("schedule decision published after midnight tick");
+        let cbe = d
+            .factors
+            .iter()
+            .find(|f| f.name == "cbe derivation")
+            .expect("cbe derivation factor present");
+        assert!(
+            cbe.value.ends_with("= false"),
+            "cbe must resolve false after midnight reset: {cbe:?}"
+        );
+    }
+
+    #[test]
+    fn cbe_is_false_on_fresh_boot_default() {
+        // User-reported regression: out of the box, with default knobs
+        // and no weather_soc run yet, `run_schedules` must derive
+        // charge_battery_extended = false. The legacy
+        // `!disable_night_grid_discharge` term short-circuited on the
+        // `false` default and made cbe permanently true.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        // Defaults: disable_night_grid_discharge=false, no weather_soc
+        // run today, no weekly full charge pending.
+        assert!(!world.knobs.disable_night_grid_discharge);
+        assert!(!world.bookkeeping.charge_to_full_required);
+        assert!(!world.bookkeeping.charge_battery_extended_today);
+
+        let _ = process(
+            &Event::Tick { at: c.monotonic },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        // The "cbe derivation" factor must resolve to false on a fresh boot.
+        let decision = world
+            .decisions
+            .schedule_0
+            .as_ref()
+            .expect("schedules decision recorded");
+        let cbe = decision
+            .factors
+            .iter()
+            .find(|f| f.name == "cbe derivation")
+            .expect("cbe derivation factor present");
+        assert!(
+            cbe.value.ends_with("= false"),
+            "expected cbe to resolve false on fresh boot, got {cbe:?}"
         );
     }
 }
