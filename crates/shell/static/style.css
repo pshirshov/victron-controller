@@ -491,6 +491,69 @@ footer {
   font-style: italic;
 }
 
+/* ----- SoC chart (PR-soc-chart) -------------------------------------- */
+
+#soc-chart {
+  margin: 8px 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+#soc-chart svg {
+  width: 100%;
+  height: 220px;
+  display: block;
+}
+#soc-chart .axis-label {
+  font-size: 10px;
+  fill: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+#soc-chart .axis-grid {
+  stroke: var(--border);
+  stroke-dasharray: 2 4;
+  stroke-width: 1px;
+}
+#soc-chart .trace-history {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  fill: none;
+}
+#soc-chart circle.trace-history {
+  /* Single-point fallback: a dot. The class above strips fill, so paint
+   * the fill back here. */
+  fill: var(--accent);
+}
+#soc-chart .trace-projection {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  fill: none;
+  opacity: 0.5;
+  stroke-dasharray: 4 4;
+}
+#soc-chart .now-marker {
+  stroke: var(--ok);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+}
+#soc-chart .terminus-label {
+  font-size: 11px;
+  fill: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+#soc-chart .hairline {
+  stroke: var(--muted);
+  stroke-width: 1px;
+  pointer-events: none;
+}
+#soc-chart .hairline-label {
+  font-size: 11px;
+  fill: var(--fg);
+  font-family: ui-monospace, monospace;
+  pointer-events: none;
+}
+
 /* ----- Tabs ---------------------------------------------------------- */
 
 .tabs {

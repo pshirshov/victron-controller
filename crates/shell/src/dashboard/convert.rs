@@ -12,6 +12,7 @@
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::too_many_lines)]
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use victron_controller_core::controllers::schedules::ScheduleSpec;
@@ -23,7 +24,7 @@ use std::time::Duration;
 
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
-use victron_controller_core::topology::ControllerParams;
+use victron_controller_core::topology::{ControllerParams, HardwareParams};
 use victron_controller_core::types::{
     BookkeepingKey, BookkeepingValue, Command, Decision, Event, KnobId, KnobValue, SensorId,
     TimerId,
@@ -32,6 +33,7 @@ use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
 use crate::config::DbusServices;
+use crate::dashboard::soc_history::{SocHistorySample as ShellSocSample, SocHistoryStore};
 
 /// Runtime inputs needed to build `sensors_meta`. Bundled so callers
 /// can pass one reference rather than juggling four arguments.
@@ -46,6 +48,14 @@ pub struct MetaContext {
     /// fallback source (whichever publishes most recently wins via
     /// `Actual::on_reading`'s freshness reset).
     pub matter_outdoor_topic: Option<String>,
+    /// PR-soc-chart: shared in-memory ring of recent SoC samples.
+    /// `world_to_snapshot` reads from this synchronously to populate
+    /// `soc_chart.history`.
+    pub soc_history: Arc<SocHistoryStore>,
+    /// PR-soc-chart: hardware params (specifically
+    /// `battery_nominal_voltage_v`) for the projection's capacity_wh
+    /// computation.
+    pub hardware: HardwareParams,
 }
 
 use victron_controller_dashboard_model::victron_controller::dashboard::mode::Mode as ModelMode;
@@ -79,6 +89,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::sensors::
 use victron_controller_dashboard_model::victron_controller::dashboard::target_phase::TargetPhase as ModelTargetPhase;
 use victron_controller_dashboard_model::victron_controller::dashboard::timer::Timer as ModelTimer;
 use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
+use victron_controller_dashboard_model::victron_controller::dashboard::soc_chart::SocChart as ModelSocChart;
+use victron_controller_dashboard_model::victron_controller::dashboard::soc_history_sample::SocHistorySample as ModelSocSample;
+use victron_controller_dashboard_model::victron_controller::dashboard::soc_projection::SocProjection as ModelSocProjection;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 
 // --- enums ----------------------------------------------------------------
@@ -335,6 +348,146 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         timers: timers_to_model(&world.timers),
         // PR-tz-from-victron: surface the Victron-supplied display TZ.
         timezone: world.timezone.clone(),
+        // PR-soc-chart: history + linear projection. Reads the in-memory
+        // ring synchronously; safe to call under the world-lock because
+        // the store has its own internal lock.
+        soc_chart: compute_soc_chart(
+            world,
+            &meta.soc_history.snapshot_blocking(),
+            meta.hardware,
+            now_epoch,
+        ),
+    }
+}
+
+// --- SoC chart compute (PR-soc-chart) -------------------------------------
+
+/// Idle threshold in W: below this magnitude `net_power` we treat the
+/// battery as quiescent and emit `slope_pct_per_hour = None`. 50 W is
+/// well below the noise floor of typical home loads.
+const SOC_IDLE_POWER_W: f64 = 50.0;
+
+/// Cap the projection horizon at +24 h regardless of slope, so a
+/// near-flat slope doesn't draw a 50000-hour line.
+const SOC_PROJECTION_HORIZON_H: f64 = 24.0;
+
+/// SoC floor used as the "depleting" terminus.
+const SOC_DEPLETION_FLOOR_PCT: f64 = 10.0;
+
+/// SoC ceiling used as the "filling" terminus.
+const SOC_FULL_PCT: f64 = 100.0;
+
+/// Build the wire `SocChart` from the shell-side history ring + a
+/// linear-projection compute over `world.sensors`. Pure: callable from
+/// tests with a hand-built world.
+#[must_use]
+pub fn compute_soc_chart(
+    world: &World,
+    history: &[ShellSocSample],
+    hardware: HardwareParams,
+    now_ms: i64,
+) -> ModelSocChart {
+    let s = &world.sensors;
+    let fresh = |a: &Actual<f64>| matches!(a.freshness, Freshness::Fresh);
+    let usable = |a: &Actual<f64>| -> Option<f64> {
+        if !fresh(a) {
+            return None;
+        }
+        let v = a.value?;
+        if v.is_finite() {
+            Some(v)
+        } else {
+            None
+        }
+    };
+
+    let now_soc = usable(&s.battery_soc);
+    let net_power_w = usable(&s.battery_dc_power);
+    let installed_ah = usable(&s.battery_installed_capacity);
+    let soh_pct = usable(&s.battery_soh);
+
+    let capacity_wh = match (installed_ah, soh_pct) {
+        (Some(ah), Some(soh)) if ah > 0.0 && soh > 0.0 => {
+            Some(ah * (soh / 100.0) * hardware.battery_nominal_voltage_v)
+        }
+        _ => None,
+    };
+
+    let projection = compute_projection(now_soc, net_power_w, capacity_wh, now_ms);
+
+    let history_wire: Vec<ModelSocSample> = history
+        .iter()
+        .map(|s| ModelSocSample {
+            epoch_ms: s.epoch_ms,
+            soc_pct: s.soc,
+        })
+        .collect();
+
+    ModelSocChart {
+        history: history_wire,
+        projection,
+        now_epoch_ms: now_ms,
+        now_soc_pct: now_soc,
+    }
+}
+
+fn compute_projection(
+    now_soc: Option<f64>,
+    net_power_w: Option<f64>,
+    capacity_wh: Option<f64>,
+    now_ms: i64,
+) -> ModelSocProjection {
+    let none = || ModelSocProjection {
+        slope_pct_per_hour: None,
+        terminus_epoch_ms: None,
+        terminus_soc_pct: None,
+        net_power_w,
+        capacity_wh,
+    };
+
+    let (Some(soc), Some(p), Some(wh)) = (now_soc, net_power_w, capacity_wh) else {
+        return none();
+    };
+    if wh <= 0.0 {
+        return none();
+    }
+    if p.abs() < SOC_IDLE_POWER_W {
+        return none();
+    }
+    let slope = (p / wh) * 100.0; // %/hour
+    if !slope.is_finite() || slope == 0.0 {
+        return none();
+    }
+
+    // Hours until the slope hits the natural terminus (100 if filling,
+    // SOC_DEPLETION_FLOOR_PCT if depleting). Already-saturated states
+    // (soc≥100 while filling, soc≤floor while depleting) collapse to a
+    // zero-distance terminus, but we still cap at the +24h horizon.
+    let (target_soc, hours_to_target) = if slope > 0.0 {
+        let dist = (SOC_FULL_PCT - soc).max(0.0);
+        (SOC_FULL_PCT, dist / slope)
+    } else {
+        let dist = (soc - SOC_DEPLETION_FLOOR_PCT).max(0.0);
+        (SOC_DEPLETION_FLOOR_PCT, dist / -slope)
+    };
+
+    let (term_h, term_soc) = if hours_to_target > SOC_PROJECTION_HORIZON_H {
+        // Clamp to +24h. Reflect the linear value at +24h, NOT the
+        // natural terminus.
+        let clamped_soc = soc + slope * SOC_PROJECTION_HORIZON_H;
+        (SOC_PROJECTION_HORIZON_H, clamped_soc)
+    } else {
+        (hours_to_target, target_soc)
+    };
+
+    let terminus_epoch_ms = now_ms.saturating_add((term_h * 3600.0 * 1000.0) as i64);
+
+    ModelSocProjection {
+        slope_pct_per_hour: Some(slope),
+        terminus_epoch_ms: Some(terminus_epoch_ms),
+        terminus_soc_pct: Some(term_soc),
+        net_power_w,
+        capacity_wh,
     }
 }
 
@@ -834,4 +987,134 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "inverter_safe_discharge_enable" => KnobId::InverterSafeDischargeEnable,
         _ => return None,
     })
+}
+
+// --- soc_chart tests (PR-soc-chart) ---------------------------------------
+
+#[cfg(test)]
+mod soc_chart_tests {
+    use super::*;
+    use std::time::Instant;
+    use victron_controller_core::tass::{Actual, Freshness};
+    use victron_controller_core::topology::HardwareParams;
+    use victron_controller_core::world::World;
+
+    fn fresh(value: f64, now: Instant) -> Actual<f64> {
+        let mut a = Actual::unknown(now);
+        a.value = Some(value);
+        a.freshness = Freshness::Fresh;
+        a.since = now;
+        a
+    }
+
+    /// World pre-populated with the four SoC-chart inputs all Fresh.
+    /// Capacity = 200 Ah × 100 % SoH × 50 V = 10000 Wh (test caller can
+    /// override individual fields after).
+    fn world_with_inputs(soc: f64, dc_power: f64, soh: f64, ah: f64) -> World {
+        let now = Instant::now();
+        let mut w = World::fresh_boot(now);
+        w.sensors.battery_soc = fresh(soc, now);
+        w.sensors.battery_dc_power = fresh(dc_power, now);
+        w.sensors.battery_soh = fresh(soh, now);
+        w.sensors.battery_installed_capacity = fresh(ah, now);
+        w
+    }
+
+    fn hw_50v() -> HardwareParams {
+        let mut h = HardwareParams::defaults();
+        // Overrride the nominal voltage so capacity arithmetic is round
+        // (10000 Wh = 200 Ah × 100 % × 50 V).
+        h.battery_nominal_voltage_v = 50.0;
+        h
+    }
+
+    #[test]
+    fn compute_soc_chart_filling_terminus() {
+        // +1000 W into a 10 kWh pack from 50 % → 10 %/h.
+        let w = world_with_inputs(50.0, 1000.0, 100.0, 200.0);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), 0);
+        let p = &chart.projection;
+        let slope = p.slope_pct_per_hour.expect("slope present");
+        assert!((slope - 10.0).abs() < 1e-6, "slope = {slope}");
+        let term_soc = p.terminus_soc_pct.expect("terminus soc present");
+        assert!((term_soc - 100.0).abs() < 1e-6);
+        let term_ms = p.terminus_epoch_ms.expect("terminus epoch present");
+        // (100 - 50) / 10 = 5 h = 18_000_000 ms.
+        assert_eq!(term_ms, 18_000_000);
+    }
+
+    #[test]
+    fn compute_soc_chart_depleting_terminus() {
+        // -500 W from 10 kWh / 50 % → -5 %/h; terminus at SoC=10.
+        let w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), 0);
+        let p = &chart.projection;
+        let slope = p.slope_pct_per_hour.expect("slope present");
+        assert!((slope + 5.0).abs() < 1e-6, "slope = {slope}");
+        let term_soc = p.terminus_soc_pct.expect("terminus soc present");
+        assert!((term_soc - 10.0).abs() < 1e-6);
+        let term_ms = p.terminus_epoch_ms.expect("terminus epoch present");
+        // (50 - 10) / 5 = 8 h = 28_800_000 ms.
+        assert_eq!(term_ms, 28_800_000);
+    }
+
+    #[test]
+    fn compute_soc_chart_idle_threshold() {
+        // 30 W is below the 50 W idle floor → slope None.
+        let w = world_with_inputs(50.0, 30.0, 100.0, 200.0);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), 0);
+        let p = &chart.projection;
+        assert!(p.slope_pct_per_hour.is_none());
+        assert!(p.terminus_epoch_ms.is_none());
+        assert!(p.terminus_soc_pct.is_none());
+        // Diagnostics still surfaced.
+        assert_eq!(p.net_power_w, Some(30.0));
+        assert_eq!(p.capacity_wh, Some(10_000.0));
+    }
+
+    #[test]
+    fn compute_soc_chart_clamps_horizon() {
+        // 60 W (just above idle) into a 100 kWh pack → slope ≈ 0.06 %/h.
+        // From 50 % to 100 % takes ~833 h, far past the +24 h cap.
+        let w = world_with_inputs(50.0, 60.0, 100.0, 2000.0);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), 0);
+        let p = &chart.projection;
+        let slope = p.slope_pct_per_hour.expect("slope present");
+        assert!(slope > 0.0 && slope < 0.1, "slope = {slope}");
+        // 24 h cap = 86_400_000 ms.
+        assert_eq!(p.terminus_epoch_ms, Some(86_400_000));
+        // Linear value at +24h, NOT 100%.
+        let term_soc = p.terminus_soc_pct.expect("terminus soc present");
+        assert!(term_soc < 100.0, "expected clamped soc < 100; got {term_soc}");
+        assert!((term_soc - (50.0 + slope * 24.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_soc_chart_omits_projection_when_inputs_stale() {
+        let mut w = world_with_inputs(50.0, 1000.0, 100.0, 200.0);
+        // Mark battery_dc_power Stale so the projection has no power input.
+        w.sensors.battery_dc_power.freshness = Freshness::Stale;
+        let chart = compute_soc_chart(&w, &[], hw_50v(), 0);
+        let p = &chart.projection;
+        assert!(p.slope_pct_per_hour.is_none());
+        assert!(p.terminus_epoch_ms.is_none());
+        assert!(p.terminus_soc_pct.is_none());
+        assert!(p.net_power_w.is_none());
+        // SoC fields still populated.
+        assert_eq!(chart.now_soc_pct, Some(50.0));
+    }
+
+    #[test]
+    fn compute_soc_chart_passes_history_through() {
+        let w = world_with_inputs(50.0, 1000.0, 100.0, 200.0);
+        let history = vec![
+            ShellSocSample { epoch_ms: 100, soc: 47.0 },
+            ShellSocSample { epoch_ms: 200, soc: 48.5 },
+        ];
+        let chart = compute_soc_chart(&w, &history, hw_50v(), 1000);
+        assert_eq!(chart.history.len(), 2);
+        assert_eq!(chart.history[0].epoch_ms, 100);
+        assert!((chart.history[0].soc_pct - 47.0).abs() < 1e-9);
+        assert_eq!(chart.now_epoch_ms, 1000);
+    }
 }

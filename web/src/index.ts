@@ -16,6 +16,7 @@ import {
   type EntityType,
 } from "./render.js";
 import { renderKnobs } from "./knobs.js";
+import { renderSocChart } from "./chart.js";
 import { WsWidget } from "./ws-widget.js";
 import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSnapshot.js";
 
@@ -68,6 +69,8 @@ function applySnapshot(snap: WorldSnapshot): void {
   renderBookkeeping(snap);
   renderForecasts(snap);
   renderKnobs(snap, sendCommand);
+  // PR-soc-chart: paint the in-memory SoC history + linear projection.
+  renderSocChart(snap);
 
   // Live-refresh the entity inspector if it's open.
   lastSnapshot = snap;

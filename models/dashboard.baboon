@@ -3,6 +3,37 @@ version "0.2.0"
 
 import "0.1.0" { * } without { Sensors WorldSnapshot Knobs Bookkeeping Command }
 
+// PR-soc-chart additions (additive within 0.2.0). Three traces fed by
+// the shell's in-memory `SocHistoryStore` plus a per-tick projection
+// computed by `compute_soc_chart`. See `dashboard/soc_history.rs`.
+data SocHistorySample {
+  epoch_ms: i64
+  soc_pct: f64
+}
+
+data SocProjection {
+  // Slope in %/hour. Positive = filling. None when the battery is idle
+  // (|net_power| below threshold) or the inputs are stale.
+  slope_pct_per_hour: opt[f64]
+  // Where the projection line crosses 100% (filling) or 10%
+  // (depleting), or its clamp at +24h. None when slope ≈ 0 — the
+  // caller draws a flat line out to a horizon (now + 12h) instead.
+  terminus_epoch_ms: opt[i64]
+  terminus_soc_pct: opt[f64]
+  // Diagnostic fields so the operator can sanity-check what we used.
+  net_power_w: opt[f64]
+  capacity_wh: opt[f64]
+}
+
+data SocChart {
+  history: lst[SocHistorySample]
+  projection: SocProjection
+  // Current SoC at snapshot time, captured here so the chart's "now"
+  // marker doesn't have to dig through `sensors`.
+  now_epoch_ms: i64
+  now_soc_pct: opt[f64]
+}
+
 // ---------------------------------------------------------------------------
 // 0.2.0 — additive:
 //   * surface myenergi-sourced Zappi session energy as a first-class
@@ -244,4 +275,6 @@ root data WorldSnapshot {
   // Defaults to "Etc/UTC" until the first D-Bus reseed lands the real
   // value from `/Settings/System/TimeZone` on com.victronenergy.settings.
   timezone: str
+  // 0.2.0 addition (PR-soc-chart).
+  soc_chart: SocChart
 }

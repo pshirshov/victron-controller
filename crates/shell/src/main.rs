@@ -15,7 +15,9 @@ use victron_controller_core::world::World;
 use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
 use victron_controller_shell::config::{self, Config, DbusServices};
-use victron_controller_shell::dashboard::{DashboardServer, SnapshotBroadcast};
+use victron_controller_shell::dashboard::{
+    DashboardServer, SnapshotBroadcast, SocHistoryStore, SOC_SAMPLE_INTERVAL,
+};
 use victron_controller_shell::dbus::{Subscriber, Writer};
 use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
 use victron_controller_shell::mqtt::{
@@ -185,11 +187,14 @@ async fn main() -> Result<()> {
     };
 
     let topology = Topology::with_hardware(cfg.hardware.into());
+    let soc_history = SocHistoryStore::new();
     let meta = victron_controller_shell::dashboard::convert::MetaContext {
         services: services.clone(),
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,
         controller_params: topology.controller_params,
         matter_outdoor_topic: cfg.outdoor_temperature_local.mqtt_topic.clone(),
+        soc_history: Arc::clone(&soc_history),
+        hardware: topology.hardware,
     };
     let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
     let snapshot_stream = SnapshotBroadcast::new(64);
@@ -417,6 +422,70 @@ async fn main() -> Result<()> {
         }
     });
 
+    // PR-soc-chart: sample `battery_soc` every 15 min into the in-memory
+    // ring. On boot we wait briefly then push the first Fresh reading so
+    // the chart isn't blank for the first 15 min.
+    {
+        let world_for_sampler = Arc::clone(&world);
+        let store_for_sampler = Arc::clone(&soc_history);
+        tokio::spawn(async move {
+            // Boot priming: poll every 5s for up to 5 minutes for the
+            // first Fresh battery_soc reading so the chart has at least
+            // one point before the periodic ticker fires.
+            let mut booted = false;
+            for _ in 0..60 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let (soc_opt, fresh) = {
+                    let w = world_for_sampler.lock().await;
+                    let a = &w.sensors.battery_soc;
+                    (
+                        a.value,
+                        matches!(
+                            a.freshness,
+                            victron_controller_core::Freshness::Fresh
+                        ),
+                    )
+                };
+                if fresh {
+                    if let Some(soc) = soc_opt {
+                        let now_ms = system_epoch_ms_now();
+                        store_for_sampler.record(soc, now_ms);
+                        booted = true;
+                        break;
+                    }
+                }
+            }
+            if !booted {
+                warn!("soc-chart: no Fresh battery_soc within 5 min of boot; ring stays empty until first interval tick");
+            }
+            // Steady-state ticker. `Skip` so a stalled tokio runtime
+            // doesn't generate a burst of catch-up samples.
+            let mut interval = tokio::time::interval(SOC_SAMPLE_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // discard the immediate first tick
+            loop {
+                interval.tick().await;
+                let (soc_opt, fresh) = {
+                    let w = world_for_sampler.lock().await;
+                    let a = &w.sensors.battery_soc;
+                    (
+                        a.value,
+                        matches!(
+                            a.freshness,
+                            victron_controller_core::Freshness::Fresh
+                        ),
+                    )
+                };
+                if fresh {
+                    if let Some(soc) = soc_opt {
+                        let now_ms = system_epoch_ms_now();
+                        store_for_sampler.record(soc, now_ms);
+                    }
+                }
+            }
+        });
+    }
+
     // SIGTERM is sent by daemontools' `svc -d` and by systemd. Ctrl-C
     // is SIGINT. Handle both so the service exits cleanly under
     // supervision.
@@ -478,6 +547,12 @@ fn init_tracing(log_tx: tokio::sync::mpsc::Sender<mqtt::LogRecord>) -> tracing_a
         .with(MqttLogLayer::new(log_tx))
         .init();
     guard
+}
+
+fn system_epoch_ms_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn config_path_from_args() -> PathBuf {

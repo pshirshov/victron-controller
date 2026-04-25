@@ -9,6 +9,8 @@
 
 pub mod convert;
 pub mod server;
+pub mod soc_history;
 pub mod ws;
 
 pub use server::{DashboardServer, SnapshotBroadcast};
+pub use soc_history::{SocHistoryStore, SAMPLE_INTERVAL as SOC_SAMPLE_INTERVAL};
