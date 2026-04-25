@@ -241,8 +241,12 @@ pub fn evaluate_setpoint(
     let mut pessimism_multiplier: f64 = 1.0;
     let mut preserve_battery: bool = false;
 
-    // SoC == 100 rolls next_full_charge forward by a week.
-    if battery_soc == 100.0 {
+    // SoC ≥ 99.99 rolls next_full_charge forward by a week. Strict
+    // `== 100.0` was brittle: Victron's /Soc is an f64 and any future
+    // firmware that reports 99.95 / 100.01 would silently skip a
+    // weekly rollover. 99.99 keeps the "we hit full" semantic without
+    // the equality risk.
+    if battery_soc >= 99.99 {
         next_full_charge = get_next_charge_date_to_sunday_5pm(now, 1, next_full_charge_defined);
     }
 
