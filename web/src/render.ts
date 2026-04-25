@@ -407,6 +407,8 @@ export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
       depends_on: string[];
       last_run_outcome: string;
       last_payload: string | null | undefined;
+      last_inputs?: Array<{ name: string; value: string }>;
+      last_outputs?: Array<{ name: string; value: string }>;
     }>;
   };
   const core = cs?.cores?.find((c) => c.id === coreId);
@@ -443,6 +445,29 @@ export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
     sections.push(
       `<section><p>no entry in cores_state for "${esc(coreId)}"</p></section>`,
     );
+  }
+
+  // PR-core-io-popups: Inputs + Outputs surface the live values the
+  // core actually read / wrote on the most recent tick. Comes ahead of
+  // the controller's Decision so the operator can read the raw data
+  // before the narrative.
+  const renderFactorTable = (
+    rows: Array<{ name: string; value: string }> | undefined,
+  ): string => {
+    if (!rows || rows.length === 0) {
+      return '<p class="dim" style="margin:0">—</p>';
+    }
+    const tr = rows
+      .map((f) => {
+        const v = maybeBoolBadge(f.value) ?? esc(f.value);
+        return `<tr><th>${esc(f.name)}</th><td>${v}</td></tr>`;
+      })
+      .join("");
+    return `<table><tbody>${tr}</tbody></table>`;
+  };
+  if (core) {
+    sections.push(`<section><h3>Inputs</h3>${renderFactorTable(core.last_inputs)}</section>`);
+    sections.push(`<section><h3>Outputs</h3>${renderFactorTable(core.last_outputs)}</section>`);
   }
 
   // Decision (the controller's narrative of inputs + outputs).

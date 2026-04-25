@@ -36,11 +36,30 @@ data Sensors {
 
 // 0.2.0 addition (PR-tass-dag-view). Per-core observability snapshot
 // produced by `CoreRegistry::run_all` after each tick.
+//
+// PR-core-io-popups (additive within 0.2.0): each core also surfaces
+// the live values it read (`last_inputs`) and the values it wrote
+// (`last_outputs`) on the most recent tick, so the dashboard can show
+// real values for cores like ZappiActiveCore / SensorBroadcastCore
+// that don't produce a Decision.
+//
+// `CoreFactor` mirrors the shape of `DecisionFactor` but is a distinct
+// wire type — keeping them decoupled means a future change to the
+// Decision-factor wire shape (units, structured values, …) can't ripple
+// into core-IO popups.
+data CoreFactor {
+  name: str
+  value: str
+}
+
 data CoreState {
   id: str
   depends_on: lst[str]
   last_run_outcome: str
   last_payload: opt[str]
+  // PR-core-io-popups.
+  last_inputs: lst[CoreFactor]
+  last_outputs: lst[CoreFactor]
 }
 
 data CoresState {

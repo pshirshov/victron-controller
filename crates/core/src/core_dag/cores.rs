@@ -16,14 +16,30 @@
 use crate::Clock;
 use crate::controllers::zappi_active::classify_zappi_active;
 use crate::process::{
-    run_current_limit, run_eddi_mode, run_schedules, run_setpoint, run_weather_soc,
-    run_zappi_mode,
+    build_current_limit_input, build_eddi_mode_input, build_schedules_input,
+    build_setpoint_input, build_zappi_mode_input, cbe_derivation, run_current_limit,
+    run_eddi_mode, run_schedules, run_setpoint, run_weather_soc, run_zappi_mode,
 };
+use crate::tass::Actual;
 use crate::topology::Topology;
-use crate::types::{BookkeepingId, Effect, PublishPayload, SensorId, encode_sensor_body};
-use crate::world::World;
+use crate::types::{BookkeepingId, Effect, ForecastProvider, PublishPayload, SensorId, encode_sensor_body};
+use crate::world::{CoreFactor, World};
 
 use super::{Core, CoreId};
+
+/// Pretty-print an `Actual<f64>` with a `Fresh`/`Stale`/`Unknown` suffix
+/// for the popup. Mirrors how the dashboard renders sensor values
+/// inline. PR-core-io-popups.
+fn fmt_actual_f64(a: Actual<f64>) -> String {
+    match a.value {
+        Some(v) => format!("{v:.2} ({:?})", a.freshness),
+        None => format!("— ({:?})", a.freshness),
+    }
+}
+
+fn factor(id: &str, value: impl Into<String>) -> CoreFactor {
+    CoreFactor { id: id.to_string(), value: value.into() }
+}
 
 pub(crate) struct ZappiActiveCore;
 impl Core for ZappiActiveCore {
@@ -62,6 +78,39 @@ impl Core for ZappiActiveCore {
     fn last_payload(&self, world: &World) -> Option<String> {
         Some(world.derived.zappi_active.to_string())
     }
+
+    /// PR-core-io-popups: surface the sensor + typed-state inputs that
+    /// `classify_zappi_active` consults, plus the elapsed time since the
+    /// last (zmo, sta, pst) tuple change, so the popup makes the
+    /// derivation legible without rerunning the classifier.
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let zappi = world.typed_sensors.zappi_state;
+        let zappi_mode = match zappi.value {
+            Some(s) => format!("{:?} ({:?})", s.zappi_mode, zappi.freshness),
+            None => format!("— ({:?})", zappi.freshness),
+        };
+        let plug_state = match zappi.value {
+            Some(s) => format!("{:?} ({:?})", s.zappi_plug_state, zappi.freshness),
+            None => format!("— ({:?})", zappi.freshness),
+        };
+        let zappi_status = match zappi.value {
+            Some(s) => format!("{:?}", s.zappi_status),
+            None => "—".to_string(),
+        };
+        let evcharger_w = fmt_actual_f64(world.sensors.evcharger_ac_power);
+        let zappi_a = fmt_actual_f64(world.sensors.evcharger_ac_current);
+        vec![
+            factor("zappi_mode", zappi_mode),
+            factor("zappi_plug_state", plug_state),
+            factor("zappi_status", zappi_status),
+            factor("evcharger_ac_power_W", evcharger_w),
+            factor("zappi_amps_A", zappi_a),
+        ]
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        vec![factor("zappi_active", world.derived.zappi_active.to_string())]
+    }
 }
 
 pub(crate) struct SetpointCore;
@@ -80,6 +129,78 @@ impl Core for SetpointCore {
         effects: &mut Vec<Effect>,
     ) {
         run_setpoint(world, clock, topology, effects);
+    }
+
+    /// PR-core-io-popups: surface every field of the live `SetpointInput`
+    /// that `run_setpoint` would build this tick, or a placeholder
+    /// "safety fallback" entry when the Fresh-sensor preconditions fail
+    /// (which is the path that drives the `apply_setpoint_safety` 10 W
+    /// idle target). `last_outputs` surfaces the actuated target plus
+    /// the bookkeeping the controller wrote on the last successful tick.
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        match build_setpoint_input(world) {
+            None => vec![factor("status", "safety fallback (required sensors not usable)")],
+            Some(i) => {
+                let g = &i.globals;
+                vec![
+                    factor("force_disable_export", format!("{}", g.force_disable_export)),
+                    factor("export_soc_threshold", format!("{:.2}", g.export_soc_threshold)),
+                    factor("discharge_soc_target", format!("{:.2}", g.discharge_soc_target)),
+                    factor(
+                        "full_charge_export_soc_threshold",
+                        format!("{:.2}", g.full_charge_export_soc_threshold),
+                    ),
+                    factor(
+                        "full_charge_discharge_soc_target",
+                        format!("{:.2}", g.full_charge_discharge_soc_target),
+                    ),
+                    factor("zappi_active", format!("{}", g.zappi_active)),
+                    factor("allow_battery_to_car", format!("{}", g.allow_battery_to_car)),
+                    factor("discharge_time", format!("{:?}", g.discharge_time)),
+                    factor("debug_full_charge", format!("{:?}", g.debug_full_charge)),
+                    factor(
+                        "pessimism_multiplier_modifier",
+                        format!("{:.2}", g.pessimism_multiplier_modifier),
+                    ),
+                    factor(
+                        "next_full_charge",
+                        g.next_full_charge.map_or("—".to_string(), |d| format!("{d}")),
+                    ),
+                    factor("power_consumption_W", format!("{:.2}", i.power_consumption)),
+                    factor("battery_soc_pct", format!("{:.2}", i.battery_soc)),
+                    factor("battery_soh_pct", format!("{:.2}", i.soh)),
+                    factor("mppt_power_0_W", format!("{:.2}", i.mppt_power_0)),
+                    factor("mppt_power_1_W", format!("{:.2}", i.mppt_power_1)),
+                    factor("soltaro_power_W", format!("{:.2}", i.soltaro_power)),
+                    factor("evcharger_ac_power_W", format!("{:.2}", i.evcharger_ac_power)),
+                    factor("battery_capacity_kwh", format!("{:.2}", i.capacity)),
+                ]
+            }
+        }
+    }
+
+    /// We don't keep last `SetpointOutput` around, so surface the values
+    /// the controller persisted into bookkeeping plus the actuated target.
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let target = world
+            .grid_setpoint
+            .target
+            .value
+            .map_or("—".to_string(), |v| format!("{v} W"));
+        let bk = &world.bookkeeping;
+        vec![
+            factor("setpoint_target_W", target),
+            factor(
+                "next_full_charge",
+                bk.next_full_charge.map_or("—".to_string(), |d| format!("{d}")),
+            ),
+            factor("charge_to_full_required", format!("{}", bk.charge_to_full_required)),
+            factor("soc_end_of_day_target", format!("{:.2}", bk.soc_end_of_day_target)),
+            factor(
+                "effective_export_soc_threshold",
+                format!("{:.2}", bk.effective_export_soc_threshold),
+            ),
+        ]
     }
 }
 
@@ -102,6 +223,64 @@ impl Core for CurrentLimitCore {
     ) {
         run_current_limit(world, clock, topology, effects);
     }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        match build_current_limit_input(world) {
+            None => vec![factor("status", "skipped (required sensors / zappi_state not usable)")],
+            Some(i) => {
+                let g = &i.globals;
+                vec![
+                    factor("zappi_current_target_A", format!("{:.2}", g.zappi_current_target)),
+                    factor("zappi_emergency_margin_A", format!("{:.2}", g.zappi_emergency_margin)),
+                    factor("zappi_state.zappi_mode", format!("{:?}", g.zappi_state.zappi_mode)),
+                    factor(
+                        "zappi_state.zappi_plug_state",
+                        format!("{:?}", g.zappi_state.zappi_plug_state),
+                    ),
+                    factor("zappi_state.zappi_status", format!("{:?}", g.zappi_state.zappi_status)),
+                    factor("zappi_active", format!("{}", g.zappi_active)),
+                    factor("extended_charge_required", format!("{}", g.extended_charge_required)),
+                    factor(
+                        "disable_night_grid_discharge",
+                        format!("{}", g.disable_night_grid_discharge),
+                    ),
+                    factor("battery_soc_target_pct", format!("{:.2}", g.battery_soc_target)),
+                    factor(
+                        "prev_ess_state",
+                        g.prev_ess_state.map_or("—".to_string(), |v| format!("{v}")),
+                    ),
+                    factor("consumption_power_W", format!("{:.2}", i.consumption_power)),
+                    factor("offgrid_power_W", format!("{:.2}", i.offgrid_power)),
+                    factor("offgrid_current_A", format!("{:.2}", i.offgrid_current)),
+                    factor("grid_voltage_V", format!("{:.2}", i.grid_voltage)),
+                    factor("grid_power_W", format!("{:.2}", i.grid_power)),
+                    factor("mppt_power_0_W", format!("{:.2}", i.mppt_power_0)),
+                    factor("mppt_power_1_W", format!("{:.2}", i.mppt_power_1)),
+                    factor("soltaro_power_W", format!("{:.2}", i.soltaro_power)),
+                    factor("zappi_current_A", format!("{:.2}", i.zappi_current)),
+                    factor("ess_state", format!("{}", i.ess_state)),
+                    factor("battery_power_W", format!("{:.2}", i.battery_power)),
+                    factor("battery_soc_pct", format!("{:.2}", i.battery_soc)),
+                ]
+            }
+        }
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let target = world
+            .input_current_limit
+            .target
+            .value
+            .map_or("—".to_string(), |v| format!("{v:.2} A"));
+        let bk = &world.bookkeeping;
+        vec![
+            factor("input_current_limit_A", target),
+            factor(
+                "prev_ess_state",
+                bk.prev_ess_state.map_or("—".to_string(), |v| format!("{v}")),
+            ),
+        ]
+    }
 }
 
 pub(crate) struct SchedulesCore;
@@ -123,6 +302,65 @@ impl Core for SchedulesCore {
     ) {
         run_schedules(world, clock, effects);
     }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let cbe = cbe_derivation(world);
+        match build_schedules_input(world) {
+            None => vec![factor("status", "skipped (battery_soc not usable)")],
+            Some(i) => {
+                let g = &i.globals;
+                vec![
+                    factor("charge_battery_extended", format!("{}", g.charge_battery_extended)),
+                    factor("cbe_from_full", format!("{}", cbe.from_full)),
+                    factor("cbe_from_weather", format!("{}", cbe.from_weather)),
+                    factor("cbe_derived", format!("{}", cbe.derived)),
+                    factor(
+                        "cbe_mode",
+                        format!("{:?}", world.knobs.charge_battery_extended_mode),
+                    ),
+                    factor("charge_car_extended", format!("{}", g.charge_car_extended)),
+                    factor("charge_to_full_required", format!("{}", g.charge_to_full_required)),
+                    factor(
+                        "disable_night_grid_discharge",
+                        format!("{}", g.disable_night_grid_discharge),
+                    ),
+                    factor("zappi_active", format!("{}", g.zappi_active)),
+                    factor(
+                        "above_soc_date",
+                        g.above_soc_date.map_or("—".to_string(), |d| format!("{d}")),
+                    ),
+                    factor("battery_soc_target_pct", format!("{:.2}", g.battery_soc_target)),
+                    factor("battery_soc_pct", format!("{:.2}", i.battery_soc)),
+                ]
+            }
+        }
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let s0 = world
+            .schedule_0
+            .target
+            .value
+            .map_or("—".to_string(), |s| format!("{s:?}"));
+        let s1 = world
+            .schedule_1
+            .target
+            .value
+            .map_or("—".to_string(), |s| format!("{s:?}"));
+        let bk = &world.bookkeeping;
+        vec![
+            factor("schedule_0", s0),
+            factor("schedule_1", s1),
+            factor(
+                "battery_selected_soc_target",
+                format!("{:.2}", bk.battery_selected_soc_target),
+            ),
+            factor(
+                "above_soc_date",
+                bk.above_soc_date.map_or("—".to_string(), |d| format!("{d}")),
+            ),
+        ]
+    }
 }
 
 pub(crate) struct ZappiModeCore;
@@ -141,6 +379,31 @@ impl Core for ZappiModeCore {
         effects: &mut Vec<Effect>,
     ) {
         run_zappi_mode(world, clock, effects);
+    }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        match build_zappi_mode_input(world) {
+            None => vec![factor("status", "skipped (zappi_state not usable)")],
+            Some(i) => {
+                let g = &i.globals;
+                vec![
+                    factor("charge_car_boost", format!("{}", g.charge_car_boost)),
+                    factor("charge_car_extended", format!("{}", g.charge_car_extended)),
+                    factor("zappi_limit_kwh", format!("{:.2}", g.zappi_limit_kwh)),
+                    factor("current_mode", format!("{:?}", i.current_mode)),
+                    factor("session_kwh", format!("{:.2}", i.session_kwh)),
+                ]
+            }
+        }
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let target = world
+            .zappi_mode
+            .target
+            .value
+            .map_or("—".to_string(), |m| format!("{m:?}"));
+        vec![factor("zappi_mode_target", target)]
     }
 }
 
@@ -161,6 +424,34 @@ impl Core for EddiModeCore {
     ) {
         run_eddi_mode(world, clock, effects);
     }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let i = build_eddi_mode_input(world);
+        let soc = match i.soc_value {
+            Some(v) => format!("{v:.2} ({:?})", i.soc_freshness),
+            None => format!("— ({:?})", i.soc_freshness),
+        };
+        vec![
+            factor("battery_soc_pct", soc),
+            factor("current_mode", format!("{:?}", i.current_mode)),
+            factor(
+                "last_transition_at",
+                i.last_transition_at.map_or("—".to_string(), |_| "set".to_string()),
+            ),
+            factor("enable_soc_pct", format!("{:.2}", i.knobs.enable_soc)),
+            factor("disable_soc_pct", format!("{:.2}", i.knobs.disable_soc)),
+            factor("dwell_s", format!("{}", i.knobs.dwell_s)),
+        ]
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let target = world
+            .eddi_mode
+            .target
+            .value
+            .map_or("—".to_string(), |m| format!("{m:?}"));
+        vec![factor("eddi_mode_target", target)]
+    }
 }
 
 pub(crate) struct WeatherSocCore;
@@ -179,6 +470,88 @@ impl Core for WeatherSocCore {
         effects: &mut Vec<Effect>,
     ) {
         run_weather_soc(world, clock, topology, effects);
+    }
+
+    /// PR-core-io-popups: surface forecast totals + temperature + the
+    /// current planner-knob thresholds. The planner only fires once per
+    /// day at 01:55, so most ticks won't produce a fresh
+    /// `WeatherSocInput`; rather than reproduce the forecast-fusion
+    /// gating here, surface the underlying provider snapshots so the
+    /// operator can see what the next 01:55 evaluation will see.
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let k = &world.knobs;
+        let bk = &world.bookkeeping;
+        let temp = fmt_actual_f64(world.sensors.outdoor_temperature);
+        let providers = [
+            ("solcast", ForecastProvider::Solcast),
+            ("forecast_solar", ForecastProvider::ForecastSolar),
+            ("open_meteo", ForecastProvider::OpenMeteo),
+        ];
+        let mut out = vec![
+            factor("outdoor_temperature_C", temp),
+            factor("charge_to_full_required", format!("{}", bk.charge_to_full_required)),
+            factor(
+                "winter_temperature_threshold_C",
+                format!("{:.2}", k.weathersoc_winter_temperature_threshold),
+            ),
+            factor(
+                "low_energy_threshold_kWh",
+                format!("{:.2}", k.weathersoc_low_energy_threshold),
+            ),
+            factor(
+                "ok_energy_threshold_kWh",
+                format!("{:.2}", k.weathersoc_ok_energy_threshold),
+            ),
+            factor(
+                "high_energy_threshold_kWh",
+                format!("{:.2}", k.weathersoc_high_energy_threshold),
+            ),
+            factor(
+                "too_much_energy_threshold_kWh",
+                format!("{:.2}", k.weathersoc_too_much_energy_threshold),
+            ),
+            factor(
+                "forecast_disagreement_strategy",
+                format!("{:?}", k.forecast_disagreement_strategy),
+            ),
+        ];
+        for (name, p) in providers {
+            let snap = world.typed_sensors.forecast(p);
+            let value = match snap {
+                None => "—".to_string(),
+                Some(s) => format!("today={:.2} kWh, tomorrow={:.2} kWh", s.today_kwh, s.tomorrow_kwh),
+            };
+            out.push(factor(&format!("forecast_{name}"), value));
+        }
+        out.push(factor(
+            "last_run_date",
+            bk.last_weather_soc_run_date.map_or("—".to_string(), |d| format!("{d}")),
+        ));
+        out
+    }
+
+    /// We don't keep the last `WeatherSocDecision` around in `World`,
+    /// so surface the four knob values the planner steers (which are
+    /// the most recent values it (or the operator) wrote) plus the
+    /// per-day boolean it stamps on `Bookkeeping`. This is the
+    /// "lightweight recomputation" path described in the spec —
+    /// approximate but honest.
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let k = &world.knobs;
+        let bk = &world.bookkeeping;
+        vec![
+            factor("export_soc_threshold", format!("{:.2}", k.export_soc_threshold)),
+            factor("discharge_soc_target", format!("{:.2}", k.discharge_soc_target)),
+            factor("battery_soc_target", format!("{:.2}", k.battery_soc_target)),
+            factor(
+                "disable_night_grid_discharge",
+                format!("{}", k.disable_night_grid_discharge),
+            ),
+            factor(
+                "charge_battery_extended_today",
+                format!("{}", bk.charge_battery_extended_today),
+            ),
+        ]
     }
 }
 

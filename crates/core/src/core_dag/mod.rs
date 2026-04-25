@@ -89,6 +89,26 @@ pub trait Core: Send + Sync {
     fn last_payload(&self, _world: &World) -> Option<String> {
         None
     }
+
+    /// Live values this core read on the most recent tick. Surfaced in
+    /// the dashboard core-inspector modal alongside `last_payload` and
+    /// the controller's Decision (when present). Default empty; cores
+    /// override to populate. PR-core-io-popups.
+    ///
+    /// Called by `CoreRegistry::run_all` AFTER `run` — for input cores
+    /// like `ZappiActiveCore` this means we read the just-written
+    /// `world.derived.zappi_active`, but the `last_inputs` of the core
+    /// (sensor states it consulted to derive that) are unchanged by its
+    /// own run, so the after-run timing is fine.
+    fn last_inputs(&self, _world: &World) -> Vec<crate::world::CoreFactor> {
+        Vec::new()
+    }
+
+    /// Live values this core wrote on the most recent tick. Surfaced
+    /// alongside `last_inputs`. PR-core-io-popups.
+    fn last_outputs(&self, _world: &World) -> Vec<crate::world::CoreFactor> {
+        Vec::new()
+    }
 }
 
 /// Errors that can arise while validating a set of cores into a DAG.
@@ -224,6 +244,8 @@ impl CoreRegistry {
                 depends_on: core.depends_on().iter().map(|d| d.name().to_string()).collect(),
                 last_run_outcome: "success".to_string(),
                 last_payload: core.last_payload(world),
+                last_inputs: core.last_inputs(world),
+                last_outputs: core.last_outputs(world),
             };
             world.cores_state.cores.push(entry);
         }

@@ -196,6 +196,18 @@ pub struct DerivedState {
     pub zappi_active: bool,
 }
 
+/// Name/value pair surfaced in the per-core `last_inputs`/`last_outputs`
+/// lists on `CoreState`. PR-core-io-popups.
+///
+/// Distinct from `crate::types::DecisionFactor` even though the fields
+/// are identical — the wire types are decoupled (see `dashboard.baboon`)
+/// so a future change to either layer can't cross-pollute the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreFactor {
+    pub id: String,
+    pub value: String,
+}
+
 /// Per-core observability snapshot, populated by `CoreRegistry::run_all`
 /// after each core runs. Pure observability — no controller reads this.
 /// PR-tass-dag-view.
@@ -215,6 +227,16 @@ pub struct CoreState {
     /// actuator cores whose effect is on Decisions/Actuated rather
     /// than a single payload.
     pub last_payload: Option<String>,
+    /// Live values the core read on the most recent tick. Empty for
+    /// cores that have nothing meaningful to surface (e.g.
+    /// `SensorBroadcastCore`, which is pure observability). PR-core-io-popups.
+    pub last_inputs: Vec<CoreFactor>,
+    /// Live values the core wrote on the most recent tick. Empty when
+    /// the core's output is a Decision rather than a discrete value, or
+    /// when the previous output isn't cleanly recoverable from the
+    /// post-run world (in which case the inputs alone are surfaced).
+    /// PR-core-io-popups.
+    pub last_outputs: Vec<CoreFactor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

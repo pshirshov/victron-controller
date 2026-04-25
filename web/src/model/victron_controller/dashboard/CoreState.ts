@@ -1,17 +1,22 @@
 // @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
+import {CoreFactor, CoreFactor_UEBACodec} from './CoreFactor'
 
 export class CoreState implements BaboonGeneratedLatest {
     private readonly _id: string;
     private readonly _depends_on: Array<string>;
     private readonly _last_run_outcome: string;
     private readonly _last_payload: string | undefined;
+    private readonly _last_inputs: Array<CoreFactor>;
+    private readonly _last_outputs: Array<CoreFactor>;
 
-    constructor(id: string, depends_on: Array<string>, last_run_outcome: string, last_payload: string | undefined) {
+    constructor(id: string, depends_on: Array<string>, last_run_outcome: string, last_payload: string | undefined, last_inputs: Array<CoreFactor>, last_outputs: Array<CoreFactor>) {
         this._id = id
         this._depends_on = depends_on
         this._last_run_outcome = last_run_outcome
         this._last_payload = last_payload
+        this._last_inputs = last_inputs
+        this._last_outputs = last_outputs
     }
 
     public get id(): string {
@@ -26,31 +31,43 @@ export class CoreState implements BaboonGeneratedLatest {
     public get last_payload(): string | undefined {
         return this._last_payload;
     }
+    public get last_inputs(): Array<CoreFactor> {
+        return this._last_inputs;
+    }
+    public get last_outputs(): Array<CoreFactor> {
+        return this._last_outputs;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
             id: this._id,
             depends_on: this._depends_on,
             last_run_outcome: this._last_run_outcome,
-            last_payload: this._last_payload !== undefined ? this._last_payload : undefined
+            last_payload: this._last_payload !== undefined ? this._last_payload : undefined,
+            last_inputs: this._last_inputs,
+            last_outputs: this._last_outputs
         };
     }
 
-    public with(overrides: {id?: string; depends_on?: Array<string>; last_run_outcome?: string; last_payload?: string | undefined}): CoreState {
+    public with(overrides: {id?: string; depends_on?: Array<string>; last_run_outcome?: string; last_payload?: string | undefined; last_inputs?: Array<CoreFactor>; last_outputs?: Array<CoreFactor>}): CoreState {
         return new CoreState(
             'id' in overrides ? overrides.id! : this._id,
             'depends_on' in overrides ? overrides.depends_on! : this._depends_on,
             'last_run_outcome' in overrides ? overrides.last_run_outcome! : this._last_run_outcome,
-            'last_payload' in overrides ? overrides.last_payload! : this._last_payload
+            'last_payload' in overrides ? overrides.last_payload! : this._last_payload,
+            'last_inputs' in overrides ? overrides.last_inputs! : this._last_inputs,
+            'last_outputs' in overrides ? overrides.last_outputs! : this._last_outputs
         );
     }
 
-    public static fromPlain(obj: {id: string; depends_on: Array<string>; last_run_outcome: string; last_payload: string | undefined}): CoreState {
+    public static fromPlain(obj: {id: string; depends_on: Array<string>; last_run_outcome: string; last_payload: string | undefined; last_inputs: Array<CoreFactor>; last_outputs: Array<CoreFactor>}): CoreState {
         return new CoreState(
             obj.id,
             obj.depends_on,
             obj.last_run_outcome,
-            obj.last_payload
+            obj.last_payload,
+            obj.last_inputs,
+            obj.last_outputs
         );
     }
 
@@ -120,6 +137,26 @@ export class CoreState_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeI32(buffer, Array.from(value.last_inputs).length);
+            for (const item of value.last_inputs) {
+                CoreFactor_UEBACodec.instance.encode(ctx, item, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeI32(buffer, Array.from(value.last_outputs).length);
+            for (const item of value.last_outputs) {
+                CoreFactor_UEBACodec.instance.encode(ctx, item, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -135,6 +172,14 @@ export class CoreState_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 BinTools.writeString(writer, value.last_payload);
             }
+            BinTools.writeI32(writer, Array.from(value.last_inputs).length);
+            for (const item of value.last_inputs) {
+                CoreFactor_UEBACodec.instance.encode(ctx, item, writer);
+            }
+            BinTools.writeI32(writer, Array.from(value.last_outputs).length);
+            for (const item of value.last_outputs) {
+                CoreFactor_UEBACodec.instance.encode(ctx, item, writer);
+            }
         }
     }
     
@@ -146,7 +191,7 @@ export class CoreState_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 4; i++) {
+            for (let i = 0; i < 6; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -155,11 +200,15 @@ export class CoreState_UEBACodec {
         const depends_on = Array.from({ length: BinTools.readI32(reader) }, () => BinTools.readString(reader));
         const last_run_outcome = BinTools.readString(reader);
         const last_payload = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
+        const last_inputs = Array.from({ length: BinTools.readI32(reader) }, () => CoreFactor_UEBACodec.instance.decode(ctx, reader));
+        const last_outputs = Array.from({ length: BinTools.readI32(reader) }, () => CoreFactor_UEBACodec.instance.decode(ctx, reader));
         return new CoreState(
             id,
             depends_on,
             last_run_outcome,
             last_payload,
+            last_inputs,
+            last_outputs,
         );
     }
 

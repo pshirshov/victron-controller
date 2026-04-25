@@ -48,6 +48,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::actual_f6
 use victron_controller_dashboard_model::victron_controller::dashboard::actual_i32::ActualI32 as ModelActualI32;
 use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping::Bookkeeping as ModelBookkeeping;
 use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as ModelCommand;
+use victron_controller_dashboard_model::victron_controller::dashboard::core_factor::CoreFactor as ModelCoreFactor;
 use victron_controller_dashboard_model::victron_controller::dashboard::core_state::CoreState as ModelCoreState;
 use victron_controller_dashboard_model::victron_controller::dashboard::cores_state::CoresState as ModelCoresState;
 use victron_controller_dashboard_model::victron_controller::dashboard::decision::Decision as ModelDecision;
@@ -319,6 +320,14 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
 }
 
 fn cores_state_to_model(c: &victron_controller_core::world::CoresState) -> ModelCoresState {
+    let factors = |fs: &[victron_controller_core::world::CoreFactor]| -> Vec<ModelCoreFactor> {
+        fs.iter()
+            .map(|f| ModelCoreFactor {
+                name: f.id.clone(),
+                value: f.value.clone(),
+            })
+            .collect()
+    };
     ModelCoresState {
         cores: c
             .cores
@@ -328,6 +337,8 @@ fn cores_state_to_model(c: &victron_controller_core::world::CoresState) -> Model
                 depends_on: s.depends_on.clone(),
                 last_run_outcome: s.last_run_outcome.clone(),
                 last_payload: s.last_payload.clone(),
+                last_inputs: factors(&s.last_inputs),
+                last_outputs: factors(&s.last_outputs),
             })
             .collect(),
         topo_order: c.topo_order.clone(),

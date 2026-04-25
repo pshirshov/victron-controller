@@ -6,6 +6,13 @@
 // PR-tass-dag-view: also initialise the new `cores_state` to an empty
 // `CoresState { cores: [], topo_order: [] }`. 0.1.0 carries no DAG view
 // at all, so leave it empty until the first 0.2.0 tick repopulates it.
+//
+// PR-core-io-popups: `CoreState` gained `last_inputs` / `last_outputs`.
+// Empty `cores: vec![]` here means there's nothing per-core to populate
+// on the back-compat path — the first 0.2.0 tick rebuilds the whole
+// vector with the new fields. Test
+// `world_snapshot_0_1_0_converter_initialises_cores_state_empty` asserts
+// this remains the contract.
 
 pub fn convert__world_snapshot__from__0_1_0(from: &crate::victron_controller::dashboard::v0_1_0::world_snapshot::WorldSnapshot) -> crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
     crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
@@ -68,37 +75,8 @@ mod tests {
         }
     }
 
-    /// Convert a fully-populated 0.1.0 Sensors and confirm `session_kwh`
-    /// is initialised to Unknown. This is the codepath exercised by
-    /// `convert__world_snapshot__from__0_1_0` (the stub above bridges
-    /// `sensors` through this converter); a regression on this function
-    /// would re-open PR-session-kwh-D01.
-    #[test]
-    fn sensors_0_1_0_converter_initialises_session_kwh_unknown() {
-        let sensors = any_v010_sensors();
-        let converted = convert__sensors__from__0_1_0(&sensors);
-        assert!(matches!(
-            converted.session_kwh,
-            V020ActualF64 {
-                value: None,
-                freshness: Freshness::Unknown,
-                ..
-            }
-        ));
-        assert_eq!(converted.battery_soc.value, Some(42.0));
-    }
-
-    /// PR-tass-dag-view: ensure the 0.1.0 -> 0.2.0 WorldSnapshot
-    /// converter initialises `cores_state` to an empty CoresState
-    /// (`cores: []`, `topo_order: []`). The first 0.2.0 tick repopulates
-    /// it; until then the dashboard's TASS-cores section renders empty
-    /// rather than crashing on a missing field.
-    #[test]
-    fn world_snapshot_0_1_0_converter_initialises_cores_state_empty() {
-        // Build a minimal 0.1.0 snapshot via JSON to dodge the long
-        // by-hand default constructor — every nested struct round-trips
-        // through serde_json in the conversion stub anyway.
-        let v010_json = serde_json::json!({
+    fn v010_snapshot_json() -> serde_json::Value {
+        serde_json::json!({
             "captured_at_epoch_ms": 7,
             "captured_at_naive_iso": "2026-04-25T00:00:00",
             "sensors": serde_json::to_value(any_v010_sensors()).unwrap(),
@@ -208,12 +186,58 @@ mod tests {
                 "eddi_mode": null,
                 "weather_soc": null,
             },
-        });
-        let v010: V010WorldSnapshot = serde_json::from_value(v010_json).unwrap();
+        })
+    }
+
+    /// Convert a fully-populated 0.1.0 Sensors and confirm `session_kwh`
+    /// is initialised to Unknown. This is the codepath exercised by
+    /// `convert__world_snapshot__from__0_1_0` (the stub above bridges
+    /// `sensors` through this converter); a regression on this function
+    /// would re-open PR-session-kwh-D01.
+    #[test]
+    fn sensors_0_1_0_converter_initialises_session_kwh_unknown() {
+        let sensors = any_v010_sensors();
+        let converted = convert__sensors__from__0_1_0(&sensors);
+        assert!(matches!(
+            converted.session_kwh,
+            V020ActualF64 {
+                value: None,
+                freshness: Freshness::Unknown,
+                ..
+            }
+        ));
+        assert_eq!(converted.battery_soc.value, Some(42.0));
+    }
+
+    /// PR-tass-dag-view: ensure the 0.1.0 -> 0.2.0 WorldSnapshot
+    /// converter initialises `cores_state` to an empty CoresState
+    /// (`cores: []`, `topo_order: []`). The first 0.2.0 tick repopulates
+    /// it; until then the dashboard's TASS-cores section renders empty
+    /// rather than crashing on a missing field.
+    #[test]
+    fn world_snapshot_0_1_0_converter_initialises_cores_state_empty() {
+        let v010: V010WorldSnapshot = serde_json::from_value(v010_snapshot_json()).unwrap();
         let converted = super::convert__world_snapshot__from__0_1_0(&v010);
         assert!(converted.cores_state.cores.is_empty());
         assert!(converted.cores_state.topo_order.is_empty());
         // Sanity: session_kwh still gets initialised on the bridged sensors path.
         assert!(matches!(converted.sensors.session_kwh.freshness, Freshness::Unknown));
+    }
+
+    /// PR-core-io-popups: the `cores: []` empty-vector contract means no
+    /// per-core entries are present on the back-compat path, so neither
+    /// `last_inputs` nor `last_outputs` need to be populated explicitly.
+    /// This test pins that contract: every (zero) entry must have empty
+    /// IO factor lists. Trivially true when `cores.is_empty()` but a
+    /// future regression that injects a placeholder entry would have to
+    /// honour it.
+    #[test]
+    fn world_snapshot_0_1_0_converter_initialises_core_io_factors_empty() {
+        let v010: V010WorldSnapshot = serde_json::from_value(v010_snapshot_json()).unwrap();
+        let converted = super::convert__world_snapshot__from__0_1_0(&v010);
+        for c in &converted.cores_state.cores {
+            assert!(c.last_inputs.is_empty(), "expected empty last_inputs for {}", c.id);
+            assert!(c.last_outputs.is_empty(), "expected empty last_outputs for {}", c.id);
+        }
     }
 }

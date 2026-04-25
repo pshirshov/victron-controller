@@ -2,13 +2,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use victron_controller_core::world::World;
 use victron_controller_core::Topology;
@@ -179,6 +179,19 @@ async fn main() -> Result<()> {
     };
     let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
     let snapshot_stream = SnapshotBroadcast::new(64);
+
+    // PR-ha-knob-sync: clone the MQTT client handle BEFORE handing the
+    // publisher to Runtime, so we can launch the initial-knob-state
+    // publish task. The bootstrap path only READS retained values; HA
+    // ends up showing "unknown" for any knob the user has never edited.
+    // After bootstrap settles we walk every knob and push its current
+    // value to retained MQTT — round-trip-stable when the value already
+    // matched retained, or fresh-write when only the safe_default
+    // existed in the controller.
+    let initial_knob_publish_client = mqtt_publisher.as_ref().map(|p| p.client_handle());
+    let initial_knob_publish_world = world.clone();
+    let initial_knob_publish_topic = cfg.mqtt.topic_root.clone();
+
     let runtime = Runtime::new(
         world.clone(),
         writer,
@@ -188,6 +201,36 @@ async fn main() -> Result<()> {
         snapshot_stream.clone(),
         meta.clone(),
     );
+
+    if let Some(client) = initial_knob_publish_client {
+        tokio::spawn(async move {
+            // Wait long enough for the MQTT subscriber's bootstrap
+            // window (BOOTSTRAP_WINDOW = ~750ms) and the post-bootstrap
+            // AllowBatteryToCar reset to apply. 3s is conservative.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let payloads = {
+                let w = initial_knob_publish_world.lock().await;
+                victron_controller_core::process::all_knob_publish_payloads(&w.knobs)
+            };
+            let mut count = 0_usize;
+            for payload in payloads {
+                if let Some((subtopic, body, retain)) =
+                    victron_controller_shell::mqtt::encode_publish_payload(&payload)
+                {
+                    let topic = format!("{initial_knob_publish_topic}/{subtopic}");
+                    if let Err(e) = client
+                        .publish(&topic, rumqttc::QoS::AtLeastOnce, retain, body.as_bytes())
+                        .await
+                    {
+                        warn!(error = %e, %topic, "initial knob publish failed");
+                    } else {
+                        count += 1;
+                    }
+                }
+            }
+            info!(count, "initial knob state published to retained MQTT");
+        });
+    }
 
     // Spawn subscriber + myenergi poller + runtime; all linked via
     // `tx`/`rx` so when the runtime's receiver closes, producers exit.

@@ -416,6 +416,83 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
     }
 }
 
+/// PR-ha-knob-sync: enumerate `(KnobId, KnobValue)` pairs covering EVERY
+/// user-controllable knob, packaged as `PublishPayload::Knob`. The shell
+/// invokes this once at boot (after the retained-MQTT bootstrap window
+/// closes) and pushes each payload to the broker so HA's MQTT integration
+/// sees a retained `<root>/knob/<name>/state` for every knob — pre-fix
+/// only knobs that the user had ever edited had a retained payload, so
+/// HA's UI showed "unknown" for the rest.
+#[must_use]
+pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayload> {
+    use KnobId as I;
+    use KnobValue as V;
+    let k = knobs;
+    vec![
+        PublishPayload::Knob { id: I::ForceDisableExport, value: V::Bool(k.force_disable_export) },
+        PublishPayload::Knob { id: I::ExportSocThreshold, value: V::Float(k.export_soc_threshold) },
+        PublishPayload::Knob { id: I::DischargeSocTarget, value: V::Float(k.discharge_soc_target) },
+        PublishPayload::Knob { id: I::BatterySocTarget, value: V::Float(k.battery_soc_target) },
+        PublishPayload::Knob {
+            id: I::FullChargeDischargeSocTarget,
+            value: V::Float(k.full_charge_discharge_soc_target),
+        },
+        PublishPayload::Knob {
+            id: I::FullChargeExportSocThreshold,
+            value: V::Float(k.full_charge_export_soc_threshold),
+        },
+        PublishPayload::Knob { id: I::DischargeTime, value: V::DischargeTime(k.discharge_time) },
+        PublishPayload::Knob { id: I::DebugFullCharge, value: V::DebugFullCharge(k.debug_full_charge) },
+        PublishPayload::Knob {
+            id: I::PessimismMultiplierModifier,
+            value: V::Float(k.pessimism_multiplier_modifier),
+        },
+        PublishPayload::Knob {
+            id: I::DisableNightGridDischarge,
+            value: V::Bool(k.disable_night_grid_discharge),
+        },
+        PublishPayload::Knob { id: I::ChargeCarBoost, value: V::Bool(k.charge_car_boost) },
+        PublishPayload::Knob { id: I::ChargeCarExtended, value: V::Bool(k.charge_car_extended) },
+        PublishPayload::Knob { id: I::ZappiCurrentTarget, value: V::Float(k.zappi_current_target) },
+        PublishPayload::Knob { id: I::ZappiLimit, value: V::Float(k.zappi_limit) },
+        PublishPayload::Knob { id: I::ZappiEmergencyMargin, value: V::Float(k.zappi_emergency_margin) },
+        PublishPayload::Knob { id: I::GridExportLimitW, value: V::Uint32(k.grid_export_limit_w) },
+        PublishPayload::Knob { id: I::GridImportLimitW, value: V::Uint32(k.grid_import_limit_w) },
+        PublishPayload::Knob { id: I::AllowBatteryToCar, value: V::Bool(k.allow_battery_to_car) },
+        PublishPayload::Knob { id: I::EddiEnableSoc, value: V::Float(k.eddi_enable_soc) },
+        PublishPayload::Knob { id: I::EddiDisableSoc, value: V::Float(k.eddi_disable_soc) },
+        PublishPayload::Knob { id: I::EddiDwellS, value: V::Uint32(k.eddi_dwell_s) },
+        PublishPayload::Knob {
+            id: I::WeathersocWinterTemperatureThreshold,
+            value: V::Float(k.weathersoc_winter_temperature_threshold),
+        },
+        PublishPayload::Knob {
+            id: I::WeathersocLowEnergyThreshold,
+            value: V::Float(k.weathersoc_low_energy_threshold),
+        },
+        PublishPayload::Knob {
+            id: I::WeathersocOkEnergyThreshold,
+            value: V::Float(k.weathersoc_ok_energy_threshold),
+        },
+        PublishPayload::Knob {
+            id: I::WeathersocHighEnergyThreshold,
+            value: V::Float(k.weathersoc_high_energy_threshold),
+        },
+        PublishPayload::Knob {
+            id: I::WeathersocTooMuchEnergyThreshold,
+            value: V::Float(k.weathersoc_too_much_energy_threshold),
+        },
+        PublishPayload::Knob {
+            id: I::ForecastDisagreementStrategy,
+            value: V::ForecastDisagreementStrategy(k.forecast_disagreement_strategy),
+        },
+        PublishPayload::Knob {
+            id: I::ChargeBatteryExtendedMode,
+            value: V::ChargeBatteryExtendedMode(k.charge_battery_extended_mode),
+        },
+    ]
+}
+
 fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topology) {
     use crate::types::{ActuatedId, SensorId};
     let p = topology.controller_params;
@@ -521,15 +598,14 @@ fn run_controllers(
 
 // --- Setpoint -----------------------------------------------------------------
 
-pub(crate) fn run_setpoint(
-    world: &mut World,
-    clock: &dyn Clock,
-    topology: &Topology,
-    effects: &mut Vec<Effect>,
-) {
-    // Required Fresh sensors. A-17: evcharger_ac_power joins the
-    // required set — the Hoymiles export term in solar_export depends
-    // on the EV-branch CT reading.
+/// Build the `SetpointInput` from the current world. Returns `None`
+/// when the required Fresh-sensor preconditions aren't met (the safety
+/// path fires); otherwise returns the live input the controller would
+/// run on. PR-core-io-popups: shared between `run_setpoint` and the
+/// dashboard's `SetpointCore::last_inputs` so the popup shows exactly
+/// the values the controller saw.
+#[must_use]
+pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
     if !world.sensors.battery_soc.is_usable()
         || !world.sensors.battery_soh.is_usable()
         || !world.sensors.battery_installed_capacity.is_usable()
@@ -539,13 +615,11 @@ pub(crate) fn run_setpoint(
         || !world.sensors.power_consumption.is_usable()
         || !world.sensors.evcharger_ac_power.is_usable()
     {
-        apply_setpoint_safety(world, clock, topology, effects);
-        return;
+        return None;
     }
-
     let k = &world.knobs;
     let bk = &world.bookkeeping;
-    let input = SetpointInput {
+    Some(SetpointInput {
         globals: SetpointInputGlobals {
             force_disable_export: k.force_disable_export,
             export_soc_threshold: k.export_soc_threshold,
@@ -571,7 +645,24 @@ pub(crate) fn run_setpoint(
         soltaro_power: world.sensors.soltaro_power.value.unwrap(),
         evcharger_ac_power: world.sensors.evcharger_ac_power.value.unwrap(),
         capacity: world.sensors.battery_installed_capacity.value.unwrap(),
+    })
+}
+
+pub(crate) fn run_setpoint(
+    world: &mut World,
+    clock: &dyn Clock,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
+    // Required Fresh sensors. A-17: evcharger_ac_power joins the
+    // required set — the Hoymiles export term in solar_export depends
+    // on the EV-branch CT reading.
+    let Some(input) = build_setpoint_input(world) else {
+        apply_setpoint_safety(world, clock, topology, effects);
+        return;
     };
+
+    let k = &world.knobs;
 
     let out = evaluate_setpoint(&input, clock);
 
@@ -795,13 +886,12 @@ fn update_bookkeeping_from_setpoint(
 
 // --- Current limit ------------------------------------------------------------
 
-pub(crate) fn run_current_limit(
-    world: &mut World,
-    clock: &dyn Clock,
-    topology: &Topology,
-    effects: &mut Vec<Effect>,
-) {
-    // Required Fresh sensors.
+/// Build the `CurrentLimitInput` from the current world, or `None` if
+/// the controller's required Fresh-sensor gates aren't satisfied.
+/// PR-core-io-popups: shared between `run_current_limit` and the
+/// dashboard's `CurrentLimitCore::last_inputs`.
+#[must_use]
+pub(crate) fn build_current_limit_input(world: &World) -> Option<CurrentLimitInput> {
     let s = &world.sensors;
     if !s.power_consumption.is_usable()
         || !s.offgrid_power.is_usable()
@@ -816,15 +906,14 @@ pub(crate) fn run_current_limit(
         || !s.battery_soc.is_usable()
         || !s.ess_state.is_usable()
     {
-        return;
+        return None;
     }
     if !world.typed_sensors.zappi_state.is_usable() {
-        return;
+        return None;
     }
-
     let k = &world.knobs;
     let bk = &world.bookkeeping;
-    let input = CurrentLimitInput {
+    Some(CurrentLimitInput {
         globals: CurrentLimitInputGlobals {
             zappi_current_target: k.zappi_current_target,
             zappi_emergency_margin: k.zappi_emergency_margin,
@@ -852,6 +941,17 @@ pub(crate) fn run_current_limit(
         ess_state: s.ess_state.value.unwrap() as i32,
         battery_power: s.battery_dc_power.value.unwrap(),
         battery_soc: s.battery_soc.value.unwrap(),
+    })
+}
+
+pub(crate) fn run_current_limit(
+    world: &mut World,
+    clock: &dyn Clock,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
+    let Some(input) = build_current_limit_input(world) else {
+        return;
     };
 
     let out = evaluate_current_limit(&input, clock);
@@ -916,14 +1016,64 @@ pub(crate) fn run_current_limit(
 
 // --- Schedules ----------------------------------------------------------------
 
-pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
-    // Schedules always runs — battery_soc is the only required sensor.
-    if !world.sensors.battery_soc.is_usable() {
-        return;
-    }
+/// Effective `charge_battery_extended` flag fed to the schedules
+/// controller, decomposed for `run_schedules` (which decorates the
+/// Decision with the derivation factors) and `SchedulesCore::last_inputs`
+/// (which surfaces them in the popup).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub(crate) struct CbeDerivation {
+    pub from_full: bool,
+    pub from_weather: bool,
+    pub derived: bool,
+    pub effective: bool,
+}
 
+pub(crate) fn cbe_derivation(world: &World) -> CbeDerivation {
+    let bk = &world.bookkeeping;
+    let k = &world.knobs;
+    let from_full = bk.charge_to_full_required;
+    let from_weather = bk.charge_battery_extended_today;
+    let derived = from_full || from_weather;
+    let effective = match k.charge_battery_extended_mode {
+        crate::knobs::ChargeBatteryExtendedMode::Auto => derived,
+        crate::knobs::ChargeBatteryExtendedMode::Forced => true,
+        crate::knobs::ChargeBatteryExtendedMode::Disabled => false,
+    };
+    CbeDerivation { from_full, from_weather, derived, effective }
+}
+
+/// Build the `SchedulesInput` from the current world, or `None` when
+/// the controller's `battery_soc` precondition isn't satisfied.
+/// PR-core-io-popups.
+#[must_use]
+pub(crate) fn build_schedules_input(world: &World) -> Option<SchedulesInput> {
+    if !world.sensors.battery_soc.is_usable() {
+        return None;
+    }
     let k = &world.knobs;
     let bk = &world.bookkeeping;
+    let cbe = cbe_derivation(world);
+    Some(SchedulesInput {
+        globals: SchedulesInputGlobals {
+            charge_battery_extended: cbe.effective,
+            charge_car_extended: k.charge_car_extended,
+            charge_to_full_required: bk.charge_to_full_required,
+            disable_night_grid_discharge: k.disable_night_grid_discharge,
+            zappi_active: world.derived.zappi_active,
+            above_soc_date: bk.above_soc_date,
+            battery_soc_target: k.battery_soc_target,
+        },
+        battery_soc: world.sensors.battery_soc.value.unwrap(),
+    })
+}
+
+pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+    // Schedules always runs — battery_soc is the only required sensor.
+    let Some(input) = build_schedules_input(world) else {
+        return;
+    };
+
     // A-15: `charge_battery_extended` in Auto mode is true when EITHER:
     //   - the weekly Sunday-17:00 full-charge scheduler fired
     //     (`bk.charge_to_full_required`), or
@@ -934,27 +1084,13 @@ pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut 
     // The legacy `!disable_night_grid_discharge` term was dropped — it
     // made cbe permanently true by default and was never the right
     // semantic.
-    let cbe_from_full = bk.charge_to_full_required;
-    let cbe_from_weather = bk.charge_battery_extended_today;
-    let cbe_derived = cbe_from_full || cbe_from_weather;
-    let charge_battery_extended = match k.charge_battery_extended_mode {
-        crate::knobs::ChargeBatteryExtendedMode::Auto => cbe_derived,
-        crate::knobs::ChargeBatteryExtendedMode::Forced => true,
-        crate::knobs::ChargeBatteryExtendedMode::Disabled => false,
-    };
-
-    let input = SchedulesInput {
-        globals: SchedulesInputGlobals {
-            charge_battery_extended,
-            charge_car_extended: k.charge_car_extended,
-            charge_to_full_required: bk.charge_to_full_required,
-            disable_night_grid_discharge: k.disable_night_grid_discharge,
-            zappi_active: world.derived.zappi_active,
-            above_soc_date: bk.above_soc_date,
-            battery_soc_target: k.battery_soc_target,
-        },
-        battery_soc: world.sensors.battery_soc.value.unwrap(),
-    };
+    // PR-core-io-popups: the cbe derivation moved into `cbe_derivation()`
+    // so `SchedulesCore::last_inputs` can surface the same factors.
+    let cbe = cbe_derivation(world);
+    let cbe_from_full = cbe.from_full;
+    let cbe_from_weather = cbe.from_weather;
+    let cbe_derived = cbe.derived;
+    let charge_battery_extended = cbe.effective;
 
     let out = evaluate_schedules(&input, clock);
     // Schedule 0 Decision: the unconditional-boost invariant. No cbe
@@ -974,7 +1110,10 @@ pub(crate) fn run_schedules(world: &mut World, clock: &dyn Clock, effects: &mut 
         )
         .with_factor(
             "cbe mode override",
-            format!("{:?} → {charge_battery_extended}", k.charge_battery_extended_mode),
+            format!(
+                "{:?} → {charge_battery_extended}",
+                world.knobs.charge_battery_extended_mode
+            ),
         );
     world.decisions.schedule_1 = Some(s1_decision);
 
@@ -1104,26 +1243,31 @@ fn maybe_propose_schedule(
 
 // --- Zappi mode ---------------------------------------------------------------
 
-pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+/// Build the `ZappiModeInput` from the current world, or `None` if the
+/// typed Zappi state isn't usable. PR-core-io-popups.
+#[must_use]
+pub(crate) fn build_zappi_mode_input(world: &World) -> Option<ZappiModeInput> {
     if !world.typed_sensors.zappi_state.is_usable() {
-        return;
+        return None;
     }
     let zappi_state = world.typed_sensors.zappi_state.value.unwrap();
-    let current_mode = zappi_state.zappi_mode;
-    // A-13 + A-14: session kWh now flows straight from the poller via
-    // `ZappiState::session_kwh` (myenergi `che`). Compared kWh-to-kWh
-    // against `zappi_limit` (also kWh — see A-14 unit fix).
-    let session_kwh = zappi_state.session_kwh;
-
     let k = &world.knobs;
-    let input = ZappiModeInput {
+    Some(ZappiModeInput {
         globals: ZappiModeInputGlobals {
             charge_car_boost: k.charge_car_boost,
             charge_car_extended: k.charge_car_extended,
             zappi_limit_kwh: k.zappi_limit,
         },
-        current_mode,
-        session_kwh,
+        current_mode: zappi_state.zappi_mode,
+        // A-13 + A-14: session kWh flows from myenergi `che`. Compared
+        // kWh-to-kWh against `zappi_limit`.
+        session_kwh: zappi_state.session_kwh,
+    })
+}
+
+pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+    let Some(input) = build_zappi_mode_input(world) else {
+        return;
     };
 
     let out = evaluate_zappi_mode(&input, clock);
@@ -1171,16 +1315,18 @@ pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut
 
 // --- Eddi mode ----------------------------------------------------------------
 
-pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+/// Build the `EddiModeInput` from the current world. Always succeeds —
+/// `evaluate_eddi_mode` itself handles a Stale/Unknown SoC. PR-core-io-popups.
+#[must_use]
+pub(crate) fn build_eddi_mode_input(world: &World) -> EddiModeInput {
     let soc = &world.sensors.battery_soc;
     let current_mode = world
         .typed_sensors
         .eddi_mode
         .value
         .unwrap_or(EddiMode::Stopped);
-
     let k = &world.knobs;
-    let input = EddiModeInput {
+    EddiModeInput {
         soc_value: soc.value,
         soc_freshness: soc.freshness,
         current_mode,
@@ -1190,7 +1336,11 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
             disable_soc: k.eddi_disable_soc,
             dwell_s: k.eddi_dwell_s,
         },
-    };
+    }
+}
+
+pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut Vec<Effect>) {
+    let input = build_eddi_mode_input(world);
 
     let out = evaluate_eddi_mode(&input, clock);
     world.decisions.eddi_mode = Some(out.decision);

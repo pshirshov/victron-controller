@@ -1,4 +1,4 @@
-
+use crate::victron_controller::dashboard::core_factor::CoreFactor;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct CoreState {
@@ -6,13 +6,15 @@ pub struct CoreState {
     pub depends_on: Vec<String>,
     pub last_run_outcome: String,
     pub last_payload: Option<String>,
+    pub last_inputs: Vec<CoreFactor>,
+    pub last_outputs: Vec<CoreFactor>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for CoreState {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        4
+        6
     }
 }
 
@@ -63,6 +65,28 @@ impl crate::baboon_runtime::BaboonBinEncode for CoreState {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.last_inputs.len() as i32)?;
+            for item in (value.last_inputs).iter() {
+                item.encode_ueba(ctx, &mut buffer)?;
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.last_outputs.len() as i32)?;
+            for item in (value.last_outputs).iter() {
+                item.encode_ueba(ctx, &mut buffer)?;
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -78,6 +102,14 @@ impl crate::baboon_runtime::BaboonBinEncode for CoreState {
                     crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
                     v.encode_ueba(ctx, writer)?;
                 }
+            }
+            crate::baboon_runtime::bin_tools::write_i32(writer, value.last_inputs.len() as i32)?;
+            for item in (value.last_inputs).iter() {
+                item.encode_ueba(ctx, writer)?;
+            }
+            crate::baboon_runtime::bin_tools::write_i32(writer, value.last_outputs.len() as i32)?;
+            for item in (value.last_outputs).iter() {
+                item.encode_ueba(ctx, writer)?;
             }
         }
         Ok(())
@@ -100,11 +132,21 @@ impl crate::baboon_runtime::BaboonBinDecode for CoreState {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
+        let last_inputs = {
+            let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
+            (0..count).map(|_| Ok(CoreFactor::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
+        };
+        let last_outputs = {
+            let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
+            (0..count).map(|_| Ok(CoreFactor::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
+        };
         Ok(CoreState {
             id,
             depends_on,
             last_run_outcome,
             last_payload,
+            last_inputs,
+            last_outputs,
         })
     }
 }

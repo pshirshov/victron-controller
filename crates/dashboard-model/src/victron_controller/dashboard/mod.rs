@@ -21,6 +21,8 @@ pub use charge_battery_extended_mode::*;
 pub mod command;
 pub mod command_ack;
 pub use command_ack::*;
+pub mod core_factor;
+pub use core_factor::*;
 pub mod core_state;
 pub use core_state::*;
 pub mod cores_state;
