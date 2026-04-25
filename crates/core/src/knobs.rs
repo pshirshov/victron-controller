@@ -24,7 +24,7 @@ pub enum DebugFullCharge {
     Force,
     /// Follow the `next_full_charge` schedule (default).
     #[default]
-    None,
+    Auto,
 }
 
 /// Fusion strategy when forecast providers disagree.
@@ -166,7 +166,7 @@ impl Knobs {
             full_charge_discharge_soc_target: 57.0,
             full_charge_export_soc_threshold: 100.0,
             discharge_time: DischargeTime::At0200,
-            debug_full_charge: DebugFullCharge::None,
+            debug_full_charge: DebugFullCharge::Auto,
             pessimism_multiplier_modifier: 1.0,
             disable_night_grid_discharge: false,
             charge_car_boost: false,
@@ -244,7 +244,7 @@ mod tests {
         assert!((k.full_charge_discharge_soc_target - 57.0).abs() < f64::EPSILON);
         assert!((k.full_charge_export_soc_threshold - 100.0).abs() < f64::EPSILON);
         assert_eq!(k.discharge_time, DischargeTime::At0200);
-        assert_eq!(k.debug_full_charge, DebugFullCharge::None);
+        assert_eq!(k.debug_full_charge, DebugFullCharge::Auto);
         assert_eq!(k.grid_export_limit_w, 4900);
         assert!(!k.allow_battery_to_car);
         assert!((k.eddi_enable_soc - 96.0).abs() < f64::EPSILON);

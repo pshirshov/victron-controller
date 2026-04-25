@@ -4,13 +4,13 @@ import {BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} fr
 export enum DebugFullCharge {
     Forbid = "Forbid",
     Force = "Force",
-    None_ = "None_"
+    Auto = "Auto"
 }
 
 export const DebugFullCharge_values: ReadonlyArray<DebugFullCharge> = [
     DebugFullCharge.Forbid,
     DebugFullCharge.Force,
-    DebugFullCharge.None_
+    DebugFullCharge.Auto
 ] as const;
 
 export function DebugFullCharge_parse(s: string): DebugFullCharge {
@@ -31,7 +31,7 @@ export class DebugFullCharge_UEBACodec {
         switch (value) {
             case "Forbid": BinTools.writeByte(writer, 0); break;
                 case "Force": BinTools.writeByte(writer, 1); break;
-                case "None_": BinTools.writeByte(writer, 2); break;
+                case "Auto": BinTools.writeByte(writer, 2); break;
             default: throw new Error("Unknown enum variant: " + value);
         }
     }
@@ -45,7 +45,7 @@ export class DebugFullCharge_UEBACodec {
         switch (tag) {
             case 0: return "Forbid" as DebugFullCharge;
                 case 1: return "Force" as DebugFullCharge;
-                case 2: return "None_" as DebugFullCharge;
+                case 2: return "Auto" as DebugFullCharge;
             default: throw new Error("Unknown enum variant tag: " + tag);
         }
     }

@@ -168,7 +168,7 @@ pub fn evaluate_setpoint(
     let charge_to_full_required = match g.debug_full_charge {
         DebugFullCharge::Forbid => false,
         DebugFullCharge::Force => true,
-        DebugFullCharge::None => next_full_charge <= now,
+        DebugFullCharge::Auto => next_full_charge <= now,
     };
 
     let soc_end_of_day_target = if charge_to_full_required {
@@ -635,7 +635,7 @@ mod tests {
                 zappi_active: false,
                 allow_battery_to_car: false,
                 discharge_time: DischargeTime::At0200,
-                debug_full_charge: DebugFullCharge::None,
+                debug_full_charge: DebugFullCharge::Auto,
                 pessimism_multiplier_modifier: 1.0,
                 next_full_charge: None,
                 // PR-inverter-safe-discharge-knob: default for fixtures
@@ -1080,7 +1080,7 @@ mod tests {
             .unwrap();
         let input = SetpointInput {
             globals: SetpointInputGlobals {
-                debug_full_charge: DebugFullCharge::None,
+                debug_full_charge: DebugFullCharge::Auto,
                 next_full_charge: Some(future),
                 ..base_input().globals
             },

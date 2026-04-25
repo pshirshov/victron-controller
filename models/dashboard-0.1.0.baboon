@@ -56,7 +56,7 @@ enum DischargeTime {
 enum DebugFullCharge {
   Forbid
   Force
-  None_
+  Auto
 }
 
 enum ForecastDisagreementStrategy {

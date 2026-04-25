@@ -99,7 +99,7 @@ export const entityDescriptions: Record<string, string> = {
   "battery.discharge.time":
     "End-of-evening discharge cutoff time. At0200 = continue through 02:00; At2300 = truncate at 23:00 (for tariffs with a 23:00 transition).",
   "debug.full-charge.mode":
-    "Manual override for the weekly full-charge cycle. None_ = follow schedule; Force = run on next eval; Forbid = skip.",
+    "Manual override for the weekly full-charge cycle. Auto = follow schedule; Force = run on next eval; Forbid = skip.",
   "forecast.pessimism.modifier":
     "Multiplier applied to forecast-derived planning estimates. <1 = optimistic, >1 = pessimistic.",
   "grid.night.discharge.disable.forced-value":

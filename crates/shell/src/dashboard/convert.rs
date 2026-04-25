@@ -125,7 +125,7 @@ fn debug_full_charge(d: DebugFullCharge) -> ModelDebugFullCharge {
     match d {
         DebugFullCharge::Forbid => ModelDebugFullCharge::Forbid,
         DebugFullCharge::Force => ModelDebugFullCharge::Force,
-        DebugFullCharge::None => ModelDebugFullCharge::None_,
+        DebugFullCharge::Auto => ModelDebugFullCharge::Auto,
     }
 }
 
@@ -715,7 +715,7 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
             value: KnobValue::DebugFullCharge(match c.value {
                 ModelDebugFullCharge::Forbid => DebugFullCharge::Forbid,
                 ModelDebugFullCharge::Force => DebugFullCharge::Force,
-                ModelDebugFullCharge::None_ => DebugFullCharge::None,
+                ModelDebugFullCharge::Auto => DebugFullCharge::Auto,
             }),
         },
         C::SetForecastDisagreementStrategy(c) => Command::Knob {

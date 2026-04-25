@@ -33,7 +33,7 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "battery.soc.target.full-charge.discharge": { kind: "float", min: 0, max: 100, step: 1, default: 57 },
   "battery.soc.threshold.full-charge.export": { kind: "float", min: 0, max: 100, step: 1, default: 100 },
   "battery.discharge.time": { kind: "enum", cmdVariant: "SetDischargeTime", options: ["At0200", "At2300"], default: "At0200" },
-  "debug.full-charge.mode": { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "None_"], default: "None_" },
+  "debug.full-charge.mode": { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "Auto"], default: "Auto" },
   "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05, default: 1 },
   "grid.night.discharge.disable.forced-value": { kind: "bool", default: false },
   "evcharger.boost.enable": { kind: "bool", default: false },
@@ -212,7 +212,9 @@ export function renderKnobs(
   const tbody = document.querySelector("#knobs-table tbody") as HTMLElement;
   const entries = Object.entries(snap.knobs)
     .filter(([name]) => name !== "writes_enabled")
-    .sort(([a], [b]) => a.localeCompare(b));
+    .sort(([a], [b]) =>
+      displayNameOfTyped(a, "knob").localeCompare(displayNameOfTyped(b, "knob")),
+    );
 
   const rows: KeyedRow[] = entries.map(([name, val]) => {
     const spec = specFor(name);

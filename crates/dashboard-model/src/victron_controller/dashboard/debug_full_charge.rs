@@ -4,7 +4,7 @@
 pub enum DebugFullCharge {
     Forbid,
     Force,
-    None_,
+    Auto,
 }
 
 impl DebugFullCharge {
@@ -12,7 +12,7 @@ impl DebugFullCharge {
         match s {
             "Forbid" => Ok(DebugFullCharge::Forbid),
             "Force" => Ok(DebugFullCharge::Force),
-            "None_" => Ok(DebugFullCharge::None_),
+            "Auto" => Ok(DebugFullCharge::Auto),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -21,7 +21,7 @@ impl DebugFullCharge {
         vec![
             DebugFullCharge::Forbid,
             DebugFullCharge::Force,
-            DebugFullCharge::None_,
+            DebugFullCharge::Auto,
         ]
     }
 }
@@ -31,7 +31,7 @@ impl std::fmt::Display for DebugFullCharge {
         match self {
             DebugFullCharge::Forbid => write!(f, "Forbid"),
             DebugFullCharge::Force => write!(f, "Force"),
-            DebugFullCharge::None_ => write!(f, "None_"),
+            DebugFullCharge::Auto => write!(f, "Auto"),
         }
     }
 }
@@ -54,7 +54,7 @@ impl crate::baboon_runtime::BaboonBinEncode for DebugFullCharge {
         match self {
             DebugFullCharge::Forbid => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
             DebugFullCharge::Force => crate::baboon_runtime::bin_tools::write_byte(writer, 1)?,
-            DebugFullCharge::None_ => crate::baboon_runtime::bin_tools::write_byte(writer, 2)?,
+            DebugFullCharge::Auto => crate::baboon_runtime::bin_tools::write_byte(writer, 2)?,
         }
         Ok(())
     }
@@ -66,7 +66,7 @@ impl crate::baboon_runtime::BaboonBinDecode for DebugFullCharge {
         match tag {
             0 => Ok(DebugFullCharge::Forbid),
             1 => Ok(DebugFullCharge::Force),
-            2 => Ok(DebugFullCharge::None_),
+            2 => Ok(DebugFullCharge::Auto),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

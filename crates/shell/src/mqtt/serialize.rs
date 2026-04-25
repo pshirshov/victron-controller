@@ -444,7 +444,7 @@ fn encode_knob_value(v: KnobValue) -> String {
         KnobValue::DischargeTime(DischargeTime::At2300) => "23:00".to_string(),
         KnobValue::DebugFullCharge(DebugFullCharge::Forbid) => "forbid".to_string(),
         KnobValue::DebugFullCharge(DebugFullCharge::Force) => "force".to_string(),
-        KnobValue::DebugFullCharge(DebugFullCharge::None) => "none".to_string(),
+        KnobValue::DebugFullCharge(DebugFullCharge::Auto) => "auto".to_string(),
         KnobValue::ForecastDisagreementStrategy(s) => match s {
             ForecastDisagreementStrategy::Max => "max".to_string(),
             ForecastDisagreementStrategy::Min => "min".to_string(),
@@ -641,7 +641,7 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         KnobId::DebugFullCharge => match body {
             "forbid" => Some(KnobValue::DebugFullCharge(DebugFullCharge::Forbid)),
             "force" => Some(KnobValue::DebugFullCharge(DebugFullCharge::Force)),
-            "none" => Some(KnobValue::DebugFullCharge(DebugFullCharge::None)),
+            "auto" | "none" => Some(KnobValue::DebugFullCharge(DebugFullCharge::Auto)),
             _ => None,
         },
         KnobId::ForecastDisagreementStrategy => match body {

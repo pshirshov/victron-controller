@@ -449,7 +449,7 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::WeathersocTooMuchEnergyThreshold, 1.0, Some("kWh")),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
-        (KnobId::DebugFullCharge, "select", json!({"options": ["none", "force", "forbid"]})),
+        (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),
         (
             KnobId::ForecastDisagreementStrategy,
             "select",

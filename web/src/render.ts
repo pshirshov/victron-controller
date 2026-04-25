@@ -163,7 +163,9 @@ function fmtDurationMs(totalMs: number): string {
 
 export function renderSensors(snap: WorldSnapshot) {
   const tbody = document.querySelector("#sensors-table tbody") as HTMLElement;
-  const entries = Object.entries(snap.sensors).sort(([a], [b]) => a.localeCompare(b));
+  const entries = Object.entries(snap.sensors).sort(([a], [b]) =>
+    displayNameOfTyped(a, "sensor").localeCompare(displayNameOfTyped(b, "sensor")),
+  );
   const meta = snap.sensors_meta as unknown as Record<
     string,
     { origin: string; identifier: string; cadence_ms: number; staleness_ms: number }
@@ -309,12 +311,15 @@ export function renderActuated(snap: WorldSnapshot) {
       s1.actual_since_epoch_ms as unknown as number,
     ),
   ];
+  rows.sort((a, b) => displayNameOfTyped(a.key, "actuated").localeCompare(displayNameOfTyped(b.key, "actuated")));
   updateKeyedRows(tbody, rows);
 }
 
 export function renderBookkeeping(snap: WorldSnapshot) {
   const tbody = document.querySelector("#bk-table tbody") as HTMLElement;
-  const rows: KeyedRow[] = Object.entries(snap.bookkeeping).map(([name, val]) => {
+  const entries = Object.entries(snap.bookkeeping)
+    .sort(([a], [b]) => displayNameOfTyped(a, "bookkeeping").localeCompare(displayNameOfTyped(b, "bookkeeping")));
+  const rows: KeyedRow[] = entries.map(([name, val]) => {
     let disp: string;
     if (val === null || val === undefined) disp = "—";
     else if (typeof val === "boolean") disp = boolBadge(val);
@@ -346,6 +351,7 @@ export function renderDecisions(snap: WorldSnapshot) {
     ["eddi_mode", d.eddi_mode],
     ["weather_soc", d.weather_soc],
   ];
+  ordered.sort(([a], [b]) => displayNameOfTyped(a, "decision").localeCompare(displayNameOfTyped(b, "decision")));
   const rows: KeyedRow[] = ordered.map(([name, dec]) => {
     if (!dec) {
       return {
@@ -427,7 +433,9 @@ export function renderTimers(snap: WorldSnapshot) {
   const tbody = document.querySelector("#timers-table tbody") as HTMLElement;
   if (!tbody) return;
   const t = snap.timers as unknown as { entries?: TimerRow[] } | undefined;
-  const entries = t?.entries ?? [];
+  const entries = (t?.entries ?? [])
+    .slice()
+    .sort((a, b) => displayNameOfTyped(a.id, "timer").localeCompare(displayNameOfTyped(b.id, "timer")));
   const rows: KeyedRow[] = entries.map((e) => {
     const last = e.last_fire_epoch_ms ?? 0;
     const next = e.next_fire_epoch_ms;
@@ -872,6 +880,7 @@ export function renderForecasts(snap: WorldSnapshot) {
     ["forecast_solar", snap.forecasts.forecast_solar],
     ["open_meteo", snap.forecasts.open_meteo],
   ];
+  providers.sort(([a], [b]) => displayNameOfTyped(a, "forecast").localeCompare(displayNameOfTyped(b, "forecast")));
   const rows: KeyedRow[] = providers.map(([name, f]) => {
     if (!f) {
       return {
