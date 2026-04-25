@@ -13,7 +13,23 @@ import type { ActuatedI32 } from "./model/victron_controller/dashboard/ActuatedI
 import type { ActuatedF64 } from "./model/victron_controller/dashboard/ActuatedF64.js";
 import type { ActuatedEnumName } from "./model/victron_controller/dashboard/ActuatedEnumName.js";
 import type { ActuatedSchedule } from "./model/victron_controller/dashboard/ActuatedSchedule.js";
-import { entityDescriptions } from "./descriptions.js";
+import {
+  bookkeepingWriters,
+  entityDescriptions,
+  forecastProviderLabels,
+} from "./descriptions.js";
+import { KNOB_SPEC, type KnobSpec } from "./knobs.js";
+
+// Entity types recognised by the inspector dispatcher.
+export type EntityType =
+  | "sensor"
+  | "knob"
+  | "actuated"
+  | "bookkeeping"
+  | "decision"
+  | "forecast"
+  | "core"
+  | "timer";
 
 // --- incremental update primitives ---------------------------------------
 
@@ -85,14 +101,13 @@ function esc(s: string): string {
   return s.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as Record<string, string>)[ch]!);
 }
 
-// Render the canonical entity name with a `title=` description tooltip
-// (native browser hover tip). When no description is registered for the
-// name, the cell still renders but without a tooltip — matches the
-// "missing key → no tooltip" behaviour the registry promises.
-export function nameWithTitle(name: string): string {
-  const desc = entityDescriptions[name];
-  if (desc === undefined) return esc(name);
-  return `<span title="${esc(desc)}">${esc(name)}</span>`;
+// Render the canonical entity name as a clickable inspector link.
+// Click handling is delegated in `web/src/index.ts`. The description
+// lives inside the popup, not in a hover tooltip — discoverability
+// moves from "hover" to "click" (see the "click any name to inspect"
+// hint at the top of the dashboard).
+export function entityLink(name: string, type: EntityType): string {
+  return `<a class="entity-link" data-entity-id="${esc(name)}" data-entity-type="${type}">${esc(name)}</a>`;
 }
 
 // Compact identifier copy button: a faint icon glyph that lives inline
@@ -152,8 +167,8 @@ export function renderSensors(snap: WorldSnapshot) {
     const cadence = mm ? fmtDurationMs(mm.cadence_ms) : `<span class="dim">—</span>`;
     const staleness = mm ? fmtDurationMs(mm.staleness_ms) : `<span class="dim">—</span>`;
     const nameCell = mm
-      ? `${nameWithTitle(name)} ${copyIcon(mm.identifier)}`
-      : nameWithTitle(name);
+      ? `${entityLink(name, "sensor")} ${copyIcon(mm.identifier)}`
+      : entityLink(name, "sensor");
     return {
       key: name,
       cells: [
@@ -213,7 +228,7 @@ export function renderActuated(snap: WorldSnapshot) {
   ): KeyedRow => ({
     key,
     cells: [
-      { cls: "mono", html: nameWithTitle(key) },
+      { cls: "mono", html: entityLink(key, "actuated") },
       { cls: "mono", html: target },
       { html: owner },
       { cls: `phase-${phase}`, html: phase },
@@ -302,7 +317,7 @@ export function renderBookkeeping(snap: WorldSnapshot) {
     return {
       key: name,
       cells: [
-        { cls: "mono", html: nameWithTitle(name) },
+        { cls: "mono", html: entityLink(name, "bookkeeping") },
         { html: disp },
       ],
     };
@@ -327,7 +342,7 @@ export function renderDecisions(snap: WorldSnapshot) {
       return {
         key: name,
         cells: [
-          { cls: "mono", html: nameWithTitle(name) },
+          { cls: "mono", html: entityLink(name, "decision") },
           { cls: "dim", html: "—" },
           { cls: "dim", html: "—" },
         ],
@@ -342,7 +357,7 @@ export function renderDecisions(snap: WorldSnapshot) {
     return {
       key: name,
       cells: [
-        { cls: "mono", html: nameWithTitle(name) },
+        { cls: "mono", html: entityLink(name, "decision") },
         { html: esc(dec.summary as string) },
         { cls: "factors", html: factors },
       ],
@@ -375,14 +390,9 @@ export function renderCoresState(snap: WorldSnapshot) {
       key: c.id,
       cells: [
         // Core name is a clickable link that opens the inspector modal
-        // (renderCoreModal). Tooltip carries the description from
-        // `entityDescriptions`; the click is wired in `web/src/index.ts`.
-        {
-          cls: "mono",
-          html: `<a class="core-link" data-core-id="${esc(c.id)}" title="${esc(
-            entityDescriptionFor(c.id),
-          )}">${esc(c.id)}</a>`,
-        },
+        // (renderEntityModal with type="core"). Description lives in
+        // the popup; click is wired in `web/src/index.ts`.
+        { cls: "mono", html: entityLink(c.id, "core") },
         { cls: "mono", html: deps },
         { html: esc(c.last_run_outcome) },
         { html: payload },
@@ -392,15 +402,375 @@ export function renderCoresState(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
-/// Render the TASS core inspector modal for `coreId` against the
-/// current snapshot. Idempotent — safe to call on every applySnapshot
-/// while the modal is open so the body refreshes live.
-export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
-  const titleEl = document.getElementById("core-modal-title");
-  const bodyEl = document.getElementById("core-modal-body");
-  if (!titleEl || !bodyEl) return;
-  titleEl.textContent = `core: ${coreId}`;
+// PR-timers-section: render the per-timer table. Columns mirror the
+// wire `Timer` shape: id | description | period | last_fire | next_fire
+// | status. Periods of zero render as "—" via fmtDurationMs.
+type TimerRow = {
+  id: string;
+  description: string;
+  period_ms: number;
+  last_fire_epoch_ms: number | null;
+  next_fire_epoch_ms: number | null;
+  status: string;
+};
 
+export function renderTimers(snap: WorldSnapshot) {
+  const tbody = document.querySelector("#timers-table tbody") as HTMLElement;
+  if (!tbody) return;
+  const t = snap.timers as unknown as { entries?: TimerRow[] } | undefined;
+  const entries = t?.entries ?? [];
+  const rows: KeyedRow[] = entries.map((e) => {
+    const last = e.last_fire_epoch_ms ?? 0;
+    const next = e.next_fire_epoch_ms;
+    return {
+      key: e.id,
+      cells: [
+        { cls: "mono", html: entityLink(e.id, "timer") },
+        { html: esc(e.description) },
+        { cls: "mono", html: fmtDurationMs(e.period_ms) },
+        { cls: "dim", html: last ? fmtEpoch(last) : "—" },
+        { cls: "dim", html: next ? fmtEpoch(next) : "—" },
+        { html: esc(e.status) },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
+}
+
+function renderTimerBody(entityId: string, snap: WorldSnapshot): string {
+  const t = snap.timers as unknown as { entries?: TimerRow[] } | undefined;
+  const entry = t?.entries?.find((e) => e.id === entityId);
+  const sections: string[] = [descriptionSection(entityId)];
+  if (!entry) {
+    sections.push(`<section><p>no timer "${esc(entityId)}" in snapshot</p></section>`);
+    return sections.filter(Boolean).join("");
+  }
+  const last = entry.last_fire_epoch_ms ?? 0;
+  const next = entry.next_fire_epoch_ms;
+  sections.push(
+    `<section><h3>Timer</h3>` +
+      `<table><tbody>` +
+      `<tr><th>id</th><td>${esc(entry.id)}</td></tr>` +
+      `<tr><th>description</th><td>${esc(entry.description)}</td></tr>` +
+      `<tr><th>period</th><td>${esc(fmtDurationMs(entry.period_ms))}</td></tr>` +
+      `<tr><th>last fire</th><td>${last ? esc(fmtEpoch(last)) : "—"}</td></tr>` +
+      `<tr><th>next fire</th><td>${next ? esc(fmtEpoch(next)) : "—"}</td></tr>` +
+      `<tr><th>status</th><td>${esc(entry.status)}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+  return sections.filter(Boolean).join("");
+}
+
+/// Render the entity inspector modal for `entityId` of `type` against
+/// the current snapshot. Idempotent — safe to call on every
+/// applySnapshot while the modal is open so the body refreshes live.
+export function renderEntityModal(
+  entityId: string,
+  type: EntityType,
+  snap: WorldSnapshot,
+) {
+  const titleEl = document.getElementById("entity-modal-title");
+  const bodyEl = document.getElementById("entity-modal-body");
+  if (!titleEl || !bodyEl) return;
+  titleEl.textContent = `${type}: ${entityId}`;
+
+  let html = "";
+  switch (type) {
+    case "sensor":      html = renderSensorBody(entityId, snap); break;
+    case "knob":        html = renderKnobBody(entityId, snap); break;
+    case "actuated":    html = renderActuatedBody(entityId, snap); break;
+    case "bookkeeping": html = renderBookkeepingBody(entityId, snap); break;
+    case "decision":    html = renderDecisionBody(entityId, snap); break;
+    case "forecast":    html = renderForecastBody(entityId, snap); break;
+    case "core":        html = renderCoreBody(entityId, snap); break;
+    case "timer":       html = renderTimerBody(entityId, snap); break;
+  }
+  bodyEl.innerHTML = html;
+}
+
+// --- per-type modal bodies ---------------------------------------------
+
+function descriptionSection(entityId: string): string {
+  const desc = entityDescriptionFor(entityId);
+  if (!desc) return "";
+  return `<section><p style="color:var(--muted);margin:0">${esc(desc)}</p></section>`;
+}
+
+function entityDescriptionFor(key: string): string {
+  return (entityDescriptions as Record<string, string>)[key] ?? "";
+}
+
+function renderFactorTable(
+  rows: Array<{ name: string; value: string }> | undefined,
+): string {
+  if (!rows || rows.length === 0) {
+    return '<p class="dim" style="margin:0">—</p>';
+  }
+  const tr = rows
+    .map((f) => {
+      const v = maybeBoolBadge(f.value) ?? esc(f.value);
+      return `<tr><th>${esc(f.name)}</th><td>${v}</td></tr>`;
+    })
+    .join("");
+  return `<table><tbody>${tr}</tbody></table>`;
+}
+
+function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
+  const sensors = snap.sensors as unknown as Record<string, ActualF64 | undefined>;
+  const meta = snap.sensors_meta as unknown as Record<
+    string,
+    { origin: string; identifier: string; cadence_ms: number; staleness_ms: number } | undefined
+  >;
+  const a = sensors[entityId];
+  const mm = meta[entityId];
+
+  const sections: string[] = [descriptionSection(entityId)];
+  if (!a) {
+    sections.push(`<section><p>no sensor "${esc(entityId)}" in snapshot</p></section>`);
+    return sections.filter(Boolean).join("");
+  }
+
+  const valText = a.value === null ? "—" : fmtNum(a.value, 2);
+  const since = a.since_epoch_ms as unknown as number;
+  sections.push(
+    `<section><h3>Current value</h3>` +
+      `<table><tbody>` +
+      `<tr><th>value</th><td>${valText}</td></tr>` +
+      `<tr><th>freshness</th><td class="freshness-${esc(String(a.freshness))}">${esc(String(a.freshness))}</td></tr>` +
+      `<tr><th>age</th><td>${esc(fmtEpoch(since))}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+
+  if (mm) {
+    const ident = esc(mm.identifier);
+    sections.push(
+      `<section><h3>Origin</h3>` +
+        `<table><tbody>` +
+        `<tr><th>origin</th><td>${esc(mm.origin)}</td></tr>` +
+        `<tr><th>identifier</th><td>${ident} ${copyIcon(mm.identifier)}</td></tr>` +
+        `<tr><th>cadence</th><td>${esc(fmtDurationMs(mm.cadence_ms))}</td></tr>` +
+        `<tr><th>stale after</th><td>${esc(fmtDurationMs(mm.staleness_ms))}</td></tr>` +
+        `</tbody></table></section>`,
+    );
+  }
+  return sections.filter(Boolean).join("");
+}
+
+function renderKnobBody(entityId: string, snap: WorldSnapshot): string {
+  const knobs = snap.knobs as unknown as Record<string, unknown>;
+  const val = knobs[entityId];
+  const spec: KnobSpec | undefined = KNOB_SPEC[entityId];
+
+  const sections: string[] = [descriptionSection(entityId)];
+
+  const valDisp = (() => {
+    if (val === undefined) return '<span class="dim">—</span>';
+    if (typeof val === "boolean") return val ? "true" : "false";
+    if (typeof val === "number") return fmtNum(val, 3);
+    return esc(String(val));
+  })();
+  sections.push(
+    `<section><h3>Current value</h3>` +
+      `<table><tbody>` +
+      `<tr><th>value</th><td>${valDisp}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+
+  if (spec) {
+    const rangeRows: string[] = [`<tr><th>kind</th><td>${esc(spec.kind)}</td></tr>`];
+    if (spec.kind === "float" || spec.kind === "int") {
+      rangeRows.push(`<tr><th>min</th><td>${spec.min}</td></tr>`);
+      rangeRows.push(`<tr><th>max</th><td>${spec.max}</td></tr>`);
+      rangeRows.push(`<tr><th>step</th><td>${spec.step}</td></tr>`);
+    } else if (spec.kind === "enum") {
+      rangeRows.push(`<tr><th>options</th><td>${spec.options.map(esc).join(", ")}</td></tr>`);
+    }
+    sections.push(
+      `<section><h3>Range</h3><table><tbody>${rangeRows.join("")}</tbody></table></section>`,
+    );
+  }
+
+  // TODO(knob-owner-provenance): the wire format does not carry
+  // last-write owner for knobs (see crates/dashboard-model/.../Knobs).
+  // Adding it requires a baboon model change — out of scope for
+  // PR-entity-inspectors. Render a placeholder until that lands.
+  sections.push(
+    `<section><h3>Last-write owner</h3>` +
+      `<p class="dim" style="margin:0">— (not yet exposed on the wire format)</p></section>`,
+  );
+  return sections.filter(Boolean).join("");
+}
+
+function renderActuatedBody(entityId: string, snap: WorldSnapshot): string {
+  const a = snap.actuated as unknown as Record<string, any>;
+  const ent = a[entityId];
+  const sections: string[] = [descriptionSection(entityId)];
+  if (!ent) {
+    sections.push(`<section><p>no actuated "${esc(entityId)}" in snapshot</p></section>`);
+    return sections.filter(Boolean).join("");
+  }
+
+  // Target side: target_value / target_owner / target_phase / target_set_at_epoch_ms.
+  const targetValue = (() => {
+    if ("target_value" in ent) {
+      const v = ent.target_value;
+      if (v === null || v === undefined) return "—";
+      return typeof v === "number" ? fmtNum(v, 2) : String(v);
+    }
+    if ("target" in ent) return fmtSchedule(ent.target);
+    return "—";
+  })();
+  const targetOwner = "target_owner" in ent ? String(ent.target_owner) : "—";
+  const targetPhase = "target_phase" in ent ? String(ent.target_phase) : "—";
+  const targetSetAt: number | undefined =
+    (ent.target_set_at_epoch_ms as number | undefined) ??
+    (ent.target_since_epoch_ms as number | undefined);
+  const targetAge = targetSetAt ? fmtEpoch(targetSetAt) : "—";
+
+  sections.push(
+    `<section><h3>Target</h3>` +
+      `<table><tbody>` +
+      `<tr><th>value</th><td>${esc(targetValue)}</td></tr>` +
+      `<tr><th>owner</th><td>${esc(targetOwner)}</td></tr>` +
+      `<tr><th>phase</th><td class="phase-${esc(targetPhase)}">${esc(targetPhase)}</td></tr>` +
+      `<tr><th>age since target_set</th><td>${esc(targetAge)}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+
+  // Actual side: shape varies — ActuatedI32/F64 nest it in `.actual`,
+  // ActuatedEnumName/Schedule flatten via actual_*.
+  let actualValue = "—";
+  let actualFresh = "—";
+  let actualSince: number | undefined;
+  if (ent.actual && typeof ent.actual === "object" && "value" in ent.actual) {
+    const v = ent.actual.value;
+    actualValue = v === null || v === undefined
+      ? "—"
+      : typeof v === "number" ? fmtNum(v, 2) : String(v);
+    actualFresh = String(ent.actual.freshness);
+    actualSince = ent.actual.since_epoch_ms as number;
+  } else if (ent.actual && typeof ent.actual === "object") {
+    // schedule's actual is a ScheduleSpec
+    actualValue = fmtSchedule(ent.actual);
+    actualFresh = String(ent.actual_freshness);
+    actualSince = ent.actual_since_epoch_ms as number;
+  } else if ("actual_value" in ent) {
+    actualValue = ent.actual_value ?? "—";
+    actualFresh = String(ent.actual_freshness);
+    actualSince = ent.actual_since_epoch_ms as number;
+  }
+  const actualAge = actualSince ? fmtEpoch(actualSince) : "—";
+  sections.push(
+    `<section><h3>Actual</h3>` +
+      `<table><tbody>` +
+      `<tr><th>value</th><td>${actualValue}</td></tr>` +
+      `<tr><th>freshness</th><td class="freshness-${esc(actualFresh)}">${esc(actualFresh)}</td></tr>` +
+      `<tr><th>age</th><td>${esc(actualAge)}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+
+  // Decision summary linking to the matching decision entity.
+  const decision = (snap.decisions as Record<string, any> | undefined)?.[entityId];
+  const decLink = entityLink(entityId, "decision");
+  if (decision && typeof decision === "object" && "summary" in decision) {
+    sections.push(
+      `<section><h3>Decision</h3>` +
+        `<p style="margin:0 0 4px">${decLink}</p>` +
+        `<p style="margin:0"><b>${esc(decision.summary as string)}</b></p>` +
+        `</section>`,
+    );
+  } else {
+    sections.push(
+      `<section><h3>Decision</h3>` +
+        `<p style="margin:0 0 4px">${decLink}</p>` +
+        `<p class="dim" style="margin:0">no Decision recorded</p>` +
+        `</section>`,
+    );
+  }
+  return sections.filter(Boolean).join("");
+}
+
+function renderBookkeepingBody(entityId: string, snap: WorldSnapshot): string {
+  const bk = snap.bookkeeping as unknown as Record<string, unknown>;
+  const sections: string[] = [descriptionSection(entityId)];
+
+  const val = bk[entityId];
+  const valDisp = (() => {
+    if (val === null || val === undefined) return "—";
+    if (typeof val === "boolean") return boolBadge(val);
+    if (typeof val === "number") return fmtNum(val, 2);
+    const s = String(val);
+    return maybeBoolBadge(s) ?? esc(s);
+  })();
+  sections.push(
+    `<section><h3>Current value</h3>` +
+      `<table><tbody>` +
+      `<tr><th>value</th><td>${valDisp}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+
+  const writers = bookkeepingWriters[entityId];
+  const writersHtml = writers && writers.length > 0
+    ? writers.map((w) => entityLink(w, "core")).join(", ")
+    : '<span class="dim">—</span>';
+  sections.push(
+    `<section><h3>Writers</h3>` +
+      `<p style="margin:0">${writersHtml}</p>` +
+      `</section>`,
+  );
+  // TODO(bookkeeping-last-write-at): wire format does not yet carry
+  // last_write_at per bookkeeping field. Out of scope for PR-entity-inspectors.
+  return sections.filter(Boolean).join("");
+}
+
+function renderDecisionBody(entityId: string, snap: WorldSnapshot): string {
+  const d = (snap.decisions as Record<string, any> | undefined)?.[entityId];
+  const sections: string[] = [descriptionSection(entityId)];
+  if (!d || typeof d !== "object" || !("summary" in d)) {
+    sections.push(
+      `<section><h3>Decision</h3>` +
+        `<p class="dim" style="margin:0">no Decision recorded for "${esc(entityId)}"</p></section>`,
+    );
+    return sections.filter(Boolean).join("");
+  }
+  const dec = d as { summary?: string; factors?: Array<{ name: string; value: string }> };
+  const summary = dec.summary ? esc(dec.summary) : "—";
+  sections.push(
+    `<section><h3>Summary</h3><p style="margin:0"><b>${summary}</b></p></section>`,
+  );
+  sections.push(
+    `<section><h3>Factors</h3>${renderFactorTable(dec.factors)}</section>`,
+  );
+  return sections.filter(Boolean).join("");
+}
+
+function renderForecastBody(entityId: string, snap: WorldSnapshot): string {
+  const f = (snap.forecasts as unknown as Record<string, any> | undefined)?.[entityId];
+  const sections: string[] = [descriptionSection(entityId)];
+  const provider = forecastProviderLabels[entityId] ?? entityId;
+  if (!f) {
+    sections.push(
+      `<section><h3>Provider</h3>` +
+        `<table><tbody>` +
+        `<tr><th>provider</th><td>${esc(provider)}</td></tr>` +
+        `<tr><th>data</th><td class="dim">no data</td></tr>` +
+        `</tbody></table></section>`,
+    );
+    return sections.filter(Boolean).join("");
+  }
+  sections.push(
+    `<section><h3>Provider</h3>` +
+      `<table><tbody>` +
+      `<tr><th>provider</th><td>${esc(provider)}</td></tr>` +
+      `<tr><th>today_kwh</th><td>${fmtNum(f.today_kwh, 1)}</td></tr>` +
+      `<tr><th>tomorrow_kwh</th><td>${fmtNum(f.tomorrow_kwh, 1)}</td></tr>` +
+      `<tr><th>last fetch</th><td>${esc(fmtEpoch(f.fetched_at_epoch_ms))}</td></tr>` +
+      `</tbody></table></section>`,
+  );
+  return sections.filter(Boolean).join("");
+}
+
+function renderCoreBody(entityId: string, snap: WorldSnapshot): string {
   const cs = snap.cores_state as unknown as {
     cores: Array<{
       id: string;
@@ -411,18 +781,11 @@ export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
       last_outputs?: Array<{ name: string; value: string }>;
     }>;
   };
-  const core = cs?.cores?.find((c) => c.id === coreId);
-  const decision = (snap.decisions as Record<string, any> | undefined)?.[coreId];
+  const core = cs?.cores?.find((c) => c.id === entityId);
+  const decision = (snap.decisions as Record<string, any> | undefined)?.[entityId];
 
-  const sections: string[] = [];
+  const sections: string[] = [descriptionSection(entityId)];
 
-  // Description.
-  const desc = entityDescriptionFor(coreId);
-  if (desc) {
-    sections.push(`<section><p style="color:var(--muted);margin:0">${esc(desc)}</p></section>`);
-  }
-
-  // Dependencies + outcome.
   if (core) {
     const depsTxt = core.depends_on.length === 0
       ? '<span class="dim">—</span>'
@@ -441,36 +804,12 @@ export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
         `<tr><th>last_payload</th><td>${payloadDisp}</td></tr>` +
         `</tbody></table></section>`,
     );
-  } else {
-    sections.push(
-      `<section><p>no entry in cores_state for "${esc(coreId)}"</p></section>`,
-    );
-  }
-
-  // PR-core-io-popups: Inputs + Outputs surface the live values the
-  // core actually read / wrote on the most recent tick. Comes ahead of
-  // the controller's Decision so the operator can read the raw data
-  // before the narrative.
-  const renderFactorTable = (
-    rows: Array<{ name: string; value: string }> | undefined,
-  ): string => {
-    if (!rows || rows.length === 0) {
-      return '<p class="dim" style="margin:0">—</p>';
-    }
-    const tr = rows
-      .map((f) => {
-        const v = maybeBoolBadge(f.value) ?? esc(f.value);
-        return `<tr><th>${esc(f.name)}</th><td>${v}</td></tr>`;
-      })
-      .join("");
-    return `<table><tbody>${tr}</tbody></table>`;
-  };
-  if (core) {
     sections.push(`<section><h3>Inputs</h3>${renderFactorTable(core.last_inputs)}</section>`);
     sections.push(`<section><h3>Outputs</h3>${renderFactorTable(core.last_outputs)}</section>`);
+  } else {
+    sections.push(`<section><p>no entry in cores_state for "${esc(entityId)}"</p></section>`);
   }
 
-  // Decision (the controller's narrative of inputs + outputs).
   if (decision && typeof decision === "object" && "summary" in decision) {
     const d = decision as { summary?: string; factors?: Array<{ name: string; value: string }> };
     const summary = d.summary ? esc(d.summary) : "—";
@@ -491,12 +830,7 @@ export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
       `<section><h3>Decision</h3><p class="dim" style="margin:0">no Decision recorded for this core (e.g. derivation cores or SensorBroadcastCore record per-tick state via last_payload only)</p></section>`,
     );
   }
-
-  bodyEl.innerHTML = sections.join("");
-}
-
-function entityDescriptionFor(key: string): string {
-  return (entityDescriptions as Record<string, string>)[key] ?? "";
+  return sections.filter(Boolean).join("");
 }
 
 export function renderForecasts(snap: WorldSnapshot) {
@@ -511,7 +845,7 @@ export function renderForecasts(snap: WorldSnapshot) {
       return {
         key: name,
         cells: [
-          { cls: "mono", html: nameWithTitle(name) },
+          { cls: "mono", html: entityLink(name, "forecast") },
           { cls: "dim", html: "no data" },
           { cls: "dim", html: "—" },
           { cls: "dim", html: "—" },
@@ -521,7 +855,7 @@ export function renderForecasts(snap: WorldSnapshot) {
     return {
       key: name,
       cells: [
-        { cls: "mono", html: nameWithTitle(name) },
+        { cls: "mono", html: entityLink(name, "forecast") },
         { cls: "mono", html: fmtNum(f.today_kwh, 1) },
         { cls: "mono", html: fmtNum(f.tomorrow_kwh, 1) },
         { cls: "dim", html: fmtEpoch(f.fetched_at_epoch_ms) },

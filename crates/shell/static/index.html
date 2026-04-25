@@ -15,6 +15,8 @@
     </div>
   </header>
 
+  <p class="inspect-hint">Click any entity name to inspect.</p>
+
   <section id="decisions">
     <h2>Decisions</h2>
     <table id="decisions-table">
@@ -78,6 +80,23 @@
     </table>
   </section>
 
+  <section id="timers">
+    <h2>Timers</h2>
+    <table id="timers-table">
+      <thead>
+        <tr>
+          <th>Timer</th>
+          <th>Description</th>
+          <th>Period</th>
+          <th>Last fire</th>
+          <th>Next fire</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <section id="bookkeeping">
     <h2>Bookkeeping</h2>
     <table id="bk-table">
@@ -120,16 +139,17 @@
     <span id="last-error"></span>
   </footer>
 
-  <!-- TASS core inspector. Hidden until a core row is clicked; populated
-       by renderCoreModal() and re-rendered live as snapshots arrive. -->
-  <div id="core-modal" class="modal" hidden>
+  <!-- Generic entity inspector. Hidden until any `.entity-link` is
+       clicked; populated by renderEntityModal() and re-rendered live as
+       snapshots arrive. Body is dispatched per entity type. -->
+  <div id="entity-modal" class="modal" hidden>
     <div class="modal-backdrop"></div>
     <div class="modal-card">
       <header>
-        <h2 id="core-modal-title">core</h2>
-        <button id="core-modal-close" type="button" aria-label="Close">✗</button>
+        <h2 id="entity-modal-title">entity</h2>
+        <button id="entity-modal-close" type="button" aria-label="Close">✗</button>
       </header>
-      <div id="core-modal-body"></div>
+      <div id="entity-modal-body"></div>
     </div>
   </div>
 

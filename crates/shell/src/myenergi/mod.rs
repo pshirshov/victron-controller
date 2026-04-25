@@ -31,7 +31,9 @@ use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use victron_controller_core::myenergi::{EddiMode, ZappiMode, ZappiPlugState, ZappiStatus};
-use victron_controller_core::types::{Event, MyenergiAction, SensorId, SensorReading, TypedReading};
+use victron_controller_core::types::{
+    Event, MyenergiAction, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
+};
 
 use crate::config::MyenergiConfig;
 
@@ -233,6 +235,17 @@ impl std::fmt::Display for MyenergiHttpFailure {
 
 impl std::error::Error for MyenergiHttpFailure {}
 
+/// PR-timers-section: wall-clock epoch-ms helper used for the per-poll
+/// `Event::TimerState` emit.
+fn myenergi_epoch_ms_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| {
+            i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
 /// Myenergi Zappi mode codes from their API spec.
 const fn zappi_mode_code(m: ZappiMode) -> u8 {
     match m {
@@ -336,6 +349,52 @@ impl Poller {
                 tokio::time::sleep(extra_backoff).await;
             }
             let had_failure = self.poll_once(&tx).await;
+            // PR-timers-section: emit a TimerState per cycle. Auth fail
+            // surfaces as `failed_last_run` with no next fire (we return).
+            let timer_status = match had_failure {
+                PollOutcome::Ok => TimerStatus::Idle,
+                PollOutcome::AuthFailed | PollOutcome::Other => TimerStatus::FailedLastRun,
+                PollOutcome::RateLimited | PollOutcome::ServerError => {
+                    TimerStatus::RetryBackoff
+                }
+            };
+            // The next-fire projection includes whatever extra backoff
+            // the failure classifier *will* apply for this fire.
+            let prospective_extra = match had_failure {
+                PollOutcome::RateLimited => RATE_LIMIT_BACKOFF,
+                PollOutcome::ServerError => {
+                    if extra_backoff == Duration::ZERO {
+                        SERVER_ERROR_BACKOFF_START
+                    } else {
+                        (extra_backoff * 2).min(SERVER_ERROR_BACKOFF_MAX)
+                    }
+                }
+                PollOutcome::Ok | PollOutcome::AuthFailed | PollOutcome::Other => {
+                    Duration::ZERO
+                }
+            };
+            let last_fire_ms = myenergi_epoch_ms_now();
+            let next_fire_ms = if matches!(had_failure, PollOutcome::AuthFailed) {
+                None
+            } else {
+                let interval_ms =
+                    i64::try_from((self.poll_period + prospective_extra).as_millis())
+                        .unwrap_or(i64::MAX);
+                Some(last_fire_ms + interval_ms)
+            };
+            if tx
+                .send(Event::TimerState {
+                    id: TimerId::MyenergiPoller,
+                    last_fire_epoch_ms: last_fire_ms,
+                    next_fire_epoch_ms: next_fire_ms,
+                    status: timer_status,
+                    at: Instant::now(),
+                })
+                .await
+                .is_err()
+            {
+                return Ok(());
+            }
             match had_failure {
                 PollOutcome::Ok => extra_backoff = Duration::ZERO,
                 PollOutcome::AuthFailed => {

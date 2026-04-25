@@ -7,7 +7,7 @@ use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
-use crate::types::{BookkeepingId, Decision, ForecastProvider, SensorId};
+use crate::types::{BookkeepingId, Decision, ForecastProvider, SensorId, TimerId, TimerStatus};
 
 /// All scalar sensor readings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -303,6 +303,28 @@ pub struct PublishedCache {
     pub bookkeeping_bool: std::collections::HashMap<BookkeepingId, bool>,
 }
 
+/// One per-timer entry mirroring the wire `Timer` shape. PR-timers-section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimerEntry {
+    /// Expected period between fires. `0` for one-shot timers.
+    pub period: std::time::Duration,
+    /// Wall-clock epoch-ms of the last fire (`None` until the first fire).
+    pub last_fire_epoch_ms: Option<i64>,
+    /// Wall-clock epoch-ms of the projected next fire (`None` for
+    /// one-shot timers that have already completed).
+    pub next_fire_epoch_ms: Option<i64>,
+    /// Current status.
+    pub status: TimerStatus,
+}
+
+/// Per-timer observability snapshot. Updated by the shell via
+/// `Event::TimerState`; consumed by `dashboard::convert` to populate the
+/// `Timers` section of the wire snapshot.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Timers {
+    pub entries: std::collections::HashMap<TimerId, TimerEntry>,
+}
+
 /// Top-level world state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
@@ -342,6 +364,10 @@ pub struct World {
     /// publish-on-change for the `SensorBroadcastCore`. Pure
     /// observability; no controller reads from this.
     pub published_cache: PublishedCache,
+
+    /// PR-timers-section: per-timer observability snapshot. Updated by
+    /// the shell via `Event::TimerState`; pure observability.
+    pub timers: Timers,
 }
 
 impl World {
@@ -365,6 +391,7 @@ impl World {
             decisions: Decisions::default(),
             cores_state: CoresState::default(),
             published_cache: PublishedCache::default(),
+            timers: Timers::default(),
         }
     }
 }

@@ -24,7 +24,7 @@ use std::time::Duration;
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
 use victron_controller_core::topology::ControllerParams;
-use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue, SensorId};
+use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue, SensorId, TimerId};
 use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
@@ -67,6 +67,8 @@ use victron_controller_dashboard_model::victron_controller::dashboard::schedule_
 use victron_controller_dashboard_model::victron_controller::dashboard::sensor_meta::SensorMeta as ModelSensorMeta;
 use victron_controller_dashboard_model::victron_controller::dashboard::sensors::Sensors as ModelSensors;
 use victron_controller_dashboard_model::victron_controller::dashboard::target_phase::TargetPhase as ModelTargetPhase;
+use victron_controller_dashboard_model::victron_controller::dashboard::timer::Timer as ModelTimer;
+use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 
 // --- enums ----------------------------------------------------------------
@@ -316,7 +318,46 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         },
         decisions: decisions_to_model(&world.decisions),
         cores_state: cores_state_to_model(&world.cores_state),
+        timers: timers_to_model(&world.timers),
     }
+}
+
+/// Convert the per-timer observability state in `world.timers` into the
+/// wire `Timers` struct. Sorts by `TimerId::name()` so the dashboard
+/// renders in a stable order. Timers that have never fired still appear
+/// (with `last_fire_epoch_ms: None`, `status: idle`) so the dashboard
+/// table shows the full known set; this is enumerated from
+/// `TimerId::ALL` rather than `world.timers.entries` to keep the row
+/// list deterministic across reboots.
+fn timers_to_model(t: &victron_controller_core::world::Timers) -> ModelTimers {
+    let mut entries: Vec<ModelTimer> = TimerId::ALL
+        .iter()
+        .map(|&id| {
+            let entry = t.entries.get(&id);
+            let period_ms: i64 = if let Some(e) = entry {
+                e.period.as_millis().try_into().unwrap_or(i64::MAX)
+            } else {
+                0
+            };
+            let status = if let Some(e) = entry {
+                e.status.name().to_string()
+            } else {
+                victron_controller_core::types::TimerStatus::Idle
+                    .name()
+                    .to_string()
+            };
+            ModelTimer {
+                id: id.name().to_string(),
+                description: id.description().to_string(),
+                period_ms,
+                last_fire_epoch_ms: entry.and_then(|e| e.last_fire_epoch_ms),
+                next_fire_epoch_ms: entry.and_then(|e| e.next_fire_epoch_ms),
+                status,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
+    ModelTimers { entries }
 }
 
 fn cores_state_to_model(c: &victron_controller_core::world::CoresState) -> ModelCoresState {

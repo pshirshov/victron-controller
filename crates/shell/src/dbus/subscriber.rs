@@ -19,7 +19,7 @@ use zbus::{Connection, MatchRule, MessageStream, MessageType, Proxy};
 
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::types::{
-    ActuatedReadback, Event, SensorId, SensorReading, TypedReading,
+    ActuatedReadback, Event, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
 };
 
 use crate::config::DbusServices;
@@ -30,6 +30,40 @@ use crate::config::DbusServices;
 /// the historical default reseed cadence so the failure mode is
 /// "behaves like the old code" rather than "spins at 1 ms".
 const RESEED_FALLBACK: Duration = Duration::from_secs(60);
+
+/// Wall-clock epoch-ms helper used by the per-service reseed timer
+/// emit path. PR-timers-section.
+fn system_epoch_ms_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| {
+            i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+/// PR-timers-section: build the well-known-service-name → `TimerId`
+/// map used by the reseed scheduler to emit per-service timer events.
+/// Each Victron service we reseed has one dedicated `TimerId` variant.
+fn build_service_timer_ids(s: &DbusServices) -> HashMap<String, TimerId> {
+    let mut m = HashMap::new();
+    m.insert(s.battery.clone(), TimerId::DbusReseedBattery);
+    m.insert(s.system.clone(), TimerId::DbusReseedSystem);
+    m.insert(s.grid.clone(), TimerId::DbusReseedGrid);
+    m.insert(s.vebus.clone(), TimerId::DbusReseedVebus);
+    m.insert(
+        s.pvinverter_soltaro.clone(),
+        TimerId::DbusReseedPvinverterSoltaro,
+    );
+    m.insert(s.evcharger.clone(), TimerId::DbusReseedEvcharger);
+    // mppt_0 is the USB1 charger, mppt_1 is the S2 charger
+    // (per `DbusServices::default_venus_3_70`). Map the well-known
+    // name to the matching TimerId variant.
+    m.insert(s.mppt_0.clone(), TimerId::DbusReseedMpptUsb1);
+    m.insert(s.mppt_1.clone(), TimerId::DbusReseedMpptS2);
+    m.insert(s.settings.clone(), TimerId::DbusReseedSettings);
+    m
+}
 
 /// Static map: actuated readback path → reseed cadence. Mirrors
 /// `ActuatedId::freshness_threshold / 2` for each readback variant,
@@ -265,6 +299,11 @@ pub struct Subscriber {
     /// once in [`Subscriber::new`] from the routing table and reused
     /// across every reconnect. PR-cadence-per-sensor.
     service_cadence: HashMap<String, Duration>,
+    /// PR-timers-section: well-known service name → `TimerId` for the
+    /// per-service reseed timer. Computed once from `DbusServices`;
+    /// used by the reseed scheduler to emit `Event::TimerState` after
+    /// each fire so the dashboard's timers section can show last/next.
+    service_timer_ids: HashMap<String, TimerId>,
     /// Accumulator for partial schedule field updates — one per
     /// schedule index (0, 1). Persistent across reconnects so a
     /// mid-accumulation blip doesn't discard fields already received.
@@ -393,6 +432,7 @@ impl Subscriber {
         let service_set: HashSet<String> =
             routes.keys().map(|(s, _)| s.clone()).collect();
         let service_cadence = compute_service_cadence(&routes, &service_set);
+        let service_timer_ids = build_service_timer_ids(services);
         info!(
             paths = routes.len(),
             services = service_set.len(),
@@ -413,6 +453,7 @@ impl Subscriber {
             routes,
             service_set,
             service_cadence,
+            service_timer_ids,
             schedule_accumulators: [SchedulePartial::default(); 2],
             poll_ticks_since_last_heartbeat: 0,
             raw_signals_since_last_heartbeat: 0,
@@ -734,7 +775,34 @@ impl Subscriber {
                     let now = Instant::now();
                     entry.next_due = now + entry.interval;
                     let service_name = entry.service.clone();
+                    let entry_interval = entry.interval;
                     schedule.push(Reverse(entry));
+                    // PR-timers-section: emit a TimerState for this
+                    // service's reseed timer regardless of poll result.
+                    // The status is derived from the result classifier
+                    // below; failure = `failed_last_run`, success = `idle`.
+                    let timer_status = match &result {
+                        Ok(Ok(())) => TimerStatus::Idle,
+                        _ => TimerStatus::FailedLastRun,
+                    };
+                    if let Some(timer_id) = self.service_timer_ids.get(&service_name).copied() {
+                        let last_fire_ms = system_epoch_ms_now();
+                        let next_fire_ms = last_fire_ms
+                            + i64::try_from(entry_interval.as_millis()).unwrap_or(i64::MAX);
+                        if tx
+                            .send(Event::TimerState {
+                                id: timer_id,
+                                last_fire_epoch_ms: last_fire_ms,
+                                next_fire_epoch_ms: Some(next_fire_ms),
+                                status: timer_status,
+                                at: now,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
                     match result {
                         Ok(Ok(())) => {
                             self.last_successful_poll_at = Some(now);

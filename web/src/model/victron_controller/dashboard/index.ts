@@ -30,6 +30,8 @@ export * from './ScheduleSpec';
 export * from './SensorMeta';
 export * from './Sensors';
 export * from './TargetPhase';
+export * from './Timer';
+export * from './Timers';
 export * from './VersionInfo';
 export * from './WorldSnapshot';
 export * from './WsClientMessage';

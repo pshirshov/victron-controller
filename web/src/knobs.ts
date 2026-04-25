@@ -9,15 +9,15 @@
 // inserted rows pick up the same logic without re-attaching listeners.
 
 import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSnapshot.js";
-import { updateKeyedRows, type KeyedRow } from "./render.js";
+import { entityLink, updateKeyedRows, type KeyedRow } from "./render.js";
 
-type KnobSpec =
+export type KnobSpec =
   | { kind: "bool" }
   | { kind: "float"; min: number; max: number; step: number }
   | { kind: "int"; min: number; max: number; step: number }
   | { kind: "enum"; cmdVariant: string; options: string[] };
 
-const KNOB_SPEC: Record<string, KnobSpec> = {
+export const KNOB_SPEC: Record<string, KnobSpec> = {
   force_disable_export: { kind: "bool" },
   export_soc_threshold: { kind: "float", min: 0, max: 100, step: 1 },
   discharge_soc_target: { kind: "float", min: 0, max: 100, step: 1 },
@@ -151,7 +151,7 @@ export function renderKnobs(
     return {
       key: name,
       cells: [
-        { cls: "mono", html: esc(name) },
+        { cls: "mono", html: entityLink(name, "knob") },
         { cls: "mono", html: valStr },
         { html: setHtml },
       ],

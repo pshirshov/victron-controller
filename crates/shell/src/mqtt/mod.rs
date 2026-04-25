@@ -38,7 +38,9 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use victron_controller_core::owner::Owner;
-use victron_controller_core::types::{Command, Event, KnobId, KnobValue, PublishPayload};
+use victron_controller_core::types::{
+    Command, Event, KnobId, KnobValue, PublishPayload, TimerId, TimerStatus,
+};
 
 use crate::config::MqttConfig;
 
@@ -147,6 +149,17 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
         topic_root: config.topic_root.clone(),
     };
     Ok(Some((publisher, subscriber)))
+}
+
+/// PR-timers-section: wall-clock epoch-ms helper used for the one-shot
+/// MqttBootstrap timer emit.
+fn epoch_ms_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| {
+            i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// UUID-v4 suffix for MQTT clientId.
@@ -298,6 +311,19 @@ impl Subscriber {
                     value: KnobValue::Bool(false),
                 },
                 owner: Owner::System,
+                at: Instant::now(),
+            })
+            .await;
+
+        // PR-timers-section: signal the one-shot MqttBootstrap timer
+        // completion so the dashboard's timers section can reflect it.
+        // No `next_fire` — the bootstrap only runs once per process.
+        let _ = tx
+            .send(Event::TimerState {
+                id: TimerId::MqttBootstrap,
+                last_fire_epoch_ms: epoch_ms_now(),
+                next_fire_epoch_ms: None,
+                status: TimerStatus::Idle,
                 at: Instant::now(),
             })
             .await;

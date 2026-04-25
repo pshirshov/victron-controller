@@ -420,6 +420,154 @@ pub enum ForecastProvider {
     OpenMeteo,
 }
 
+// =============================================================================
+// Timers
+// =============================================================================
+
+/// Identifier for every timer-driven action the shell owns. PR-timers-section.
+///
+/// Each variant is a distinct task / loop in the shell that fires on a
+/// fixed cadence (or once at startup); the shell emits an
+/// `Event::TimerState` after each fire so the world snapshot can surface
+/// last-fire / next-fire / status to the dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimerId {
+    /// Solcast HTTP poller (forecast scheduler).
+    ForecastSolcast,
+    /// Forecast.Solar HTTP poller (forecast scheduler).
+    ForecastSolar,
+    /// Open-Meteo HTTP poller (forecast scheduler).
+    OpenMeteo,
+    /// Open-Meteo current-weather poller — separate task from the
+    /// forecast scheduler.
+    OpenMeteoCurrent,
+    /// myenergi cloud poller.
+    MyenergiPoller,
+    /// D-Bus reseed timer for the battery service.
+    DbusReseedBattery,
+    /// D-Bus reseed timer for the system service.
+    DbusReseedSystem,
+    /// D-Bus reseed timer for the grid service.
+    DbusReseedGrid,
+    /// D-Bus reseed timer for the vebus service.
+    DbusReseedVebus,
+    /// D-Bus reseed timer for the Soltaro pvinverter service.
+    DbusReseedPvinverterSoltaro,
+    /// D-Bus reseed timer for the evcharger service.
+    DbusReseedEvcharger,
+    /// D-Bus reseed timer for MPPT (S2) service.
+    DbusReseedMpptS2,
+    /// D-Bus reseed timer for MPPT (USB1) service.
+    DbusReseedMpptUsb1,
+    /// D-Bus reseed timer for the settings service.
+    DbusReseedSettings,
+    /// One-shot MQTT bootstrap (retained-state restore + initial publish).
+    MqttBootstrap,
+    /// One-shot initial knob publish at startup (PR-2).
+    InitialKnobPublish,
+}
+
+impl TimerId {
+    /// All variants — used by the dashboard converter to enumerate the
+    /// expected timer set (so the table renders even before the first
+    /// fire of a given timer).
+    pub const ALL: &'static [TimerId] = &[
+        TimerId::ForecastSolcast,
+        TimerId::ForecastSolar,
+        TimerId::OpenMeteo,
+        TimerId::OpenMeteoCurrent,
+        TimerId::MyenergiPoller,
+        TimerId::DbusReseedBattery,
+        TimerId::DbusReseedSystem,
+        TimerId::DbusReseedGrid,
+        TimerId::DbusReseedVebus,
+        TimerId::DbusReseedPvinverterSoltaro,
+        TimerId::DbusReseedEvcharger,
+        TimerId::DbusReseedMpptS2,
+        TimerId::DbusReseedMpptUsb1,
+        TimerId::DbusReseedSettings,
+        TimerId::MqttBootstrap,
+        TimerId::InitialKnobPublish,
+    ];
+
+    /// Stable `snake_case` identifier — what the wire `Timer.id` field
+    /// carries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ForecastSolcast => "forecast_solcast",
+            Self::ForecastSolar => "forecast_solar",
+            Self::OpenMeteo => "open_meteo",
+            Self::OpenMeteoCurrent => "open_meteo_current",
+            Self::MyenergiPoller => "myenergi_poller",
+            Self::DbusReseedBattery => "dbus_reseed_battery",
+            Self::DbusReseedSystem => "dbus_reseed_system",
+            Self::DbusReseedGrid => "dbus_reseed_grid",
+            Self::DbusReseedVebus => "dbus_reseed_vebus",
+            Self::DbusReseedPvinverterSoltaro => "dbus_reseed_pvinverter_soltaro",
+            Self::DbusReseedEvcharger => "dbus_reseed_evcharger",
+            Self::DbusReseedMpptS2 => "dbus_reseed_mppt_s2",
+            Self::DbusReseedMpptUsb1 => "dbus_reseed_mppt_usb1",
+            Self::DbusReseedSettings => "dbus_reseed_settings",
+            Self::MqttBootstrap => "mqtt_bootstrap",
+            Self::InitialKnobPublish => "initial_knob_publish",
+        }
+    }
+
+    /// Human-readable description, surfaced as the dashboard tooltip /
+    /// row description column.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::ForecastSolcast => "Solcast HTTP forecast poller",
+            Self::ForecastSolar => "Forecast.Solar HTTP forecast poller",
+            Self::OpenMeteo => "Open-Meteo HTTP forecast poller",
+            Self::OpenMeteoCurrent => "Open-Meteo current-weather poller",
+            Self::MyenergiPoller => "myenergi cloud poller (Zappi/Eddi state + session kWh)",
+            Self::DbusReseedBattery => "D-Bus reseed timer for the battery service",
+            Self::DbusReseedSystem => "D-Bus reseed timer for the system service",
+            Self::DbusReseedGrid => "D-Bus reseed timer for the grid service",
+            Self::DbusReseedVebus => "D-Bus reseed timer for the vebus service",
+            Self::DbusReseedPvinverterSoltaro => {
+                "D-Bus reseed timer for the Soltaro pvinverter service"
+            }
+            Self::DbusReseedEvcharger => "D-Bus reseed timer for the evcharger service",
+            Self::DbusReseedMpptS2 => "D-Bus reseed timer for the MPPT (S2) service",
+            Self::DbusReseedMpptUsb1 => "D-Bus reseed timer for the MPPT (USB1) service",
+            Self::DbusReseedSettings => "D-Bus reseed timer for the settings service",
+            Self::MqttBootstrap => "One-shot MQTT bootstrap (retained-state restore + initial publish)",
+            Self::InitialKnobPublish => "One-shot initial knob publish at startup",
+        }
+    }
+}
+
+/// Status of a timer-driven action's most recent invocation.
+/// Stringified to `snake_case` over the wire (`Timer.status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimerStatus {
+    /// Idle between fires (the common case).
+    Idle,
+    /// Currently executing.
+    Running,
+    /// Last run failed; the timer continues firing on cadence.
+    FailedLastRun,
+    /// In retry-backoff after a failure.
+    RetryBackoff,
+}
+
+impl TimerStatus {
+    /// `snake_case` wire encoding.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::FailedLastRun => "failed_last_run",
+            Self::RetryBackoff => "retry_backoff",
+        }
+    }
+}
+
 /// Which BatteryLife schedule field this target write addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScheduleField {
@@ -511,6 +659,16 @@ pub enum Event {
     /// Periodic heartbeat. Drives freshness decay and gives controllers
     /// a chance to re-propose in the absence of input events.
     Tick {
+        at: Instant,
+    },
+    /// PR-timers-section: a timer-driven shell task fired (or just
+    /// updated its status). Pure observability — `apply_event` upserts
+    /// the entry in `world.timers`; no controllers consume this.
+    TimerState {
+        id: TimerId,
+        last_fire_epoch_ms: i64,
+        next_fire_epoch_ms: Option<i64>,
+        status: TimerStatus,
         at: Instant,
     },
 }

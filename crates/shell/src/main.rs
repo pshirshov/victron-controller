@@ -10,6 +10,7 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info, warn};
 
+use victron_controller_core::types::{Event, TimerId, TimerStatus};
 use victron_controller_core::world::World;
 use victron_controller_core::Topology;
 use victron_controller_shell::clock::RealClock;
@@ -203,6 +204,7 @@ async fn main() -> Result<()> {
     );
 
     if let Some(client) = initial_knob_publish_client {
+        let tx_initial_knob = tx.clone();
         tokio::spawn(async move {
             // Wait long enough for the MQTT subscriber's bootstrap
             // window (BOOTSTRAP_WINDOW = ~750ms) and the post-bootstrap
@@ -229,6 +231,22 @@ async fn main() -> Result<()> {
                 }
             }
             info!(count, "initial knob state published to retained MQTT");
+            // PR-timers-section: signal the one-shot InitialKnobPublish
+            // timer completion. No `next_fire` — runs once per process.
+            let last_fire_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| {
+                    i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
+                });
+            let _ = tx_initial_knob
+                .send(Event::TimerState {
+                    id: TimerId::InitialKnobPublish,
+                    last_fire_epoch_ms: last_fire_ms,
+                    next_fire_epoch_ms: None,
+                    status: TimerStatus::Idle,
+                    at: Instant::now(),
+                })
+                .await;
         });
     }
 

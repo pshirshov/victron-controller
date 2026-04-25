@@ -67,6 +67,24 @@ data CoresState {
   topo_order: lst[str]
 }
 
+// 0.2.0 addition (PR-timers-section). One entry per timer-driven action
+// the shell is responsible for. `period_ms` is the expected cadence;
+// `last_fire_epoch_ms` / `next_fire_epoch_ms` are wall-clock estimates
+// (epoch ms) of when the timer last/next fires. `status` is a free-form
+// snake_case label (idle / running / failed_last_run / retry_backoff).
+data Timer {
+  id: str
+  description: str
+  period_ms: i64
+  last_fire_epoch_ms: opt[i64]
+  next_fire_epoch_ms: opt[i64]
+  status: str
+}
+
+data Timers {
+  entries: lst[Timer]
+}
+
 root data WorldSnapshot {
   captured_at_epoch_ms: i64
   captured_at_naive_iso: str
@@ -79,4 +97,6 @@ root data WorldSnapshot {
   decisions: Decisions
   // 0.2.0 addition (PR-tass-dag-view).
   cores_state: CoresState
+  // 0.2.0 addition (PR-timers-section).
+  timers: Timers
 }

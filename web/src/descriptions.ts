@@ -1,11 +1,11 @@
 // Static registry of human-readable entity descriptions, keyed by the
 // canonical name as it appears in the dashboard tables (sensor name,
 // knob name, actuated-entity name, bookkeeping field, decision name,
-// forecast-provider name). Used as the `title=` attribute on every
-// row's first cell so users get a native browser tooltip on hover.
+// forecast-provider name). Used inside the entity inspector popup for
+// every entity type (PR-entity-inspectors).
 //
 // Frontend-only: drift from backend renames is acceptable risk —
-// missing keys simply render with no tooltip.
+// missing keys simply render without a description.
 
 export const entityDescriptions: Record<string, string> = {
   // --- Sensors (20 — see crates/dashboard-model/.../sensors.rs) ---
@@ -165,4 +165,27 @@ export const entityDescriptions: Record<string, string> = {
   solcast: "Solcast forecast provider (free tier, paid for accuracy on this site).",
   forecast_solar: "Forecast.Solar forecast provider (free tier).",
   open_meteo: "Open-Meteo forecast provider (free).",
+};
+
+// Bookkeeping field → list of cores that write to it (PR-entity-inspectors).
+// Hand-curated; mirrors the writer set documented in
+// crates/core/src/process.rs and the per-controller modules.
+export const bookkeepingWriters: Record<string, string[]> = {
+  next_full_charge_iso: ["setpoint"],
+  above_soc_date_iso: ["schedules"],
+  prev_ess_state: ["current_limit"],
+  zappi_active: ["zappi_active"],
+  charge_to_full_required: ["setpoint"],
+  soc_end_of_day_target: ["setpoint"],
+  effective_export_soc_threshold: ["setpoint"],
+  battery_selected_soc_target: ["schedules"],
+  charge_battery_extended_today: ["weather_soc"],
+  charge_battery_extended_today_date_iso: ["weather_soc"],
+};
+
+// Forecast provider display labels, by provider id.
+export const forecastProviderLabels: Record<string, string> = {
+  solcast: "Solcast",
+  forecast_solar: "Forecast.Solar",
+  open_meteo: "Open-Meteo",
 };

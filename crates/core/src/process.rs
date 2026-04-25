@@ -53,8 +53,10 @@ use crate::topology::{ControllerParams, Topology};
 use crate::types::{
     ActuatedId, ActuatedReadback, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
     DbusValue, Decision, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel,
-    MyenergiAction, PublishPayload, ScheduleField, SensorId, SensorReading, TypedReading,
+    MyenergiAction, PublishPayload, ScheduleField, SensorId, SensorReading, TimerId,
+    TimerStatus, TypedReading,
 };
+use crate::world::TimerEntry;
 use crate::world::{ForecastSnapshot, World};
 
 /// γ-rule window: dashboard write suppresses HA commands within this
@@ -98,6 +100,54 @@ fn apply_event(
             at,
         } => apply_command(*command, *owner, *at, world, effects),
         Event::Tick { at } => apply_tick(*at, world, clock, topology),
+        Event::TimerState {
+            id,
+            last_fire_epoch_ms,
+            next_fire_epoch_ms,
+            status,
+            at: _,
+        } => apply_timer_state(
+            *id,
+            *last_fire_epoch_ms,
+            *next_fire_epoch_ms,
+            *status,
+            world,
+        ),
+    }
+}
+
+/// PR-timers-section: upsert the per-timer entry in `world.timers`.
+/// Period is preserved across updates from the first time the entry was
+/// seen — the shell currently doesn't surface period in the event itself
+/// because the cadence is fixed per-task — so we keep whatever was there
+/// (or default to zero on first observation).
+fn apply_timer_state(
+    id: TimerId,
+    last_fire_epoch_ms: i64,
+    next_fire_epoch_ms: Option<i64>,
+    status: TimerStatus,
+    world: &mut World,
+) {
+    let entry = world
+        .timers
+        .entries
+        .entry(id)
+        .or_insert_with(|| TimerEntry {
+            period: std::time::Duration::ZERO,
+            last_fire_epoch_ms: None,
+            next_fire_epoch_ms: None,
+            status: TimerStatus::Idle,
+        });
+    entry.last_fire_epoch_ms = Some(last_fire_epoch_ms);
+    entry.next_fire_epoch_ms = next_fire_epoch_ms;
+    entry.status = status;
+    if let (Some(last), Some(next)) = (entry.last_fire_epoch_ms, entry.next_fire_epoch_ms) {
+        if next > last {
+            // Period inferred from the spacing between last and next fire.
+            // Saturating cast — period in ms easily fits an i64 → u64.
+            let dur_ms = u64::try_from(next - last).unwrap_or(0);
+            entry.period = std::time::Duration::from_millis(dur_ms);
+        }
     }
 }
 

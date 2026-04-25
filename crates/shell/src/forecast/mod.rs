@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
-use victron_controller_core::types::{Event, ForecastProvider, TypedReading};
+use victron_controller_core::types::{Event, ForecastProvider, TimerId, TimerStatus, TypedReading};
 
 pub use forecast_solar::ForecastSolarClient;
 pub use open_meteo::OpenMeteoClient;
@@ -56,12 +56,33 @@ pub trait ForecastFetcher: Send + Sync + std::fmt::Debug {
 
 /// Periodic scheduler: ticks on `cadence`, calls `fetcher.fetch()`,
 /// sends a `TypedReading::Forecast` event on success.
+/// Map a [`ForecastProvider`] to its corresponding [`TimerId`] —
+/// PR-timers-section. Each forecast scheduler emits a `TimerState`
+/// after every fetch cycle so the dashboard's timers section can
+/// surface last-fire / next-fire / status.
+fn provider_timer_id(p: ForecastProvider) -> TimerId {
+    match p {
+        ForecastProvider::Solcast => TimerId::ForecastSolcast,
+        ForecastProvider::ForecastSolar => TimerId::ForecastSolar,
+        ForecastProvider::OpenMeteo => TimerId::OpenMeteo,
+    }
+}
+
+/// Wall-clock epoch-ms helper used by the timer-emit paths.
+pub(crate) fn epoch_ms_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 pub async fn run_scheduler(
     fetcher: Box<dyn ForecastFetcher>,
     cadence: Duration,
     tx: mpsc::Sender<Event>,
 ) -> Result<()> {
     let provider = fetcher.provider();
+    let timer_id = provider_timer_id(provider);
     info!(
         ?provider,
         cadence_s = cadence.as_secs(),
@@ -83,7 +104,13 @@ pub async fn run_scheduler(
             info!(?provider, sleep_s = extra_backoff.as_secs(), "forecast scheduler backoff");
             tokio::time::sleep(extra_backoff).await;
         }
-        match fetcher.fetch().await {
+        let fetch_result = fetcher.fetch().await;
+        // Track the per-fire status so we can emit a TimerState after
+        // every cycle (PR-timers-section). Backoff drives the projected
+        // `next_fire`: cadence + extra_backoff after the next ticker tick.
+        let mut timer_status = TimerStatus::Idle;
+        let mut should_return = false;
+        match fetch_result {
             Ok(totals) => {
                 extra_backoff = Duration::ZERO;
                 debug!(
@@ -116,7 +143,8 @@ pub async fn run_scheduler(
                             error = %e,
                             "forecast auth failed (401/403); disabling fetcher — check api_key"
                         );
-                        return Ok(());
+                        timer_status = TimerStatus::FailedLastRun;
+                        should_return = true;
                     }
                     Some(FetchFailure::RateLimited(_)) => {
                         warn!(
@@ -126,6 +154,7 @@ pub async fn run_scheduler(
                             "forecast rate-limited (429); long backoff before next attempt"
                         );
                         extra_backoff = RATE_LIMIT_BACKOFF;
+                        timer_status = TimerStatus::RetryBackoff;
                     }
                     Some(FetchFailure::ServerError(_)) => {
                         extra_backoff = if extra_backoff == Duration::ZERO {
@@ -139,12 +168,41 @@ pub async fn run_scheduler(
                             backoff_s = extra_backoff.as_secs(),
                             "forecast 5xx; exponential backoff"
                         );
+                        timer_status = TimerStatus::RetryBackoff;
                     }
                     Some(FetchFailure::Other(_)) | None => {
                         warn!(?provider, error = %e, "forecast fetch failed");
+                        timer_status = TimerStatus::FailedLastRun;
                     }
                 }
             }
+        }
+        // PR-timers-section: emit per-fire timer state. `next_fire` is
+        // the wall-clock time of the projected next fire, factoring in
+        // any extra backoff that the failure classifier just applied.
+        let last_fire_ms = epoch_ms_now();
+        let interval_ms = i64::try_from((cadence + extra_backoff).as_millis())
+            .unwrap_or(i64::MAX);
+        let next_fire_ms = if should_return {
+            None
+        } else {
+            Some(last_fire_ms + interval_ms)
+        };
+        if tx
+            .send(Event::TimerState {
+                id: timer_id,
+                last_fire_epoch_ms: last_fire_ms,
+                next_fire_epoch_ms: next_fire_ms,
+                status: timer_status,
+                at: std::time::Instant::now(),
+            })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+        if should_return {
+            return Ok(());
         }
     }
 }

@@ -337,7 +337,7 @@ footer {
 }
 .ws-retry:hover { filter: brightness(1.15); }
 
-/* TASS core inspector modal. */
+/* Generic entity inspector modal (originally TASS-core inspector). */
 .modal[hidden] { display: none; }
 .modal {
   position: fixed;
@@ -378,7 +378,7 @@ footer {
   font-family: ui-monospace, monospace;
   color: var(--accent);
 }
-#core-modal-close {
+#entity-modal-close {
   background: transparent;
   color: var(--muted);
   border: 1px solid var(--border);
@@ -390,49 +390,57 @@ footer {
   padding: 0;
   cursor: pointer;
 }
-#core-modal-close:hover {
+#entity-modal-close:hover {
   color: var(--fg);
   border-color: var(--fg);
 }
-#core-modal-body {
+#entity-modal-body {
   padding: 12px 14px;
   font-size: 13px;
 }
-#core-modal-body section {
+#entity-modal-body section {
   margin-bottom: 12px;
 }
-#core-modal-body h3 {
+#entity-modal-body h3 {
   margin: 0 0 6px;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
 }
-#core-modal-body table {
+#entity-modal-body table {
   width: 100%;
   border-collapse: collapse;
 }
-#core-modal-body th,
-#core-modal-body td {
+#entity-modal-body th,
+#entity-modal-body td {
   text-align: left;
   padding: 3px 6px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
-#core-modal-body th {
+#entity-modal-body th {
   width: 40%;
   font-weight: normal;
   color: var(--muted);
   font-family: ui-monospace, monospace;
 }
-#core-modal-body td {
+#entity-modal-body td {
   font-family: ui-monospace, monospace;
 }
-.core-link {
+.entity-link {
   cursor: pointer;
   text-decoration: underline dotted var(--muted) 1px;
   text-underline-offset: 3px;
+  color: inherit;
 }
-.core-link:hover {
+.entity-link:hover {
   color: var(--accent);
+}
+
+.inspect-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
 }

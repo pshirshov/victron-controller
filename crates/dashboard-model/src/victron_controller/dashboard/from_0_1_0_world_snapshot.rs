@@ -13,6 +13,10 @@
 // vector with the new fields. Test
 // `world_snapshot_0_1_0_converter_initialises_cores_state_empty` asserts
 // this remains the contract.
+//
+// PR-timers-section: also initialise `timers` to `Timers { entries: [] }`.
+// 0.1.0 has no timer view; the first 0.2.0 tick repopulates it after the
+// shell tasks emit their first `TimerState` events.
 
 pub fn convert__world_snapshot__from__0_1_0(from: &crate::victron_controller::dashboard::v0_1_0::world_snapshot::WorldSnapshot) -> crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
     crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
@@ -28,6 +32,9 @@ pub fn convert__world_snapshot__from__0_1_0(from: &crate::victron_controller::da
         cores_state: crate::victron_controller::dashboard::cores_state::CoresState {
             cores: Vec::new(),
             topo_order: Vec::new(),
+        },
+        timers: crate::victron_controller::dashboard::timers::Timers {
+            entries: Vec::new(),
         },
     }
 }
@@ -239,5 +246,19 @@ mod tests {
             assert!(c.last_inputs.is_empty(), "expected empty last_inputs for {}", c.id);
             assert!(c.last_outputs.is_empty(), "expected empty last_outputs for {}", c.id);
         }
+    }
+
+    /// PR-timers-section: the 0.1.0 -> 0.2.0 converter must initialise
+    /// `timers` to an empty `Timers { entries: [] }`. The first 0.2.0
+    /// tick repopulates it after the shell's timer-driven tasks emit
+    /// their first `TimerState` events.
+    #[test]
+    fn world_snapshot_0_1_0_converter_initialises_timers_empty() {
+        let v010: V010WorldSnapshot = serde_json::from_value(v010_snapshot_json()).unwrap();
+        let converted = super::convert__world_snapshot__from__0_1_0(&v010);
+        assert!(
+            converted.timers.entries.is_empty(),
+            "expected empty timers on the 0.1.0 back-compat path"
+        );
     }
 }

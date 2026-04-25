@@ -18,9 +18,9 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-use victron_controller_core::types::{Event, SensorId, SensorReading};
+use victron_controller_core::types::{Event, SensorId, SensorReading, TimerId, TimerStatus};
 
-use super::fetch_json;
+use super::{epoch_ms_now, fetch_json};
 
 pub async fn run_open_meteo_temperature(
     http: HttpClient,
@@ -52,6 +52,9 @@ pub async fn run_open_meteo_temperature(
             // into the forecast pipeline).
             ("timezone", tz_name),
         ];
+        // PR-timers-section: track the per-fire status so a TimerState
+        // can be emitted after every cycle (success or error).
+        let mut timer_status = TimerStatus::Idle;
         match fetch_json(&http, url, &query).await {
             Ok(body) => {
                 let Some(t) = body
@@ -59,6 +62,10 @@ pub async fn run_open_meteo_temperature(
                     .and_then(serde_json::Value::as_f64)
                 else {
                     warn!("open-meteo response missing /current/temperature_2m");
+                    timer_status = TimerStatus::FailedLastRun;
+                    if !emit_timer_state(&tx, cadence, timer_status).await {
+                        return Ok(());
+                    }
                     continue;
                 };
                 debug!(temperature_c = t, "open-meteo outdoor temperature fetched");
@@ -75,7 +82,33 @@ pub async fn run_open_meteo_temperature(
                     return Ok(());
                 }
             }
-            Err(e) => warn!(error = %e, "open-meteo current-weather fetch failed"),
+            Err(e) => {
+                warn!(error = %e, "open-meteo current-weather fetch failed");
+                timer_status = TimerStatus::FailedLastRun;
+            }
+        }
+        if !emit_timer_state(&tx, cadence, timer_status).await {
+            return Ok(());
         }
     }
+}
+
+/// Emit one `Event::TimerState` for the OpenMeteoCurrent timer. Returns
+/// `false` when the channel is closed (caller should exit). PR-timers-section.
+async fn emit_timer_state(
+    tx: &mpsc::Sender<Event>,
+    cadence: Duration,
+    status: TimerStatus,
+) -> bool {
+    let last = epoch_ms_now();
+    let next = last + i64::try_from(cadence.as_millis()).unwrap_or(i64::MAX);
+    tx.send(Event::TimerState {
+        id: TimerId::OpenMeteoCurrent,
+        last_fire_epoch_ms: last,
+        next_fire_epoch_ms: Some(next),
+        status,
+        at: Instant::now(),
+    })
+    .await
+    .is_ok()
 }

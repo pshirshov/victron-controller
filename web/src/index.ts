@@ -6,11 +6,13 @@ import {
   installCopyHandler,
   renderActuated,
   renderBookkeeping,
-  renderCoreModal,
   renderCoresState,
   renderDecisions,
+  renderEntityModal,
   renderForecasts,
   renderSensors,
+  renderTimers,
+  type EntityType,
 } from "./render.js";
 import { renderKnobs } from "./knobs.js";
 import { WsWidget } from "./ws-widget.js";
@@ -23,10 +25,11 @@ function wsUrl(): string {
 
 let managerRef: ConnectionManager | null = null;
 let widgetRef: WsWidget | null = null;
-// TASS core inspector: id of the currently-open core, or null when
-// closed. On every snapshot we re-render the modal body so the user
-// sees live updates.
-let openCoreId: string | null = null;
+// Entity inspector: id + type of the currently-open entity, or null
+// when closed. On every snapshot we re-render the modal body so the
+// user sees live updates.
+let openEntityId: string | null = null;
+let openEntityType: EntityType | null = null;
 let lastSnapshot: WorldSnapshot | null = null;
 
 function sendCommand(cmd: unknown): void {
@@ -60,51 +63,67 @@ function applySnapshot(snap: WorldSnapshot): void {
   renderDecisions(snap);
   renderActuated(snap);
   renderCoresState(snap);
+  renderTimers(snap);
   renderBookkeeping(snap);
   renderForecasts(snap);
   renderKnobs(snap, sendCommand);
 
-  // Live-refresh the TASS core inspector if it's open.
+  // Live-refresh the entity inspector if it's open.
   lastSnapshot = snap;
-  if (openCoreId !== null) {
-    renderCoreModal(openCoreId, snap);
+  if (openEntityId !== null && openEntityType !== null) {
+    renderEntityModal(openEntityId, openEntityType, snap);
   }
 }
 
-function openCoreInspector(coreId: string): void {
-  openCoreId = coreId;
-  const modal = document.getElementById("core-modal");
+function openEntityInspector(entityId: string, type: EntityType): void {
+  openEntityId = entityId;
+  openEntityType = type;
+  const modal = document.getElementById("entity-modal");
   if (!modal) return;
   modal.removeAttribute("hidden");
   if (lastSnapshot) {
-    renderCoreModal(coreId, lastSnapshot);
+    renderEntityModal(entityId, type, lastSnapshot);
   }
 }
 
-function closeCoreInspector(): void {
-  openCoreId = null;
-  const modal = document.getElementById("core-modal");
+function closeEntityInspector(): void {
+  openEntityId = null;
+  openEntityType = null;
+  const modal = document.getElementById("entity-modal");
   if (modal) modal.setAttribute("hidden", "");
 }
 
-function installCoreInspectorHandlers(): void {
-  // Click on a `.core-link` (the rendered core-name anchor) to open.
+const VALID_TYPES: ReadonlySet<EntityType> = new Set([
+  "sensor",
+  "knob",
+  "actuated",
+  "bookkeeping",
+  "decision",
+  "forecast",
+  "core",
+  "timer",
+]);
+
+function installEntityInspectorHandlers(): void {
   document.body.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement | null;
     if (!target) return;
-    const link = target.closest(".core-link") as HTMLElement | null;
-    if (link?.dataset.coreId) {
-      ev.preventDefault();
-      openCoreInspector(link.dataset.coreId);
-      return;
+    const link = target.closest(".entity-link") as HTMLElement | null;
+    if (link?.dataset.entityId && link?.dataset.entityType) {
+      const t = link.dataset.entityType as EntityType;
+      if (VALID_TYPES.has(t)) {
+        ev.preventDefault();
+        openEntityInspector(link.dataset.entityId, t);
+        return;
+      }
     }
-    if (target.id === "core-modal-close" || target.classList.contains("modal-backdrop")) {
-      closeCoreInspector();
+    if (target.id === "entity-modal-close" || target.classList.contains("modal-backdrop")) {
+      closeEntityInspector();
     }
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && openCoreId !== null) {
-      closeCoreInspector();
+    if (ev.key === "Escape" && openEntityId !== null) {
+      closeEntityInspector();
     }
   });
 }
@@ -121,7 +140,7 @@ function init(): void {
   widgetRef = widget;
 
   installCopyHandler();
-  installCoreInspectorHandlers();
+  installEntityInspectorHandlers();
 
   manager.start();
 }
