@@ -357,8 +357,12 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             state_class: "measurement",
         },
         BatteryInstalledCapacity => SensorMeta {
-            unit: Some("kWh"),
-            device_class: Some("energy_storage"),
+            // Victron's /InstalledCapacity is in Ah (not kWh); the Wh
+            // computation downstream multiplies by SoH and nominal
+            // voltage. No HA `device_class` fits Ah cleanly — leave it
+            // None so HA renders the value with the unit only.
+            unit: Some("Ah"),
+            device_class: None,
             state_class: "measurement",
         },
         BatteryDcPower | MpptPower0 | MpptPower1 | SoltaroPower | PowerConsumption

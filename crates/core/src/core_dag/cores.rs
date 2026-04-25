@@ -187,7 +187,7 @@ impl Core for SetpointCore {
                     factor("mppt_power_1_W", format!("{:.2}", i.mppt_power_1)),
                     factor("soltaro_power_W", format!("{:.2}", i.soltaro_power)),
                     factor("evcharger_ac_power_W", format!("{:.2}", i.evcharger_ac_power)),
-                    factor("battery_capacity_kwh", format!("{:.2}", i.capacity)),
+                    factor("battery_capacity_Ah", format!("{:.2}", i.capacity)),
                 ]
             }
         }

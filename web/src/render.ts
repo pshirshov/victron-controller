@@ -358,10 +358,12 @@ export function renderBookkeeping(snap: WorldSnapshot) {
     // PR-bookkeeping-edit: pencil icon for editable bookkeeping fields.
     // Only `next_full_charge` is editable today (allowlisted in
     // `apply_set_bookkeeping`). The click handler swaps the cell into
-    // edit mode.
-    if (name === "next_full_charge") {
+    // edit mode. The snapshot field name is `next_full_charge_iso`
+    // (it carries an ISO 8601 string); the data-edit-bk attribute
+    // carries the canonical key the click handler dispatches on.
+    if (name === "next_full_charge_iso") {
       const editBtn =
-        `<button class="edit-btn icon" data-edit-bk="${name}" title="Edit ${name}">&#9998;</button>`;
+        `<button class="edit-btn icon" data-edit-bk="next_full_charge" title="Edit next full charge">&#9998;</button>`;
       disp = `${disp} ${editBtn}`;
     }
     return {
@@ -1029,12 +1031,12 @@ function clearBookkeepingEdit(btn: HTMLButtonElement): void {
 function enterBookkeepingEdit(btn: HTMLButtonElement): void {
   const td = btn.closest("td") as HTMLTableCellElement | null;
   if (!td) return;
+  // The pencil button carries the *canonical* bookkeeping key
+  // (e.g. "next_full_charge"), not the snapshot field name
+  // (e.g. "next_full_charge_iso"). All save/cancel/clear data-*
+  // attributes mirror the canonical key so `bookkeepingKeyToWire` can
+  // map it to the baboon BookkeepingKey variant.
   const key = btn.getAttribute("data-edit-bk") ?? "";
-  // Read the row's current displayed value from the snapshot-rendered
-  // text. The pencil button itself is part of the cell's HTML, so peel
-  // it off; the leading text up to the first `<button` is the value.
-  const tr = td.closest("tr") as HTMLTableRowElement | null;
-  const rowKey = tr?.dataset.key ?? key;
   // The current value lives in the row's text content excluding the
   // button. Use `td.textContent` minus the button text.
   const currentText = (td.firstChild?.textContent ?? "").trim();
@@ -1042,10 +1044,10 @@ function enterBookkeepingEdit(btn: HTMLButtonElement): void {
   // format). Fall back to empty string if the cell shows "—".
   const inputValue = toDatetimeLocalValue(currentText);
   td.innerHTML =
-    `<input type="datetime-local" data-edit-bk-input="${esc(rowKey)}" value="${esc(inputValue)}" />` +
-    ` <button data-save-bk="${esc(rowKey)}">Save</button>` +
-    ` <button data-cancel-bk="${esc(rowKey)}">Cancel</button>` +
-    ` <button data-clear-bk="${esc(rowKey)}" title="Clear (set to none)">&#10005; clear</button>`;
+    `<input type="datetime-local" data-edit-bk-input="${esc(key)}" value="${esc(inputValue)}" />` +
+    ` <button data-save-bk="${esc(key)}">Save</button>` +
+    ` <button data-cancel-bk="${esc(key)}">Cancel</button>` +
+    ` <button data-clear-bk="${esc(key)}" title="Clear (set to none)">&#10005; clear</button>`;
   const input = td.querySelector("input") as HTMLInputElement | null;
   input?.focus();
 }
