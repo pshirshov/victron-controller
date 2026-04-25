@@ -66,6 +66,27 @@ impl Sensors {
             SensorId::EssState => self.ess_state,
             SensorId::OutdoorTemperature => self.outdoor_temperature,
             SensorId::SessionKwh => self.session_kwh,
+            // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror
+            // sensor variants don't have dedicated storage on `Sensors`.
+            // Their storage of truth is `world.<entity>.actual`; the
+            // post-update hook in `apply_sensor_reading` writes there.
+            // For dashboard / publish lookups via `by_id`, return an
+            // `Unknown` placeholder so callers iterating `SensorId::ALL`
+            // don't see spurious values. PR-AS-B / PR-AS-C will revisit
+            // (project from the actuated entity, or filter these out of
+            // the publish iteration).
+            SensorId::GridSetpointActual
+            | SensorId::InputCurrentLimitActual
+            | SensorId::Schedule0StartActual
+            | SensorId::Schedule0DurationActual
+            | SensorId::Schedule0SocActual
+            | SensorId::Schedule0DaysActual
+            | SensorId::Schedule0AllowDischargeActual
+            | SensorId::Schedule1StartActual
+            | SensorId::Schedule1DurationActual
+            | SensorId::Schedule1SocActual
+            | SensorId::Schedule1DaysActual
+            | SensorId::Schedule1AllowDischargeActual => Actual::unknown(self.battery_soc.since),
         }
     }
 

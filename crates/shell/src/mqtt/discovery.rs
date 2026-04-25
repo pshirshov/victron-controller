@@ -336,6 +336,11 @@ struct SensorMeta {
     state_class: &'static str,
 }
 
+// `GridSetpointActual` (W) and `BatteryDcPower` (W) etc. share the same
+// SensorMeta body; clippy would have us merge them but the actuated-
+// mirror arm is added separately for documentation purposes — PR-AS-B/C
+// will likely filter these out of HA discovery anyway.
+#[allow(clippy::match_same_arms)]
 fn sensor_meta(id: SensorId) -> SensorMeta {
     use SensorId::*;
     match id {
@@ -380,6 +385,36 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             unit: Some("kWh"),
             device_class: Some("energy"),
             state_class: "total_increasing",
+        },
+        // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
+        // variants are not yet routed by the subscriber and have no HA
+        // entity surface today. Provide unit-less placeholders so the
+        // match remains exhaustive; PR-AS-B/C will revisit (likely
+        // gating these out of HA discovery entirely — the actuated
+        // entity already has its own published surface).
+        GridSetpointActual => SensorMeta {
+            unit: Some("W"),
+            device_class: Some("power"),
+            state_class: "measurement",
+        },
+        InputCurrentLimitActual => SensorMeta {
+            unit: Some("A"),
+            device_class: Some("current"),
+            state_class: "measurement",
+        },
+        Schedule0StartActual
+        | Schedule0DurationActual
+        | Schedule0SocActual
+        | Schedule0DaysActual
+        | Schedule0AllowDischargeActual
+        | Schedule1StartActual
+        | Schedule1DurationActual
+        | Schedule1SocActual
+        | Schedule1DaysActual
+        | Schedule1AllowDischargeActual => SensorMeta {
+            unit: None,
+            device_class: None,
+            state_class: "measurement",
         },
     }
 }

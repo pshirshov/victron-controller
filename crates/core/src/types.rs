@@ -83,6 +83,25 @@ pub enum SensorId {
     /// field; resets when a session ends. Reseed-driven (cadence
     /// 300 s, owned by the myenergi poller, not the D-Bus subscriber).
     SessionKwh,
+    // PR-actuated-as-sensors (PR-AS-A): D-Bus paths that mirror an
+    // actuated entity. Treated as scalar sensors for cadence /
+    // freshness purposes. Storage of truth lives on
+    // `world.<entity>.actual` (driven via the `actuated_id()` post-
+    // hook in `apply_sensor_reading`); these variants exist so the
+    // D-Bus subscriber can route their paths through the unified
+    // sensor pipeline.
+    GridSetpointActual,
+    InputCurrentLimitActual,
+    Schedule0StartActual,
+    Schedule0DurationActual,
+    Schedule0SocActual,
+    Schedule0DaysActual,
+    Schedule0AllowDischargeActual,
+    Schedule1StartActual,
+    Schedule1DurationActual,
+    Schedule1SocActual,
+    Schedule1DaysActual,
+    Schedule1AllowDischargeActual,
 }
 
 impl SensorId {
@@ -132,6 +151,24 @@ impl SensorId {
             // (default 300 s); 600 s = 2 × cadence per the reseed-driven
             // staleness rule.
             Self::SessionKwh => Duration::from_secs(600),
+            // PR-actuated-as-sensors (PR-AS-A): grid setpoint &
+            // current-limit readback paths reseed every 5 s alongside
+            // their fast-organic neighbours on the same service.
+            Self::GridSetpointActual | Self::InputCurrentLimitActual => {
+                Duration::from_secs(15)
+            }
+            // PR-actuated-as-sensors (PR-AS-A): schedule leaf paths
+            // reseed at 60 s; staleness 180 s satisfies 2× cadence.
+            Self::Schedule0StartActual
+            | Self::Schedule0DurationActual
+            | Self::Schedule0SocActual
+            | Self::Schedule0DaysActual
+            | Self::Schedule0AllowDischargeActual
+            | Self::Schedule1StartActual
+            | Self::Schedule1DurationActual
+            | Self::Schedule1SocActual
+            | Self::Schedule1DaysActual
+            | Self::Schedule1AllowDischargeActual => Duration::from_secs(180),
         }
     }
 }
@@ -185,6 +222,19 @@ impl SensorId {
         SensorId::EssState,
         SensorId::OutdoorTemperature,
         SensorId::SessionKwh,
+        // PR-actuated-as-sensors (PR-AS-A).
+        SensorId::GridSetpointActual,
+        SensorId::InputCurrentLimitActual,
+        SensorId::Schedule0StartActual,
+        SensorId::Schedule0DurationActual,
+        SensorId::Schedule0SocActual,
+        SensorId::Schedule0DaysActual,
+        SensorId::Schedule0AllowDischargeActual,
+        SensorId::Schedule1StartActual,
+        SensorId::Schedule1DurationActual,
+        SensorId::Schedule1SocActual,
+        SensorId::Schedule1DaysActual,
+        SensorId::Schedule1AllowDischargeActual,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -220,7 +270,12 @@ impl SensorId {
             | Self::VebusInputCurrent
             | Self::EvchargerAcPower
             | Self::EvchargerAcCurrent
-            | Self::BatterySoc => FreshnessRegime::SlowSignalled,
+            | Self::BatterySoc
+            // PR-actuated-as-sensors (PR-AS-A): grid setpoint and
+            // current-limit readback paths follow their fast-organic
+            // neighbours on the same service.
+            | Self::GridSetpointActual
+            | Self::InputCurrentLimitActual => FreshnessRegime::SlowSignalled,
             // Reseed-driven — value moves on minutes-to-hours timescales,
             // organic signals essentially never fire.
             // `SessionKwh` is sourced from the myenergi cloud poll, not
@@ -231,7 +286,19 @@ impl SensorId {
             | Self::BatteryInstalledCapacity
             | Self::EssState
             | Self::OutdoorTemperature
-            | Self::SessionKwh => FreshnessRegime::ReseedDriven,
+            | Self::SessionKwh
+            // PR-actuated-as-sensors (PR-AS-A): schedule leaf paths —
+            // value moves only on a settings write (reseed-driven).
+            | Self::Schedule0StartActual
+            | Self::Schedule0DurationActual
+            | Self::Schedule0SocActual
+            | Self::Schedule0DaysActual
+            | Self::Schedule0AllowDischargeActual
+            | Self::Schedule1StartActual
+            | Self::Schedule1DurationActual
+            | Self::Schedule1SocActual
+            | Self::Schedule1DaysActual
+            | Self::Schedule1AllowDischargeActual => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -273,7 +340,12 @@ impl SensorId {
             // 5 s reseed amortises across the silent service alongside
             // the other fast-organic sensors.
             | Self::MpptPower0
-            | Self::MpptPower1 => Duration::from_secs(5),
+            | Self::MpptPower1
+            // PR-actuated-as-sensors (PR-AS-A): grid setpoint &
+            // current-limit readback paths share the fast-organic
+            // 5 s reseed cadence on their respective services.
+            | Self::GridSetpointActual
+            | Self::InputCurrentLimitActual => Duration::from_secs(5),
             // Slow-signalled / reseed-driven on the battery service: 60 s.
             Self::BatterySoc
             | Self::BatterySoh
@@ -288,6 +360,75 @@ impl SensorId {
             // so the core can validate its own staleness invariant
             // without taking a shell-crate dependency.
             Self::SessionKwh => Duration::from_secs(300),
+            // PR-actuated-as-sensors (PR-AS-A): schedule leaf paths
+            // reseed every 60 s on the settings service.
+            Self::Schedule0StartActual
+            | Self::Schedule0DurationActual
+            | Self::Schedule0SocActual
+            | Self::Schedule0DaysActual
+            | Self::Schedule0AllowDischargeActual
+            | Self::Schedule1StartActual
+            | Self::Schedule1DurationActual
+            | Self::Schedule1SocActual
+            | Self::Schedule1DaysActual
+            | Self::Schedule1AllowDischargeActual => Duration::from_secs(60),
+        }
+    }
+
+    /// PR-actuated-as-sensors (PR-AS-A): the actuated entity this
+    /// sensor reading mirrors, if any. Used by the post-update hook in
+    /// `apply_sensor_reading` to drive `confirm_if(...)` on the
+    /// matching `world.<entity>.actual` slot. Returns `None` for plain
+    /// sensors.
+    ///
+    /// Schedule leaf fields return `None` here because their readback
+    /// confirmation requires a complete `ScheduleSpec`; the rollup is
+    /// driven by `Event::ScheduleReadback` via the subscriber-side
+    /// accumulator.
+    ///
+    /// Explicit per-variant match (no `_ =>` arm) so a future
+    /// `SensorId` addition forces classification.
+    // Schedule leaf fields and plain (non-actuated-mirror) sensors
+    // both return `None` here; clippy's `match_same_arms` would have
+    // us collapse them, but the explicit arms are load-bearing —
+    // they document the *reason* for the `None` (per-leaf vs plain
+    // sensor) and force a future addition to pick a side.
+    #[allow(clippy::match_same_arms)]
+    #[must_use]
+    pub const fn actuated_id(self) -> Option<ActuatedId> {
+        match self {
+            Self::GridSetpointActual => Some(ActuatedId::GridSetpoint),
+            Self::InputCurrentLimitActual => Some(ActuatedId::InputCurrentLimit),
+            Self::Schedule0StartActual
+            | Self::Schedule0DurationActual
+            | Self::Schedule0SocActual
+            | Self::Schedule0DaysActual
+            | Self::Schedule0AllowDischargeActual
+            | Self::Schedule1StartActual
+            | Self::Schedule1DurationActual
+            | Self::Schedule1SocActual
+            | Self::Schedule1DaysActual
+            | Self::Schedule1AllowDischargeActual => None,
+            Self::BatterySoc
+            | Self::BatterySoh
+            | Self::BatteryInstalledCapacity
+            | Self::BatteryDcPower
+            | Self::MpptPower0
+            | Self::MpptPower1
+            | Self::SoltaroPower
+            | Self::PowerConsumption
+            | Self::GridPower
+            | Self::GridVoltage
+            | Self::GridCurrent
+            | Self::ConsumptionCurrent
+            | Self::OffgridPower
+            | Self::OffgridCurrent
+            | Self::VebusInputCurrent
+            | Self::EvchargerAcPower
+            | Self::EvchargerAcCurrent
+            | Self::EssState
+            | Self::OutdoorTemperature
+            | Self::SessionKwh => None,
         }
     }
 }
@@ -662,6 +803,18 @@ pub enum Event {
     Sensor(SensorReading),
     TypedSensor(TypedReading),
     Readback(ActuatedReadback),
+    /// PR-actuated-as-sensors (PR-AS-A): rolled-up schedule readback.
+    /// The 5 leaf D-Bus fields (`Start`/`Duration`/`Soc`/`Day`/
+    /// `AllowDischarge`) per slot land as `Event::Sensor` per leaf;
+    /// the subscriber-side accumulator emits this event after a
+    /// complete fresh re-observation of all 5 fields. Drives
+    /// `world.schedule_<n>.on_reading` + `confirm_if`.
+    ScheduleReadback {
+        /// `0` or `1`.
+        index: u8,
+        value: ScheduleSpec,
+        at: Instant,
+    },
     Command {
         command: Command,
         owner: Owner,
@@ -906,6 +1059,22 @@ mod tests {
                 SensorId::OutdoorTemperature => Duration::from_secs(30 * 60),
                 // myenergi cloud — 5 min.
                 SensorId::SessionKwh => Duration::from_secs(300),
+                // PR-actuated-as-sensors (PR-AS-A): grid-setpoint &
+                // current-limit readback paths reseed at 5 s.
+                SensorId::GridSetpointActual
+                | SensorId::InputCurrentLimitActual => Duration::from_secs(5),
+                // PR-actuated-as-sensors (PR-AS-A): schedule leaf
+                // paths reseed at 60 s.
+                SensorId::Schedule0StartActual
+                | SensorId::Schedule0DurationActual
+                | SensorId::Schedule0SocActual
+                | SensorId::Schedule0DaysActual
+                | SensorId::Schedule0AllowDischargeActual
+                | SensorId::Schedule1StartActual
+                | SensorId::Schedule1DurationActual
+                | SensorId::Schedule1SocActual
+                | SensorId::Schedule1DaysActual
+                | SensorId::Schedule1AllowDischargeActual => Duration::from_secs(60),
             };
             assert_eq!(
                 id.reseed_cadence(),
@@ -933,12 +1102,26 @@ mod tests {
                 | SensorId::EvchargerAcPower
                 | SensorId::EvchargerAcCurrent
                 | SensorId::MpptPower0
-                | SensorId::MpptPower1 => FreshnessRegime::SlowSignalled,
+                | SensorId::MpptPower1
+                // PR-actuated-as-sensors (PR-AS-A).
+                | SensorId::GridSetpointActual
+                | SensorId::InputCurrentLimitActual => FreshnessRegime::SlowSignalled,
                 SensorId::BatterySoh
                 | SensorId::BatteryInstalledCapacity
                 | SensorId::EssState
                 | SensorId::OutdoorTemperature
-                | SensorId::SessionKwh => FreshnessRegime::ReseedDriven,
+                | SensorId::SessionKwh
+                // PR-actuated-as-sensors (PR-AS-A).
+                | SensorId::Schedule0StartActual
+                | SensorId::Schedule0DurationActual
+                | SensorId::Schedule0SocActual
+                | SensorId::Schedule0DaysActual
+                | SensorId::Schedule0AllowDischargeActual
+                | SensorId::Schedule1StartActual
+                | SensorId::Schedule1DurationActual
+                | SensorId::Schedule1SocActual
+                | SensorId::Schedule1DaysActual
+                | SensorId::Schedule1AllowDischargeActual => FreshnessRegime::ReseedDriven,
             };
             assert_eq!(
                 id.regime(),
@@ -966,6 +1149,55 @@ mod tests {
 
             // Belt-and-braces: the shared helper agrees.
             check_staleness_invariant(id).unwrap_or_else(|e| panic!("{e}"));
+        }
+    }
+
+    /// PR-actuated-as-sensors (PR-AS-A): explicit per-variant assertion
+    /// of `SensorId::actuated_id()`. Mirrors the impl's match shape so a
+    /// new `SensorId` variant fails compile here until classified.
+    #[test]
+    #[allow(clippy::match_same_arms)]
+    fn sensor_id_actuated_id_mapping() {
+        for &id in SensorId::ALL {
+            let expected: Option<ActuatedId> = match id {
+                SensorId::GridSetpointActual => Some(ActuatedId::GridSetpoint),
+                SensorId::InputCurrentLimitActual => Some(ActuatedId::InputCurrentLimit),
+                SensorId::Schedule0StartActual
+                | SensorId::Schedule0DurationActual
+                | SensorId::Schedule0SocActual
+                | SensorId::Schedule0DaysActual
+                | SensorId::Schedule0AllowDischargeActual
+                | SensorId::Schedule1StartActual
+                | SensorId::Schedule1DurationActual
+                | SensorId::Schedule1SocActual
+                | SensorId::Schedule1DaysActual
+                | SensorId::Schedule1AllowDischargeActual => None,
+                SensorId::BatterySoc
+                | SensorId::BatterySoh
+                | SensorId::BatteryInstalledCapacity
+                | SensorId::BatteryDcPower
+                | SensorId::MpptPower0
+                | SensorId::MpptPower1
+                | SensorId::SoltaroPower
+                | SensorId::PowerConsumption
+                | SensorId::GridPower
+                | SensorId::GridVoltage
+                | SensorId::GridCurrent
+                | SensorId::ConsumptionCurrent
+                | SensorId::OffgridPower
+                | SensorId::OffgridCurrent
+                | SensorId::VebusInputCurrent
+                | SensorId::EvchargerAcPower
+                | SensorId::EvchargerAcCurrent
+                | SensorId::EssState
+                | SensorId::OutdoorTemperature
+                | SensorId::SessionKwh => None,
+            };
+            assert_eq!(
+                id.actuated_id(),
+                expected,
+                "SensorId::{id:?}.actuated_id() mismatch",
+            );
         }
     }
 

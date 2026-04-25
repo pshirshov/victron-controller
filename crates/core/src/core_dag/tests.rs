@@ -564,13 +564,15 @@ mod sensor_broadcast {
     use crate::types::{Effect, PublishPayload, SensorId};
     use crate::world::World;
 
-    // `SensorId::ALL.len()` (20 today) sensor publishes plus 4 numeric
-    // + 3 boolean bookkeeping publishes on the first run with a
-    // fresh-boot world (every cache slot is absent → first-write emits
-    // the value). 20 + 4 + 3 = 27.
-    // 20 sensors + 3 numeric bookkeeping (PrevEssState dropped per
-    // PR-ha-discovery-D01) + 3 bool bookkeeping = 26.
-    const EXPECTED_FIRST_RUN_EFFECTS: usize = 20 + 3 + 3;
+    // `SensorId::ALL.len()` (32 after PR-actuated-as-sensors PR-AS-A
+    // — 20 original + 14 actuated-mirror sensors) sensor publishes
+    // plus 3 numeric + 3 boolean bookkeeping publishes on the first
+    // run with a fresh-boot world (every cache slot is absent →
+    // first-write emits the value). The 14 new actuated-mirror
+    // sensors emit "unavailable" placeholders since the subscriber
+    // doesn't yet route to them; that's still a publish, dedup'd on
+    // subsequent runs by the body cache.
+    const EXPECTED_FIRST_RUN_EFFECTS: usize = 32 + 3 + 3;
 
     fn fixed_clock() -> FixedClock {
         let mono = Instant::now();

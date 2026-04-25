@@ -406,6 +406,22 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         SensorId::EssState => "inverter.ess.state",
         SensorId::OutdoorTemperature => "weather.temperature.outdoor",
         SensorId::SessionKwh => "evcharger.session.energy",
+        // PR-actuated-as-sensors (PR-AS-A): not surfaced on the wire
+        // today (subscriber doesn't emit them yet). Names follow the
+        // actuated wire taxonomy so PR-AS-B/C can decide whether to
+        // publish or filter without renaming.
+        SensorId::GridSetpointActual => "grid.setpoint.actual",
+        SensorId::InputCurrentLimitActual => "inverter.input.current-limit.actual",
+        SensorId::Schedule0StartActual => "schedule.0.start.actual",
+        SensorId::Schedule0DurationActual => "schedule.0.duration.actual",
+        SensorId::Schedule0SocActual => "schedule.0.soc.actual",
+        SensorId::Schedule0DaysActual => "schedule.0.days.actual",
+        SensorId::Schedule0AllowDischargeActual => "schedule.0.allow-discharge.actual",
+        SensorId::Schedule1StartActual => "schedule.1.start.actual",
+        SensorId::Schedule1DurationActual => "schedule.1.duration.actual",
+        SensorId::Schedule1SocActual => "schedule.1.soc.actual",
+        SensorId::Schedule1DaysActual => "schedule.1.days.actual",
+        SensorId::Schedule1AllowDischargeActual => "schedule.1.allow-discharge.actual",
     }
 }
 

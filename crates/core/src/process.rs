@@ -35,7 +35,7 @@ use crate::controllers::eddi_mode::{
     EddiModeInput, EddiModeKnobs, evaluate_eddi_mode,
 };
 use crate::controllers::schedules::{
-    SchedulesInput, SchedulesInputGlobals, evaluate_schedules,
+    ScheduleSpec, SchedulesInput, SchedulesInputGlobals, evaluate_schedules,
 };
 use crate::controllers::setpoint::{
     SetpointInput, SetpointInputGlobals, evaluate_setpoint,
@@ -92,9 +92,12 @@ fn apply_event(
     effects: &mut Vec<Effect>,
 ) {
     match event {
-        Event::Sensor(reading) => apply_sensor_reading(*reading, world),
+        Event::Sensor(reading) => apply_sensor_reading(*reading, world, topology, effects),
         Event::TypedSensor(reading) => apply_typed_reading(*reading, world),
         Event::Readback(readback) => apply_readback(*readback, world, topology, effects),
+        Event::ScheduleReadback { index, value, at } => {
+            apply_schedule_readback(*index, *value, *at, world, effects);
+        }
         Event::Command {
             command,
             owner,
@@ -152,7 +155,12 @@ fn apply_timer_state(
     }
 }
 
-fn apply_sensor_reading(r: SensorReading, world: &mut World) {
+fn apply_sensor_reading(
+    r: SensorReading,
+    world: &mut World,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
     let v = r.value;
     let at = r.at;
     match r.id {
@@ -178,6 +186,92 @@ fn apply_sensor_reading(r: SensorReading, world: &mut World) {
         SensorId::EssState => world.sensors.ess_state.on_reading(v, at),
         SensorId::OutdoorTemperature => world.sensors.outdoor_temperature.on_reading(v, at),
         SensorId::SessionKwh => world.sensors.session_kwh.on_reading(v, at),
+        // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
+        // variants don't have dedicated `world.sensors.<field>` slots —
+        // their storage of truth is `world.<entity>.actual`, driven by
+        // the post-hook below.
+        SensorId::GridSetpointActual
+        | SensorId::InputCurrentLimitActual
+        | SensorId::Schedule0StartActual
+        | SensorId::Schedule0DurationActual
+        | SensorId::Schedule0SocActual
+        | SensorId::Schedule0DaysActual
+        | SensorId::Schedule0AllowDischargeActual
+        | SensorId::Schedule1StartActual
+        | SensorId::Schedule1DurationActual
+        | SensorId::Schedule1SocActual
+        | SensorId::Schedule1DaysActual
+        | SensorId::Schedule1AllowDischargeActual => {}
+    }
+
+    // PR-actuated-as-sensors (PR-AS-A): post-update hook. If this
+    // sensor mirrors an actuated entity, drive the matching
+    // `world.<entity>.actual.on_reading + confirm_if`. Schedules go
+    // through the dedicated `Event::ScheduleReadback` rollup instead
+    // (the per-leaf reading can't be combined with a `ScheduleSpec`
+    // confirm_if predicate). Zappi/Eddi never enter this pipeline.
+    match r.id.actuated_id() {
+        None => {}
+        Some(ActuatedId::GridSetpoint) => {
+            #[allow(clippy::cast_possible_truncation)]
+            let value = v as i32;
+            world.grid_setpoint.on_reading(value, at);
+            let tol = topology.controller_params.setpoint_confirm_tolerance_w;
+            if world
+                .grid_setpoint
+                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
+            {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::GridSetpoint,
+                    phase: world.grid_setpoint.target.phase,
+                }));
+            }
+        }
+        Some(ActuatedId::InputCurrentLimit) => {
+            world.input_current_limit.on_reading(v, at);
+            let tol = topology.controller_params.current_limit_confirm_tolerance_a;
+            if world
+                .input_current_limit
+                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
+            {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::InputCurrentLimit,
+                    phase: world.input_current_limit.target.phase,
+                }));
+            }
+        }
+        Some(other) => {
+            debug_assert!(matches!(
+                other,
+                ActuatedId::ZappiMode
+                    | ActuatedId::EddiMode
+                    | ActuatedId::Schedule0
+                    | ActuatedId::Schedule1
+            ));
+        }
+    }
+}
+
+/// PR-actuated-as-sensors (PR-AS-A): handle the rolled-up schedule
+/// readback emitted by the subscriber-side accumulator.
+fn apply_schedule_readback(
+    index: u8,
+    value: ScheduleSpec,
+    at: Instant,
+    world: &mut World,
+    effects: &mut Vec<Effect>,
+) {
+    let (actuated, id) = match index {
+        0 => (&mut world.schedule_0, ActuatedId::Schedule0),
+        1 => (&mut world.schedule_1, ActuatedId::Schedule1),
+        _ => return,
+    };
+    actuated.on_reading(value, at);
+    if actuated.confirm_if(|t, a| t == a, at) {
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id,
+            phase: actuated.target.phase,
+        }));
     }
 }
 
@@ -2404,6 +2498,139 @@ mod tests {
             &Topology::defaults(),
         );
         assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-actuated-as-sensors (PR-AS-A): the new sensor-id-based
+    // confirmation path runs in parallel with `apply_readback`. These
+    // tests pin the new path via `Event::Sensor(SensorReading{ id:
+    // GridSetpointActual, ... })` and `Event::ScheduleReadback`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_event_grid_setpoint_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target = world.grid_setpoint.target.value.unwrap();
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+
+        // Drive a sensor reading on the actuated-mirror id, value within
+        // the ±50 tolerance.
+        let effects = process(
+            &Event::Sensor(SensorReading {
+                id: SensorId::GridSetpointActual,
+                value: f64::from(target + 12),
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Confirmed);
+        let publishes: Vec<_> = effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(PublishPayload::ActuatedPhase {
+                        id: ActuatedId::GridSetpoint,
+                        phase: TargetPhase::Confirmed,
+                    })
+                )
+            })
+            .collect();
+        assert_eq!(
+            publishes.len(),
+            1,
+            "expected exactly one ActuatedPhase(GridSetpoint, Confirmed) publish; got {effects:#?}",
+        );
+    }
+
+    #[test]
+    fn apply_event_current_limit_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target = world.input_current_limit.target.value.unwrap();
+        assert_eq!(world.input_current_limit.target.phase, TargetPhase::Commanded);
+
+        // Within the configured tolerance for current-limit confirmation.
+        let tol = Topology::defaults()
+            .controller_params
+            .current_limit_confirm_tolerance_a;
+        let effects = process(
+            &Event::Sensor(SensorReading {
+                id: SensorId::InputCurrentLimitActual,
+                value: target + (tol / 2.0),
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.input_current_limit.target.phase, TargetPhase::Confirmed);
+        let publishes: Vec<_> = effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(PublishPayload::ActuatedPhase {
+                        id: ActuatedId::InputCurrentLimit,
+                        phase: TargetPhase::Confirmed,
+                    })
+                )
+            })
+            .collect();
+        assert_eq!(
+            publishes.len(),
+            1,
+            "expected exactly one ActuatedPhase(InputCurrentLimit, Confirmed) publish; got {effects:#?}",
+        );
+    }
+
+    #[test]
+    fn apply_event_schedule_readback_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target = world.schedule_0.target.value.expect("schedule_0 target set");
+        assert_eq!(world.schedule_0.target.phase, TargetPhase::Commanded);
+
+        let effects = process(
+            &Event::ScheduleReadback {
+                index: 0,
+                value: target,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.schedule_0.target.phase, TargetPhase::Confirmed);
+        let publishes: Vec<_> = effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(PublishPayload::ActuatedPhase {
+                        id: ActuatedId::Schedule0,
+                        phase: TargetPhase::Confirmed,
+                    })
+                )
+            })
+            .collect();
+        assert_eq!(
+            publishes.len(),
+            1,
+            "expected exactly one ActuatedPhase(Schedule0, Confirmed) publish; got {effects:#?}",
+        );
     }
 
     #[test]
