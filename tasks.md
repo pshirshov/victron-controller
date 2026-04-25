@@ -27,12 +27,12 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   staleness-floor correctness invariant. Plan in
   `./docs/drafts/20260425-0130-m-ux-1-plan.md`. Five PRs; correctness
   item lands first.
-- [~] **M-AS** — Unify actuated-readback ingestion with the sensor
+- [x] **M-AS** — Unify actuated-readback ingestion with the sensor
   pipeline; collapse `Event::Readback`/`apply_readback`/`Route::*Readback`
   into `Route::Sensor` + `Event::ScheduleReadback`. Plan in
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
-  PR-A (additive infra), PR-B (subscriber routing switch),
-  PR-C (delete the old types).
+  PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
+  switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
 
 ---
 
@@ -1087,7 +1087,7 @@ PR-tass-dag-view rides the same bump or its own minor follow-on.
 
 Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
 
-- [~] **PR-AS-A** — Additive infra: new `SensorId` variants
+- [x] **PR-AS-A** — Additive infra: new `SensorId` variants
   (`GridSetpointActual` 5s/15s, `InputCurrentLimitActual` 5s/15s,
   `Schedule0/1{Start,Duration,Soc,Days,AllowDischarge}Actual` 60s/180s),
   `SensorId::actuated_id() -> Option<ActuatedId>`,
@@ -1096,7 +1096,7 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   user 2026-04-25: live in the sensor handler, not a sibling hook).
   Old `Event::Readback`/`apply_readback`/`Route::*Readback` paths
   remain functional in parallel; this PR is purely additive.
-- [ ] **PR-AS-B** — Subscriber routing switch: routing table emits
+- [x] **PR-AS-B** — Subscriber routing switch: routing table emits
   `Route::Sensor(...)` for grid_setpoint, current_limit, and the 10
   schedule leaf fields; emits `Event::ScheduleReadback` when the
   existing `SchedulePartial` accumulator completes. Delete
@@ -1104,7 +1104,7 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   `Route::ScheduleField`, `ScheduleSpecField`, and the
   `ACTUATED_RESEED_*` constants. Per-service `min` cadence on
   `settings` collapses from 300 s to 5 s (driven by GridSetpointActual).
-- [ ] **PR-AS-C** — Cleanup: delete `apply_readback`, `Event::Readback`,
+- [x] **PR-AS-C** — Cleanup: delete `apply_readback`, `Event::Readback`,
   `ActuatedReadback`, `ActuatedId::freshness_threshold`, the four
   explicit per-actuated `apply_tick` decay calls. Migrate the three
   remaining tests in `process.rs` and the proptest. ZappiMode test
