@@ -19,7 +19,7 @@ use zbus::{Connection, MatchRule, MessageStream, MessageType, Proxy};
 
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::types::{
-    ActuatedReadback, Event, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
+    Event, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
 };
 
 use crate::config::DbusServices;
@@ -65,36 +65,24 @@ fn build_service_timer_ids(s: &DbusServices) -> HashMap<String, TimerId> {
     m
 }
 
-/// Static map: actuated readback path → reseed cadence. Mirrors
-/// `ActuatedId::freshness_threshold / 2` for each readback variant,
-/// expressed as the bare cadence so `routing_table` rows can use it
-/// without the core having a dedicated `ActuatedId::reseed_cadence`
-/// method (intentionally avoided per the plan).
-///
-/// The numbers come from `crates/core/src/types.rs::ActuatedId::freshness_threshold`:
-/// - `InputCurrentLimit` 600 s → 300 s reseed
-/// - `GridSetpoint` / Schedule 0,1 fields 900 s → 450 s reseed
-const ACTUATED_RESEED_CURRENT_LIMIT: Duration = Duration::from_secs(300);
-const ACTUATED_RESEED_GRID_SETPOINT: Duration = Duration::from_secs(450);
-const ACTUATED_RESEED_SCHEDULE_FIELD: Duration = Duration::from_secs(450);
-
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
-/// We keep this small and explicit rather than deriving it — there are
-/// only ~20 paths and their semantics differ (scalar sensor vs. typed
-/// vs. readback of an actuated).
+/// PR-AS-B unified the table around a single `Route::Sensor(SensorId)`
+/// shape: the four formerly-separate actuated readback paths
+/// (grid-setpoint, input-current-limit, and 10 schedule leaf fields)
+/// now route through new `*Actual` SensorId variants. The schedule
+/// rollup that used to live behind `Route::ScheduleField` is preserved
+/// as a subscriber-internal side-effect (see `sensor_id_to_schedule_field`
+/// + the `SchedulePartial` accumulator).
 #[derive(Debug, Clone)]
 enum Route {
     Sensor(SensorId),
-    GridSetpointReadback,
-    CurrentLimitReadback,
-    /// Partial update to Schedule N's Nth field. The subscriber
-    /// accumulates all five fields before emitting a complete
-    /// ScheduleSpec readback.
-    ScheduleField { index: u8, field: ScheduleSpecField },
 }
 
 /// Which field of a ScheduleSpec this D-Bus path corresponds to.
+/// Module-private after PR-AS-B: only `SchedulePartial::apply` consults
+/// it, and the lookup from `SensorId` to this enum lives in
+/// `sensor_id_to_schedule_field`.
 #[derive(Debug, Clone, Copy)]
 enum ScheduleSpecField {
     Start,
@@ -102,6 +90,33 @@ enum ScheduleSpecField {
     Soc,
     Days,
     AllowDischarge,
+}
+
+/// Map a SensorId to its (schedule-index, field) pair, if it is one of
+/// the 10 schedule leaf-field SensorIds. Returns `None` for any other
+/// SensorId.
+///
+/// This is the only place the subscriber knows about the rollup. After
+/// the per-leaf `Event::Sensor(...)` is queued, the subscriber consults
+/// this lookup; on a hit, it updates `schedule_accumulators[idx]` and,
+/// when `take_spec()` returns `Some`, emits the rollup
+/// `Event::ScheduleReadback`.
+fn sensor_id_to_schedule_field(id: SensorId) -> Option<(u8, ScheduleSpecField)> {
+    match id {
+        SensorId::Schedule0StartActual => Some((0, ScheduleSpecField::Start)),
+        SensorId::Schedule0DurationActual => Some((0, ScheduleSpecField::Duration)),
+        SensorId::Schedule0SocActual => Some((0, ScheduleSpecField::Soc)),
+        SensorId::Schedule0DaysActual => Some((0, ScheduleSpecField::Days)),
+        SensorId::Schedule0AllowDischargeActual => Some((0, ScheduleSpecField::AllowDischarge)),
+        SensorId::Schedule1StartActual => Some((1, ScheduleSpecField::Start)),
+        SensorId::Schedule1DurationActual => Some((1, ScheduleSpecField::Duration)),
+        SensorId::Schedule1SocActual => Some((1, ScheduleSpecField::Soc)),
+        SensorId::Schedule1DaysActual => Some((1, ScheduleSpecField::Days)),
+        SensorId::Schedule1AllowDischargeActual => {
+            Some((1, ScheduleSpecField::AllowDischarge))
+        }
+        _ => None,
+    }
 }
 
 /// Build the routing table from the configured bus names. Keyed by
@@ -142,7 +157,12 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     add(&mut r, &s.vebus, "/Ac/Out/L1/P", Route::Sensor(OffgridPower));
     add(&mut r, &s.vebus, "/Ac/Out/L1/I", Route::Sensor(OffgridCurrent));
     add(&mut r, &s.vebus, "/Ac/ActiveIn/L1/I", Route::Sensor(VebusInputCurrent));
-    add(&mut r, &s.vebus, "/Ac/In/1/CurrentLimit", Route::CurrentLimitReadback);
+    add(
+        &mut r,
+        &s.vebus,
+        "/Ac/In/1/CurrentLimit",
+        Route::Sensor(InputCurrentLimitActual),
+    );
 
     // Evcharger (EV-branch ET112)
     add(&mut r, &s.evcharger, "/Ac/Power", Route::Sensor(EvchargerAcPower));
@@ -153,26 +173,50 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
         &mut r,
         &s.settings,
         "/Settings/CGwacs/AcPowerSetPoint",
-        Route::GridSetpointReadback,
+        Route::Sensor(GridSetpointActual),
     );
     add(&mut r, &s.settings, "/Settings/CGwacs/BatteryLife/State", Route::Sensor(EssState));
 
-    // Schedule readback — 5 fields × 2 schedules. Each partial update
-    // advances the subscriber's accumulator; a full ScheduleSpec is
-    // emitted once all 5 fields have arrived.
-    for index in 0..=1u8 {
-        for (path_field, spec_field) in [
-            ("Start", ScheduleSpecField::Start),
-            ("Duration", ScheduleSpecField::Duration),
-            ("Soc", ScheduleSpecField::Soc),
-            ("Day", ScheduleSpecField::Days),
-            ("AllowDischarge", ScheduleSpecField::AllowDischarge),
-        ] {
+    // Schedule readback — 5 fields × 2 schedules. Each leaf path lands
+    // as its own `Route::Sensor(...)` row; the per-field SensorId feeds
+    // both the universal sensor freshness machinery and the
+    // subscriber-internal accumulator that emits a rolled-up
+    // `Event::ScheduleReadback` once all 5 fields are present.
+    //
+    // NB: the D-Bus path uses `Day` (singular), the SensorId uses
+    // `Days` (plural) — preserves the historical naming.
+    for (index, schedule_ids) in [
+        (
+            0u8,
+            [
+                Schedule0StartActual,
+                Schedule0DurationActual,
+                Schedule0SocActual,
+                Schedule0DaysActual,
+                Schedule0AllowDischargeActual,
+            ],
+        ),
+        (
+            1u8,
+            [
+                Schedule1StartActual,
+                Schedule1DurationActual,
+                Schedule1SocActual,
+                Schedule1DaysActual,
+                Schedule1AllowDischargeActual,
+            ],
+        ),
+    ] {
+        for (path_field, sensor_id) in
+            ["Start", "Duration", "Soc", "Day", "AllowDischarge"]
+                .into_iter()
+                .zip(schedule_ids)
+        {
             add(
                 &mut r,
                 &s.settings,
                 &format!("/Settings/CGwacs/BatteryLife/Schedule/Charge/{index}/{path_field}"),
-                Route::ScheduleField { index, field: spec_field },
+                Route::Sensor(sensor_id),
             );
         }
     }
@@ -180,16 +224,12 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     r
 }
 
-/// Reseed cadence for a single route. For sensor routes this defers
-/// to `SensorId::reseed_cadence()` (the per-sensor authoritative
-/// table); for actuated readbacks it consults the small static table
-/// at the top of this module (mirrors `ActuatedId::freshness_threshold / 2`).
+/// Reseed cadence for a single route. After PR-AS-B every route is
+/// `Route::Sensor(id)`, so this defers entirely to the per-sensor
+/// authoritative table on `SensorId::reseed_cadence`.
 fn cadence_for_route(route: &Route) -> Duration {
     match route {
         Route::Sensor(id) => id.reseed_cadence(),
-        Route::CurrentLimitReadback => ACTUATED_RESEED_CURRENT_LIMIT,
-        Route::GridSetpointReadback => ACTUATED_RESEED_GRID_SETPOINT,
-        Route::ScheduleField { .. } => ACTUATED_RESEED_SCHEDULE_FIELD,
     }
 }
 
@@ -774,7 +814,9 @@ impl Subscriber {
                                     self.routed_signals_since_last_heartbeat.saturating_add(1);
                                 let now = Instant::now();
                                 self.last_signal_at = Some(now);
-                                if let Some(event) = self.route_to_event(&route, value, now) {
+                                let mut emitted: Vec<Event> = Vec::new();
+                                self.route_to_event(&route, value, now, &mut emitted);
+                                for event in emitted {
                                     if tx.send(event).await.is_err() {
                                         return Ok(());
                                     }
@@ -1043,12 +1085,18 @@ impl Subscriber {
         Ok(())
     }
 
-    /// Turn a routed (value, time) into an Event, possibly mutating the
-    /// schedule accumulators in the process. Thin wrapper around the
-    /// free `route_to_event` helper; the same logic is invoked from
-    /// `seed_service` (which cannot take `&mut self`).
-    fn route_to_event(&mut self, route: &Route, value: f64, at: Instant) -> Option<Event> {
-        route_to_event(route, value, at, &mut self.schedule_accumulators)
+    /// Turn a routed (value, time) into 0..=2 Events, appending them
+    /// to `out`. Thin wrapper around the free `route_to_event` helper;
+    /// the same logic is invoked from `seed_service` (which cannot take
+    /// `&mut self`).
+    fn route_to_event(
+        &mut self,
+        route: &Route,
+        value: f64,
+        at: Instant,
+        out: &mut Vec<Event>,
+    ) {
+        route_to_event(route, value, at, &mut self.schedule_accumulators, out);
     }
 }
 
@@ -1056,47 +1104,43 @@ impl Subscriber {
 /// (free fn) and `Subscriber::route_to_event` can share it. The schedule
 /// accumulator is passed in by `&mut` so callers can own it in different
 /// places (on `Self` for the signal arm, via caller for seed).
+///
+/// Always emits exactly one `Event::Sensor(...)` for the routed value.
+/// For the 10 schedule-leaf SensorIds, additionally updates the
+/// matching `schedule_accumulators[idx]`; if `take_spec()` then returns
+/// a complete spec, also emits an `Event::ScheduleReadback{...}`.
 fn route_to_event(
     route: &Route,
     value: f64,
     at: Instant,
     schedule_accumulators: &mut [SchedulePartial; 2],
-) -> Option<Event> {
+    out: &mut Vec<Event>,
+) {
     match route {
-        Route::Sensor(id) => Some(Event::Sensor(SensorReading {
-            id: *id,
-            value,
-            at,
-        })),
-        Route::GridSetpointReadback => {
-            #[allow(clippy::cast_possible_truncation)]
-            Some(Event::Readback(ActuatedReadback::GridSetpoint {
-                value: value as i32,
-                at,
-            }))
-        }
-        Route::CurrentLimitReadback => {
-            Some(Event::Readback(ActuatedReadback::InputCurrentLimit {
+        Route::Sensor(id) => {
+            out.push(Event::Sensor(SensorReading {
+                id: *id,
                 value,
                 at,
-            }))
-        }
-        Route::ScheduleField { index, field } => {
-            let idx = *index as usize;
-            let acc = &mut schedule_accumulators[idx];
-            acc.apply(*field, value);
-            // Emit only when all 5 fields are present AND consume them:
-            // the accumulator is reset after each emit so the next
-            // readback requires a complete re-observation of every
-            // field, not just the one that changed. See `take_spec`
-            // doc for the rationale (defect A-12). The 300 s settings
-            // reseed delivers all 5 together and satisfies this.
-            let spec = acc.take_spec()?;
-            Some(Event::Readback(if *index == 0 {
-                ActuatedReadback::Schedule0 { value: spec, at }
-            } else {
-                ActuatedReadback::Schedule1 { value: spec, at }
-            }))
+            }));
+            if let Some((idx, field)) = sensor_id_to_schedule_field(*id) {
+                let acc = &mut schedule_accumulators[idx as usize];
+                acc.apply(field, value);
+                // Emit the rollup ONLY when all 5 fields are present
+                // AND consume them: `take_spec` resets the accumulator
+                // after each emit so the next readback requires a
+                // complete re-observation of every field, not just the
+                // one that changed (defect A-12). The settings-service
+                // reseed delivers all 5 leaves together and satisfies
+                // this.
+                if let Some(spec) = acc.take_spec() {
+                    out.push(Event::ScheduleReadback {
+                        index: idx,
+                        value: spec,
+                        at,
+                    });
+                }
+            }
         }
     }
 }
@@ -1192,7 +1236,9 @@ async fn seed_service(
         let Some(value) = extract_scalar(v) else {
             continue;
         };
-        if let Some(event) = route_to_event(&route, value, at, schedule_accumulators) {
+        let mut emitted: Vec<Event> = Vec::new();
+        route_to_event(&route, value, at, schedule_accumulators, &mut emitted);
+        for event in emitted {
             if tx.send(event).await.is_err() {
                 return Ok(());
             }
@@ -1523,12 +1569,14 @@ mod tests {
             Some(Duration::from_secs(5)),
             "system min cadence"
         );
-        // settings hosts EssState (300 s) and GridSetpoint readback
-        // (450 s) and Schedule fields (450 s). Min = 300 s.
+        // settings hosts EssState (300 s), GridSetpointActual (5 s),
+        // and Schedule{0,1}*Actual leaves (60 s). After PR-AS-B the
+        // unified `Route::Sensor` table makes the min collapse to 5 s,
+        // driven by GridSetpointActual.
         assert_eq!(
             cadence.get(&services.settings).copied(),
-            Some(Duration::from_secs(300)),
-            "settings min cadence"
+            Some(Duration::from_secs(5)),
+            "settings min cadence (PR-AS-B: GridSetpointActual at 5 s drives this)"
         );
         // solarcharger.ttyS2 hosts only MpptPower1 (5 s, fast-organic
         // alongside the other PV-flow sensors) per the
@@ -1538,6 +1586,153 @@ mod tests {
             Some(Duration::from_secs(5)),
             "solarcharger.ttyS2 min cadence"
         );
+    }
+
+    /// Helper: build the canonical Venus v3.70 routing table for tests
+    /// that need to look up specific (service, path) entries.
+    fn canonical_routes() -> (DbusServices, HashMap<(String, String), Route>) {
+        let services = DbusServices::default_venus_3_70();
+        let routes = routing_table(&services);
+        (services, routes)
+    }
+
+    fn route_sensor_id(routes: &HashMap<(String, String), Route>, key: &(String, String)) -> SensorId {
+        match routes.get(key).expect("routing table entry") {
+            Route::Sensor(id) => *id,
+        }
+    }
+
+    #[test]
+    fn routing_table_routes_grid_setpoint_as_sensor() {
+        let (services, routes) = canonical_routes();
+        let key = (
+            services.settings.clone(),
+            "/Settings/CGwacs/AcPowerSetPoint".to_string(),
+        );
+        assert_eq!(route_sensor_id(&routes, &key), SensorId::GridSetpointActual);
+    }
+
+    #[test]
+    fn routing_table_routes_current_limit_as_sensor() {
+        let (services, routes) = canonical_routes();
+        let key = (services.vebus.clone(), "/Ac/In/1/CurrentLimit".to_string());
+        assert_eq!(
+            route_sensor_id(&routes, &key),
+            SensorId::InputCurrentLimitActual,
+        );
+    }
+
+    #[test]
+    fn routing_table_routes_each_schedule_field_as_sensor() {
+        let (services, routes) = canonical_routes();
+        // 10 (path-tail, expected SensorId) pairs covering both slots.
+        // The D-Bus path uses `Day` (singular), the SensorId uses
+        // `Days` (plural) — historical naming preserved.
+        let cases: [(u8, &str, SensorId); 10] = [
+            (0, "Start", SensorId::Schedule0StartActual),
+            (0, "Duration", SensorId::Schedule0DurationActual),
+            (0, "Soc", SensorId::Schedule0SocActual),
+            (0, "Day", SensorId::Schedule0DaysActual),
+            (0, "AllowDischarge", SensorId::Schedule0AllowDischargeActual),
+            (1, "Start", SensorId::Schedule1StartActual),
+            (1, "Duration", SensorId::Schedule1DurationActual),
+            (1, "Soc", SensorId::Schedule1SocActual),
+            (1, "Day", SensorId::Schedule1DaysActual),
+            (1, "AllowDischarge", SensorId::Schedule1AllowDischargeActual),
+        ];
+        for (index, leaf, expected) in cases {
+            let path = format!(
+                "/Settings/CGwacs/BatteryLife/Schedule/Charge/{index}/{leaf}"
+            );
+            let key = (services.settings.clone(), path);
+            assert_eq!(
+                route_sensor_id(&routes, &key),
+                expected,
+                "schedule index={index} leaf={leaf}",
+            );
+        }
+    }
+
+    /// Drive the same `route_to_event` entry point production uses; the
+    /// 5 leaf events must produce 5 `Event::Sensor`s and exactly one
+    /// trailing `Event::ScheduleReadback`.
+    #[test]
+    fn schedule_accumulator_emits_rollup_after_five_fields() {
+        let mut accumulators = [SchedulePartial::default(); 2];
+        let at = Instant::now();
+        let leaves: [(SensorId, f64); 5] = [
+            (SensorId::Schedule0StartActual, 1.0),
+            (SensorId::Schedule0DurationActual, 3_600.0),
+            (SensorId::Schedule0SocActual, 80.0),
+            (SensorId::Schedule0DaysActual, 7.0),
+            (SensorId::Schedule0AllowDischargeActual, 1.0),
+        ];
+        let mut emitted: Vec<Event> = Vec::new();
+        for (id, v) in leaves {
+            route_to_event(&Route::Sensor(id), v, at, &mut accumulators, &mut emitted);
+        }
+        // Expect 5 sensor events + 1 rollup = 6 total.
+        assert_eq!(emitted.len(), 6, "5 sensors + 1 rollup");
+        // First 4 are pure sensors, no rollup.
+        for ev in emitted.iter().take(4) {
+            assert!(
+                matches!(ev, Event::Sensor(_)),
+                "leaf 1..=4 must be Event::Sensor only, got {ev:?}"
+            );
+        }
+        // Fifth leaf emits the sensor and the rollup.
+        assert!(matches!(emitted[4], Event::Sensor(_)), "5th sensor");
+        match &emitted[5] {
+            Event::ScheduleReadback { index, value, at: rollup_at } => {
+                assert_eq!(*index, 0);
+                assert_eq!(*rollup_at, at);
+                assert_eq!(value.start_s, 1);
+                assert_eq!(value.duration_s, 3_600);
+                assert!((value.soc - 80.0).abs() < f64::EPSILON);
+                assert_eq!(value.days, 7);
+                assert_eq!(value.discharge, 1);
+            }
+            other => panic!("expected ScheduleReadback, got {other:?}"),
+        }
+    }
+
+    /// Defect A-12 invariant: after a successful rollup the accumulator
+    /// must clear — a single subsequent leaf must NOT produce a fresh
+    /// rollup that re-uses the four previously-observed values.
+    #[test]
+    fn schedule_accumulator_resets_after_emit() {
+        let mut accumulators = [SchedulePartial::default(); 2];
+        let at = Instant::now();
+        let initial: [(SensorId, f64); 5] = [
+            (SensorId::Schedule0StartActual, 100.0),
+            (SensorId::Schedule0DurationActual, 200.0),
+            (SensorId::Schedule0SocActual, 90.0),
+            (SensorId::Schedule0DaysActual, 3.0),
+            (SensorId::Schedule0AllowDischargeActual, 1.0),
+        ];
+        let mut emitted: Vec<Event> = Vec::new();
+        for (id, v) in initial {
+            route_to_event(&Route::Sensor(id), v, at, &mut accumulators, &mut emitted);
+        }
+        let initial_rollups = emitted
+            .iter()
+            .filter(|ev| matches!(ev, Event::ScheduleReadback { .. }))
+            .count();
+        assert_eq!(initial_rollups, 1, "first 5 leaves emit one rollup");
+
+        // Now a single subsequent leaf for the same slot. It must
+        // produce its `Event::Sensor` but NOT a stale rollup built
+        // from the previously-observed 4 values.
+        let mut second: Vec<Event> = Vec::new();
+        route_to_event(
+            &Route::Sensor(SensorId::Schedule0DaysActual),
+            7.0,
+            at,
+            &mut accumulators,
+            &mut second,
+        );
+        assert_eq!(second.len(), 1, "single leaf emits exactly one event");
+        assert!(matches!(second[0], Event::Sensor(_)), "and it is the sensor leaf");
     }
 
     #[test]
