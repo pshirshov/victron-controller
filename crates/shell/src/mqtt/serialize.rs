@@ -4,6 +4,7 @@
 //! All state messages are retained JSON so a reboot sees the last
 //! values. Logs are not retained.
 
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use serde_json::json;
@@ -18,7 +19,38 @@ use victron_controller_core::types::{
     ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue,
     PublishPayload, SensorId, SensorReading, encode_sensor_body,
 };
-use victron_controller_core::Owner;
+use victron_controller_core::{HardwareParams, Owner};
+
+/// PR-hardware-config: hardware constants threaded into the MQTT
+/// layer. Set once at startup via [`set_hardware_params`]; read by
+/// [`knob_range`] to compute per-direction `grid_*_limit_w` ceilings
+/// (export defaults to 6000 W, import to 13_000 W). The OnceLock
+/// approach was chosen over plumbing `&HardwareParams` through every
+/// `knob_range` caller because:
+///   - `knob_range` has many call sites (HA discovery, retained-MQTT
+///     ingest validation, tests) and the parameter is otherwise
+///     completely irrelevant to them;
+///   - the value is set once at startup and never mutates, so the
+///     `OnceLock` semantics match the actual lifecycle precisely;
+///   - tests that don't explicitly initialise it transparently get
+///     `HardwareParams::defaults()` (see `hardware_params()` below).
+static HARDWARE_PARAMS: OnceLock<HardwareParams> = OnceLock::new();
+
+/// Initialise the global hardware params for MQTT-layer use. Called
+/// once from `main` after config load. Panics if called twice — that
+/// would indicate a bug in startup wiring.
+pub fn set_hardware_params(hw: HardwareParams) {
+    HARDWARE_PARAMS
+        .set(hw)
+        .expect("set_hardware_params called twice");
+}
+
+/// Read the global hardware params. Returns `HardwareParams::defaults()`
+/// when the cell hasn't been set (test-only path — production startup
+/// always calls `set_hardware_params` before any MQTT I/O).
+fn hardware_params() -> &'static HardwareParams {
+    HARDWARE_PARAMS.get_or_init(HardwareParams::defaults)
+}
 
 /// Given a PublishPayload, produce a (subtopic, body, retain) triple
 /// for MQTT. The subtopic is appended to the configured topic_root.
@@ -457,8 +489,12 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::WeathersocHighEnergyThreshold
         | KnobId::WeathersocTooMuchEnergyThreshold => (0.0, 1000.0),
 
-        // Power (W)
-        KnobId::GridExportLimitW | KnobId::GridImportLimitW => (0.0, 10_000.0),
+        // Power (W) — PR-hardware-config: per-direction ceilings
+        // sourced from HardwareParams, so the export and import caps
+        // can differ. Defaults: export 6000 W (G99 export
+        // authorisation), import 13 000 W (MultiPlus continuous import).
+        KnobId::GridExportLimitW => (0.0, f64::from(hardware_params().grid_export_knob_max_w)),
+        KnobId::GridImportLimitW => (0.0, f64::from(hardware_params().grid_import_knob_max_w)),
 
         // Time (s)
         KnobId::EddiDwellS => (0.0, 3600.0),
@@ -1011,9 +1047,10 @@ mod tests {
             // Pessimism multiplier
             (KnobId::PessimismMultiplierModifier, "-0.1"),
             (KnobId::PessimismMultiplierModifier, "2.01"),
-            // Power (u32)
-            (KnobId::GridExportLimitW, "10001"),
-            (KnobId::GridImportLimitW, "10001"),
+            // Power (u32) — PR-hardware-config: per-direction
+            // ceilings now (export 6000, import 13000).
+            (KnobId::GridExportLimitW, "6001"),
+            (KnobId::GridImportLimitW, "13001"),
             // Dwell (u32)
             (KnobId::EddiDwellS, "3601"),
         ];
@@ -1102,9 +1139,12 @@ mod tests {
             (KnobId::ZappiCurrentTarget, "32"),
             (KnobId::ZappiEmergencyMargin, "0"),
             (KnobId::ZappiEmergencyMargin, "10"),
-            // Power caps
+            // Power caps — PR-hardware-config: export 0..6000,
+            // import 0..13000 by default.
             (KnobId::GridExportLimitW, "0"),
-            (KnobId::GridExportLimitW, "10000"),
+            (KnobId::GridExportLimitW, "6000"),
+            (KnobId::GridImportLimitW, "0"),
+            (KnobId::GridImportLimitW, "13000"),
             // Time
             (KnobId::EddiDwellS, "0"),
             (KnobId::EddiDwellS, "3600"),

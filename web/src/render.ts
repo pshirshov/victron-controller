@@ -609,14 +609,12 @@ function renderKnobBody(entityId: string, snap: WorldSnapshot): string {
     );
   }
 
-  // TODO(knob-owner-provenance): the wire format does not carry
-  // last-write owner for knobs (see crates/dashboard-model/.../Knobs).
-  // Adding it requires a baboon model change — out of scope for
-  // PR-entity-inspectors. Render a placeholder until that lands.
-  sections.push(
-    `<section><h3>Last-write owner</h3>` +
-      `<p class="dim" style="margin:0">— (not yet exposed on the wire format)</p></section>`,
-  );
+  // Knob owner provenance was relevant during γ-hold (PR-11) when
+  // controller-driven writes had to defer to dashboard writes for 1 s.
+  // PR-gamma-hold-redesign deleted γ-hold entirely — knobs are
+  // user-only now (Dashboard / HaMqtt / System write paths, no
+  // priority queue) — so "last-write owner" carries no actionable
+  // information and the row is omitted.
   return sections.filter(Boolean).join("");
 }
 
@@ -740,8 +738,13 @@ function renderBookkeepingBody(entityId: string, snap: WorldSnapshot): string {
       `<p style="margin:0">${writersHtml}</p>` +
       `</section>`,
   );
-  // TODO(bookkeeping-last-write-at): wire format does not yet carry
-  // last_write_at per bookkeeping field. Out of scope for PR-entity-inspectors.
+  // Per-field last-write-at for bookkeeping isn't tracked: most
+  // bookkeeping fields are recomputed every tick from world state
+  // (e.g. `effective_export_soc_threshold`, `weathersoc.derived.*`),
+  // so "last write" is meaningless. The few that ARE event-driven
+  // (`next_full_charge`, `above_soc_date`) are stamped at the value
+  // itself. Use the Decision panel of the writing core to see when
+  // a field's value was decided.
   return sections.filter(Boolean).join("");
 }
 

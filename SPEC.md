@@ -455,6 +455,12 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `writes_enabled` | `false` (G3: safe cold-start; see `Knobs::safe_defaults` in `crates/core/src/knobs.rs`) | |
 | `forecast_disagreement_strategy` | `solcast_if_available_else_mean` | |
 
+### 7.1. Deploy-time hardware constants (PR-hardware-config)
+
+The values listed above are **runtime knobs** — operators flip them via dashboard / HA / retained MQTT. A second class of values is deploy-time-immutable: physical-hardware properties (inverter export ceiling, main-breaker rating, grid voltage band, battery stack nominal voltage). They live under `[hardware]` in `config.toml` and feed `core::topology::HardwareParams` once at startup. They do NOT appear on the dashboard, are NOT retained over MQTT, and are NOT part of the runtime knob inventory. See `config.example.toml` for the full list and defaults.
+
+The `[hardware] grid_export_knob_max_w` and `grid_import_knob_max_w` values cap the runtime `grid_export_limit_w` / `grid_import_limit_w` knobs respectively — both at the in-process clamp (`process::run_setpoint`) and at the MQTT/HA validation boundary (`mqtt::serialize::knob_range` + `mqtt::discovery::number_knob`). Defaults are `6000` (export) / `13000` (import); these replaced the previous single 10 000 W ceiling that applied symmetrically.
+
 ---
 
 ## 8. Testing strategy

@@ -38,6 +38,12 @@ async fn main() -> Result<()> {
     info!("loading config: {}", cfg_path.display());
     let cfg: Config = config::load(&cfg_path).with_context(|| "load config")?;
 
+    // PR-hardware-config: install the hardware params into the
+    // MQTT-layer OnceLock BEFORE HA discovery / retained-knob ingest,
+    // so the per-direction grid_*_limit_w ceilings are in effect for
+    // the very first knob_range() call.
+    victron_controller_shell::mqtt::set_hardware_params(cfg.hardware.into());
+
     let services = cfg
         .dbus
         .services

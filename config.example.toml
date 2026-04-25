@@ -141,3 +141,38 @@ bind = "0.0.0.0"
 # Heartbeat period for freshness decay + periodic controller re-evaluation.
 # 1 s is plenty (controllers are pure arithmetic on a small world).
 tick_period = "1s"
+
+# =============================================================================
+# Hardware (deploy-time constants — see SPEC §7 / PR-hardware-config)
+# =============================================================================
+# These were previously hard-coded `const`s inside the controller
+# crates. They are deploy-time-immutable: not exposed on the dashboard,
+# not retained over MQTT, not part of the runtime knob inventory. Edit
+# this section only when the install's physical hardware changes
+# (different inverter, different breaker rating, different grid voltage
+# band, different battery stack voltage). Restart the service to pick
+# up changes.
+[hardware]
+# Inverter / battery limits — used by setpoint controller's max_discharge formula.
+inverter_max_discharge_w     = 5000      # MultiPlus AC-export ceiling.
+inverter_safe_discharge_w    = 4020      # Margin below the inverter "forced grid charge above ~4.8 kW" glitch.
+
+# AC-input current-limit bounds — used by current_limit controller.
+max_grid_current_a           = 65        # Main breaker rating ceiling.
+min_system_current_a         = 10        # Floor — keeps inverter aux fed.
+
+# Setpoint behaviour.
+idle_setpoint_w              = 10        # Forced-import baseline (Soltaro 23:55 quirk).
+baseload_consumption_w       = 1200      # Evening planner: preserve_battery threshold.
+
+# Grid-side knob ceilings — split from the former single 10_000 W cap.
+grid_export_knob_max_w       = 6000      # ESB G99 typical authorisation. Caps grid_export_limit_w knob.
+grid_import_knob_max_w       = 13000     # MultiPlus continuous import capability. Caps grid_import_limit_w knob.
+
+# Capacity model.
+battery_nominal_voltage_v    = 48.0      # Pylontech 48V stack.
+
+# EN 50160 grid voltage band — used by current_limit's effective_grid_v sanity gate.
+grid_nominal_voltage_v       = 230.0
+grid_min_sensible_voltage_v  = 207.0     # EN 50160 -10%.
+grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
