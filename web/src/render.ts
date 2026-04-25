@@ -355,6 +355,15 @@ export function renderBookkeeping(snap: WorldSnapshot) {
       const s = String(val);
       disp = maybeBoolBadge(s) ?? esc(s);
     }
+    // PR-bookkeeping-edit: pencil icon for editable bookkeeping fields.
+    // Only `next_full_charge` is editable today (allowlisted in
+    // `apply_set_bookkeeping`). The click handler swaps the cell into
+    // edit mode.
+    if (name === "next_full_charge") {
+      const editBtn =
+        `<button class="edit-btn icon" data-edit-bk="${name}" title="Edit ${name}">&#9998;</button>`;
+      disp = `${disp} ${editBtn}`;
+    }
     return {
       key: name,
       cells: [
@@ -947,6 +956,154 @@ export function installCopyHandler() {
       (ok) => flashButton(el, ok ? "copied" : "failed", ok),
     );
   });
+}
+
+// --- bookkeeping-edit handler (PR-bookkeeping-edit) ---------------------
+//
+// Delegated click handler on `#bk-table` that turns a pencil-icon click
+// into an inline editor for the row's value cell. On Save it calls
+// `sendCommand` with a `SetBookkeeping` payload; on Cancel it just
+// removes the inline editor and lets the next snapshot tick redraw.
+//
+// Focus preservation: while the user is editing, `updateKeyedRows`
+// won't touch any cell that contains `document.activeElement` — so a
+// focused `<input>` survives snapshot ticks unmolested. The Save/Cancel
+// buttons live in the same cell, so the cell as a whole is shielded for
+// as long as focus is anywhere inside it.
+
+let bkEditHandlerInstalled = false;
+let bkEditSend: ((cmd: unknown) => void) | null = null;
+
+export function installBookkeepingEditHandler(
+  sendCommand: (cmd: unknown) => void,
+): void {
+  bkEditSend = sendCommand;
+  if (bkEditHandlerInstalled) return;
+  bkEditHandlerInstalled = true;
+  const tbody = document.querySelector("#bk-table tbody") as HTMLElement | null;
+  if (!tbody) return;
+  tbody.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement | null;
+    if (!target) return;
+
+    const editBtn = target.closest("button[data-edit-bk]") as HTMLButtonElement | null;
+    if (editBtn) {
+      enterBookkeepingEdit(editBtn);
+      return;
+    }
+    const saveBtn = target.closest("button[data-save-bk]") as HTMLButtonElement | null;
+    if (saveBtn) {
+      saveBookkeepingEdit(saveBtn);
+      return;
+    }
+    const cancelBtn = target.closest("button[data-cancel-bk]") as HTMLButtonElement | null;
+    if (cancelBtn) {
+      cancelBookkeepingEdit(cancelBtn);
+      return;
+    }
+    const clearBtn = target.closest("button[data-clear-bk]") as HTMLButtonElement | null;
+    if (clearBtn) {
+      clearBookkeepingEdit(clearBtn);
+      return;
+    }
+  });
+}
+
+function clearBookkeepingEdit(btn: HTMLButtonElement): void {
+  if (!bkEditSend) return;
+  const key = btn.getAttribute("data-clear-bk") ?? "";
+  const cmdKey = bookkeepingKeyToWire(key);
+  if (!cmdKey) return;
+  bkEditSend({
+    SetBookkeeping: {
+      key: cmdKey,
+      value: { Cleared: {} },
+    },
+  });
+  const td = btn.closest("td") as HTMLTableCellElement | null;
+  const focused = document.activeElement as HTMLElement | null;
+  focused?.blur();
+  if (td) td.innerHTML = "";
+}
+
+function enterBookkeepingEdit(btn: HTMLButtonElement): void {
+  const td = btn.closest("td") as HTMLTableCellElement | null;
+  if (!td) return;
+  const key = btn.getAttribute("data-edit-bk") ?? "";
+  // Read the row's current displayed value from the snapshot-rendered
+  // text. The pencil button itself is part of the cell's HTML, so peel
+  // it off; the leading text up to the first `<button` is the value.
+  const tr = td.closest("tr") as HTMLTableRowElement | null;
+  const rowKey = tr?.dataset.key ?? key;
+  // The current value lives in the row's text content excluding the
+  // button. Use `td.textContent` minus the button text.
+  const currentText = (td.firstChild?.textContent ?? "").trim();
+  // Convert "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM" (datetime-local
+  // format). Fall back to empty string if the cell shows "—".
+  const inputValue = toDatetimeLocalValue(currentText);
+  td.innerHTML =
+    `<input type="datetime-local" data-edit-bk-input="${esc(rowKey)}" value="${esc(inputValue)}" />` +
+    ` <button data-save-bk="${esc(rowKey)}">Save</button>` +
+    ` <button data-cancel-bk="${esc(rowKey)}">Cancel</button>` +
+    ` <button data-clear-bk="${esc(rowKey)}" title="Clear (set to none)">&#10005; clear</button>`;
+  const input = td.querySelector("input") as HTMLInputElement | null;
+  input?.focus();
+}
+
+function saveBookkeepingEdit(btn: HTMLButtonElement): void {
+  if (!bkEditSend) return;
+  const td = btn.closest("td") as HTMLTableCellElement | null;
+  if (!td) return;
+  const key = btn.getAttribute("data-save-bk") ?? "";
+  const input = td.querySelector("input") as HTMLInputElement | null;
+  if (!input) return;
+  const raw = input.value;
+  if (!raw) return;
+  // HTML5 datetime-local emits "YYYY-MM-DDTHH:MM" (sometimes with seconds).
+  // The Rust decoder accepts both forms.
+  const iso = raw;
+  const cmdKey = bookkeepingKeyToWire(key);
+  if (!cmdKey) return;
+  bkEditSend({
+    SetBookkeeping: {
+      key: cmdKey,
+      value: { NaiveDateTime: { iso } },
+    },
+  });
+  // Drop focus so the next snapshot tick is free to repaint the cell
+  // with the new value.
+  input.blur();
+}
+
+function cancelBookkeepingEdit(btn: HTMLButtonElement): void {
+  // Just blur — the next snapshot tick (or any non-focused state) will
+  // redraw the cell from the current snapshot.
+  const td = btn.closest("td") as HTMLTableCellElement | null;
+  const focused = document.activeElement as HTMLElement | null;
+  focused?.blur();
+  // Force-clear the cell so the row repaints on the next snapshot tick.
+  if (td) td.innerHTML = "";
+}
+
+function toDatetimeLocalValue(s: string): string {
+  if (!s || s === "—") return "";
+  // chrono Display: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS".
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$/);
+  if (!m) return "";
+  return `${m[1]}T${m[2]}`;
+}
+
+function bookkeepingKeyToWire(name: string): string | null {
+  switch (name) {
+    case "next_full_charge":
+      return "NextFullCharge";
+    case "above_soc_date":
+      return "AboveSocDate";
+    case "prev_ess_state":
+      return "PrevEssState";
+    default:
+      return null;
+  }
 }
 
 function flashButton(el: HTMLButtonElement, label: string, good: boolean) {

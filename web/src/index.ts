@@ -3,6 +3,7 @@
 
 import { ConnectionManager, DEFAULT_CONFIG } from "./manager.js";
 import {
+  installBookkeepingEditHandler,
   installCopyHandler,
   renderActuated,
   renderBookkeeping,
@@ -140,6 +141,7 @@ function init(): void {
   widgetRef = widget;
 
   installCopyHandler();
+  installBookkeepingEditHandler(sendCommand);
   installEntityInspectorHandlers();
   installTabSwitcher();
 

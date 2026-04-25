@@ -745,11 +745,17 @@ pub enum TypedReading {
 /// phase to seed `World.bookkeeping` from retained state. There is no
 /// external source that should issue it at runtime; the controllers
 /// themselves own bookkeeping updates via effects.
+///
+/// `SetBookkeeping` is the user-driven sibling — issued by the dashboard
+/// to shift one of a small allowlist of bookkeeping fields. Unlike
+/// `Bookkeeping`, the apply path validates `(key, value)` against the
+/// allowlist; unsupported combinations emit a Warn log and are dropped.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
     Knob { id: KnobId, value: KnobValue },
     KillSwitch(bool),
     Bookkeeping { key: BookkeepingKey, value: BookkeepingValue },
+    SetBookkeeping { key: BookkeepingKey, value: BookkeepingValue },
 }
 
 /// Everything the pure core consumes.

@@ -169,6 +169,23 @@ data Bookkeeping {
 // PR-gamma-hold-redesign: extend Command with a Mode setter so the
 // dashboard can flip `*_mode` knobs without inventing a new bool/enum
 // variant for each.
+//
+// PR-bookkeeping-edit: dashboard-driven edit of selected bookkeeping
+// fields (today: `next_full_charge`). The core's `apply_set_bookkeeping`
+// handler holds the allowlist of accepted (key, value-shape) pairs.
+enum BookkeepingKey {
+  NextFullCharge
+  AboveSocDate
+  PrevEssState
+}
+
+adt BookkeepingValue {
+  data NaiveDateTime {
+    iso: str
+  }
+  data Cleared {}
+}
+
 root adt Command {
   data SetBoolKnob {
     knob_name: str
@@ -201,6 +218,11 @@ root adt Command {
   }
   data SetKillSwitch {
     value: bit
+  }
+  // PR-bookkeeping-edit — user-driven shift of a bookkeeping field.
+  data SetBookkeeping {
+    key: BookkeepingKey
+    value: BookkeepingValue
   }
 }
 

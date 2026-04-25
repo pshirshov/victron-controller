@@ -9,6 +9,8 @@ export * from './ActuatedF64';
 export * from './ActuatedI32';
 export * from './ActuatedSchedule';
 export * from './Bookkeeping';
+export * from './BookkeepingKey';
+export * from './BookkeepingValue';
 export * from './ChargeBatteryExtendedMode';
 export * from './Command';
 export * from './CommandAck';

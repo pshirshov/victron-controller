@@ -3,10 +3,12 @@ import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, Ba
 import {DebugFullCharge, DebugFullCharge_UEBACodec} from './DebugFullCharge'
 import {ChargeBatteryExtendedMode, ChargeBatteryExtendedMode_UEBACodec} from './ChargeBatteryExtendedMode'
 import {Mode, Mode_UEBACodec} from './Mode'
+import {BookkeepingKey, BookkeepingKey_UEBACodec} from './BookkeepingKey'
 import {DischargeTime, DischargeTime_UEBACodec} from './DischargeTime'
 import {ForecastDisagreementStrategy, ForecastDisagreementStrategy_UEBACodec} from './ForecastDisagreementStrategy'
+import {BookkeepingValue, BookkeepingValue_UEBACodec} from './BookkeepingValue'
 
-export type Command = SetBoolKnob | SetFloatKnob | SetUintKnob | SetDischargeTime | SetDebugFullCharge | SetForecastDisagreementStrategy | SetChargeBatteryExtendedMode | SetMode | SetKillSwitch
+export type Command = SetBoolKnob | SetFloatKnob | SetUintKnob | SetDischargeTime | SetDebugFullCharge | SetForecastDisagreementStrategy | SetChargeBatteryExtendedMode | SetMode | SetKillSwitch | SetBookkeeping
 
 export const Command = {
     BaboonDomainVersion: '0.2.0',
@@ -28,6 +30,7 @@ export function isSetForecastDisagreementStrategy(value: Command): value is SetF
 export function isSetChargeBatteryExtendedMode(value: Command): value is SetChargeBatteryExtendedMode { return value instanceof SetChargeBatteryExtendedMode; }
 export function isSetMode(value: Command): value is SetMode { return value instanceof SetMode; }
 export function isSetKillSwitch(value: Command): value is SetKillSwitch { return value instanceof SetKillSwitch; }
+export function isSetBookkeeping(value: Command): value is SetBookkeeping { return value instanceof SetBookkeeping; }
 
 export class SetBoolKnob implements BaboonGeneratedLatest {
     private readonly _knob_name: string;
@@ -1127,6 +1130,138 @@ export class SetKillSwitch_UEBACodec {
     }
 }
 
+export class SetBookkeeping implements BaboonGeneratedLatest {
+    private readonly _key: BookkeepingKey;
+    private readonly _value: BookkeepingValue;
+
+    constructor(key: BookkeepingKey, value: BookkeepingValue) {
+        this._key = key
+        this._value = value
+    }
+
+    public get key(): BookkeepingKey {
+        return this._key;
+    }
+    public get value(): BookkeepingValue {
+        return this._value;
+    }
+
+    public toJSON(): Record<string, unknown> {
+        return {
+            key: this._key,
+            value: this._value
+        };
+    }
+
+    public with(overrides: {key?: BookkeepingKey; value?: BookkeepingValue}): SetBookkeeping {
+        return new SetBookkeeping(
+            'key' in overrides ? overrides.key! : this._key,
+            'value' in overrides ? overrides.value! : this._value
+        );
+    }
+
+    public static fromPlain(obj: {key: BookkeepingKey; value: BookkeepingValue}): SetBookkeeping {
+        return new SetBookkeeping(
+            obj.key,
+            obj.value
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return SetBookkeeping.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return SetBookkeeping.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetBookkeeping'
+    public baboonTypeIdentifier() {
+        return SetBookkeeping.BaboonTypeIdentifier
+    }
+    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public baboonSameInVersions() {
+        return SetBookkeeping.BaboonSameInVersions
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetBookkeeping'
+    public baboonAdtTypeIdentifier() {
+        return SetBookkeeping.BaboonAdtTypeIdentifier
+    }
+    
+    public static binCodec(): SetBookkeeping_UEBACodec {
+        return SetBookkeeping_UEBACodec.instance
+    }
+}
+
+export class SetBookkeeping_UEBACodec {
+    public encode(ctx: BaboonCodecContext, value: SetBookkeeping, writer: BaboonBinWriter): unknown {
+        if (this !== SetBookkeeping_UEBACodec.lazyInstance.value) {
+          return SetBookkeeping_UEBACodec.lazyInstance.value.encode(ctx, value, writer)
+        }
+    
+        if (ctx === BaboonCodecContext.Indexed) {
+            BinTools.writeByte(writer, 0x01);
+            const buffer = new BaboonBinWriter();
+            BookkeepingKey_UEBACodec.instance.encode(ctx, value.key, buffer);
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BookkeepingValue_UEBACodec.instance.encode(ctx, value.value, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            writer.writeAll(buffer.toBytes());
+        } else {
+            BinTools.writeByte(writer, 0x00)
+            BookkeepingKey_UEBACodec.instance.encode(ctx, value.key, writer);
+            BookkeepingValue_UEBACodec.instance.encode(ctx, value.value, writer);
+        }
+    }
+    
+    public decode(ctx: BaboonCodecContext, reader: BaboonBinReader): SetBookkeeping {
+        if (this !== SetBookkeeping_UEBACodec .lazyInstance.value) {
+            return SetBookkeeping_UEBACodec.lazyInstance.value.decode(ctx, reader)
+        }
+    
+        const header = BinTools.readByte(reader);
+        const useIndices = header === 0x01;
+        if (useIndices) {
+            for (let i = 0; i < 1; i++) {
+                BinTools.readI32(reader);
+                BinTools.readI32(reader);
+            }
+        }
+        const key = BookkeepingKey_UEBACodec.instance.decode(ctx, reader);
+        const value = BookkeepingValue_UEBACodec.instance.decode(ctx, reader);
+        return new SetBookkeeping(
+            key,
+            value,
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return SetBookkeeping_UEBACodec.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return SetBookkeeping_UEBACodec.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetBookkeeping'
+    public baboonTypeIdentifier() {
+        return SetBookkeeping_UEBACodec.BaboonTypeIdentifier
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetBookkeeping'
+    public baboonAdtTypeIdentifier() {
+        return SetBookkeeping_UEBACodec.BaboonAdtTypeIdentifier
+    }
+
+    protected static lazyInstance = new Lazy(() => new SetBookkeeping_UEBACodec())
+    public static get instance(): SetBookkeeping_UEBACodec {
+        return SetBookkeeping_UEBACodec.lazyInstance.value
+    }
+}
+
 
 export class Command_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Command, writer: BaboonBinWriter): unknown {
@@ -1170,6 +1305,10 @@ export class Command_UEBACodec {
                 BinTools.writeByte(writer, 8);
                 SetKillSwitch_UEBACodec.instance.encode(ctx, value, writer);
             }
+            if (value instanceof SetBookkeeping) {
+                BinTools.writeByte(writer, 9);
+                SetBookkeeping_UEBACodec.instance.encode(ctx, value, writer);
+            }
     }
     
     public decode(ctx: BaboonCodecContext, reader: BaboonBinReader): Command {
@@ -1188,6 +1327,7 @@ export class Command_UEBACodec {
                 case 6: return SetChargeBatteryExtendedMode_UEBACodec.instance.decode(ctx, reader)
                 case 7: return SetMode_UEBACodec.instance.decode(ctx, reader)
                 case 8: return SetKillSwitch_UEBACodec.instance.decode(ctx, reader)
+                case 9: return SetBookkeeping_UEBACodec.instance.decode(ctx, reader)
             default: throw new Error("Unknown ADT branch tag: " + tag);
         }
     }

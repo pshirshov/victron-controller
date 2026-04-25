@@ -428,7 +428,48 @@ fn apply_command(
             apply_bookkeeping(key, value, world);
             effects.push(Effect::Publish(PublishPayload::Bookkeeping(key, value)));
         }
+        Command::SetBookkeeping { key, value } => {
+            apply_set_bookkeeping(key, value, world, effects);
+        }
     }
+}
+
+/// User-driven bookkeeping edit. Allowlists `(key, value-shape)` pairs:
+/// only `NextFullCharge` is editable today, with either a `NaiveDateTime`
+/// (set) or `Cleared` (set-to-None). Anything else is dropped with a
+/// Warn log so an unexpected wire combination is observable rather than
+/// silently mutating state. Accepted edits mutate the world AND emit a
+/// `PublishPayload::Bookkeeping` effect so the new value survives a
+/// restart via the existing retained-MQTT path. An additional Info log
+/// documents what changed for the operator.
+fn apply_set_bookkeeping(
+    key: BookkeepingKey,
+    value: BookkeepingValue,
+    world: &mut World,
+    effects: &mut Vec<Effect>,
+) {
+    let accepted = matches!(
+        (key, value),
+        (
+            BookkeepingKey::NextFullCharge,
+            BookkeepingValue::NaiveDateTime(_) | BookkeepingValue::Cleared,
+        ),
+    );
+    if !accepted {
+        effects.push(Effect::Log {
+            level: LogLevel::Warn,
+            source: "process::command",
+            message: format!("SetBookkeeping rejected: ({key:?}, {value:?})"),
+        });
+        return;
+    }
+    apply_bookkeeping(key, value, world);
+    effects.push(Effect::Publish(PublishPayload::Bookkeeping(key, value)));
+    effects.push(Effect::Log {
+        level: LogLevel::Info,
+        source: "bookkeeping.edit",
+        message: format!("SetBookkeeping accepted: ({key:?}, {value:?})"),
+    });
 }
 
 fn apply_bookkeeping(
@@ -2806,6 +2847,139 @@ mod tests {
             &Topology::defaults(),
         );
         assert_eq!(world.bookkeeping.above_soc_date, None);
+    }
+
+    // ------------------------------------------------------------------
+    // SetBookkeeping (PR-bookkeeping-edit) — user-driven dashboard edit.
+    // Mutates the field AND publishes the retained MQTT body so the
+    // change survives a restart.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn set_bookkeeping_next_full_charge_writes_field_and_persists() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let dt = NaiveDate::from_ymd_opt(2026, 5, 3)
+            .unwrap()
+            .and_hms_opt(2, 0, 0)
+            .unwrap();
+        let eff = process(
+            &Event::Command {
+                command: Command::SetBookkeeping {
+                    key: BookkeepingKey::NextFullCharge,
+                    value: BookkeepingValue::NaiveDateTime(dt),
+                },
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.next_full_charge, Some(dt));
+        assert!(eff.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::Bookkeeping(
+                BookkeepingKey::NextFullCharge,
+                BookkeepingValue::NaiveDateTime(_),
+            )),
+        )));
+    }
+
+    #[test]
+    fn set_bookkeeping_next_full_charge_cleared_sets_none() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Seed a value first via the bootstrap path.
+        let dt = NaiveDate::from_ymd_opt(2026, 5, 3)
+            .unwrap()
+            .and_hms_opt(2, 0, 0)
+            .unwrap();
+        world.bookkeeping.next_full_charge = Some(dt);
+
+        let eff = process(
+            &Event::Command {
+                command: Command::SetBookkeeping {
+                    key: BookkeepingKey::NextFullCharge,
+                    value: BookkeepingValue::Cleared,
+                },
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.next_full_charge, None);
+        assert!(eff.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::Bookkeeping(
+                BookkeepingKey::NextFullCharge,
+                BookkeepingValue::Cleared,
+            )),
+        )));
+    }
+
+    #[test]
+    fn set_bookkeeping_rejects_unsupported_keys() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let d = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap();
+        let before = world.bookkeeping.above_soc_date;
+
+        let eff = process(
+            &Event::Command {
+                command: Command::SetBookkeeping {
+                    key: BookkeepingKey::AboveSocDate,
+                    value: BookkeepingValue::NaiveDate(d),
+                },
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.above_soc_date, before);
+        assert!(eff.iter().any(|e| matches!(
+            e,
+            Effect::Log { level: LogLevel::Warn, source: "process::command", .. },
+        )));
+        assert!(!eff.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::Bookkeeping(_, _)),
+        )));
+    }
+
+    #[test]
+    fn set_bookkeeping_rejects_type_mismatch() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let d = NaiveDate::from_ymd_opt(2026, 5, 3).unwrap();
+        let before = world.bookkeeping.next_full_charge;
+
+        let eff = process(
+            &Event::Command {
+                command: Command::SetBookkeeping {
+                    key: BookkeepingKey::NextFullCharge,
+                    value: BookkeepingValue::NaiveDate(d),
+                },
+                owner: Owner::Dashboard,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(world.bookkeeping.next_full_charge, before);
+        assert!(eff.iter().any(|e| matches!(
+            e,
+            Effect::Log { level: LogLevel::Warn, source: "process::command", .. },
+        )));
+        assert!(!eff.iter().any(|e| matches!(
+            e,
+            Effect::Publish(PublishPayload::Bookkeeping(_, _)),
+        )));
     }
 
     #[test]

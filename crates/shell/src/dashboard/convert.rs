@@ -24,7 +24,10 @@ use std::time::Duration;
 use victron_controller_core::myenergi::{EddiMode, ZappiMode};
 use victron_controller_core::tass::{Actual, Actuated, Freshness, TargetPhase};
 use victron_controller_core::topology::ControllerParams;
-use victron_controller_core::types::{Command, Decision, Event, KnobId, KnobValue, SensorId, TimerId};
+use victron_controller_core::types::{
+    BookkeepingKey, BookkeepingValue, Command, Decision, Event, KnobId, KnobValue, SensorId,
+    TimerId,
+};
 use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
@@ -748,6 +751,41 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
             Command::Knob { id, value: KnobValue::Mode(core_mode) }
         }
         C::SetKillSwitch(c) => Command::KillSwitch(c.value),
+        C::SetBookkeeping(c) => {
+            use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping_key::BookkeepingKey as ModelBkKey;
+            use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping_value::BookkeepingValue as ModelBkValue;
+            let key = match c.key {
+                ModelBkKey::NextFullCharge => BookkeepingKey::NextFullCharge,
+                ModelBkKey::AboveSocDate => BookkeepingKey::AboveSocDate,
+                ModelBkKey::PrevEssState => BookkeepingKey::PrevEssState,
+            };
+            let value = match &c.value {
+                ModelBkValue::NaiveDateTime(v) => {
+                    // Accept both `T`-separated and space-separated wire
+                    // forms; chrono's default Display for NaiveDateTime
+                    // emits a space, while HTML5 datetime-local inputs
+                    // emit `T`.
+                    let parsed =
+                        chrono::NaiveDateTime::parse_from_str(&v.iso, "%Y-%m-%dT%H:%M:%S")
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(
+                                    &v.iso,
+                                    "%Y-%m-%dT%H:%M",
+                                )
+                            })
+                            .or_else(|_| {
+                                chrono::NaiveDateTime::parse_from_str(
+                                    &v.iso,
+                                    "%Y-%m-%d %H:%M:%S",
+                                )
+                            })
+                            .ok()?;
+                    BookkeepingValue::NaiveDateTime(parsed)
+                }
+                ModelBkValue::Cleared(_) => BookkeepingValue::Cleared,
+            };
+            Command::SetBookkeeping { key, value }
+        }
     };
     Some(Event::Command {
         command: core_cmd,

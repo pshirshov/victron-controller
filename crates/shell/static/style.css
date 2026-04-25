@@ -159,6 +159,26 @@ tr:hover .copy-btn.icon { opacity: 1; }
 .copy-btn.icon.copied      { opacity: 1; color: var(--ok); }
 .copy-btn.icon.copy-failed { opacity: 1; color: var(--bad); }
 
+/* PR-bookkeeping-edit: pencil icon next to editable bookkeeping values.
+ * Mirrors `.copy-btn.icon` — faint by default, brightens on row hover
+ * or focus. */
+.edit-btn.icon {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  margin-left: 4px;
+  font-size: 14px;
+  line-height: 1;
+  vertical-align: baseline;
+  opacity: 0.4;
+  color: var(--muted);
+  cursor: pointer;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+tr:hover .edit-btn.icon { opacity: 1; }
+.edit-btn.icon:hover,
+.edit-btn.icon:focus { opacity: 1; color: var(--fg); outline: none; }
+
 /* Boolean value badge — checkmark for true, cross for false. Both render
  * in the default foreground colour: many of our booleans
  * (force_disable_export, disable_night_grid_discharge, charge_to_full_required,
