@@ -118,7 +118,11 @@ async fn main() -> Result<()> {
     // eviction or transient I/O failure at startup does not abort the
     // binary — daemontools supervises the *process*, but the
     // subscriber now supervises its own connection.
-    let subscriber = Subscriber::new(&services);
+    let mut subscriber = Subscriber::new(&services);
+    // Build the reseed-trigger fan-in before the writer so the writer
+    // can kick the subscriber for an immediate GetItems on the affected
+    // service after every successful SetValue.
+    let reseed_trigger = subscriber.reseed_channel();
 
     // A-39: startup warning when config-level gates disagree with the
     // runtime kill switch. The dashboard badge currently reads only
@@ -144,7 +148,8 @@ async fn main() -> Result<()> {
         "creating D-Bus writer (dry_run={}, lazy connect)",
         !cfg.dbus.writes_enabled
     );
-    let writer = Writer::new(services.clone(), !cfg.dbus.writes_enabled);
+    let writer =
+        Writer::new(services.clone(), !cfg.dbus.writes_enabled).with_reseed_trigger(reseed_trigger);
 
     let myenergi_client = MyenergiClient::new(cfg.myenergi.clone());
     info!(

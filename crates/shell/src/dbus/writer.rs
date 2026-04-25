@@ -40,6 +40,12 @@ pub struct Writer {
     /// config-file `[dbus] writes_enabled` knob *in addition* to the
     /// runtime kill switch.
     dry_run: bool,
+    /// Optional handle to the subscriber's reseed-trigger fan-in.
+    /// After every successful `SetValue`, we kick the subscriber to
+    /// poll the affected service immediately so the readback lands
+    /// within seconds rather than waiting for the next periodic
+    /// GetItems (up to 5 min on the settings service).
+    reseed_trigger: Option<crate::dbus::subscriber::ReseedTrigger>,
     inner: tokio::sync::Mutex<WriterInner>,
 }
 
@@ -73,6 +79,7 @@ impl Writer {
         Self {
             services,
             dry_run,
+            reseed_trigger: None,
             inner: tokio::sync::Mutex::new(WriterInner {
                 conn: None,
                 next_reconnect_earliest: Instant::now(),
@@ -82,6 +89,18 @@ impl Writer {
                 last_error_at: None,
             }),
         }
+    }
+
+    /// Attach a reseed-trigger handle so successful writes can ask the
+    /// subscriber for an immediate GetItems on the affected service.
+    /// Call once before the writer goes into use.
+    #[must_use]
+    pub fn with_reseed_trigger(
+        mut self,
+        trigger: crate::dbus::subscriber::ReseedTrigger,
+    ) -> Self {
+        self.reseed_trigger = Some(trigger);
+        self
     }
 
     pub async fn write(&self, target: DbusTarget, value: DbusValue) {
@@ -111,6 +130,9 @@ impl Writer {
             Ok(Ok(())) => {
                 self.mark_healthy().await;
                 debug!(%svc, %path, ?value, "WriteDbus ok");
+                if let Some(trigger) = &self.reseed_trigger {
+                    trigger.kick(&svc);
+                }
             }
             Ok(Err(e)) => {
                 let should_log = self.mark_failed().await;

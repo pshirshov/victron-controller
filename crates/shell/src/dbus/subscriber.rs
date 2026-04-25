@@ -334,6 +334,43 @@ pub struct Subscriber {
     /// Used by the heartbeat to flag broker-side stalls, and to gate
     /// reconnect decisions.
     last_successful_poll_at: Option<Instant>,
+    /// Optional fan-in for write-driven reseed kicks. Populated by
+    /// [`Subscriber::reseed_channel`] before [`run`]. The
+    /// `connect_and_serve` loop drains this from a dedicated `select!`
+    /// arm and triggers `seed_service` immediately, so a `WriteDbus`
+    /// to the settings service produces a fresh readback within a
+    /// couple seconds rather than waiting for the next periodic poll.
+    reseed_rx: Option<mpsc::Receiver<String>>,
+}
+
+/// Handle the writer (and any future write-side caller) uses to ask
+/// the subscriber for an immediate GetItems on a specific service.
+/// The subscriber's `select!` has a dedicated arm that drains this
+/// channel and reseeds out-of-band of the periodic schedule.
+///
+/// Why: Victron's settings service does NOT emit `ItemsChanged` in
+/// response to our own `SetValue`. Without an explicit kick, the
+/// post-write readback has to wait for the next per-service GetItems
+/// tick — which can be up to 5 min on the settings service. That
+/// makes the dashboard appear stuck at `Phase=Commanded /
+/// Freshness=Deprecated` for minutes after every grid_setpoint /
+/// schedule write, even though actuation is healthy.
+///
+/// The channel is bounded (8 slots, plenty for the write rate) and
+/// the writer uses `try_send` so a stalled subscriber never blocks
+/// the dispatch loop.
+#[derive(Clone, Debug)]
+pub struct ReseedTrigger {
+    tx: mpsc::Sender<String>,
+}
+
+impl ReseedTrigger {
+    /// Request an immediate GetItems on the given service. Best-
+    /// effort — drops the request silently if the subscriber's queue
+    /// is full (next periodic poll will pick up the change anyway).
+    pub fn kick(&self, service: &str) {
+        let _ = self.tx.try_send(service.to_string());
+    }
 }
 
 /// Minimum gap between periodic-`GetItems` failure warnings for a given
@@ -461,6 +498,7 @@ impl Subscriber {
             started_at: Instant::now(),
             last_signal_at: None,
             last_successful_poll_at: None,
+            reseed_rx: None,
         }
     }
 
@@ -486,9 +524,24 @@ impl Subscriber {
     /// Returns `Ok(())` only on clean shutdown (receiver dropped from
     /// inside a session). No path here terminates the whole binary on
     /// a D-Bus hiccup.
+    /// Build a reseed-trigger handle paired with this subscriber. Call
+    /// once before [`run`]; pass the returned handle to writers (or
+    /// any other site that wants to force an immediate GetItems on a
+    /// specific service). The matching receiver is consumed by
+    /// `run`/`connect_and_serve` via `set_reseed_rx`.
+    pub fn reseed_channel(&mut self) -> ReseedTrigger {
+        let (tx, rx) = mpsc::channel::<String>(8);
+        self.reseed_rx = Some(rx);
+        ReseedTrigger { tx }
+    }
+
     pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
         let mut backoff = RECONNECT_BACKOFF_INITIAL;
         let mut attempt: u32 = 0;
+        // Reseed-trigger receiver lives outside `connect_and_serve` so
+        // it survives session reconnects intact (the sender side is held
+        // by writers; nothing should drop it across our reconnects).
+        let mut reseed_rx = self.reseed_rx.take();
         loop {
             attempt = attempt.saturating_add(1);
             info!(
@@ -497,7 +550,7 @@ impl Subscriber {
                 "D-Bus subscriber: connecting"
             );
             let session_start = Instant::now();
-            match self.connect_and_serve(&tx, attempt).await {
+            match self.connect_and_serve(&tx, &mut reseed_rx, attempt).await {
                 Ok(()) => {
                     info!("D-Bus subscriber exiting cleanly");
                     return Ok(());
@@ -538,6 +591,7 @@ impl Subscriber {
     async fn connect_and_serve(
         &mut self,
         tx: &mpsc::Sender<Event>,
+        reseed_rx: &mut Option<mpsc::Receiver<String>>,
         attempt: u32,
     ) -> Result<()> {
         let conn = Connection::system()
@@ -928,6 +982,57 @@ impl Subscriber {
                                 "no ItemsChanged signals and no successful GetItems in \
                                  the last {}s — reconnecting",
                                 SILENCE_RECONNECT_THRESHOLD.as_secs()
+                            ));
+                        }
+                    }
+                }
+                kick = async {
+                    match reseed_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending::<Option<String>>().await,
+                    }
+                } => {
+                    let Some(svc) = kick else {
+                        // All senders dropped — disable the arm for the
+                        // remainder of this session. `pending()` above
+                        // covers subsequent iterations.
+                        *reseed_rx = None;
+                        continue;
+                    };
+                    if !self.service_set.contains(&svc) {
+                        debug!(service = %svc, "reseed kick for unknown service; ignored");
+                        continue;
+                    }
+                    // Reseed immediately. The periodic schedule entry
+                    // for this service is left untouched — its next_due
+                    // is already in the future, so the periodic poll
+                    // will re-fire on its normal cadence after this
+                    // out-of-band kick completes.
+                    let conn_ref = &conn;
+                    let routes = &self.routes;
+                    let schedule_accumulators = &mut self.schedule_accumulators;
+                    let svc_for_log = svc.clone();
+                    let kick_body = async move {
+                        seed_service(conn_ref, routes, schedule_accumulators, &svc, tx).await
+                    };
+                    match tokio::time::timeout(POLL_ITERATION_BUDGET, kick_body).await {
+                        Ok(Ok(())) => {
+                            self.last_successful_poll_at = Some(Instant::now());
+                            debug!(service = %svc_for_log, "post-write reseed ok");
+                        }
+                        Ok(Err(e)) => {
+                            warn!(
+                                service = %svc_for_log,
+                                error = %format!("{e:#}"),
+                                "post-write reseed failed",
+                            );
+                        }
+                        Err(_elapsed) => {
+                            return Err(anyhow!(
+                                "post-write reseed exceeded {}s budget on {} — broker \
+                                 unresponsive; reconnecting",
+                                POLL_ITERATION_BUDGET.as_secs(),
+                                svc_for_log,
                             ));
                         }
                     }
