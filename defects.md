@@ -1256,3 +1256,35 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/shell/src/dbus/writer.rs` — `last_warn_at` transitions
 **Description:** A successful write sets `last_warn_at = None`. On subsequent failure it's not touched. The dedup state bookkeeping is split between `connection()` and `mark_*` and is easy to break in future edits.
 **Suggested fix:** Centralise warn-throttle state transitions; add a unit test that bursts 20 writes against a "throttled" inner state (manually-constructed with `next_reconnect_earliest = now + 1s`) and asserts only one warn is emitted.
+
+---
+
+## M-UX-1 wave 1 — Review round 1 (executors `a98ebd3d2e979b22d` + `a8ac2d6fa5e587761`, reviewer `a0673e8a25aab1608`)
+
+### [PR-M-UX-1-D01] descriptions.ts has dead entries for fields not in the wire format
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/descriptions.ts`
+**Description:** The plan claimed 12 bookkeeping fields, but `models/dashboard.baboon` exposes only 10. `descriptions.ts` had keys for `last_weather_soc_run_date` and `eddi_last_transition_at` which exist in `crates/core/src/world.rs` but are NOT in the wire format and so will never render — dead entries that imply broader coverage than is real.
+**Fix:** Removed both keys from `descriptions.ts`. Re-add via the wire format if/when they become visible (see M-UX-1 PR-ha-discovery-expand for bookkeeping-field expansion criteria).
+
+### [PR-M-UX-1-D02] Boolean-badge red colour misrepresents semantically-good `false` values
+**Status:** resolved
+**Severity:** minor (UX judgement)
+**Location:** `crates/shell/static/style.css` — `.bool-badge.bool-true` / `.bool-false` colour rules
+**Description:** Initial badge styling rendered `true` green and `false` red. For `force_disable_export=false`, `disable_night_grid_discharge=false`, `charge_to_full_required=false` — `false` is the *good* state. The colour-coding implied a value judgement that is inverted for these flags.
+**Fix:** Dropped both colour overrides; both badges now render in `var(--fg)` (default foreground). Filled disc (`●`) for true, hollow circle (`○`) for false remains as the visual distinction. CSS comment documents the rationale.
+
+### [PR-M-UX-1-D03] Bookkeeping `prev_ess_state` description didn't decode the integer code
+**Status:** resolved
+**Severity:** trivial
+**Location:** `web/src/descriptions.ts` — `prev_ess_state` entry
+**Description:** Description said it's an ESS state code, but no decoding hint was shown next to the value.
+**Fix:** Description now lists the Victron BatteryLife code mapping inline (0=Unknown, 1=Restart, 2=Default, 3=BatteryLife, 9=KeepBatteriesCharged, 10=Optimized, 11=ExternalControl).
+
+### [PR-M-UX-1-D04] Runtime startup assertion is binary-only — relies on unit test for CI coverage
+**Status:** resolved (informational; no fix needed)
+**Severity:** nit
+**Location:** `crates/shell/src/runtime.rs::Runtime::new`
+**Description:** `Runtime::new` is exercised only by `main`, so the panic path is not hit in CI. The unit test in `crates/core/src/types.rs` is the actual gate.
+**Fix:** None — by design. Per-variant unit test (`freshness_threshold_invariant_holds_for_every_sensor`) covers every `SensorId` variant via explicit match, which is the actual CI gate. The runtime assertion is belt-and-braces against runtime constant edits that bypass the unit test.

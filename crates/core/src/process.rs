@@ -1555,8 +1555,8 @@ mod tests {
         let mut world = World::fresh_boot(c.monotonic);
         seed_required_sensors(&mut world, c.monotonic);
 
-        // Age battery_soc past the 5 s freshness threshold.
-        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(30), naive(12, 0));
+        // Age battery_soc past the 120 s freshness threshold.
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(130), naive(12, 0));
         let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
 
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
@@ -2479,8 +2479,8 @@ mod tests {
             .eddi_mode
             .on_reading(EddiMode::Normal, c.monotonic);
 
-        // Age SoC past freshness threshold.
-        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(30), naive(12, 0));
+        // Age SoC past freshness threshold (120 s).
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(130), naive(12, 0));
         let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
 
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
@@ -2549,8 +2549,8 @@ mod tests {
         world.sensors.battery_soc.on_reading(80.0, c.monotonic);
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Fresh);
 
-        // Must exceed SensorId::BatterySoc.freshness_threshold() (15 s).
-        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(20), naive(12, 0));
+        // Must exceed SensorId::BatterySoc.freshness_threshold() (120 s).
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(130), naive(12, 0));
         let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
     }

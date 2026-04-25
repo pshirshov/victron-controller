@@ -13,6 +13,7 @@ import type { ActuatedI32 } from "./model/victron_controller/dashboard/ActuatedI
 import type { ActuatedF64 } from "./model/victron_controller/dashboard/ActuatedF64.js";
 import type { ActuatedEnumName } from "./model/victron_controller/dashboard/ActuatedEnumName.js";
 import type { ActuatedSchedule } from "./model/victron_controller/dashboard/ActuatedSchedule.js";
+import { entityDescriptions } from "./descriptions.js";
 
 // --- incremental update primitives ---------------------------------------
 
@@ -84,6 +85,42 @@ function esc(s: string): string {
   return s.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as Record<string, string>)[ch]!);
 }
 
+// Render the canonical entity name with a `title=` description tooltip
+// (native browser hover tip). When no description is registered for the
+// name, the cell still renders but without a tooltip — matches the
+// "missing key → no tooltip" behaviour the registry promises.
+export function nameWithTitle(name: string): string {
+  const desc = entityDescriptions[name];
+  if (desc === undefined) return esc(name);
+  return `<span title="${esc(desc)}">${esc(name)}</span>`;
+}
+
+// Compact identifier copy button: a faint icon glyph that lives inline
+// after the entity name in the same cell. Hover-darkens via CSS.
+function copyIcon(identifier: string): string {
+  const ident = esc(identifier);
+  return `<button class="copy-btn icon" data-copy="${ident}" title="Copy ${ident}">⧉</button>`;
+}
+
+// Boolean → coloured badge. The string forms `"true"` / `"false"` show
+// up everywhere bookkeeping/decision factors stringify booleans, so
+// detection on the literal string is robust to JSON-vs-typed origins.
+// The textual key stays visible elsewhere; this replaces only the value.
+function boolBadge(value: boolean): string {
+  return value
+    ? '<span class="bool-badge bool-true" title="true">●</span>'
+    : '<span class="bool-badge bool-false" title="false">○</span>';
+}
+
+// Convert `"true"` / `"false"` (or the booleans themselves) to a badge,
+// passing every other value through unchanged. Defensive: applied
+// everywhere a stringified boolean might surface.
+function maybeBoolBadge(value: string): string | null {
+  if (value === "true") return boolBadge(true);
+  if (value === "false") return boolBadge(false);
+  return null;
+}
+
 // Format a duration in ms as "500ms", "2s", "30s", "15m", "1h 30m".
 function fmtDurationMs(totalMs: number): string {
   if (!isFinite(totalMs) || totalMs <= 0) return "—";
@@ -114,13 +151,13 @@ export function renderSensors(snap: WorldSnapshot) {
     const origin = mm ? esc(mm.origin) : `<span class="dim">—</span>`;
     const cadence = mm ? fmtDurationMs(mm.cadence_ms) : `<span class="dim">—</span>`;
     const staleness = mm ? fmtDurationMs(mm.staleness_ms) : `<span class="dim">—</span>`;
-    const copyBtn = mm
-      ? `<button class="copy-btn" data-copy="${esc(mm.identifier)}" title="${esc(mm.identifier)}">copy</button>`
-      : "";
+    const nameCell = mm
+      ? `${nameWithTitle(name)} ${copyIcon(mm.identifier)}`
+      : nameWithTitle(name);
     return {
       key: name,
       cells: [
-        { cls: "mono", html: esc(name) },
+        { cls: "mono", html: nameCell },
         { cls: "mono", html: valText },
         {
           cls: `freshness-${act.freshness}`,
@@ -131,7 +168,6 @@ export function renderSensors(snap: WorldSnapshot) {
         { cls: "mono", html: cadence },
         { cls: "mono", html: staleness },
         { cls: "mono", html: origin },
-        { html: copyBtn },
       ],
     };
   });
@@ -177,7 +213,7 @@ export function renderActuated(snap: WorldSnapshot) {
   ): KeyedRow => ({
     key,
     cells: [
-      { cls: "mono", html: key },
+      { cls: "mono", html: nameWithTitle(key) },
       { cls: "mono", html: target },
       { html: owner },
       { cls: `phase-${phase}`, html: phase },
@@ -257,13 +293,16 @@ export function renderBookkeeping(snap: WorldSnapshot) {
   const rows: KeyedRow[] = Object.entries(snap.bookkeeping).map(([name, val]) => {
     let disp: string;
     if (val === null || val === undefined) disp = "—";
-    else if (typeof val === "boolean") disp = val ? '<span class="freshness-Fresh">true</span>' : "false";
+    else if (typeof val === "boolean") disp = boolBadge(val);
     else if (typeof val === "number") disp = fmtNum(val, 2);
-    else disp = esc(String(val));
+    else {
+      const s = String(val);
+      disp = maybeBoolBadge(s) ?? esc(s);
+    }
     return {
       key: name,
       cells: [
-        { cls: "mono", html: esc(name) },
+        { cls: "mono", html: nameWithTitle(name) },
         { html: disp },
       ],
     };
@@ -288,19 +327,22 @@ export function renderDecisions(snap: WorldSnapshot) {
       return {
         key: name,
         cells: [
-          { cls: "mono", html: name },
+          { cls: "mono", html: nameWithTitle(name) },
           { cls: "dim", html: "—" },
           { cls: "dim", html: "—" },
         ],
       };
     }
     const factors = (dec.factors as Array<{ name: string; value: string }>)
-      .map((f) => `<span class="factor"><b>${esc(f.name)}</b>=${esc(f.value)}</span>`)
+      .map((f) => {
+        const valHtml = maybeBoolBadge(f.value) ?? esc(f.value);
+        return `<span class="factor"><b>${esc(f.name)}</b>=${valHtml}</span>`;
+      })
       .join(" ");
     return {
       key: name,
       cells: [
-        { cls: "mono", html: name },
+        { cls: "mono", html: nameWithTitle(name) },
         { html: esc(dec.summary as string) },
         { cls: "factors", html: factors },
       ],
@@ -321,7 +363,7 @@ export function renderForecasts(snap: WorldSnapshot) {
       return {
         key: name,
         cells: [
-          { cls: "mono", html: name },
+          { cls: "mono", html: nameWithTitle(name) },
           { cls: "dim", html: "no data" },
           { cls: "dim", html: "—" },
           { cls: "dim", html: "—" },
@@ -331,7 +373,7 @@ export function renderForecasts(snap: WorldSnapshot) {
     return {
       key: name,
       cells: [
-        { cls: "mono", html: name },
+        { cls: "mono", html: nameWithTitle(name) },
         { cls: "mono", html: fmtNum(f.today_kwh, 1) },
         { cls: "mono", html: fmtNum(f.tomorrow_kwh, 1) },
         { cls: "dim", html: fmtEpoch(f.fetched_at_epoch_ms) },
@@ -358,12 +400,13 @@ export function installCopyHandler() {
 }
 
 function flashButton(el: HTMLButtonElement, label: string, good: boolean) {
+  const isIcon = el.classList.contains("icon");
   const orig = el.textContent ?? "copy";
-  el.textContent = label;
+  if (!isIcon) el.textContent = label;
   el.classList.toggle("copied", good);
   el.classList.toggle("copy-failed", !good);
   setTimeout(() => {
-    el.textContent = orig;
+    if (!isIcon) el.textContent = orig;
     el.classList.remove("copied", "copy-failed");
   }, 900);
 }

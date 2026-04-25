@@ -109,7 +109,9 @@ impl SensorId {
             Self::GridVoltage => Duration::from_secs(10),
             // Slow-signalled: Pylontech emits SoC at ~1 Hz while changing,
             // seconds-to-minutes idle.
-            Self::BatterySoc => Duration::from_secs(15),
+            // Rule: `staleness >= 2 * cadence` for slow-signalled sensors
+            // (60 s reseed → 120 s window).
+            Self::BatterySoc => Duration::from_secs(120),
             // Reseed-driven slow metrics: value only moves on minutes-
             // to-hours timescales; staleness ≈ 2× reseed cadence.
             Self::BatterySoh | Self::EssState => Duration::from_secs(900),
@@ -122,6 +124,192 @@ impl SensorId {
             Self::OutdoorTemperature => Duration::from_secs(40 * 60),
         }
     }
+}
+
+/// Classification of a sensor's freshness regime.
+///
+/// Drives the staleness-floor invariant — see
+/// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md` and the
+/// PR-staleness-floor section of M-UX-1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshnessRegime {
+    /// Organic `ItemsChanged` signals at ≥ 1 Hz drive freshness; the
+    /// reseed is belt-and-suspenders. Lower bound only: `staleness ≥ 5 s`.
+    Fast,
+    /// Organic signals fire on change but inter-change gaps span
+    /// seconds–minutes. Both regimes apply: `staleness ≥ 2 × cadence`.
+    SlowSignalled,
+    /// Organic signals essentially never fire; reseed IS the freshness
+    /// source. `staleness ≥ 2 × cadence`.
+    ReseedDriven,
+}
+
+impl SensorId {
+    /// Every variant of this enum, for invariant checks.
+    ///
+    /// Updated by hand when a new sensor lands. The matching
+    /// `regime` / `reseed_cadence` arms in the same impl will refuse to
+    /// compile if a variant is added without classifying it (explicit
+    /// `match` in those methods, no `_ =>` arm).
+    pub const ALL: &'static [SensorId] = &[
+        SensorId::BatterySoc,
+        SensorId::BatterySoh,
+        SensorId::BatteryInstalledCapacity,
+        SensorId::BatteryDcPower,
+        SensorId::MpptPower0,
+        SensorId::MpptPower1,
+        SensorId::SoltaroPower,
+        SensorId::PowerConsumption,
+        SensorId::GridPower,
+        SensorId::GridVoltage,
+        SensorId::GridCurrent,
+        SensorId::ConsumptionCurrent,
+        SensorId::OffgridPower,
+        SensorId::OffgridCurrent,
+        SensorId::VebusInputCurrent,
+        SensorId::EvchargerAcPower,
+        SensorId::EvchargerAcCurrent,
+        SensorId::EssState,
+        SensorId::OutdoorTemperature,
+    ];
+
+    /// Freshness regime for this sensor — see [`FreshnessRegime`].
+    ///
+    /// Authority: the audit table in
+    /// `docs/drafts/20260425-0130-m-ux-1-plan.md` § "PR-staleness-floor".
+    /// Explicit per-variant match (no `_` arm) so adding a new variant
+    /// forces an explicit classification call at compile time.
+    #[must_use]
+    pub const fn regime(self) -> FreshnessRegime {
+        match self {
+            // Fast — organic signals at ≥ 1 Hz.
+            //
+            // MPPTs are classified Fast despite emitting at sub-second
+            // cadence sunny / silently at night (PV=0): Stale-at-night
+            // is semantically correct since controllers treat the value
+            // as 0 W via the `solar_export_w` rule. The matrix-doc note
+            // on the 30 s window covers the trade-off.
+            Self::PowerConsumption
+            | Self::ConsumptionCurrent
+            | Self::GridPower
+            | Self::GridCurrent
+            | Self::GridVoltage
+            | Self::BatteryDcPower
+            | Self::SoltaroPower
+            | Self::MpptPower0
+            | Self::MpptPower1
+            | Self::OffgridPower
+            | Self::OffgridCurrent
+            | Self::VebusInputCurrent
+            | Self::EvchargerAcPower
+            | Self::EvchargerAcCurrent => FreshnessRegime::Fast,
+            // Slow-signalled — emits on change but gaps can be minutes.
+            Self::BatterySoc => FreshnessRegime::SlowSignalled,
+            // Reseed-driven — value moves on minutes-to-hours timescales.
+            Self::BatterySoh
+            | Self::BatteryInstalledCapacity
+            | Self::EssState
+            | Self::OutdoorTemperature => FreshnessRegime::ReseedDriven,
+        }
+    }
+
+    /// Reseed cadence for this sensor in the regime where reseed matters.
+    ///
+    /// Mirrors the constants in `crates/shell/src/dbus/subscriber.rs`
+    /// (`SEED_INTERVAL_DEFAULT = 60s`, `SEED_INTERVAL_SETTINGS = 300s`)
+    /// plus the Open-Meteo poll cadence for `OutdoorTemperature`. Hard-
+    /// coded here so the core crate doesn't pull a dependency on the
+    /// shell crate just to validate its own invariants.
+    #[must_use]
+    pub const fn reseed_cadence(self) -> std::time::Duration {
+        use std::time::Duration;
+        match self {
+            // Reseeded by `SEED_INTERVAL_DEFAULT = 60 s`.
+            Self::BatterySoc
+            | Self::BatterySoh
+            | Self::BatteryInstalledCapacity
+            | Self::BatteryDcPower
+            | Self::MpptPower0
+            | Self::MpptPower1
+            | Self::SoltaroPower
+            | Self::PowerConsumption
+            | Self::ConsumptionCurrent
+            | Self::GridPower
+            | Self::GridVoltage
+            | Self::GridCurrent
+            | Self::OffgridPower
+            | Self::OffgridCurrent
+            | Self::VebusInputCurrent
+            | Self::EvchargerAcPower
+            | Self::EvchargerAcCurrent => Duration::from_secs(60),
+            // Reseeded by `SEED_INTERVAL_SETTINGS = 300 s`.
+            Self::EssState => Duration::from_secs(300),
+            // Open-Meteo poll cadence (30 min).
+            Self::OutdoorTemperature => Duration::from_secs(30 * 60),
+        }
+    }
+}
+
+/// Lower bound for fast-regime staleness. Bias-to-safety floor — the
+/// only check we can usefully do for sub-second sensors at the
+/// unit-test level.
+pub const FAST_REGIME_STALENESS_FLOOR: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+/// Sensors whose cadence is NOT governed by the D-Bus subscriber
+/// constants and which therefore use a grace-window freshness model
+/// (`staleness = cadence + slack`) rather than the strict `2× cadence`
+/// headroom. Mirrors the user-stated myenergi exclusion in
+/// `docs/drafts/20260425-0130-m-ux-1-plan.md` § "PR-staleness-floor".
+#[must_use]
+const fn is_external_polled(id: SensorId) -> bool {
+    matches!(id, SensorId::OutdoorTemperature)
+}
+
+/// Verify the per-sensor staleness invariant for one sensor. Returns
+/// `Err(message)` describing the violation if the invariant fails.
+///
+/// Used by both the `freshness_threshold_invariant_holds_for_every_sensor`
+/// unit test and by `Runtime::new` as a startup belt-and-braces check.
+#[allow(clippy::missing_errors_doc)]
+pub fn check_staleness_invariant(id: SensorId) -> Result<(), String> {
+    let staleness = id.freshness_threshold();
+    match id.regime() {
+        FreshnessRegime::Fast => {
+            if staleness < FAST_REGIME_STALENESS_FLOOR {
+                return Err(format!(
+                    "staleness invariant violated: SensorId::{id:?} \
+                     staleness={}s < fast-regime floor {}s; \
+                     fix freshness_threshold",
+                    staleness.as_secs(),
+                    FAST_REGIME_STALENESS_FLOOR.as_secs()
+                ));
+            }
+        }
+        FreshnessRegime::SlowSignalled | FreshnessRegime::ReseedDriven => {
+            let cadence = id.reseed_cadence();
+            // External-polled sensors (Open-Meteo, future myenergi)
+            // use a grace-window model: `staleness > cadence` is the
+            // ping-pong-avoidance floor; the strict 2× headroom doesn't
+            // apply because their cadence is owned by an external
+            // service, not the D-Bus reseed constants.
+            let required = if is_external_polled(id) {
+                cadence + std::time::Duration::from_secs(1)
+            } else {
+                2 * cadence
+            };
+            if staleness < required {
+                return Err(format!(
+                    "staleness invariant violated: SensorId::{id:?} \
+                     staleness={}s < required={}s; \
+                     fix freshness_threshold or reseed cadence",
+                    staleness.as_secs(),
+                    required.as_secs()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Actuated-entity identifiers.
@@ -382,4 +570,105 @@ pub enum Effect {
         source: &'static str,
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Per-PR-staleness-floor: every `SensorId` must satisfy the regime-
+    /// dependent staleness invariant. The match below is intentionally
+    /// explicit (no `_` arm) so adding a new variant forces the test
+    /// author to classify it. Cadence numbers mirror
+    /// `SEED_INTERVAL_DEFAULT` / `SEED_INTERVAL_SETTINGS` in
+    /// `crates/shell/src/dbus/subscriber.rs`; hard-coded here because the
+    /// core crate cannot depend on the shell.
+    #[test]
+    fn freshness_threshold_invariant_holds_for_every_sensor() {
+        const SEED_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
+        const SEED_INTERVAL_SETTINGS: Duration = Duration::from_secs(300);
+        const OPEN_METEO_CADENCE: Duration = Duration::from_secs(30 * 60);
+
+        for &id in SensorId::ALL {
+            // Categorise via an explicit match — adding a variant later
+            // breaks the build until the new arm is added.
+            let (regime, cadence): (FreshnessRegime, Duration) = match id {
+                // Fast — organic ItemsChanged ≥ 1 Hz drives freshness.
+                // MPPTs join this group: silent at night when PV=0 is
+                // semantically correct (controllers treat Stale as 0 W).
+                SensorId::PowerConsumption
+                | SensorId::ConsumptionCurrent
+                | SensorId::GridPower
+                | SensorId::GridCurrent
+                | SensorId::GridVoltage
+                | SensorId::BatteryDcPower
+                | SensorId::SoltaroPower
+                | SensorId::MpptPower0
+                | SensorId::MpptPower1
+                | SensorId::OffgridPower
+                | SensorId::OffgridCurrent
+                | SensorId::VebusInputCurrent
+                | SensorId::EvchargerAcPower
+                | SensorId::EvchargerAcCurrent => {
+                    (FreshnessRegime::Fast, SEED_INTERVAL_DEFAULT)
+                }
+                // Slow-signalled — emits on change, gaps span minutes.
+                SensorId::BatterySoc => {
+                    (FreshnessRegime::SlowSignalled, SEED_INTERVAL_DEFAULT)
+                }
+                // Reseed-driven — value moves on minutes-to-hours.
+                SensorId::BatterySoh | SensorId::BatteryInstalledCapacity => {
+                    (FreshnessRegime::ReseedDriven, SEED_INTERVAL_DEFAULT)
+                }
+                SensorId::EssState => {
+                    (FreshnessRegime::ReseedDriven, SEED_INTERVAL_SETTINGS)
+                }
+                SensorId::OutdoorTemperature => {
+                    (FreshnessRegime::ReseedDriven, OPEN_METEO_CADENCE)
+                }
+            };
+
+            // Cross-check: the local categorisation matches the impl-side
+            // metadata. A mismatch here means the test and the runtime
+            // assertion would diverge — fail loud rather than silently.
+            assert_eq!(
+                id.regime(),
+                regime,
+                "SensorId::{id:?} regime mismatch between test and `regime()`"
+            );
+            assert_eq!(
+                id.reseed_cadence(),
+                cadence,
+                "SensorId::{id:?} cadence mismatch between test and `reseed_cadence()`"
+            );
+
+            let staleness = id.freshness_threshold();
+            match regime {
+                FreshnessRegime::Fast => {
+                    assert!(
+                        staleness >= FAST_REGIME_STALENESS_FLOOR,
+                        "SensorId::{id:?} (Fast) staleness {staleness:?} < {FAST_REGIME_STALENESS_FLOOR:?}",
+                    );
+                }
+                FreshnessRegime::SlowSignalled | FreshnessRegime::ReseedDriven => {
+                    // External-polled sensors (Open-Meteo today, future
+                    // myenergi `SessionKwh`) use a grace-window model
+                    // — see `is_external_polled` doc.
+                    let required = if matches!(id, SensorId::OutdoorTemperature) {
+                        cadence + Duration::from_secs(1)
+                    } else {
+                        2 * cadence
+                    };
+                    assert!(
+                        staleness >= required,
+                        "SensorId::{id:?} ({regime:?}) staleness {staleness:?} < required {required:?}",
+                    );
+                }
+            }
+
+            // Belt-and-braces: the shared helper agrees.
+            check_staleness_invariant(id).unwrap_or_else(|e| panic!("{e}"));
+        }
+    }
 }

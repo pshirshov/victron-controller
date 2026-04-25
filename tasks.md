@@ -23,6 +23,10 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   (2) **PR-SCHED0** — schedule_0 observed disabled post-`df3ae4d`
   even though `evaluate_schedules` unconditionally sets DAYS_ENABLED
   on it; determine root cause and lock invariant in a test.
+- [~] **M-UX-1** — Dashboard UX, HA discovery expansion, and a
+  staleness-floor correctness invariant. Plan in
+  `./docs/drafts/20260425-0130-m-ux-1-plan.md`. Five PRs; correctness
+  item lands first.
 
 ---
 
@@ -974,3 +978,58 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   per-signal, deferred as rename). Verification: green (199 passed).
   Constraint for future work: a D-Bus wedge on `seed_service()` can still
   park the select loop; PR-URGENT-13b should wrap that call in a timeout.
+
+---
+
+## Milestone M-UX-1 — PR breakdown
+
+Detail in `./docs/drafts/20260425-0130-m-ux-1-plan.md`. Anchored by a
+correctness item (PR-staleness-floor) plus four UX/feature PRs. Wire
+format goes 0.1.0 → 0.2.0 (additive only) under PR-session-kwh-sensor;
+PR-tass-dag-view rides the same bump or its own minor follow-on.
+
+- [x] **PR-staleness-floor** — Enforce `staleness ≥ 2 × reseed_cadence`
+  for slow/reseed-driven sensors via startup assertion + per-variant
+  test. Sensor audit found one offender: `BatterySoc` (cadence 60 s,
+  staleness 15 s → bumped to 120 s). User-flagged as correctness-tier;
+  landed first. 0 review defects after round 1.
+
+- [ ] **PR-session-kwh-sensor** — Add `Sensors.session_kwh: ActualF64`
+  (sourced from myenergi `che` field via `ZappiState`). Add
+  `SensorId::SessionKwh` with cadence 300 s / staleness 600 s.
+  Wire-format bump 0.1.0 → 0.2.0 (additive). Blocks
+  PR-ha-discovery-expand.
+
+- [ ] **PR-ha-discovery-expand** — Extend HA MQTT discovery beyond
+  knobs/phases. New: 21 `sensor` entities (19 D-Bus + outdoor_temp +
+  session_kwh) and 7 `sensor`/`binary_sensor` for controller-relevant
+  bookkeeping. Add `PublishPayload::Sensor` + `BookkeepingSensor`; new
+  `SensorBroadcastCore` (no `depends_on`; runs after derivations).
+  Stale → `"unavailable"` (HA convention). Depends on
+  PR-session-kwh-sensor.
+
+- [x] **PR-dashboard-ux** — Frontend-only. Items 2 + 3 + 5 from the
+  user list: hover descriptions (70 entries); compact identifier-copy
+  icon (drops `Identifier` column); boolean badges (filled vs hollow
+  disc, neutral colour per round-1 D02 — green/red would imply value
+  judgement that's wrong for kill-switch flags like
+  `force_disable_export=false`). Wire format unchanged.
+
+- [ ] **PR-tass-dag-view** — New dashboard section showing
+  `production_cores()` with `depends_on` edges + per-core last-run
+  outcome and (for derivation cores) last payload. Adds `CoreState` /
+  `CoresState` types to `dashboard.baboon`. Coordinate wire-format
+  bump with PR-session-kwh-sensor.
+
+### Cross-cutting (M-UX-1)
+
+- Honesty invariant: PR-tass-dag-view's outcome tracking does not
+  suppress per-controller Decision writes.
+- Three-layer safety chain: HA discovery additions are read-only
+  (`sensor` + `binary_sensor` only); no new writable entity surfaces.
+- Wire format: 0.1.0 → 0.2.0, additive only. Older clients ignore
+  unknown fields per baboon forward-compat.
+- Description registry stays frontend-only — different audiences
+  from HA discovery payloads.
+- MQTT volume: ~26 KB total retained after expansion; FlashMQ
+  default tolerances comfortably accommodate.

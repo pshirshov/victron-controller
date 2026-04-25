@@ -78,7 +78,7 @@ One row per subscribed `(service, path)` in `routing_table`. Classifications:
 | `PowerConsumption` | system | `/Ac/Consumption/L1/Power` | Fast | 60 s | 5 s |
 | `ConsumptionCurrent` | system | `/Ac/Consumption/L1/Current` | Fast | 60 s | 5 s |
 | `GridPower` | system | `/Ac/Grid/L1/Power` | Fast | 60 s | 5 s |
-| `BatterySoc` | battery | `/Soc` | Slow-signalled (1 Hz changing, minutes idle) | 60 s | 15 s |
+| `BatterySoc` | battery | `/Soc` | Slow-signalled (1 Hz changing, minutes idle) | 60 s | 120 s |
 | `BatterySoh` | battery | `/Soh` | Reseed-driven (minutes–hours) | 300 s | 900 s |
 | `BatteryInstalledCapacity` | battery | `/InstalledCapacity` | Reseed-driven (static) | 600 s | 3600 s |
 | `BatteryDcPower` | battery | `/Dc/0/Power` | **Fast** (user: "updates once/sec") | 60 s | 5 s |
@@ -103,6 +103,8 @@ One row per subscribed `(service, path)` in `routing_table`. Classifications:
 | **Readback** `Schedule1.*` (5 fields) | settings | `…/Schedule/Charge/1/*` | Readback (mirror of above) | 300 s | 900 s |
 
 Worst-case reseed load under this schedule: 9 services × ~1 call / 60 s = **0.15 GetItems/s** across all services — about 120× gentler than the current 500 ms broadcast (18/s), well below anything Victron's reference clients do, and low enough that dbus-flashmq's documented 3-republish/s ceiling isn't approached. The alternative single-path reseed (more surgical than whole-service `GetItems`) would drop load further but is harder to implement; see per-service sections below for discussion.
+
+**Updates:** `BatterySoc` staleness revised `15 s → 120 s` (M-UX-1 PR-staleness-floor, 2026-04-25): the original 15 s violated the slow-signalled invariant `staleness ≥ 2 × cadence` (60 s reseed → ≥ 120 s).
 
 Every row satisfies the `staleness > max(organic-gap, reseed)` invariant:
 - Fast paths: `staleness ≪ reseed` because the signal stream's ~1 Hz cadence is the freshness driver. The reseed is a safety net for signal outages — but on signal loss we want to fail fast, so staleness is tight.

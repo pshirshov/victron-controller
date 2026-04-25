@@ -14,7 +14,7 @@ use anyhow::Result;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info, trace, warn};
 
-use victron_controller_core::types::{Effect, Event};
+use victron_controller_core::types::{check_staleness_invariant, Effect, Event, SensorId};
 use victron_controller_core::{process, Topology, World};
 
 use crate::clock::RealClock;
@@ -47,6 +47,13 @@ impl Runtime {
         snapshot_stream: Arc<SnapshotBroadcast>,
         meta: MetaContext,
     ) -> Self {
+        // Belt-and-braces against constant edits that bypass the unit
+        // test in `crates/core/src/types.rs`. PR-staleness-floor (M-UX-1).
+        for &id in SensorId::ALL {
+            if let Err(msg) = check_staleness_invariant(id) {
+                panic!("{msg}");
+            }
+        }
         Self {
             world,
             topology,
