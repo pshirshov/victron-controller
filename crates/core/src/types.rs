@@ -495,27 +495,28 @@ impl TimerId {
         TimerId::InitialKnobPublish,
     ];
 
-    /// Stable `snake_case` identifier — what the wire `Timer.id` field
-    /// carries.
+    /// Stable dotted identifier — what the wire `Timer.id` field carries
+    /// and the user-facing identifier shown on the dashboard.
+    /// PR-rename-entities.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::ForecastSolcast => "forecast_solcast",
-            Self::ForecastSolar => "forecast_solar",
-            Self::OpenMeteo => "open_meteo",
-            Self::OpenMeteoCurrent => "open_meteo_current",
-            Self::MyenergiPoller => "myenergi_poller",
-            Self::DbusReseedBattery => "dbus_reseed_battery",
-            Self::DbusReseedSystem => "dbus_reseed_system",
-            Self::DbusReseedGrid => "dbus_reseed_grid",
-            Self::DbusReseedVebus => "dbus_reseed_vebus",
-            Self::DbusReseedPvinverterSoltaro => "dbus_reseed_pvinverter_soltaro",
-            Self::DbusReseedEvcharger => "dbus_reseed_evcharger",
-            Self::DbusReseedMpptS2 => "dbus_reseed_mppt_s2",
-            Self::DbusReseedMpptUsb1 => "dbus_reseed_mppt_usb1",
-            Self::DbusReseedSettings => "dbus_reseed_settings",
-            Self::MqttBootstrap => "mqtt_bootstrap",
-            Self::InitialKnobPublish => "initial_knob_publish",
+            Self::ForecastSolcast => "timer.forecast.solcast",
+            Self::ForecastSolar => "timer.forecast.solar",
+            Self::OpenMeteo => "timer.forecast.open-meteo",
+            Self::OpenMeteoCurrent => "timer.weather.current",
+            Self::MyenergiPoller => "timer.myenergi.poll",
+            Self::DbusReseedBattery => "timer.dbus.reseed.battery",
+            Self::DbusReseedSystem => "timer.dbus.reseed.system",
+            Self::DbusReseedGrid => "timer.dbus.reseed.grid",
+            Self::DbusReseedVebus => "timer.dbus.reseed.vebus",
+            Self::DbusReseedPvinverterSoltaro => "timer.dbus.reseed.soltaro",
+            Self::DbusReseedEvcharger => "timer.dbus.reseed.evcharger",
+            Self::DbusReseedMpptS2 => "timer.dbus.reseed.mppt-s2",
+            Self::DbusReseedMpptUsb1 => "timer.dbus.reseed.mppt-usb1",
+            Self::DbusReseedSettings => "timer.dbus.reseed.settings",
+            Self::MqttBootstrap => "timer.mqtt.bootstrap",
+            Self::InitialKnobPublish => "timer.knob.initial-publish",
         }
     }
 
@@ -774,17 +775,17 @@ pub enum BookkeepingId {
 }
 
 impl BookkeepingId {
-    /// Stable `snake_case` topic-tail name. Mirrors the wire taxonomy
-    /// at the top of `crates/shell/src/mqtt/discovery.rs`.
+    /// Stable dotted topic-tail name. PR-rename-entities. Mirrors the
+    /// wire taxonomy at the top of `crates/shell/src/mqtt/discovery.rs`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::ZappiActive => "zappi_active",
-            Self::ChargeToFullRequired => "charge_to_full_required",
-            Self::ChargeBatteryExtendedToday => "charge_battery_extended_today",
-            Self::SocEndOfDayTarget => "soc_end_of_day_target",
-            Self::EffectiveExportSocThreshold => "effective_export_soc_threshold",
-            Self::BatterySelectedSocTarget => "battery_selected_soc_target",
+            Self::ZappiActive => "evcharger.active",
+            Self::ChargeToFullRequired => "schedule.full-charge.required",
+            Self::ChargeBatteryExtendedToday => "schedule.extended.charge.today",
+            Self::SocEndOfDayTarget => "battery.soc.target.end-of-day",
+            Self::EffectiveExportSocThreshold => "battery.soc.threshold.export.effective",
+            Self::BatterySelectedSocTarget => "battery.soc.target.selected",
         }
     }
 }

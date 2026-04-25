@@ -9,6 +9,7 @@
 // inserted rows pick up the same logic without re-attaching listeners.
 
 import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSnapshot.js";
+import { displayNameOfTyped } from "./displayNames.js";
 import { entityLink, updateKeyedRows, type KeyedRow } from "./render.js";
 
 export type KnobSpec =
@@ -17,45 +18,55 @@ export type KnobSpec =
   | { kind: "int"; min: number; max: number; step: number }
   | { kind: "enum"; cmdVariant: string; options: string[] };
 
+// PR-rename-entities: keyed by the dotted display name (the user-facing
+// surface). Renderers look up via `displayNameOfTyped(canonical, "knob")`
+// — `specFor()` below.
 export const KNOB_SPEC: Record<string, KnobSpec> = {
-  force_disable_export: { kind: "bool" },
-  export_soc_threshold: { kind: "float", min: 0, max: 100, step: 1 },
-  discharge_soc_target: { kind: "float", min: 0, max: 100, step: 1 },
-  battery_soc_target: { kind: "float", min: 0, max: 100, step: 1 },
-  full_charge_discharge_soc_target: { kind: "float", min: 0, max: 100, step: 1 },
-  full_charge_export_soc_threshold: { kind: "float", min: 0, max: 100, step: 1 },
-  discharge_time: { kind: "enum", cmdVariant: "SetDischargeTime", options: ["At0200", "At2300"] },
-  debug_full_charge: { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "None_"] },
-  pessimism_multiplier_modifier: { kind: "float", min: 0, max: 2, step: 0.05 },
-  disable_night_grid_discharge: { kind: "bool" },
-  charge_car_boost: { kind: "bool" },
-  charge_car_extended: { kind: "bool" },
-  zappi_current_target: { kind: "float", min: 6, max: 32, step: 0.5 },
+  "grid.export.force-disable": { kind: "bool" },
+  "battery.soc.threshold.export.forced-value": { kind: "float", min: 0, max: 100, step: 1 },
+  "battery.soc.target.discharge.forced-value": { kind: "float", min: 0, max: 100, step: 1 },
+  "battery.soc.target.charge.forced-value": { kind: "float", min: 0, max: 100, step: 1 },
+  "battery.soc.target.full-charge.discharge": { kind: "float", min: 0, max: 100, step: 1 },
+  "battery.soc.threshold.full-charge.export": { kind: "float", min: 0, max: 100, step: 1 },
+  "battery.discharge.time": { kind: "enum", cmdVariant: "SetDischargeTime", options: ["At0200", "At2300"] },
+  "debug.full-charge.mode": { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "None_"] },
+  "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05 },
+  "grid.night.discharge.disable.forced-value": { kind: "bool" },
+  "evcharger.boost.enable": { kind: "bool" },
+  "evcharger.extended.enable": { kind: "bool" },
+  "evcharger.current.target": { kind: "float", min: 6, max: 32, step: 0.5 },
   // A-14: kWh (per-session EV charge ceiling), not %.
-  zappi_limit: { kind: "float", min: 0, max: 100, step: 0.5 },
-  zappi_emergency_margin: { kind: "float", min: 0, max: 10, step: 0.5 },
-  grid_export_limit_w: { kind: "int", min: 0, max: 10000, step: 50 },
-  grid_import_limit_w: { kind: "int", min: 0, max: 10000, step: 10 },
-  allow_battery_to_car: { kind: "bool" },
-  eddi_enable_soc: { kind: "float", min: 50, max: 100, step: 1 },
-  eddi_disable_soc: { kind: "float", min: 50, max: 100, step: 1 },
-  eddi_dwell_s: { kind: "int", min: 0, max: 3600, step: 5 },
-  weathersoc_winter_temperature_threshold: { kind: "float", min: -30, max: 40, step: 0.5 },
-  weathersoc_low_energy_threshold: { kind: "float", min: 0, max: 500, step: 1 },
-  weathersoc_ok_energy_threshold: { kind: "float", min: 0, max: 500, step: 1 },
-  weathersoc_high_energy_threshold: { kind: "float", min: 0, max: 500, step: 1 },
-  weathersoc_too_much_energy_threshold: { kind: "float", min: 0, max: 500, step: 1 },
-  forecast_disagreement_strategy: {
+  "evcharger.session.limit": { kind: "float", min: 0, max: 100, step: 0.5 },
+  "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5 },
+  "grid.export.limit": { kind: "int", min: 0, max: 10000, step: 50 },
+  "grid.import.limit": { kind: "int", min: 0, max: 10000, step: 10 },
+  "battery.export.car.allow": { kind: "bool" },
+  "eddi.soc.enable": { kind: "float", min: 50, max: 100, step: 1 },
+  "eddi.soc.disable": { kind: "float", min: 50, max: 100, step: 1 },
+  "eddi.dwell.seconds": { kind: "int", min: 0, max: 3600, step: 5 },
+  "weathersoc.threshold.winter-temperature": { kind: "float", min: -30, max: 40, step: 0.5 },
+  "weathersoc.threshold.energy.low": { kind: "float", min: 0, max: 500, step: 1 },
+  "weathersoc.threshold.energy.ok": { kind: "float", min: 0, max: 500, step: 1 },
+  "weathersoc.threshold.energy.high": { kind: "float", min: 0, max: 500, step: 1 },
+  "weathersoc.threshold.energy.too-much": { kind: "float", min: 0, max: 500, step: 1 },
+  "forecast.disagreement.strategy": {
     kind: "enum",
     cmdVariant: "SetForecastDisagreementStrategy",
     options: ["Max", "Min", "Mean", "SolcastIfAvailableElseMean"],
   },
-  charge_battery_extended_mode: {
+  "schedule.extended.charge.mode": {
     kind: "enum",
     cmdVariant: "SetChargeBatteryExtendedMode",
     options: ["Auto", "Forced", "Disabled"],
   },
 };
+
+/// Look up a `KnobSpec` by either the canonical snake_case key (as it
+/// appears in `snap.knobs`) or its dotted display name. Renderers call
+/// this rather than indexing KNOB_SPEC directly.
+export function specFor(canonical: string): KnobSpec | undefined {
+  return KNOB_SPEC[displayNameOfTyped(canonical, "knob")] ?? KNOB_SPEC[canonical];
+}
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" } as Record<string, string>)[ch]!);
@@ -91,7 +102,7 @@ function installHandlers() {
     const btn = (ev.target as HTMLElement).closest("button[data-knob-action]") as HTMLButtonElement | null;
     if (!btn || !currentSend || !currentSnap) return;
     const name = btn.getAttribute("data-knob") ?? "";
-    const spec = KNOB_SPEC[name];
+    const spec = specFor(name);
     if (!spec) return;
     const td = btn.closest("td");
     if (!td) return;
@@ -140,7 +151,7 @@ export function renderKnobs(
     .sort(([a], [b]) => a.localeCompare(b));
 
   const rows: KeyedRow[] = entries.map(([name, val]) => {
-    const spec = KNOB_SPEC[name];
+    const spec = specFor(name);
     const valStr =
       typeof val === "boolean"
         ? val ? "true" : "false"

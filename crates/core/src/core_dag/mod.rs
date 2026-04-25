@@ -43,19 +43,19 @@ pub enum CoreId {
 }
 
 impl CoreId {
-    /// Stable `snake_case` name used in the dashboard wire format and
-    /// the description registry. PR-tass-dag-view.
+    /// Stable dotted name used in the dashboard wire format and the
+    /// description registry. PR-rename-entities.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::ZappiActive => "zappi_active",
+            Self::ZappiActive => "evcharger.active",
             Self::Setpoint => "setpoint",
-            Self::CurrentLimit => "current_limit",
+            Self::CurrentLimit => "current-limit",
             Self::Schedules => "schedules",
-            Self::ZappiMode => "zappi_mode",
-            Self::EddiMode => "eddi_mode",
-            Self::WeatherSoc => "weather_soc",
-            Self::SensorBroadcast => "sensor_broadcast",
+            Self::ZappiMode => "evcharger.mode",
+            Self::EddiMode => "eddi.mode",
+            Self::WeatherSoc => "weathersoc",
+            Self::SensorBroadcast => "broadcast.sensor",
         }
     }
 }

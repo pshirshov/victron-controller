@@ -18,6 +18,7 @@ import {
   entityDescriptions,
   forecastProviderLabels,
 } from "./descriptions.js";
+import { displayNameOfTyped } from "./displayNames.js";
 import { KNOB_SPEC, type KnobSpec } from "./knobs.js";
 
 // Entity types recognised by the inspector dispatcher.
@@ -106,8 +107,16 @@ function esc(s: string): string {
 // lives inside the popup, not in a hover tooltip — discoverability
 // moves from "hover" to "click" (see the "click any name to inspect"
 // hint at the top of the dashboard).
+//
+// PR-rename-entities: `data-entity-id` carries the snake_case canonical
+// key (matches snapshot field names — what the inspector dispatcher
+// uses to read values out of `snap.knobs.<id>` etc). The visible text
+// is the dotted display name for the entity's type; same canonical may
+// resolve to different dotted names across classes (actuated vs
+// decision vs core).
 export function entityLink(name: string, type: EntityType): string {
-  return `<a class="entity-link" data-entity-id="${esc(name)}" data-entity-type="${type}">${esc(name)}</a>`;
+  const visible = displayNameOfTyped(name, type);
+  return `<a class="entity-link" data-entity-id="${esc(name)}" data-entity-type="${type}">${esc(visible)}</a>`;
 }
 
 // Compact identifier copy button: a faint icon glyph that lives inline
@@ -440,7 +449,7 @@ export function renderTimers(snap: WorldSnapshot) {
 function renderTimerBody(entityId: string, snap: WorldSnapshot): string {
   const t = snap.timers as unknown as { entries?: TimerRow[] } | undefined;
   const entry = t?.entries?.find((e) => e.id === entityId);
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "timer")];
   if (!entry) {
     sections.push(`<section><p>no timer "${esc(entityId)}" in snapshot</p></section>`);
     return sections.filter(Boolean).join("");
@@ -490,14 +499,22 @@ export function renderEntityModal(
 
 // --- per-type modal bodies ---------------------------------------------
 
-function descriptionSection(entityId: string): string {
-  const desc = entityDescriptionFor(entityId);
+function descriptionSection(entityId: string, type?: EntityType): string {
+  const desc = entityDescriptionFor(entityId, type);
   if (!desc) return "";
   return `<section><p style="color:var(--muted);margin:0">${esc(desc)}</p></section>`;
 }
 
-function entityDescriptionFor(key: string): string {
-  return (entityDescriptions as Record<string, string>)[key] ?? "";
+// PR-rename-entities: `entityDescriptions` is keyed by the dotted display
+// name (the user-facing surface). Translate the canonical id before
+// lookup. When `type` is provided, use the type-aware display name so
+// collision keys (zappi_mode, eddi_mode, weather_soc, schedule_0/1)
+// resolve to the right dotted form per class.
+function entityDescriptionFor(key: string, type?: EntityType): string {
+  const dotted = type ? displayNameOfTyped(key, type) : displayNameOfTyped(key, "");
+  return (entityDescriptions as Record<string, string>)[dotted]
+    ?? (entityDescriptions as Record<string, string>)[key]
+    ?? "";
 }
 
 function renderFactorTable(
@@ -524,7 +541,7 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
   const a = sensors[entityId];
   const mm = meta[entityId];
 
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "sensor")];
   if (!a) {
     sections.push(`<section><p>no sensor "${esc(entityId)}" in snapshot</p></section>`);
     return sections.filter(Boolean).join("");
@@ -559,9 +576,11 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
 function renderKnobBody(entityId: string, snap: WorldSnapshot): string {
   const knobs = snap.knobs as unknown as Record<string, unknown>;
   const val = knobs[entityId];
-  const spec: KnobSpec | undefined = KNOB_SPEC[entityId];
+  // KNOB_SPEC is keyed by dotted display name (PR-rename-entities); the
+  // canonical id maps to it via displayNameOfTyped.
+  const spec: KnobSpec | undefined = KNOB_SPEC[displayNameOfTyped(entityId, "knob")] ?? KNOB_SPEC[entityId];
 
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "knob")];
 
   const valDisp = (() => {
     if (val === undefined) return '<span class="dim">—</span>';
@@ -604,7 +623,7 @@ function renderKnobBody(entityId: string, snap: WorldSnapshot): string {
 function renderActuatedBody(entityId: string, snap: WorldSnapshot): string {
   const a = snap.actuated as unknown as Record<string, any>;
   const ent = a[entityId];
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "actuated")];
   if (!ent) {
     sections.push(`<section><p>no actuated "${esc(entityId)}" in snapshot</p></section>`);
     return sections.filter(Boolean).join("");
@@ -692,7 +711,7 @@ function renderActuatedBody(entityId: string, snap: WorldSnapshot): string {
 
 function renderBookkeepingBody(entityId: string, snap: WorldSnapshot): string {
   const bk = snap.bookkeeping as unknown as Record<string, unknown>;
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "bookkeeping")];
 
   const val = bk[entityId];
   const valDisp = (() => {
@@ -709,7 +728,10 @@ function renderBookkeepingBody(entityId: string, snap: WorldSnapshot): string {
       `</tbody></table></section>`,
   );
 
-  const writers = bookkeepingWriters[entityId];
+  // bookkeepingWriters is keyed by the dotted display name post
+  // PR-rename-entities; canonical lookup is a fallback for safety.
+  const dotted = displayNameOfTyped(entityId, "bookkeeping");
+  const writers = bookkeepingWriters[dotted] ?? bookkeepingWriters[entityId];
   const writersHtml = writers && writers.length > 0
     ? writers.map((w) => entityLink(w, "core")).join(", ")
     : '<span class="dim">—</span>';
@@ -725,7 +747,7 @@ function renderBookkeepingBody(entityId: string, snap: WorldSnapshot): string {
 
 function renderDecisionBody(entityId: string, snap: WorldSnapshot): string {
   const d = (snap.decisions as Record<string, any> | undefined)?.[entityId];
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "decision")];
   if (!d || typeof d !== "object" || !("summary" in d)) {
     sections.push(
       `<section><h3>Decision</h3>` +
@@ -746,8 +768,10 @@ function renderDecisionBody(entityId: string, snap: WorldSnapshot): string {
 
 function renderForecastBody(entityId: string, snap: WorldSnapshot): string {
   const f = (snap.forecasts as unknown as Record<string, any> | undefined)?.[entityId];
-  const sections: string[] = [descriptionSection(entityId)];
-  const provider = forecastProviderLabels[entityId] ?? entityId;
+  const sections: string[] = [descriptionSection(entityId, "forecast")];
+  // forecastProviderLabels is keyed by the dotted display name.
+  const dotted = displayNameOfTyped(entityId, "forecast");
+  const provider = forecastProviderLabels[dotted] ?? forecastProviderLabels[entityId] ?? entityId;
   if (!f) {
     sections.push(
       `<section><h3>Provider</h3>` +
@@ -771,6 +795,11 @@ function renderForecastBody(entityId: string, snap: WorldSnapshot): string {
 }
 
 function renderCoreBody(entityId: string, snap: WorldSnapshot): string {
+  // PR-rename-entities: cores arrive in the snapshot with their dotted
+  // form already (CoreState.id is filled from CoreId::name() which now
+  // returns dotted). The description registry is keyed on dotted names,
+  // so descriptionSection lookup-by-typed handles either flavor — but
+  // the bookkeeping writers list still uses the dotted form too.
   const cs = snap.cores_state as unknown as {
     cores: Array<{
       id: string;
@@ -784,7 +813,7 @@ function renderCoreBody(entityId: string, snap: WorldSnapshot): string {
   const core = cs?.cores?.find((c) => c.id === entityId);
   const decision = (snap.decisions as Record<string, any> | undefined)?.[entityId];
 
-  const sections: string[] = [descriptionSection(entityId)];
+  const sections: string[] = [descriptionSection(entityId, "core")];
 
   if (core) {
     const depsTxt = core.depends_on.length === 0

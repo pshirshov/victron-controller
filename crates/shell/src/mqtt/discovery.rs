@@ -175,13 +175,16 @@ async fn publish_kill_switch(client: &AsyncClient, topic_root: &str) -> Result<u
 }
 
 async fn publish_phases(client: &AsyncClient, topic_root: &str) -> Result<usize> {
+    // PR-rename-entities: topic-tails are dotted form. Distinct from
+    // the actuated decision/target disambiguation in `actuated_name` —
+    // phases publish only the actuated side, so `.target` is implicit.
     let ids = [
-        (ActuatedId::GridSetpoint, "grid_setpoint"),
-        (ActuatedId::InputCurrentLimit, "input_current_limit"),
-        (ActuatedId::ZappiMode, "zappi_mode"),
-        (ActuatedId::EddiMode, "eddi_mode"),
-        (ActuatedId::Schedule0, "schedule_0"),
-        (ActuatedId::Schedule1, "schedule_1"),
+        (ActuatedId::GridSetpoint, "grid.setpoint"),
+        (ActuatedId::InputCurrentLimit, "inverter.input.current-limit"),
+        (ActuatedId::ZappiMode, "evcharger.mode.target"),
+        (ActuatedId::EddiMode, "eddi.mode.target"),
+        (ActuatedId::Schedule0, "schedule.0"),
+        (ActuatedId::Schedule1, "schedule.1"),
     ];
     let mut count = 0;
     for (_id, name) in ids {

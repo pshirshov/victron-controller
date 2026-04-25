@@ -1,191 +1,192 @@
-// Static registry of human-readable entity descriptions, keyed by the
-// canonical name as it appears in the dashboard tables (sensor name,
-// knob name, actuated-entity name, bookkeeping field, decision name,
-// forecast-provider name). Used inside the entity inspector popup for
-// every entity type (PR-entity-inspectors).
+// Static registry of human-readable entity descriptions.
+//
+// PR-rename-entities: keyed by the user-facing dotted hierarchical name
+// (the same form shown on the dashboard and used as MQTT topic-tails).
+// `render.ts::descriptionSection` translates the canonical snake_case
+// id (matches snapshot field names) into the dotted form via
+// `displayNameOfTyped` before lookup. Used inside the entity inspector
+// popup for every entity type (PR-entity-inspectors).
 //
 // Frontend-only: drift from backend renames is acceptable risk —
 // missing keys simply render without a description.
 
 export const entityDescriptions: Record<string, string> = {
-  // --- Sensors (20 — see crates/dashboard-model/.../sensors.rs) ---
-  battery_soc: "Pylontech battery state of charge (%).",
-  battery_soh: "Pylontech battery state of health (%). Reseed-driven; rarely changes.",
-  battery_installed_capacity:
+  // --- Sensors (20) ---
+  "battery.soc": "Pylontech battery state of charge (%).",
+  "battery.soh": "Pylontech battery state of health (%). Reseed-driven; rarely changes.",
+  "battery.capacity.installed":
     "Installed Pylontech battery capacity (kWh / Ah, per Victron's reading). Effectively static.",
-  battery_dc_power:
+  "battery.power.dc":
     "Battery DC-side instantaneous power (W). Negative = charging, positive = discharging.",
-  mppt_power_0: "MPPT solar charger 0 instantaneous DC power (W). Idle = 0 at night.",
-  mppt_power_1: "MPPT solar charger 1 instantaneous DC power (W). Idle = 0 at night.",
-  soltaro_power:
+  "solar.mppt.0.power": "MPPT solar charger 0 instantaneous DC power (W). Idle = 0 at night.",
+  "solar.mppt.1.power": "MPPT solar charger 1 instantaneous DC power (W). Idle = 0 at night.",
+  "solar.soltaro.power":
     "AC-coupled Soltaro battery instantaneous power (W). Negative = charging, positive = discharging.",
-  power_consumption:
+  "house.power.consumption":
     "Total household AC consumption (W) reported by Victron. Includes house loads + EV branch.",
-  grid_power:
+  "grid.power":
     "Instantaneous grid power (W) at the meter. Negative = export to grid, positive = import.",
-  grid_voltage: "Grid line voltage (V). Slow-moving sanity signal.",
-  grid_current: "Grid line current (A). Sign matches grid_power.",
-  consumption_current: "AC current (A) drawn by household consumption.",
-  offgrid_power: "Off-grid (inverter output) instantaneous AC power (W).",
-  offgrid_current: "Off-grid (inverter output) instantaneous AC current (A).",
-  vebus_input_current:
-    "VE.Bus input current limit readback (A) — confirms the actuated input_current_limit reached the inverter.",
-  evcharger_ac_power:
+  "grid.voltage": "Grid line voltage (V). Slow-moving sanity signal.",
+  "grid.current": "Grid line current (A). Sign matches grid.power.",
+  "house.current.consumption": "AC current (A) drawn by household consumption.",
+  "inverter.offgrid.power": "Off-grid (inverter output) instantaneous AC power (W).",
+  "inverter.offgrid.current": "Off-grid (inverter output) instantaneous AC current (A).",
+  "inverter.input.current":
+    "VE.Bus input current limit readback (A) — confirms the actuated inverter.input.current-limit reached the inverter.",
+  "evcharger.ac.power":
     "Net EV-branch meter (W). Combined Zappi + Hoymiles microinverters; cannot be split per design.",
-  evcharger_ac_current: "Net EV-branch current (A). Sign matches evcharger_ac_power.",
-  ess_state:
+  "evcharger.ac.current": "Net EV-branch current (A). Sign matches evcharger.ac.power.",
+  "inverter.ess.state":
     "Victron ESS state machine code (Keep batteries charged / Optimised w/ or w/o BatteryLife / external control). Reseed-driven from Settings.",
-  outdoor_temperature:
+  "weather.temperature.outdoor":
     "Outdoor temperature (°C) sourced from Open-Meteo current weather. Reseed-driven (~30 min).",
-  session_kwh:
+  "evcharger.session.energy":
     "Cumulative energy delivered to the EV in the current Zappi session (kWh). Sourced from myenergi 'che' field; resets when the session ends.",
 
   // --- Actuated entities ---
-  grid_setpoint:
+  "grid.setpoint":
     "Commanded AC power setpoint at the grid tie. Negative = export, positive = import. Idle baseline 10 W.",
-  input_current_limit:
+  "inverter.input.current-limit":
     "Commanded VE.Bus input current limit (A). Caps grid import to the inverter; main lever for grid-charge throttling.",
-  zappi_mode:
+  "evcharger.mode.target":
     "Commanded Zappi EV-charger mode (Eco / EcoPlus / Fast / Stopped). Driven by solar surplus + tariff bands.",
-  eddi_mode:
+  "eddi.mode.target":
     "Commanded Eddi diverter mode (Normal / Stopped). Driven locally by battery SoC hysteresis (default Stopped, 96/94).",
-  schedule_0:
+  "schedule.0":
     "Victron ESS schedule slot 0. Encodes start time, duration, target SoC, and enabled/disabled bit (days = ±7).",
-  schedule_1:
+  "schedule.1":
     "Victron ESS schedule slot 1. Encodes start time, duration, target SoC, and enabled/disabled bit (days = ±7).",
 
   // --- Decisions (per-controller "why?" explanations) ---
-  weather_soc:
+  "weathersoc":
     "Weather-SoC planner: pre-dawn job that picks the night-charge target SoC from forecast totals and outdoor temperature.",
 
   // --- Bookkeeping fields ---
-  next_full_charge_iso:
-    "Next scheduled weekly full-charge timestamp (ISO 8601). Rolls forward each Sunday 17:00 unless overridden by debug_full_charge.",
-  above_soc_date_iso:
+  "schedule.full-charge.next":
+    "Next scheduled weekly full-charge timestamp (ISO 8601). Rolls forward each Sunday 17:00 unless overridden by debug.full-charge.mode.",
+  "battery.soc.above-threshold.date":
     "Last calendar date the battery crossed the export threshold (ISO 8601). Used by full-charge gating logic.",
-  prev_ess_state:
+  "inverter.ess.state.previous":
     "Previous Victron ESS state code observed (Victron BatteryLife codes: 0=Unknown · 1=Restart · 2=Default · 3=BatteryLife · 9=KeepBatteriesCharged · 10=Optimized · 11=ExternalControl). Used to detect transitions for bookkeeping side effects.",
-  zappi_active:
+  "evcharger.active":
     "Derived flag: true when the EV is genuinely charging (combines mode/plug/time-in-state/power thresholds). Read by setpoint, current-limit, and schedules controllers.",
-  charge_to_full_required:
+  "schedule.full-charge.required":
     "True when the weekly full-charge plan is armed for the upcoming night. Forces export threshold to 100% and discharge target down.",
-  soc_end_of_day_target:
+  "battery.soc.target.end-of-day":
     "Effective end-of-evening SoC target (%) selected by the schedules controller from the active knob set.",
-  effective_export_soc_threshold:
-    "Effective SoC threshold (%) above which battery export is allowed. Equals export_soc_threshold normally; raised to full_charge_export_soc_threshold during full-charge.",
-  battery_selected_soc_target:
+  "battery.soc.threshold.export.effective":
+    "Effective SoC threshold (%) above which battery export is allowed. Equals battery.soc.threshold.export.forced-value normally; raised to battery.soc.threshold.full-charge.export during full-charge.",
+  "battery.soc.target.selected":
     "Effective night-charge SoC target (%) selected per current policy (legacy, full-charge, or weather-SoC).",
-  charge_battery_extended_today:
-    "True if today's weather_soc decided the night charge should extend through the NightExtended (05:00–08:00) window. Reset on calendar-day rollover.",
-  charge_battery_extended_today_date_iso:
-    "Calendar date charge_battery_extended_today was last set for, so the tick-level reset knows when to clear.",
+  "schedule.extended.charge.today":
+    "True if today's weathersoc planner decided the night charge should extend through the NightExtended (05:00–08:00) window. Reset on calendar-day rollover.",
+  "schedule.extended.charge.today.date":
+    "Calendar date schedule.extended.charge.today was last set for, so the tick-level reset knows when to clear.",
 
   // --- Knobs (export / discharge policy) ---
-  force_disable_export:
+  "grid.export.force-disable":
     "When true, setpoint is forced to idle 10 W and grid export is suppressed (kill switch for export).",
-  export_soc_threshold:
+  "battery.soc.threshold.export.forced-value":
     "Battery SoC (%) at or above which export is allowed under normal policy.",
-  discharge_soc_target:
+  "battery.soc.target.discharge.forced-value":
     "Evening-controller target SoC (%) at end-of-day under normal policy.",
-  battery_soc_target:
+  "battery.soc.target.charge.forced-value":
     "Night-time scheduled charge target SoC (%) under normal policy.",
-  full_charge_discharge_soc_target:
+  "battery.soc.target.full-charge.discharge":
     "Evening target SoC (%) during the weekly full-charge cycle (lower than normal, to make room).",
-  full_charge_export_soc_threshold:
+  "battery.soc.threshold.full-charge.export":
     "Export SoC threshold (%) during the weekly full-charge cycle (typically 100 to forbid export).",
-  discharge_time:
+  "battery.discharge.time":
     "End-of-evening discharge cutoff time. At0200 = continue through 02:00; At2300 = truncate at 23:00 (for tariffs with a 23:00 transition).",
-  debug_full_charge:
+  "debug.full-charge.mode":
     "Manual override for the weekly full-charge cycle. None_ = follow schedule; Force = run on next eval; Forbid = skip.",
-  pessimism_multiplier_modifier:
+  "forecast.pessimism.modifier":
     "Multiplier applied to forecast-derived planning estimates. <1 = optimistic, >1 = pessimistic.",
-  disable_night_grid_discharge:
+  "grid.night.discharge.disable.forced-value":
     "When true, suppresses grid discharge during the night band. Inverse of legacy charge_battery_extended derivation.",
 
   // --- Knobs (Zappi / EV) ---
-  charge_car_boost:
+  "evcharger.boost.enable":
     "Boost mode for EV charging — overrides solar-only logic to prioritise getting the car charged.",
-  charge_car_extended:
+  "evcharger.extended.enable":
     "Extended charging mode for the EV (longer/looser thresholds).",
-  zappi_current_target:
+  "evcharger.current.target":
     "Target Zappi charge current (A) under controller-driven modes.",
-  zappi_limit:
+  "evcharger.session.limit":
     "Per-session EV charge ceiling (kWh). Once the car has drawn ≥ this in the current session, mode is forced Off (only when ≤65 kWh).",
-  zappi_emergency_margin:
-    "Headroom (kWh) reserved before the zappi_limit cutoff fires. Smooths handoff.",
+  "evcharger.current.margin":
+    "Headroom (kWh) reserved before the evcharger.session.limit cutoff fires. Smooths handoff.",
 
   // --- Knobs (grid / battery-to-car / Eddi) ---
-  grid_export_limit_w:
+  "grid.export.limit":
     "Hard cap on negative setpoint magnitude (grid-side export limit, W).",
-  grid_import_limit_w:
+  "grid.import.limit":
     "Hard cap on positive setpoint magnitude (grid-side import limit, W).",
-  allow_battery_to_car:
+  "battery.export.car.allow":
     "Permit DC battery to discharge into the EV during Zappi-active windows. Always boots false; never persisted.",
-  eddi_enable_soc:
+  "eddi.soc.enable":
     "Eddi target becomes Normal when battery SoC ≥ this (%). Default 96.",
-  eddi_disable_soc:
-    "Eddi target becomes Stopped when battery SoC ≤ this (%). Default 94 (hysteresis with eddi_enable_soc).",
-  eddi_dwell_s:
+  "eddi.soc.disable":
+    "Eddi target becomes Stopped when battery SoC ≤ this (%). Default 94 (hysteresis with eddi.soc.enable).",
+  "eddi.dwell.seconds":
     "Minimum dwell time (s) at the current Eddi state before re-evaluation.",
 
-  // --- Knobs (weather-SoC planner) ---
-  weathersoc_winter_temperature_threshold:
-    "Outdoor temperature (°C) below which weather-SoC switches to the winter heuristic.",
-  weathersoc_low_energy_threshold:
-    "Forecast total energy threshold (kWh) below which weather-SoC treats the day as low-yield.",
-  weathersoc_ok_energy_threshold:
-    "Forecast total energy threshold (kWh) for an OK-yield day in weather-SoC.",
-  weathersoc_high_energy_threshold:
-    "Forecast total energy threshold (kWh) for a high-yield day in weather-SoC.",
-  weathersoc_too_much_energy_threshold:
-    "Forecast total energy threshold (kWh) above which weather-SoC backs off the night charge entirely.",
+  // --- Knobs (weathersoc planner) ---
+  "weathersoc.threshold.winter-temperature":
+    "Outdoor temperature (°C) below which weathersoc switches to the winter heuristic.",
+  "weathersoc.threshold.energy.low":
+    "Forecast total energy threshold (kWh) below which weathersoc treats the day as low-yield.",
+  "weathersoc.threshold.energy.ok":
+    "Forecast total energy threshold (kWh) for an OK-yield day in weathersoc.",
+  "weathersoc.threshold.energy.high":
+    "Forecast total energy threshold (kWh) for a high-yield day in weathersoc.",
+  "weathersoc.threshold.energy.too-much":
+    "Forecast total energy threshold (kWh) above which weathersoc backs off the night charge entirely.",
 
   // --- Knobs (ops) ---
-  writes_enabled:
+  "writes-enabled":
     "Master kill switch. When false, the service runs in observer mode — no actuation, decisions still computed.",
-  forecast_disagreement_strategy:
+  "forecast.disagreement.strategy":
     "Fusion strategy when forecast providers disagree: Max / Mean / Min / SolcastIfAvailableElseMean.",
-  charge_battery_extended_mode:
-    "Override for the charge_battery_extended derivation: Auto / Forced / Disabled.",
+  "schedule.extended.charge.mode":
+    "Override for the schedule.extended.charge derivation: Auto / Forced / Disabled.",
 
-  // --- TASS cores (PR-tass-dag-view) ---
-  // CoreId names from crates/core/src/core_dag/mod.rs::CoreId::name(),
-  // matching production_cores() in crates/core/src/core_dag/cores.rs.
-  // Note: keys that collide with sensors / actuated / decisions
-  // (zappi_mode, eddi_mode, weather_soc) keep their existing entry —
-  // the description registry is global by design.
+  // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:
     "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",
-  current_limit:
+  "current-limit":
     "VE.Bus input-current-limit controller — caps grid import to the inverter; primary lever for grid-charge throttling.",
   schedules:
-    "ESS schedule controller — populates schedule_0 / schedule_1 with start/duration/SoC/enabled bits per current policy.",
+    "ESS schedule controller — populates schedule.0 / schedule.1 with start/duration/SoC/enabled bits per current policy.",
+  "broadcast.sensor":
+    "Sensor broadcast core — runs after every actuator core; publishes the tick's sensor + bookkeeping snapshot to MQTT.",
 
   // --- Forecast providers ---
-  solcast: "Solcast forecast provider (free tier, paid for accuracy on this site).",
-  forecast_solar: "Forecast.Solar forecast provider (free tier).",
-  open_meteo: "Open-Meteo forecast provider (free).",
+  "forecast.solcast": "Solcast forecast provider (free tier, paid for accuracy on this site).",
+  "forecast.solar": "Forecast.Solar forecast provider (free tier).",
+  "forecast.open-meteo": "Open-Meteo forecast provider (free).",
 };
 
 // Bookkeeping field → list of cores that write to it (PR-entity-inspectors).
 // Hand-curated; mirrors the writer set documented in
 // crates/core/src/process.rs and the per-controller modules.
+// PR-rename-entities: keys + values use the dotted display form.
 export const bookkeepingWriters: Record<string, string[]> = {
-  next_full_charge_iso: ["setpoint"],
-  above_soc_date_iso: ["schedules"],
-  prev_ess_state: ["current_limit"],
-  zappi_active: ["zappi_active"],
-  charge_to_full_required: ["setpoint"],
-  soc_end_of_day_target: ["setpoint"],
-  effective_export_soc_threshold: ["setpoint"],
-  battery_selected_soc_target: ["schedules"],
-  charge_battery_extended_today: ["weather_soc"],
-  charge_battery_extended_today_date_iso: ["weather_soc"],
+  "schedule.full-charge.next": ["setpoint"],
+  "battery.soc.above-threshold.date": ["schedules"],
+  "inverter.ess.state.previous": ["current-limit"],
+  "evcharger.active": ["evcharger.active"],
+  "schedule.full-charge.required": ["setpoint"],
+  "battery.soc.target.end-of-day": ["setpoint"],
+  "battery.soc.threshold.export.effective": ["setpoint"],
+  "battery.soc.target.selected": ["schedules"],
+  "schedule.extended.charge.today": ["weathersoc"],
+  "schedule.extended.charge.today.date": ["weathersoc"],
 };
 
-// Forecast provider display labels, by provider id.
+// Forecast provider display labels, by dotted display name.
 export const forecastProviderLabels: Record<string, string> = {
-  solcast: "Solcast",
-  forecast_solar: "Forecast.Solar",
-  open_meteo: "Open-Meteo",
+  "forecast.solcast": "Solcast",
+  "forecast.solar": "Forecast.Solar",
+  "forecast.open-meteo": "Open-Meteo",
 };

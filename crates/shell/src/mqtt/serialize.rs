@@ -217,9 +217,9 @@ fn decode_generic(
 
 fn bookkeeping_key_from_name(name: &str) -> Option<BookkeepingKey> {
     Some(match name {
-        "next_full_charge" => BookkeepingKey::NextFullCharge,
-        "above_soc_date" => BookkeepingKey::AboveSocDate,
-        "prev_ess_state" => BookkeepingKey::PrevEssState,
+        "schedule.full-charge.next" => BookkeepingKey::NextFullCharge,
+        "battery.soc.above-threshold.date" => BookkeepingKey::AboveSocDate,
+        "inverter.ess.state.previous" => BookkeepingKey::PrevEssState,
         _ => return None,
     })
 }
@@ -252,97 +252,97 @@ fn parse_bookkeeping_value(key: BookkeepingKey, body: &str) -> Option<Bookkeepin
 #[allow(clippy::too_many_lines)]
 pub fn knob_name(id: KnobId) -> &'static str {
     match id {
-        KnobId::ForceDisableExport => "force_disable_export",
-        KnobId::ExportSocThreshold => "export_soc_threshold",
-        KnobId::DischargeSocTarget => "discharge_soc_target",
-        KnobId::BatterySocTarget => "battery_soc_target",
-        KnobId::FullChargeDischargeSocTarget => "full_charge_discharge_soc_target",
-        KnobId::FullChargeExportSocThreshold => "full_charge_export_soc_threshold",
-        KnobId::DischargeTime => "discharge_time",
-        KnobId::DebugFullCharge => "debug_full_charge",
-        KnobId::PessimismMultiplierModifier => "pessimism_multiplier_modifier",
-        KnobId::DisableNightGridDischarge => "disable_night_grid_discharge",
-        KnobId::ChargeCarBoost => "charge_car_boost",
-        KnobId::ChargeCarExtended => "charge_car_extended",
-        KnobId::ZappiCurrentTarget => "zappi_current_target",
-        KnobId::ZappiLimit => "zappi_limit",
-        KnobId::ZappiEmergencyMargin => "zappi_emergency_margin",
-        KnobId::GridExportLimitW => "grid_export_limit_w",
-        KnobId::GridImportLimitW => "grid_import_limit_w",
-        KnobId::AllowBatteryToCar => "allow_battery_to_car",
-        KnobId::EddiEnableSoc => "eddi_enable_soc",
-        KnobId::EddiDisableSoc => "eddi_disable_soc",
-        KnobId::EddiDwellS => "eddi_dwell_s",
-        KnobId::WeathersocWinterTemperatureThreshold => "weathersoc_winter_temperature_threshold",
-        KnobId::WeathersocLowEnergyThreshold => "weathersoc_low_energy_threshold",
-        KnobId::WeathersocOkEnergyThreshold => "weathersoc_ok_energy_threshold",
-        KnobId::WeathersocHighEnergyThreshold => "weathersoc_high_energy_threshold",
-        KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc_too_much_energy_threshold",
-        KnobId::ForecastDisagreementStrategy => "forecast_disagreement_strategy",
-        KnobId::ChargeBatteryExtendedMode => "charge_battery_extended_mode",
+        KnobId::ForceDisableExport => "grid.export.force-disable",
+        KnobId::ExportSocThreshold => "battery.soc.threshold.export.forced-value",
+        KnobId::DischargeSocTarget => "battery.soc.target.discharge.forced-value",
+        KnobId::BatterySocTarget => "battery.soc.target.charge.forced-value",
+        KnobId::FullChargeDischargeSocTarget => "battery.soc.target.full-charge.discharge",
+        KnobId::FullChargeExportSocThreshold => "battery.soc.threshold.full-charge.export",
+        KnobId::DischargeTime => "battery.discharge.time",
+        KnobId::DebugFullCharge => "debug.full-charge.mode",
+        KnobId::PessimismMultiplierModifier => "forecast.pessimism.modifier",
+        KnobId::DisableNightGridDischarge => "grid.night.discharge.disable.forced-value",
+        KnobId::ChargeCarBoost => "evcharger.boost.enable",
+        KnobId::ChargeCarExtended => "evcharger.extended.enable",
+        KnobId::ZappiCurrentTarget => "evcharger.current.target",
+        KnobId::ZappiLimit => "evcharger.session.limit",
+        KnobId::ZappiEmergencyMargin => "evcharger.current.margin",
+        KnobId::GridExportLimitW => "grid.export.limit",
+        KnobId::GridImportLimitW => "grid.import.limit",
+        KnobId::AllowBatteryToCar => "battery.export.car.allow",
+        KnobId::EddiEnableSoc => "eddi.soc.enable",
+        KnobId::EddiDisableSoc => "eddi.soc.disable",
+        KnobId::EddiDwellS => "eddi.dwell.seconds",
+        KnobId::WeathersocWinterTemperatureThreshold => "weathersoc.threshold.winter-temperature",
+        KnobId::WeathersocLowEnergyThreshold => "weathersoc.threshold.energy.low",
+        KnobId::WeathersocOkEnergyThreshold => "weathersoc.threshold.energy.ok",
+        KnobId::WeathersocHighEnergyThreshold => "weathersoc.threshold.energy.high",
+        KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc.threshold.energy.too-much",
+        KnobId::ForecastDisagreementStrategy => "forecast.disagreement.strategy",
+        KnobId::ChargeBatteryExtendedMode => "schedule.extended.charge.mode",
         // PR-gamma-hold-redesign — four mode selectors.
-        KnobId::ExportSocThresholdMode => "export_soc_threshold_mode",
-        KnobId::DischargeSocTargetMode => "discharge_soc_target_mode",
-        KnobId::BatterySocTargetMode => "battery_soc_target_mode",
-        KnobId::DisableNightGridDischargeMode => "disable_night_grid_discharge_mode",
+        KnobId::ExportSocThresholdMode => "battery.soc.threshold.export.mode",
+        KnobId::DischargeSocTargetMode => "battery.soc.target.discharge.mode",
+        KnobId::BatterySocTargetMode => "battery.soc.target.charge.mode",
+        KnobId::DisableNightGridDischargeMode => "grid.night.discharge.disable.mode",
     }
 }
 
 fn knob_id_from_name(n: &str) -> Option<KnobId> {
     Some(match n {
-        "force_disable_export" => KnobId::ForceDisableExport,
-        "export_soc_threshold" => KnobId::ExportSocThreshold,
-        "discharge_soc_target" => KnobId::DischargeSocTarget,
-        "battery_soc_target" => KnobId::BatterySocTarget,
-        "full_charge_discharge_soc_target" => KnobId::FullChargeDischargeSocTarget,
-        "full_charge_export_soc_threshold" => KnobId::FullChargeExportSocThreshold,
-        "discharge_time" => KnobId::DischargeTime,
-        "debug_full_charge" => KnobId::DebugFullCharge,
-        "pessimism_multiplier_modifier" => KnobId::PessimismMultiplierModifier,
-        "disable_night_grid_discharge" => KnobId::DisableNightGridDischarge,
-        "charge_car_boost" => KnobId::ChargeCarBoost,
-        "charge_car_extended" => KnobId::ChargeCarExtended,
-        "zappi_current_target" => KnobId::ZappiCurrentTarget,
-        "zappi_limit" => KnobId::ZappiLimit,
-        "zappi_emergency_margin" => KnobId::ZappiEmergencyMargin,
-        "grid_export_limit_w" => KnobId::GridExportLimitW,
-        "grid_import_limit_w" => KnobId::GridImportLimitW,
-        "allow_battery_to_car" => KnobId::AllowBatteryToCar,
-        "eddi_enable_soc" => KnobId::EddiEnableSoc,
-        "eddi_disable_soc" => KnobId::EddiDisableSoc,
-        "eddi_dwell_s" => KnobId::EddiDwellS,
-        "weathersoc_winter_temperature_threshold" => KnobId::WeathersocWinterTemperatureThreshold,
-        "weathersoc_low_energy_threshold" => KnobId::WeathersocLowEnergyThreshold,
-        "weathersoc_ok_energy_threshold" => KnobId::WeathersocOkEnergyThreshold,
-        "weathersoc_high_energy_threshold" => KnobId::WeathersocHighEnergyThreshold,
-        "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
-        "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
-        "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
+        "grid.export.force-disable" => KnobId::ForceDisableExport,
+        "battery.soc.threshold.export.forced-value" => KnobId::ExportSocThreshold,
+        "battery.soc.target.discharge.forced-value" => KnobId::DischargeSocTarget,
+        "battery.soc.target.charge.forced-value" => KnobId::BatterySocTarget,
+        "battery.soc.target.full-charge.discharge" => KnobId::FullChargeDischargeSocTarget,
+        "battery.soc.threshold.full-charge.export" => KnobId::FullChargeExportSocThreshold,
+        "battery.discharge.time" => KnobId::DischargeTime,
+        "debug.full-charge.mode" => KnobId::DebugFullCharge,
+        "forecast.pessimism.modifier" => KnobId::PessimismMultiplierModifier,
+        "grid.night.discharge.disable.forced-value" => KnobId::DisableNightGridDischarge,
+        "evcharger.boost.enable" => KnobId::ChargeCarBoost,
+        "evcharger.extended.enable" => KnobId::ChargeCarExtended,
+        "evcharger.current.target" => KnobId::ZappiCurrentTarget,
+        "evcharger.session.limit" => KnobId::ZappiLimit,
+        "evcharger.current.margin" => KnobId::ZappiEmergencyMargin,
+        "grid.export.limit" => KnobId::GridExportLimitW,
+        "grid.import.limit" => KnobId::GridImportLimitW,
+        "battery.export.car.allow" => KnobId::AllowBatteryToCar,
+        "eddi.soc.enable" => KnobId::EddiEnableSoc,
+        "eddi.soc.disable" => KnobId::EddiDisableSoc,
+        "eddi.dwell.seconds" => KnobId::EddiDwellS,
+        "weathersoc.threshold.winter-temperature" => KnobId::WeathersocWinterTemperatureThreshold,
+        "weathersoc.threshold.energy.low" => KnobId::WeathersocLowEnergyThreshold,
+        "weathersoc.threshold.energy.ok" => KnobId::WeathersocOkEnergyThreshold,
+        "weathersoc.threshold.energy.high" => KnobId::WeathersocHighEnergyThreshold,
+        "weathersoc.threshold.energy.too-much" => KnobId::WeathersocTooMuchEnergyThreshold,
+        "forecast.disagreement.strategy" => KnobId::ForecastDisagreementStrategy,
+        "schedule.extended.charge.mode" => KnobId::ChargeBatteryExtendedMode,
         // PR-gamma-hold-redesign — four mode selectors.
-        "export_soc_threshold_mode" => KnobId::ExportSocThresholdMode,
-        "discharge_soc_target_mode" => KnobId::DischargeSocTargetMode,
-        "battery_soc_target_mode" => KnobId::BatterySocTargetMode,
-        "disable_night_grid_discharge_mode" => KnobId::DisableNightGridDischargeMode,
+        "battery.soc.threshold.export.mode" => KnobId::ExportSocThresholdMode,
+        "battery.soc.target.discharge.mode" => KnobId::DischargeSocTargetMode,
+        "battery.soc.target.charge.mode" => KnobId::BatterySocTargetMode,
+        "grid.night.discharge.disable.mode" => KnobId::DisableNightGridDischargeMode,
         _ => return None,
     })
 }
 
 fn actuated_name(id: ActuatedId) -> &'static str {
     match id {
-        ActuatedId::GridSetpoint => "grid_setpoint",
-        ActuatedId::InputCurrentLimit => "input_current_limit",
-        ActuatedId::ZappiMode => "zappi_mode",
-        ActuatedId::EddiMode => "eddi_mode",
-        ActuatedId::Schedule0 => "schedule_0",
-        ActuatedId::Schedule1 => "schedule_1",
+        ActuatedId::GridSetpoint => "grid.setpoint",
+        ActuatedId::InputCurrentLimit => "inverter.input.current-limit",
+        ActuatedId::ZappiMode => "evcharger.mode.target",
+        ActuatedId::EddiMode => "eddi.mode.target",
+        ActuatedId::Schedule0 => "schedule.0",
+        ActuatedId::Schedule1 => "schedule.1",
     }
 }
 
 fn bookkeeping_name(k: BookkeepingKey) -> &'static str {
     match k {
-        BookkeepingKey::NextFullCharge => "next_full_charge",
-        BookkeepingKey::AboveSocDate => "above_soc_date",
-        BookkeepingKey::PrevEssState => "prev_ess_state",
+        BookkeepingKey::NextFullCharge => "schedule.full-charge.next",
+        BookkeepingKey::AboveSocDate => "battery.soc.above-threshold.date",
+        BookkeepingKey::PrevEssState => "inverter.ess.state.previous",
     }
 }
 
@@ -352,26 +352,26 @@ fn bookkeeping_name(k: BookkeepingKey) -> &'static str {
 /// top of `crates/shell/src/mqtt/discovery.rs`.
 pub(crate) fn sensor_name(id: SensorId) -> &'static str {
     match id {
-        SensorId::BatterySoc => "battery_soc",
-        SensorId::BatterySoh => "battery_soh",
-        SensorId::BatteryInstalledCapacity => "battery_installed_capacity",
-        SensorId::BatteryDcPower => "battery_dc_power",
-        SensorId::MpptPower0 => "mppt_power_0",
-        SensorId::MpptPower1 => "mppt_power_1",
-        SensorId::SoltaroPower => "soltaro_power",
-        SensorId::PowerConsumption => "power_consumption",
-        SensorId::GridPower => "grid_power",
-        SensorId::GridVoltage => "grid_voltage",
-        SensorId::GridCurrent => "grid_current",
-        SensorId::ConsumptionCurrent => "consumption_current",
-        SensorId::OffgridPower => "offgrid_power",
-        SensorId::OffgridCurrent => "offgrid_current",
-        SensorId::VebusInputCurrent => "vebus_input_current",
-        SensorId::EvchargerAcPower => "evcharger_ac_power",
-        SensorId::EvchargerAcCurrent => "evcharger_ac_current",
-        SensorId::EssState => "ess_state",
-        SensorId::OutdoorTemperature => "outdoor_temperature",
-        SensorId::SessionKwh => "session_kwh",
+        SensorId::BatterySoc => "battery.soc",
+        SensorId::BatterySoh => "battery.soh",
+        SensorId::BatteryInstalledCapacity => "battery.capacity.installed",
+        SensorId::BatteryDcPower => "battery.power.dc",
+        SensorId::MpptPower0 => "solar.mppt.0.power",
+        SensorId::MpptPower1 => "solar.mppt.1.power",
+        SensorId::SoltaroPower => "solar.soltaro.power",
+        SensorId::PowerConsumption => "house.power.consumption",
+        SensorId::GridPower => "grid.power",
+        SensorId::GridVoltage => "grid.voltage",
+        SensorId::GridCurrent => "grid.current",
+        SensorId::ConsumptionCurrent => "house.current.consumption",
+        SensorId::OffgridPower => "inverter.offgrid.power",
+        SensorId::OffgridCurrent => "inverter.offgrid.current",
+        SensorId::VebusInputCurrent => "inverter.input.current",
+        SensorId::EvchargerAcPower => "evcharger.ac.power",
+        SensorId::EvchargerAcCurrent => "evcharger.ac.current",
+        SensorId::EssState => "inverter.ess.state",
+        SensorId::OutdoorTemperature => "weather.temperature.outdoor",
+        SensorId::SessionKwh => "evcharger.session.energy",
     }
 }
 
@@ -656,7 +656,7 @@ mod tests {
             value: KnobValue::Bool(true),
         };
         let (t, b, r) = encode_publish_payload(&p).unwrap();
-        assert_eq!(t, "knob/force_disable_export/state");
+        assert_eq!(t, "knob/grid.export.force-disable/state");
         assert_eq!(b, "true");
         assert!(r);
     }
@@ -668,7 +668,7 @@ mod tests {
             value: KnobValue::Float(80.0),
         })
         .unwrap();
-        assert_eq!(t, "knob/export_soc_threshold/state");
+        assert_eq!(t, "knob/battery.soc.threshold.export.forced-value/state");
         assert_eq!(b, "80");
     }
 
@@ -697,7 +697,7 @@ mod tests {
             phase: victron_controller_core::TargetPhase::Confirmed,
         };
         let (t, b, _) = encode_publish_payload(&p).unwrap();
-        assert_eq!(t, "entity/grid_setpoint/phase");
+        assert_eq!(t, "entity/grid.setpoint/phase");
         assert!(b.contains("Confirmed"));
     }
 
@@ -709,7 +709,7 @@ mod tests {
     fn decode_bool_knob_set() {
         let e = decode_knob_set(
             "victron-controller",
-            "victron-controller/knob/force_disable_export/set",
+            "victron-controller/knob/grid.export.force-disable/set",
             b"true",
         )
         .unwrap();
@@ -731,7 +731,7 @@ mod tests {
     fn decode_float_knob_set() {
         let e = decode_knob_set(
             "victron-controller",
-            "victron-controller/knob/export_soc_threshold/set",
+            "victron-controller/knob/battery.soc.threshold.export.forced-value/set",
             b"67.5",
         )
         .unwrap();
@@ -789,7 +789,7 @@ mod tests {
     fn decode_bad_bool_payload_returns_none() {
         assert!(decode_knob_set(
             "victron-controller",
-            "victron-controller/knob/force_disable_export/set",
+            "victron-controller/knob/grid.export.force-disable/set",
             b"maybe"
         )
         .is_none());
@@ -800,7 +800,7 @@ mod tests {
         // Root prefix mismatch.
         assert!(decode_knob_set(
             "victron-controller",
-            "other-root/knob/force_disable_export/set",
+            "other-root/knob/grid.export.force-disable/set",
             b"true"
         )
         .is_none());
@@ -814,7 +814,7 @@ mod tests {
     fn decode_state_knob_uses_system_owner() {
         let e = decode_state_message(
             "victron-controller",
-            "victron-controller/knob/export_soc_threshold/state",
+            "victron-controller/knob/battery.soc.threshold.export.forced-value/state",
             b"67.0",
         )
         .unwrap();
@@ -855,7 +855,7 @@ mod tests {
         // State decoder must not match /set topics.
         assert!(decode_state_message(
             "victron-controller",
-            "victron-controller/knob/force_disable_export/set",
+            "victron-controller/knob/grid.export.force-disable/set",
             b"true"
         )
         .is_none());
@@ -866,7 +866,7 @@ mod tests {
         // Symmetrically: /set decoder must not match /state topics.
         assert!(decode_knob_set(
             "victron-controller",
-            "victron-controller/knob/force_disable_export/state",
+            "victron-controller/knob/grid.export.force-disable/state",
             b"true"
         )
         .is_none());
@@ -880,7 +880,7 @@ mod tests {
     fn decode_bookkeeping_next_full_charge_datetime() {
         let e = decode_state_message(
             "victron-controller",
-            "victron-controller/bookkeeping/next_full_charge/state",
+            "victron-controller/bookkeeping/schedule.full-charge.next/state",
             b"2026-04-26T17:00:00",
         )
         .unwrap();
@@ -904,7 +904,7 @@ mod tests {
     fn decode_bookkeeping_above_soc_date() {
         let e = decode_state_message(
             "victron-controller",
-            "victron-controller/bookkeeping/above_soc_date/state",
+            "victron-controller/bookkeeping/battery.soc.above-threshold.date/state",
             b"2026-04-21",
         )
         .unwrap();
@@ -927,7 +927,7 @@ mod tests {
     fn decode_bookkeeping_prev_ess_state_int() {
         let e = decode_state_message(
             "victron-controller",
-            "victron-controller/bookkeeping/prev_ess_state/state",
+            "victron-controller/bookkeeping/inverter.ess.state.previous/state",
             b"10",
         )
         .unwrap();
@@ -947,7 +947,7 @@ mod tests {
     fn decode_bookkeeping_null_is_cleared() {
         let e = decode_state_message(
             "victron-controller",
-            "victron-controller/bookkeeping/next_full_charge/state",
+            "victron-controller/bookkeeping/schedule.full-charge.next/state",
             b"null",
         )
         .unwrap();
@@ -967,7 +967,7 @@ mod tests {
     fn decode_bookkeeping_bad_date_returns_none() {
         assert!(decode_state_message(
             "victron-controller",
-            "victron-controller/bookkeeping/above_soc_date/state",
+            "victron-controller/bookkeeping/battery.soc.above-threshold.date/state",
             b"nope"
         )
         .is_none());
@@ -1129,7 +1129,7 @@ mod tests {
             freshness: Freshness::Stale,
         };
         let (t, b, r) = encode_publish_payload(&p).unwrap();
-        assert_eq!(t, "sensor/battery_soc/state");
+        assert_eq!(t, "sensor/battery.soc/state");
         assert_eq!(b, "unavailable");
         assert!(r);
     }
@@ -1153,7 +1153,7 @@ mod tests {
             freshness: Freshness::Fresh,
         };
         let (t, b, _) = encode_publish_payload(&p).unwrap();
-        assert_eq!(t, "sensor/outdoor_temperature/state");
+        assert_eq!(t, "sensor/weather.temperature.outdoor/state");
         assert_eq!(b, "42.5");
     }
 
@@ -1177,7 +1177,7 @@ mod tests {
             value: true,
         })
         .unwrap();
-        assert_eq!(t, "bookkeeping/zappi_active/state");
+        assert_eq!(t, "bookkeeping/evcharger.active/state");
         assert_eq!(b, "true");
         assert!(r);
 
@@ -1196,7 +1196,7 @@ mod tests {
             value: 75.0,
         })
         .unwrap();
-        assert_eq!(t, "bookkeeping/soc_end_of_day_target/state");
+        assert_eq!(t, "bookkeeping/battery.soc.target.end-of-day/state");
         // Integer-valued float drops `.0` per `f64::Display`.
         assert_eq!(b, "75");
 
