@@ -40,13 +40,37 @@ pub struct EddiModeKnobs {
     pub dwell_s: u32,
 }
 
-/// Decision: explicit target or leave-alone. A `Set` action that
-/// matches `current_mode` is semantically a no-op but still returned
-/// so that the outer `process()` can drive the TASS phase machine.
+/// Decision: explicit target with a flag for whether it requires an
+/// actuation call. `Set` and `Leave` both carry the controller's
+/// intended target (Stopped or Normal); `Leave` differs only in that
+/// the actual mode already matches, so no `CallMyenergi` effect is
+/// needed. The TASS target is still proposed in both cases so the
+/// dashboard / HA see the controller's intent — pre-fix the `Leave`
+/// path left `world.eddi_mode.target` stuck at `Unset` forever
+/// when the device's first-tick assumed-Stopped happened to match
+/// the controller's Stopped decision.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EddiModeAction {
     Set(EddiMode),
-    Leave,
+    Leave(EddiMode),
+}
+
+impl EddiModeAction {
+    /// The controller's intended target mode, regardless of whether
+    /// actuation is required this tick.
+    #[must_use]
+    pub fn target(self) -> EddiMode {
+        match self {
+            Self::Set(m) | Self::Leave(m) => m,
+        }
+    }
+
+    /// True iff the controller wants `process()` to fire a
+    /// `CallMyenergi(SetEddiMode)` effect this tick.
+    #[must_use]
+    pub fn should_actuate(self) -> bool {
+        matches!(self, Self::Set(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,7 +140,7 @@ pub fn evaluate_eddi_mode(input: &EddiModeInput, clock: &dyn Clock) -> EddiModeO
 }
 
 fn safe_action(target: EddiMode, input: &EddiModeInput) -> EddiModeAction {
-    if target == input.current_mode { EddiModeAction::Leave } else { EddiModeAction::Set(target) }
+    if target == input.current_mode { EddiModeAction::Leave(target) } else { EddiModeAction::Set(target) }
 }
 
 /// Gate a non-safety transition on the dwell timer. Returns the action
@@ -127,7 +151,7 @@ fn apply_dwell(
     clock: &dyn Clock,
 ) -> (EddiModeAction, Option<&'static str>) {
     if desired == input.current_mode {
-        return (EddiModeAction::Leave, None);
+        return (EddiModeAction::Leave(desired), None);
     }
     if desired == EddiMode::Stopped {
         return (EddiModeAction::Set(EddiMode::Stopped), Some("safety direction bypasses dwell"));
@@ -139,7 +163,10 @@ fn apply_dwell(
         Some(prev) if now.saturating_duration_since(prev) >= dwell => {
             (EddiModeAction::Set(EddiMode::Normal), Some("dwell satisfied"))
         }
-        Some(_) => (EddiModeAction::Leave, Some("dwell not yet satisfied — holding")),
+        // Dwell-not-satisfied: target intent is still `desired` (the
+        // controller wants to transition); we just don't fire the
+        // actuation yet. Keep target intent visible to the dashboard.
+        Some(_) => (EddiModeAction::Leave(input.current_mode), Some("dwell not yet satisfied — holding")),
     }
 }
 
@@ -220,7 +247,10 @@ mod tests {
     #[test]
     fn stale_soc_when_already_stopped_is_leave() {
         let input = input_with(Some(99.0), Freshness::Stale, EddiMode::Stopped, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
+        assert_eq!(
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Leave(EddiMode::Stopped),
+        );
     }
 
     // ------------------------------------------------------------------
@@ -270,13 +300,19 @@ mod tests {
     #[test]
     fn in_hysteresis_while_normal_stays_normal() {
         let input = input_with(Some(95.0), Freshness::Fresh, EddiMode::Normal, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
+        assert_eq!(
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Leave(EddiMode::Normal),
+        );
     }
 
     #[test]
     fn in_hysteresis_while_stopped_stays_stopped() {
         let input = input_with(Some(95.0), Freshness::Fresh, EddiMode::Stopped, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
+        assert_eq!(
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Leave(EddiMode::Stopped),
+        );
     }
 
     // ------------------------------------------------------------------
@@ -306,7 +342,14 @@ mod tests {
             EddiMode::Stopped,
             Some(recently),
         );
-        assert_eq!(evaluate_eddi_mode(&input, &c).action, EddiModeAction::Leave);
+        // Dwell-holding: target intent stays at the actual mode (the
+        // controller wants Normal but is holding Stopped until the
+        // dwell expires; TASS target reflects what's running, not what's
+        // queued — Decision text describes the intent).
+        assert_eq!(
+            evaluate_eddi_mode(&input, &c).action,
+            EddiModeAction::Leave(EddiMode::Stopped),
+        );
     }
 
     #[test]
@@ -351,7 +394,10 @@ mod tests {
     #[test]
     fn no_change_when_already_in_desired_mode() {
         let input = input_with(Some(99.0), Freshness::Fresh, EddiMode::Normal, None);
-        assert_eq!(evaluate_eddi_mode(&input, &clock()).action, EddiModeAction::Leave);
+        assert_eq!(
+            evaluate_eddi_mode(&input, &clock()).action,
+            EddiModeAction::Leave(EddiMode::Normal),
+        );
     }
 
     // ------------------------------------------------------------------

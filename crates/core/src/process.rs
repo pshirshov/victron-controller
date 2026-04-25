@@ -35,7 +35,6 @@ use crate::controllers::current_limit::{
 use crate::controllers::eddi_mode::{
     EddiModeInput, EddiModeKnobs, evaluate_eddi_mode,
 };
-use crate::controllers::eddi_mode::EddiModeAction;
 use crate::controllers::schedules::{
     SchedulesInput, SchedulesInputGlobals, evaluate_schedules,
 };
@@ -1195,27 +1194,34 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
 
     let out = evaluate_eddi_mode(&input, clock);
     world.decisions.eddi_mode = Some(out.decision);
-    let desired = match out.action {
-        EddiModeAction::Leave => return,
-        EddiModeAction::Set(m) => m,
-    };
 
+    // EDDI-ALWAYS-ACTUATE (user-flagged 2026-04-25): the eddi controller
+    // always has a definite opinion on what mode the device should be in
+    // (Stopped or Normal, per SoC + dwell + freshness gates). Propose
+    // that target unconditionally so the dashboard / HA reflect the
+    // controller's intent — pre-fix, the `Leave` arm short-circuited
+    // before `propose_target`, leaving `world.eddi_mode.target` stuck at
+    // `Unset` whenever the assumed-Stopped first-tick happened to match
+    // the controller's Stopped decision (most boots).
+    let desired = out.action.target();
     let now = clock.monotonic();
-
-    // Propose target unconditionally (PR-SCHED0): see
-    // `maybe_propose_setpoint`.
     let changed = world
         .eddi_mode
         .propose_target(desired, Owner::EddiController, now);
-    if !changed {
-        return;
-    }
 
-    // PR-SCHED0-D03: publish phase unconditionally; see `maybe_propose_setpoint`.
+    // Always publish the post-propose phase so observers see the target
+    // being set (Unset → Pending) on the first interesting tick.
     effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
         id: ActuatedId::EddiMode,
         phase: world.eddi_mode.target.phase,
     }));
+
+    // Actuation gate: only fire `CallMyenergi` when the controller asked
+    // for `Set` AND the target value actually changed (idempotent dedup
+    // — repeat ticks with the same target don't re-fire).
+    if !out.action.should_actuate() || !changed {
+        return;
+    }
 
     // A-36: record the transition BEFORE the writes_enabled gate. The
     // dwell clock tracks "time since last proposed mode transition" —
@@ -2439,15 +2445,27 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn eddi_requires_fresh_soc() {
+    fn eddi_requires_fresh_soc_and_pins_safety_target() {
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
-        // No battery_soc reading — freshness Unknown.
-        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
-        // Desired mode would be Stopped (safety), which equals current
-        // (world.eddi_mode.target is Unset, current_mode defaults to
-        // Stopped) so no transition.
-        assert_eq!(world.eddi_mode.target.phase, TargetPhase::Unset);
+        // No battery_soc reading — freshness Unknown. Controller's safety
+        // direction is Stopped. Pre-EDDI-ALWAYS-ACTUATE (2026-04-25) the
+        // target stayed Unset because Leave short-circuited before
+        // propose_target. Now we always propose so the dashboard / HA see
+        // the controller's intent — target.value=Stopped, phase=Pending,
+        // owner=EddiController. No CallMyenergi fires (the device is
+        // assumed-Stopped and Leave doesn't actuate).
+        let effects = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.eddi_mode.target.phase, TargetPhase::Pending);
+        assert_eq!(world.eddi_mode.target.value, Some(EddiMode::Stopped));
+        assert_eq!(world.eddi_mode.target.owner, Owner::EddiController);
+        assert!(
+            !effects.iter().any(|e| matches!(
+                e,
+                Effect::CallMyenergi(MyenergiAction::SetEddiMode(_))
+            )),
+            "Leave action must not fire CallMyenergi"
+        );
     }
 
     #[test]
