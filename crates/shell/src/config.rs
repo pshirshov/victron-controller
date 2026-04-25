@@ -22,6 +22,8 @@ pub struct Config {
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub tuning: TuningConfig,
+    #[serde(default)]
+    pub outdoor_temperature_local: OutdoorTemperatureLocalConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -359,6 +361,45 @@ impl Default for DashboardConfig {
     }
 }
 
+/// PR-matter-outdoor-temp: optional MQTT bridge for a Matter
+/// outdoor-temperature sensor (e.g. a Meross Smart Hub publishing
+/// raw cluster attributes). Same broker/credentials as `[mqtt]`. When
+/// `mqtt_topic` is `None`, this path is silent — Open-Meteo's current-
+/// weather poller remains the sole `outdoor_temperature` source.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutdoorTemperatureLocalConfig {
+    /// Optional MQTT topic publishing local outdoor temperature.
+    /// Body must be a JSON-encoded int (centi-Celsius units, e.g.
+    /// `1640` for 16.4°C, signed int16 range [-27315, 32767]).
+    /// `null` / non-numeric bodies are silently dropped (the Meross
+    /// hub publishes `null` between low-power reads).
+    #[serde(default)]
+    pub mqtt_topic: Option<String>,
+    /// Sanity bounds. Readings outside are dropped as glitches.
+    /// Defaults: -50.0 / 80.0.
+    #[serde(default = "default_min_celsius")]
+    pub min_celsius: f64,
+    #[serde(default = "default_max_celsius")]
+    pub max_celsius: f64,
+}
+
+impl Default for OutdoorTemperatureLocalConfig {
+    fn default() -> Self {
+        Self {
+            mqtt_topic: None,
+            min_celsius: default_min_celsius(),
+            max_celsius: default_max_celsius(),
+        }
+    }
+}
+
+fn default_min_celsius() -> f64 {
+    -50.0
+}
+fn default_max_celsius() -> f64 {
+    80.0
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuningConfig {
     /// Heartbeat for freshness decay + periodic controller re-evaluation.
@@ -481,6 +522,7 @@ impl Default for Config {
             forecast: ForecastConfig::default(),
             dashboard: DashboardConfig::default(),
             tuning: TuningConfig::default(),
+            outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
         }
     }
 }
@@ -574,6 +616,33 @@ mod tests {
             msg.contains("Atlantis/R'lyeh"),
             "error must mention the offending value, got: {msg}"
         );
+    }
+
+    #[test]
+    fn outdoor_temperature_local_absent_yields_silent_defaults() {
+        // PR-matter-outdoor-temp: the Open-Meteo path is the sole
+        // outdoor_temperature source when the section is absent.
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.outdoor_temperature_local.mqtt_topic.is_none());
+        assert!((c.outdoor_temperature_local.min_celsius - -50.0).abs() < f64::EPSILON);
+        assert!((c.outdoor_temperature_local.max_celsius - 80.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn outdoor_temperature_local_parses_section() {
+        let t = r#"
+            [outdoor_temperature_local]
+            mqtt_topic  = "matter/1/attributes/107_1026_0"
+            min_celsius = -20.0
+            max_celsius = 50.0
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        assert_eq!(
+            c.outdoor_temperature_local.mqtt_topic.as_deref(),
+            Some("matter/1/attributes/107_1026_0")
+        );
+        assert!((c.outdoor_temperature_local.min_celsius - -20.0).abs() < f64::EPSILON);
+        assert!((c.outdoor_temperature_local.max_celsius - 50.0).abs() < f64::EPSILON);
     }
 
     #[test]

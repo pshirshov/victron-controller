@@ -149,7 +149,8 @@ async fn main() -> Result<()> {
     let myenergi_poller = MyenergiPoller::new(myenergi_client, cfg.myenergi.poll_period);
 
     // MQTT (optional; skipped when host is empty).
-    let (mqtt_publisher, mqtt_subscriber) = match mqtt::connect(&cfg.mqtt).await? {
+    let (mqtt_publisher, mqtt_subscriber) =
+        match mqtt::connect(&cfg.mqtt, &cfg.outdoor_temperature_local).await? {
         Some((p, s)) => {
             info!("publishing HA discovery config");
             if let Err(e) = publish_ha_discovery(&p.client_handle(), &cfg.mqtt.topic_root).await {
@@ -177,6 +178,7 @@ async fn main() -> Result<()> {
         services: services.clone(),
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,
         controller_params: topology.controller_params,
+        matter_outdoor_topic: cfg.outdoor_temperature_local.mqtt_topic.clone(),
     };
     let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
     let snapshot_stream = SnapshotBroadcast::new(64);

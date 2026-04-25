@@ -17,6 +17,10 @@
 // PR-timers-section: also initialise `timers` to `Timers { entries: [] }`.
 // 0.1.0 has no timer view; the first 0.2.0 tick repopulates it after the
 // shell tasks emit their first `TimerState` events.
+//
+// PR-gamma-hold-redesign: bridge `knobs` and `bookkeeping` through their
+// hand-written converters, which initialise the new mode selectors and
+// `weather_soc_*` slots respectively.
 
 pub fn convert__world_snapshot__from__0_1_0(from: &crate::victron_controller::dashboard::v0_1_0::world_snapshot::WorldSnapshot) -> crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
     crate::victron_controller::dashboard::world_snapshot::WorldSnapshot {
@@ -25,8 +29,8 @@ pub fn convert__world_snapshot__from__0_1_0(from: &crate::victron_controller::da
         sensors: crate::victron_controller::dashboard::from_0_1_0_sensors::convert__sensors__from__0_1_0(&from.sensors),
         sensors_meta: serde_json::from_value(serde_json::to_value(&from.sensors_meta).unwrap()).unwrap(),
         actuated: serde_json::from_value(serde_json::to_value(&from.actuated).unwrap()).unwrap(),
-        knobs: serde_json::from_value(serde_json::to_value(&from.knobs).unwrap()).unwrap(),
-        bookkeeping: serde_json::from_value(serde_json::to_value(&from.bookkeeping).unwrap()).unwrap(),
+        knobs: crate::victron_controller::dashboard::from_0_1_0_knobs::convert__knobs__from__0_1_0(&from.knobs),
+        bookkeeping: crate::victron_controller::dashboard::from_0_1_0_bookkeeping::convert__bookkeeping__from__0_1_0(&from.bookkeeping),
         forecasts: serde_json::from_value(serde_json::to_value(&from.forecasts).unwrap()).unwrap(),
         decisions: serde_json::from_value(serde_json::to_value(&from.decisions).unwrap()).unwrap(),
         cores_state: crate::victron_controller::dashboard::cores_state::CoresState {
@@ -44,6 +48,7 @@ mod tests {
     use crate::victron_controller::dashboard::actual_f64::ActualF64 as V020ActualF64;
     use crate::victron_controller::dashboard::freshness::Freshness;
     use crate::victron_controller::dashboard::from_0_1_0_sensors::convert__sensors__from__0_1_0;
+    use crate::victron_controller::dashboard::mode::Mode;
     use crate::victron_controller::dashboard::v0_1_0::actual_f64::ActualF64 as V010ActualF64;
     use crate::victron_controller::dashboard::v0_1_0::freshness::Freshness as V010Freshness;
     use crate::victron_controller::dashboard::v0_1_0::sensors::Sensors as V010Sensors;
@@ -260,5 +265,29 @@ mod tests {
             converted.timers.entries.is_empty(),
             "expected empty timers on the 0.1.0 back-compat path"
         );
+    }
+
+    /// PR-gamma-hold-redesign: the 0.1.0 -> 0.2.0 converter must
+    /// initialise the four new `*_mode` knobs to `Mode::Weather` (so the
+    /// back-compat path preserves prior implicit behaviour: planner
+    /// drives the four weather_soc-driven knobs) AND must initialise the
+    /// four new `weather_soc_*` bookkeeping slots to the safe-default
+    /// values from SPEC §7 (80 / 80 / 80 / false).
+    #[test]
+    fn world_snapshot_0_1_0_converter_initialises_gamma_hold_redesign_fields() {
+        let v010: V010WorldSnapshot = serde_json::from_value(v010_snapshot_json()).unwrap();
+        let converted = super::convert__world_snapshot__from__0_1_0(&v010);
+
+        // All four mode selectors default to Weather.
+        assert_eq!(converted.knobs.export_soc_threshold_mode, Mode::Weather);
+        assert_eq!(converted.knobs.discharge_soc_target_mode, Mode::Weather);
+        assert_eq!(converted.knobs.battery_soc_target_mode, Mode::Weather);
+        assert_eq!(converted.knobs.disable_night_grid_discharge_mode, Mode::Weather);
+
+        // All four weather_soc bookkeeping slots default to safe values.
+        assert!((converted.bookkeeping.weather_soc_export_soc_threshold - 80.0).abs() < f64::EPSILON);
+        assert!((converted.bookkeeping.weather_soc_discharge_soc_target - 80.0).abs() < f64::EPSILON);
+        assert!((converted.bookkeeping.weather_soc_battery_soc_target - 80.0).abs() < f64::EPSILON);
+        assert!(!converted.bookkeeping.weather_soc_disable_night_grid_discharge);
     }
 }

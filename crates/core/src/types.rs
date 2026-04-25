@@ -9,7 +9,7 @@
 use crate::Freshness;
 use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::{
-    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Mode,
 };
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::owner::Owner;
@@ -410,6 +410,11 @@ pub enum KnobId {
     WeathersocTooMuchEnergyThreshold,
     ForecastDisagreementStrategy,
     ChargeBatteryExtendedMode,
+    // PR-gamma-hold-redesign — four mode selectors.
+    ExportSocThresholdMode,
+    DischargeSocTargetMode,
+    BatterySocTargetMode,
+    DisableNightGridDischargeMode,
 }
 
 /// Forecast providers.
@@ -593,6 +598,8 @@ pub enum KnobValue {
     DebugFullCharge(DebugFullCharge),
     ForecastDisagreementStrategy(ForecastDisagreementStrategy),
     ChargeBatteryExtendedMode(ChargeBatteryExtendedMode),
+    // PR-gamma-hold-redesign.
+    Mode(Mode),
 }
 
 // =============================================================================

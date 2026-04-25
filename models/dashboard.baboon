@@ -1,14 +1,28 @@
 model victron_controller.dashboard
 version "0.2.0"
 
-import "0.1.0" { * } without { Sensors WorldSnapshot }
+import "0.1.0" { * } without { Sensors WorldSnapshot Knobs Bookkeeping Command }
 
 // ---------------------------------------------------------------------------
 // 0.2.0 — additive:
 //   * surface myenergi-sourced Zappi session energy as a first-class
 //     dashboard sensor (PR-session-kwh-sensor).
 //   * surface the TASS core DAG (PR-tass-dag-view).
+//   * PR-gamma-hold-redesign: replace γ-hold + owner priority on the four
+//     weather_soc-driven knobs with explicit `*_mode` knobs. The four
+//     existing knobs become user-only "forced override" values; the four
+//     bookkeeping fields capture weather_soc's per-tick derivations; the
+//     setpoint/schedules controllers dispatch on `*_mode = Weather|Forced`.
 // ---------------------------------------------------------------------------
+
+// PR-gamma-hold-redesign. Per-knob source selector: `Weather` reads the
+// matching `bookkeeping.weather_soc_*` slot (default — preserves prior
+// implicit weather_soc-drives behaviour); `Forced` reads the user-owned
+// knob value directly.
+enum Mode {
+  Weather
+  Forced
+}
 
 data Sensors {
   battery_soc: ActualF64
@@ -83,6 +97,107 @@ data Timer {
 
 data Timers {
   entries: lst[Timer]
+}
+
+// PR-gamma-hold-redesign: 0.2.0 redefinition of `Knobs`. Identical to
+// 0.1.0 plus four new `*_mode` selectors (one per weather_soc-driven
+// output). The existing four numeric/bool knobs keep their meaning as
+// "forced override values" — read by the controllers when the matching
+// `*_mode` is `Forced`.
+data Knobs {
+  force_disable_export: bit
+  export_soc_threshold: f64
+  discharge_soc_target: f64
+  battery_soc_target: f64
+  full_charge_discharge_soc_target: f64
+  full_charge_export_soc_threshold: f64
+  discharge_time: DischargeTime
+  debug_full_charge: DebugFullCharge
+  pessimism_multiplier_modifier: f64
+  disable_night_grid_discharge: bit
+  charge_car_boost: bit
+  charge_car_extended: bit
+  zappi_current_target: f64
+  zappi_limit: f64
+  zappi_emergency_margin: f64
+  grid_export_limit_w: i32
+  grid_import_limit_w: i32
+  allow_battery_to_car: bit
+  eddi_enable_soc: f64
+  eddi_disable_soc: f64
+  eddi_dwell_s: i32
+  weathersoc_winter_temperature_threshold: f64
+  weathersoc_low_energy_threshold: f64
+  weathersoc_ok_energy_threshold: f64
+  weathersoc_high_energy_threshold: f64
+  weathersoc_too_much_energy_threshold: f64
+  writes_enabled: bit
+  forecast_disagreement_strategy: ForecastDisagreementStrategy
+  charge_battery_extended_mode: ChargeBatteryExtendedMode
+  // PR-gamma-hold-redesign — four mode selectors.
+  export_soc_threshold_mode: Mode
+  discharge_soc_target_mode: Mode
+  battery_soc_target_mode: Mode
+  disable_night_grid_discharge_mode: Mode
+}
+
+// PR-gamma-hold-redesign: 0.2.0 redefinition of `Bookkeeping`. Adds four
+// `weather_soc_*` slots — the planner writes its derivations here every
+// tick instead of clobbering the user-owned knobs.
+data Bookkeeping {
+  next_full_charge_iso: opt[str]
+  above_soc_date_iso: opt[str]
+  prev_ess_state: opt[i32]
+  zappi_active: bit
+  charge_to_full_required: bit
+  soc_end_of_day_target: f64
+  effective_export_soc_threshold: f64
+  battery_selected_soc_target: f64
+  charge_battery_extended_today: bit
+  charge_battery_extended_today_date_iso: opt[str]
+  // PR-gamma-hold-redesign — weather_soc per-tick derivations.
+  weather_soc_export_soc_threshold: f64
+  weather_soc_discharge_soc_target: f64
+  weather_soc_battery_soc_target: f64
+  weather_soc_disable_night_grid_discharge: bit
+}
+
+// PR-gamma-hold-redesign: extend Command with a Mode setter so the
+// dashboard can flip `*_mode` knobs without inventing a new bool/enum
+// variant for each.
+root adt Command {
+  data SetBoolKnob {
+    knob_name: str
+    value: bit
+  }
+  data SetFloatKnob {
+    knob_name: str
+    value: f64
+  }
+  data SetUintKnob {
+    knob_name: str
+    value: i32
+  }
+  data SetDischargeTime {
+    value: DischargeTime
+  }
+  data SetDebugFullCharge {
+    value: DebugFullCharge
+  }
+  data SetForecastDisagreementStrategy {
+    value: ForecastDisagreementStrategy
+  }
+  data SetChargeBatteryExtendedMode {
+    value: ChargeBatteryExtendedMode
+  }
+  // PR-gamma-hold-redesign — set one of the four `*_mode` knobs.
+  data SetMode {
+    knob_name: str
+    value: Mode
+  }
+  data SetKillSwitch {
+    value: bit
+  }
 }
 
 root data WorldSnapshot {

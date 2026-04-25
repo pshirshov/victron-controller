@@ -25,6 +25,7 @@ export * from './ForecastSnapshot';
 export * from './Forecasts';
 export * from './Freshness';
 export * from './Knobs';
+export * from './Mode';
 export * from './Owner';
 export * from './ScheduleSpec';
 export * from './SensorMeta';

@@ -23,7 +23,10 @@ mod serialize;
 
 pub use discovery::publish_ha_discovery;
 pub use log_layer::{log_channel, spawn_log_publisher, LogRecord, MqttLogLayer};
-pub use serialize::{decode_knob_set, decode_state_message, encode_publish_payload};
+pub use serialize::{
+    decode_knob_set, decode_state_message, encode_publish_payload, matter_outdoor_temp_event,
+    parse_matter_outdoor_temp, MatterOutdoorTempParse,
+};
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -42,7 +45,7 @@ use victron_controller_core::types::{
     Command, Event, KnobId, KnobValue, PublishPayload, TimerId, TimerStatus,
 };
 
-use crate::config::MqttConfig;
+use crate::config::{MqttConfig, OutdoorTemperatureLocalConfig};
 
 /// How long the bootstrap phase waits for retained `/state` messages
 /// before switching to the normal subscription pattern.
@@ -83,8 +86,14 @@ impl Publisher {
 /// Connect to the broker and spawn the rumqttc event-loop task. Returns
 /// a [`Publisher`] the runtime can clone + share, and an
 /// [`Subscriber`] that wraps the `EventLoop` so someone drives it.
+///
+/// `outdoor_temp` (optional) wires a Matter MQTT bridge feeding
+/// `SensorId::OutdoorTemperature` — see PR-matter-outdoor-temp.
 #[allow(clippy::unused_async)]
-pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscriber)>> {
+pub async fn connect(
+    config: &MqttConfig,
+    outdoor_temp: &OutdoorTemperatureLocalConfig,
+) -> Result<Option<(Publisher, Subscriber)>> {
     if config.host.is_empty() {
         info!("mqtt disabled (no host configured)");
         return Ok(None);
@@ -147,6 +156,9 @@ pub async fn connect(config: &MqttConfig) -> Result<Option<(Publisher, Subscribe
         client,
         event_loop,
         topic_root: config.topic_root.clone(),
+        matter_outdoor_topic: outdoor_temp.mqtt_topic.clone(),
+        matter_outdoor_min_c: outdoor_temp.min_celsius,
+        matter_outdoor_max_c: outdoor_temp.max_celsius,
     };
     Ok(Some((publisher, subscriber)))
 }
@@ -190,6 +202,11 @@ pub struct Subscriber {
     client: AsyncClient,
     event_loop: EventLoop,
     topic_root: String,
+    /// PR-matter-outdoor-temp: when `Some`, subscribe to this exact
+    /// topic and feed its readings as `SensorId::OutdoorTemperature`.
+    matter_outdoor_topic: Option<String>,
+    matter_outdoor_min_c: f64,
+    matter_outdoor_max_c: f64,
 }
 
 impl std::fmt::Debug for Subscriber {
@@ -199,6 +216,9 @@ impl std::fmt::Debug for Subscriber {
             .field("client", &"<AsyncClient>")
             .field("event_loop", &"<EventLoop>")
             .field("topic_root", &self.topic_root)
+            .field("matter_outdoor_topic", &self.matter_outdoor_topic)
+            .field("matter_outdoor_min_c", &self.matter_outdoor_min_c)
+            .field("matter_outdoor_max_c", &self.matter_outdoor_max_c)
             .finish()
     }
 }
@@ -334,6 +354,13 @@ impl Subscriber {
 
         // Phase 2: main loop ---------------------------------------------------
         self.subscribe_set_topics(&set_topics).await?;
+        self.subscribe_matter_outdoor().await;
+
+        // PR-matter-outdoor-temp: rate-limit the out-of-range warn to
+        // once per 60 s. Genuine sensor failures stay visible without
+        // flooding the log if a stuck sensor publishes every minute.
+        let mut last_oor_warn: Option<Instant> = None;
+        let oor_warn_period = Duration::from_secs(60);
 
         loop {
             let ev = match self.event_loop.poll().await {
@@ -346,6 +373,7 @@ impl Subscriber {
                     if let Err(e2) = self.subscribe_set_topics(&set_topics).await {
                         warn!(error = %e2, "re-subscribe failed; continuing");
                     }
+                    self.subscribe_matter_outdoor().await;
                     continue;
                 }
             };
@@ -355,8 +383,56 @@ impl Subscriber {
                     if let Err(e) = self.subscribe_set_topics(&set_topics).await {
                         warn!(error = %e, "re-subscribe after ConnAck failed");
                     }
+                    self.subscribe_matter_outdoor().await;
                 }
                 MqttEvent::Incoming(Packet::Publish(publish)) => {
+                    // PR-matter-outdoor-temp: exact-match against the
+                    // configured Matter outdoor-temperature topic before
+                    // falling through to the knob/set decoder.
+                    if let Some(topic) = self.matter_outdoor_topic.as_deref() {
+                        if publish.topic == topic {
+                            match serialize::parse_matter_outdoor_temp(
+                                &publish.payload,
+                                self.matter_outdoor_min_c,
+                                self.matter_outdoor_max_c,
+                            ) {
+                                MatterOutdoorTempParse::Reading(c) => {
+                                    let event = serialize::matter_outdoor_temp_event(
+                                        c,
+                                        Instant::now(),
+                                    );
+                                    if tx.send(event).await.is_err() {
+                                        info!(
+                                            "runtime receiver closed; mqtt subscriber exiting"
+                                        );
+                                        return Ok(());
+                                    }
+                                }
+                                MatterOutdoorTempParse::Drop => {
+                                    debug!(
+                                        topic = %publish.topic,
+                                        "matter outdoor temp body dropped (null/non-numeric/out-of-int16)"
+                                    );
+                                }
+                                MatterOutdoorTempParse::OutOfRange(c) => {
+                                    let now = Instant::now();
+                                    let should_warn = last_oor_warn
+                                        .is_none_or(|t| now.duration_since(t) >= oor_warn_period);
+                                    if should_warn {
+                                        warn!(
+                                            celsius = c,
+                                            min = self.matter_outdoor_min_c,
+                                            max = self.matter_outdoor_max_c,
+                                            topic = %publish.topic,
+                                            "matter outdoor temp out of sanity range; dropped (rate-limited 60s)"
+                                        );
+                                        last_oor_warn = Some(now);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(event) = serialize::decode_knob_set(
                         &self.topic_root,
                         &publish.topic,
@@ -384,5 +460,23 @@ impl Subscriber {
         }
         info!(?topics, "mqtt /set topics subscribed");
         Ok(())
+    }
+
+    /// PR-matter-outdoor-temp: subscribe (exact, no glob) to the
+    /// configured Matter outdoor-temperature topic, if any. Logged
+    /// once per (re)subscribe so an operator can see the bridge is
+    /// live; non-fatal on failure (the OM poller is the safety net).
+    async fn subscribe_matter_outdoor(&self) {
+        let Some(topic) = self.matter_outdoor_topic.as_deref() else {
+            return;
+        };
+        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+            Ok(()) => {
+                info!(%topic, "matter outdoor temperature MQTT bridge subscribed: {topic}");
+            }
+            Err(e) => {
+                warn!(error = %e, %topic, "matter outdoor temperature MQTT subscribe failed");
+            }
+        }
     }
 }

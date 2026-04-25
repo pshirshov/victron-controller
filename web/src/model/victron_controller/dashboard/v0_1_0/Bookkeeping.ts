@@ -114,7 +114,7 @@ export class Bookkeeping implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Bookkeeping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0"]
     public baboonSameInVersions() {
         return Bookkeeping.BaboonSameInVersions
     }

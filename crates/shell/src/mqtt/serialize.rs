@@ -10,13 +10,13 @@ use serde_json::json;
 use tracing::warn;
 
 use victron_controller_core::knobs::{
-    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Mode,
 };
 #[cfg(test)]
 use victron_controller_core::tass::Freshness;
 use victron_controller_core::types::{
     ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue,
-    PublishPayload, SensorId, encode_sensor_body,
+    PublishPayload, SensorId, SensorReading, encode_sensor_body,
 };
 use victron_controller_core::Owner;
 
@@ -82,6 +82,70 @@ fn format_sensor_value(v: f64) -> String {
     // decimals to keep the wire size small for fast-path sensors.
     let rounded = (v * 1000.0).round() / 1000.0;
     format!("{rounded}")
+}
+
+// -----------------------------------------------------------------------------
+// PR-matter-outdoor-temp: Matter cluster attribute → SensorReading
+// -----------------------------------------------------------------------------
+
+/// Outcome of parsing a Matter outdoor-temperature MQTT body.
+/// Three-way distinction so the caller can log appropriately:
+/// - `Reading(°C)` — happy path; emit a `SensorReading`.
+/// - `Drop` — body is `null` / non-numeric / out of int16 range;
+///   silently dropped (Meross publishes `null` between low-power reads,
+///   so this is the common case and must not spam logs).
+/// - `OutOfRange` — body parsed but the °C value is outside the
+///   configured `[min_celsius, max_celsius]` sanity bounds; caller
+///   should `warn!` (rate-limited) because this signals a real sensor
+///   issue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MatterOutdoorTempParse {
+    Reading(f64),
+    Drop,
+    OutOfRange(f64),
+}
+
+/// Parse a Matter `TemperatureMeasurement::MeasuredValue` body
+/// (cluster 0x0402, attribute 0) — JSON-encoded signed int in centi-
+/// Celsius, valid Matter int16 range `[-27315, 32767]`. Applies the
+/// caller-supplied sanity bounds to the resulting °C value.
+#[must_use]
+pub fn parse_matter_outdoor_temp(
+    payload: &[u8],
+    min_celsius: f64,
+    max_celsius: f64,
+) -> MatterOutdoorTempParse {
+    let centi: i64 = match serde_json::from_slice::<serde_json::Value>(payload) {
+        Ok(serde_json::Value::Number(n)) => match n.as_i64() {
+            Some(v) => v,
+            None => return MatterOutdoorTempParse::Drop,
+        },
+        // null, "unavailable", arrays, schema drift — silently drop.
+        _ => return MatterOutdoorTempParse::Drop,
+    };
+    // Matter int16 range. Anything outside indicates corruption /
+    // schema drift, not a sensor error — drop silently.
+    if !(-27315..=32767).contains(&centi) {
+        return MatterOutdoorTempParse::Drop;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let celsius = centi as f64 / 100.0;
+    if !(min_celsius..=max_celsius).contains(&celsius) {
+        return MatterOutdoorTempParse::OutOfRange(celsius);
+    }
+    MatterOutdoorTempParse::Reading(celsius)
+}
+
+/// Build the `Event::Sensor` for a parsed Matter outdoor-temperature
+/// reading. Separated from the parser so tests can assert the wiring
+/// without standing up an MQTT client.
+#[must_use]
+pub fn matter_outdoor_temp_event(celsius: f64, at: Instant) -> Event {
+    Event::Sensor(SensorReading {
+        id: SensorId::OutdoorTemperature,
+        value: celsius,
+        at,
+    })
 }
 
 /// Decode an incoming MQTT `<root>/knob/<name>/set` or
@@ -216,6 +280,11 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc_too_much_energy_threshold",
         KnobId::ForecastDisagreementStrategy => "forecast_disagreement_strategy",
         KnobId::ChargeBatteryExtendedMode => "charge_battery_extended_mode",
+        // PR-gamma-hold-redesign — four mode selectors.
+        KnobId::ExportSocThresholdMode => "export_soc_threshold_mode",
+        KnobId::DischargeSocTargetMode => "discharge_soc_target_mode",
+        KnobId::BatterySocTargetMode => "battery_soc_target_mode",
+        KnobId::DisableNightGridDischargeMode => "disable_night_grid_discharge_mode",
     }
 }
 
@@ -249,6 +318,11 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
         "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
         "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
+        // PR-gamma-hold-redesign — four mode selectors.
+        "export_soc_threshold_mode" => KnobId::ExportSocThresholdMode,
+        "discharge_soc_target_mode" => KnobId::DischargeSocTargetMode,
+        "battery_soc_target_mode" => KnobId::BatterySocTargetMode,
+        "disable_night_grid_discharge_mode" => KnobId::DisableNightGridDischargeMode,
         _ => return None,
     })
 }
@@ -328,6 +402,11 @@ fn encode_knob_value(v: KnobValue) -> String {
             ChargeBatteryExtendedMode::Forced => "forced".to_string(),
             ChargeBatteryExtendedMode::Disabled => "disabled".to_string(),
         },
+        // PR-gamma-hold-redesign.
+        KnobValue::Mode(m) => match m {
+            Mode::Weather => "weather".to_string(),
+            Mode::Forced => "forced".to_string(),
+        },
     }
 }
 
@@ -396,7 +475,12 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::DischargeTime
         | KnobId::DebugFullCharge
         | KnobId::ForecastDisagreementStrategy
-        | KnobId::ChargeBatteryExtendedMode => return None,
+        | KnobId::ChargeBatteryExtendedMode
+        // PR-gamma-hold-redesign — mode selectors are enums.
+        | KnobId::ExportSocThresholdMode
+        | KnobId::DischargeSocTargetMode
+        | KnobId::BatterySocTargetMode
+        | KnobId::DisableNightGridDischargeMode => return None,
     })
 }
 
@@ -523,6 +607,18 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
                 ChargeBatteryExtendedMode::Disabled,
             )),
             _ => None,
+        },
+        // PR-gamma-hold-redesign.
+        KnobId::ExportSocThresholdMode
+        | KnobId::DischargeSocTargetMode
+        | KnobId::BatterySocTargetMode
+        | KnobId::DisableNightGridDischargeMode => match body {
+            "weather" => Some(KnobValue::Mode(Mode::Weather)),
+            "forced" => Some(KnobValue::Mode(Mode::Forced)),
+            _ => {
+                warn!("unknown Mode value: {body}");
+                None
+            }
         },
     }
 }
@@ -1110,6 +1206,116 @@ mod tests {
         })
         .unwrap();
         assert_eq!(b, "87.5");
+    }
+
+    // ------------------------------------------------------------------
+    // PR-matter-outdoor-temp: Matter centi-Celsius → SensorReading
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn matter_outdoor_temp_parses_positive_centi_celsius() {
+        // 16.4 °C — the running example from PR scope.
+        match parse_matter_outdoor_temp(b"1640", -50.0, 80.0) {
+            MatterOutdoorTempParse::Reading(v) => {
+                assert!((v - 16.4).abs() < 1e-9, "got {v}");
+            }
+            other => panic!("expected Reading(16.4), got {other:?}"),
+        }
+        // The wired-event helper preserves the value.
+        let ev = matter_outdoor_temp_event(16.4, Instant::now());
+        match ev {
+            Event::Sensor(SensorReading {
+                id: SensorId::OutdoorTemperature,
+                value,
+                ..
+            }) => assert!((value - 16.4).abs() < 1e-9),
+            other => panic!("expected Sensor(OutdoorTemperature), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matter_outdoor_temp_parses_negative_centi_celsius() {
+        match parse_matter_outdoor_temp(b"-450", -50.0, 80.0) {
+            MatterOutdoorTempParse::Reading(v) => {
+                assert!((v - -4.5).abs() < 1e-9, "got {v}");
+            }
+            other => panic!("expected Reading(-4.5), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matter_outdoor_temp_drops_null_body() {
+        assert_eq!(
+            parse_matter_outdoor_temp(b"null", -50.0, 80.0),
+            MatterOutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn matter_outdoor_temp_drops_string_body() {
+        assert_eq!(
+            parse_matter_outdoor_temp(b"\"unavailable\"", -50.0, 80.0),
+            MatterOutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn matter_outdoor_temp_drops_garbage_body() {
+        // Not even valid JSON.
+        assert_eq!(
+            parse_matter_outdoor_temp(b"not-json", -50.0, 80.0),
+            MatterOutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn matter_outdoor_temp_drops_int16_overflow() {
+        // 100 000 centi-°C is well outside Matter's int16 range
+        // [-27315, 32767] — drop silently as schema drift.
+        assert_eq!(
+            parse_matter_outdoor_temp(b"100000", -50.0, 80.0),
+            MatterOutdoorTempParse::Drop,
+        );
+        // Negative overflow too.
+        assert_eq!(
+            parse_matter_outdoor_temp(b"-30000", -50.0, 80.0),
+            MatterOutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn matter_outdoor_temp_in_int16_but_out_of_bounds_is_oor() {
+        // 7000 centi-°C = 70.0 °C, within int16 but above the
+        // configured upper sanity bound (50.0).
+        match parse_matter_outdoor_temp(b"7000", -20.0, 50.0) {
+            MatterOutdoorTempParse::OutOfRange(v) => {
+                assert!((v - 70.0).abs() < 1e-9);
+            }
+            other => panic!("expected OutOfRange(70.0), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matter_outdoor_temp_in_bounds_round_trip() {
+        // 500 centi-°C = 5.0 °C — passes both int16 and configured
+        // [-20, 50] bounds.
+        match parse_matter_outdoor_temp(b"500", -20.0, 50.0) {
+            MatterOutdoorTempParse::Reading(v) => assert!((v - 5.0).abs() < 1e-9),
+            other => panic!("expected Reading(5.0), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matter_outdoor_temp_bounds_are_inclusive() {
+        // Exactly at the bounds should pass.
+        match parse_matter_outdoor_temp(b"-2000", -20.0, 50.0) {
+            MatterOutdoorTempParse::Reading(v) => assert!((v - -20.0).abs() < 1e-9),
+            other => panic!("expected Reading(-20.0), got {other:?}"),
+        }
+        match parse_matter_outdoor_temp(b"5000", -20.0, 50.0) {
+            MatterOutdoorTempParse::Reading(v) => assert!((v - 50.0).abs() < 1e-9),
+            other => panic!("expected Reading(50.0), got {other:?}"),
+        }
     }
 
     #[test]

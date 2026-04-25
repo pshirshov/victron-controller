@@ -28,4 +28,4 @@ pub use types::{
     FreshnessRegime, KnobId, KnobValue, LogLevel, MyenergiAction, PublishPayload, ScheduleField,
     SensorId, SensorReading, TypedReading,
 };
-pub use world::{Bookkeeping, ForecastSnapshot, KnobProvenance, Sensors, TypedSensors, World};
+pub use world::{Bookkeeping, ForecastSnapshot, Sensors, TypedSensors, World};

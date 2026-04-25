@@ -164,6 +164,16 @@ pub struct Bookkeeping {
     /// not persisted to retained MQTT today, so a reboot inside the 01:55
     /// minute may re-fire — accepted tradeoff.
     pub last_weather_soc_run_date: Option<NaiveDate>,
+    /// PR-gamma-hold-redesign: per-tick weather_soc derivations. The
+    /// planner writes its current proposal here every tick; the
+    /// setpoint / current-limit / schedules controllers read from
+    /// these slots when the matching `*_mode = Weather`. Replaces the
+    /// previous "planner clobbers user-owned knobs" model. See
+    /// `process::effective_*` helpers.
+    pub weather_soc_export_soc_threshold: f64,
+    pub weather_soc_discharge_soc_target: f64,
+    pub weather_soc_battery_soc_target: f64,
+    pub weather_soc_disable_night_grid_discharge: bool,
 }
 
 impl Bookkeeping {
@@ -181,6 +191,13 @@ impl Bookkeeping {
             charge_battery_extended_today: false,
             charge_battery_extended_today_date: None,
             last_weather_soc_run_date: None,
+            // PR-gamma-hold-redesign: match Knobs::safe_defaults so a
+            // boot before the first weather_soc tick still hands the
+            // controllers a sane value when `*_mode = Weather`.
+            weather_soc_export_soc_threshold: 80.0,
+            weather_soc_discharge_soc_target: 80.0,
+            weather_soc_battery_soc_target: 80.0,
+            weather_soc_disable_night_grid_discharge: false,
         }
     }
 }
@@ -259,28 +276,6 @@ pub struct Decisions {
     pub weather_soc: Option<Decision>,
 }
 
-/// Provenance record: which owner last wrote a knob, and when.
-///
-/// A-55: per-knob granularity. Previously a single `Option<Instant>`
-/// covered *every* knob, so writing `battery_soc_target` from the
-/// dashboard suppressed HaMqtt/WeatherSocPlanner on *all* knobs for
-/// the hold window — if the user touched one knob, HA stopped being
-/// able to drive the others. The per-knob map only holds the ones
-/// that have ever been written from the dashboard.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct KnobProvenance {
-    pub last_dashboard_write: std::collections::HashMap<crate::types::KnobId, Instant>,
-}
-
-impl KnobProvenance {
-    #[must_use]
-    pub fn fresh_boot() -> Self {
-        Self {
-            last_dashboard_write: std::collections::HashMap::new(),
-        }
-    }
-}
-
 /// PR-ha-discovery-expand: per-sensor + per-bookkeeping last-published
 /// snapshot, used by `SensorBroadcastCore` to skip republishing
 /// identical values every tick. Without this, ~28 retained MQTT
@@ -336,9 +331,11 @@ pub struct World {
     pub schedule_0: Actuated<ScheduleSpec>,
     pub schedule_1: Actuated<ScheduleSpec>,
 
-    // Knobs (plain values; γ γ hold tracked via knob_provenance)
+    // PR-gamma-hold-redesign: knobs are user-owned plain values; γ-hold
+    // and per-knob provenance are gone. Source-of-truth dispatch on the
+    // four weather_soc-driven outputs is via the `*_mode` selectors plus
+    // `bookkeeping.weather_soc_*` slots.
     pub knobs: Knobs,
-    pub knob_provenance: KnobProvenance,
 
     // Sensors
     pub sensors: Sensors,
@@ -383,7 +380,6 @@ impl World {
             schedule_0: Actuated::new(now),
             schedule_1: Actuated::new(now),
             knobs: Knobs::safe_defaults(),
-            knob_provenance: KnobProvenance::fresh_boot(),
             sensors: Sensors::unknown(now),
             typed_sensors: TypedSensors::unknown(now),
             bookkeeping: Bookkeeping::fresh_boot(),

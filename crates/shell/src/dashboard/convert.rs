@@ -37,8 +37,15 @@ pub struct MetaContext {
     pub services: DbusServices,
     pub open_meteo_cadence: Duration,
     pub controller_params: ControllerParams,
+    /// PR-matter-outdoor-temp: when `Some`, the dashboard's
+    /// `outdoor_temperature` row is annotated with the Matter MQTT
+    /// origin/topic instead of Open-Meteo. Open-Meteo remains a silent
+    /// fallback source (whichever publishes most recently wins via
+    /// `Actual::on_reading`'s freshness reset).
+    pub matter_outdoor_topic: Option<String>,
 }
 
+use victron_controller_dashboard_model::victron_controller::dashboard::mode::Mode as ModelMode;
 use victron_controller_dashboard_model::victron_controller::dashboard::actuated::Actuated as ModelActuated;
 use victron_controller_dashboard_model::victron_controller::dashboard::actuated_enum_name::ActuatedEnumName;
 use victron_controller_dashboard_model::victron_controller::dashboard::actuated_f64::ActuatedF64 as ModelActuatedF64;
@@ -310,6 +317,10 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             charge_battery_extended_today_date_iso: b
                 .charge_battery_extended_today_date
                 .map(|d| d.to_string()),
+            weather_soc_export_soc_threshold: b.weather_soc_export_soc_threshold,
+            weather_soc_discharge_soc_target: b.weather_soc_discharge_soc_target,
+            weather_soc_battery_soc_target: b.weather_soc_battery_soc_target,
+            weather_soc_disable_night_grid_discharge: b.weather_soc_disable_night_grid_discharge,
         },
         forecasts: ModelForecasts {
             solcast: f.forecast_solcast.as_ref().map(forecast_snapshot),
@@ -513,13 +524,27 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             SensorId::EssState,
         ),
     );
+    // PR-matter-outdoor-temp: when the Matter MQTT bridge is configured,
+    // surface its origin/topic/cadence on the dashboard. Open-Meteo
+    // stays running as a silent fallback (~30 min cadence, 40 min
+    // staleness — either source keeps the sensor fresh).
     m.insert(
         "outdoor_temperature".into(),
-        ModelSensorMeta {
-            origin: "open-meteo".to_string(),
-            identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
-            cadence_ms: om_cadence_ms,
-            staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
+        if let Some(topic) = &ctx.matter_outdoor_topic {
+            ModelSensorMeta {
+                origin: "matter-mqtt".to_string(),
+                identifier: topic.clone(),
+                // Meross publishes ~every minute when alive.
+                cadence_ms: 60_000,
+                staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
+            }
+        } else {
+            ModelSensorMeta {
+                origin: "open-meteo".to_string(),
+                identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
+                cadence_ms: om_cadence_ms,
+                staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
+            }
         },
     );
     // Zappi session kWh — sourced from the myenergi cloud `che` field
@@ -602,6 +627,18 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         writes_enabled: k.writes_enabled,
         forecast_disagreement_strategy: forecast_strategy(k.forecast_disagreement_strategy),
         charge_battery_extended_mode: cbe_mode(k.charge_battery_extended_mode),
+        export_soc_threshold_mode: mode(k.export_soc_threshold_mode),
+        discharge_soc_target_mode: mode(k.discharge_soc_target_mode),
+        battery_soc_target_mode: mode(k.battery_soc_target_mode),
+        disable_night_grid_discharge_mode: mode(k.disable_night_grid_discharge_mode),
+    }
+}
+
+fn mode(m: victron_controller_core::knobs::Mode) -> ModelMode {
+    use victron_controller_core::knobs::Mode as CoreMode;
+    match m {
+        CoreMode::Weather => ModelMode::Weather,
+        CoreMode::Forced => ModelMode::Forced,
     }
 }
 
@@ -699,6 +736,14 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
                 ModelCbeMode::Disabled => ChargeBatteryExtendedMode::Disabled,
             }),
         },
+        C::SetMode(c) => {
+            let id = knob_id_from_name(&c.knob_name)?;
+            let core_mode = match c.value {
+                ModelMode::Weather => victron_controller_core::knobs::Mode::Weather,
+                ModelMode::Forced => victron_controller_core::knobs::Mode::Forced,
+            };
+            Command::Knob { id, value: KnobValue::Mode(core_mode) }
+        }
         C::SetKillSwitch(c) => Command::KillSwitch(c.value),
     };
     Some(Event::Command {
@@ -741,6 +786,10 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
         "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
         "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
+        "export_soc_threshold_mode" => KnobId::ExportSocThresholdMode,
+        "discharge_soc_target_mode" => KnobId::DischargeSocTargetMode,
+        "battery_soc_target_mode" => KnobId::BatterySocTargetMode,
+        "disable_night_grid_discharge_mode" => KnobId::DisableNightGridDischargeMode,
         _ => return None,
     })
 }

@@ -2,6 +2,7 @@ use crate::victron_controller::dashboard::charge_battery_extended_mode::ChargeBa
 use crate::victron_controller::dashboard::debug_full_charge::DebugFullCharge;
 use crate::victron_controller::dashboard::discharge_time::DischargeTime;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
+use crate::victron_controller::dashboard::mode::Mode;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Knobs {
@@ -34,6 +35,10 @@ pub struct Knobs {
     pub writes_enabled: bool,
     pub forecast_disagreement_strategy: ForecastDisagreementStrategy,
     pub charge_battery_extended_mode: ChargeBatteryExtendedMode,
+    pub export_soc_threshold_mode: Mode,
+    pub discharge_soc_target_mode: Mode,
+    pub battery_soc_target_mode: Mode,
+    pub disable_night_grid_discharge_mode: Mode,
 }
 
 impl PartialEq for Knobs {
@@ -168,6 +173,22 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.export_soc_threshold_mode.cmp(&other.export_soc_threshold_mode) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.discharge_soc_target_mode.cmp(&other.discharge_soc_target_mode) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.battery_soc_target_mode.cmp(&other.battery_soc_target_mode) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.disable_night_grid_discharge_mode.cmp(&other.disable_night_grid_discharge_mode) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -213,6 +234,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.writes_enabled.encode_ueba(ctx, &mut buffer)?;
             value.forecast_disagreement_strategy.encode_ueba(ctx, &mut buffer)?;
             value.charge_battery_extended_mode.encode_ueba(ctx, &mut buffer)?;
+            value.export_soc_threshold_mode.encode_ueba(ctx, &mut buffer)?;
+            value.discharge_soc_target_mode.encode_ueba(ctx, &mut buffer)?;
+            value.battery_soc_target_mode.encode_ueba(ctx, &mut buffer)?;
+            value.disable_night_grid_discharge_mode.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -245,6 +270,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.writes_enabled.encode_ueba(ctx, writer)?;
             value.forecast_disagreement_strategy.encode_ueba(ctx, writer)?;
             value.charge_battery_extended_mode.encode_ueba(ctx, writer)?;
+            value.export_soc_threshold_mode.encode_ueba(ctx, writer)?;
+            value.discharge_soc_target_mode.encode_ueba(ctx, writer)?;
+            value.battery_soc_target_mode.encode_ueba(ctx, writer)?;
+            value.disable_night_grid_discharge_mode.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -285,6 +314,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let writes_enabled = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let forecast_disagreement_strategy = ForecastDisagreementStrategy::decode_ueba(ctx, reader)?;
         let charge_battery_extended_mode = ChargeBatteryExtendedMode::decode_ueba(ctx, reader)?;
+        let export_soc_threshold_mode = Mode::decode_ueba(ctx, reader)?;
+        let discharge_soc_target_mode = Mode::decode_ueba(ctx, reader)?;
+        let battery_soc_target_mode = Mode::decode_ueba(ctx, reader)?;
+        let disable_night_grid_discharge_mode = Mode::decode_ueba(ctx, reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -315,6 +348,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             writes_enabled,
             forecast_disagreement_strategy,
             charge_battery_extended_mode,
+            export_soc_threshold_mode,
+            discharge_soc_target_mode,
+            battery_soc_target_mode,
+            disable_night_grid_discharge_mode,
         })
     }
 }

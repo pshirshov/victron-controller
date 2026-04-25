@@ -95,6 +95,8 @@ pub mod from_0_1_0_wsservermessage_pong;
 pub mod from_0_1_0_wsservermessage_snapshot;
 pub mod knobs;
 pub use knobs::*;
+pub mod mode;
+pub use mode::*;
 pub mod owner;
 pub use owner::*;
 pub mod schedule_spec;

@@ -121,6 +121,20 @@ port = 8910
 bind = "0.0.0.0"
 
 # =============================================================================
+# Outdoor temperature — optional Matter MQTT bridge (PR-matter-outdoor-temp)
+# =============================================================================
+# When `mqtt_topic` is set, the controller subscribes to that topic on the
+# same broker as `[mqtt]` above and feeds incoming readings as the
+# `outdoor_temperature` sensor. The Open-Meteo current-weather poller
+# stays running as a fallback — whichever source publishes most recently
+# wins. Body must be a JSON-encoded signed int in centi-Celsius (e.g.
+# `1640` = 16.4°C); `null` / non-numeric bodies are silently dropped.
+[outdoor_temperature_local]
+# mqtt_topic  = "matter/1/attributes/107_1026_0"
+# min_celsius = -20.0
+# max_celsius = 50.0
+
+# =============================================================================
 # Runtime tuning
 # =============================================================================
 [tuning]

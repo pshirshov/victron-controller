@@ -12,6 +12,10 @@ pub struct Bookkeeping {
     pub battery_selected_soc_target: f64,
     pub charge_battery_extended_today: bool,
     pub charge_battery_extended_today_date_iso: Option<String>,
+    pub weather_soc_export_soc_threshold: f64,
+    pub weather_soc_discharge_soc_target: f64,
+    pub weather_soc_battery_soc_target: f64,
+    pub weather_soc_disable_night_grid_discharge: bool,
 }
 
 impl PartialEq for Bookkeeping {
@@ -67,6 +71,22 @@ impl Ord for Bookkeeping {
             ord => return ord,
         }
         match self.charge_battery_extended_today_date_iso.cmp(&other.charge_battery_extended_today_date_iso) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.weather_soc_export_soc_threshold.total_cmp(&other.weather_soc_export_soc_threshold) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.weather_soc_discharge_soc_target.total_cmp(&other.weather_soc_discharge_soc_target) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.weather_soc_battery_soc_target.total_cmp(&other.weather_soc_battery_soc_target) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.weather_soc_disable_night_grid_discharge.cmp(&other.weather_soc_disable_night_grid_discharge) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
@@ -148,6 +168,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Bookkeeping {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            value.weather_soc_export_soc_threshold.encode_ueba(ctx, &mut buffer)?;
+            value.weather_soc_discharge_soc_target.encode_ueba(ctx, &mut buffer)?;
+            value.weather_soc_battery_soc_target.encode_ueba(ctx, &mut buffer)?;
+            value.weather_soc_disable_night_grid_discharge.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -185,6 +209,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Bookkeeping {
                     v.encode_ueba(ctx, writer)?;
                 }
             }
+            value.weather_soc_export_soc_threshold.encode_ueba(ctx, writer)?;
+            value.weather_soc_discharge_soc_target.encode_ueba(ctx, writer)?;
+            value.weather_soc_battery_soc_target.encode_ueba(ctx, writer)?;
+            value.weather_soc_disable_night_grid_discharge.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -218,6 +246,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Bookkeeping {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
+        let weather_soc_export_soc_threshold = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let weather_soc_discharge_soc_target = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let weather_soc_battery_soc_target = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let weather_soc_disable_night_grid_discharge = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         Ok(Bookkeeping {
             next_full_charge_iso,
             above_soc_date_iso,
@@ -229,6 +261,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Bookkeeping {
             battery_selected_soc_target,
             charge_battery_extended_today,
             charge_battery_extended_today_date_iso,
+            weather_soc_export_soc_threshold,
+            weather_soc_discharge_soc_target,
+            weather_soc_battery_soc_target,
+            weather_soc_disable_night_grid_discharge,
         })
     }
 }

@@ -12,8 +12,12 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     private readonly _battery_selected_soc_target: number;
     private readonly _charge_battery_extended_today: boolean;
     private readonly _charge_battery_extended_today_date_iso: string | undefined;
+    private readonly _weather_soc_export_soc_threshold: number;
+    private readonly _weather_soc_discharge_soc_target: number;
+    private readonly _weather_soc_battery_soc_target: number;
+    private readonly _weather_soc_disable_night_grid_discharge: boolean;
 
-    constructor(next_full_charge_iso: string | undefined, above_soc_date_iso: string | undefined, prev_ess_state: number | undefined, zappi_active: boolean, charge_to_full_required: boolean, soc_end_of_day_target: number, effective_export_soc_threshold: number, battery_selected_soc_target: number, charge_battery_extended_today: boolean, charge_battery_extended_today_date_iso: string | undefined) {
+    constructor(next_full_charge_iso: string | undefined, above_soc_date_iso: string | undefined, prev_ess_state: number | undefined, zappi_active: boolean, charge_to_full_required: boolean, soc_end_of_day_target: number, effective_export_soc_threshold: number, battery_selected_soc_target: number, charge_battery_extended_today: boolean, charge_battery_extended_today_date_iso: string | undefined, weather_soc_export_soc_threshold: number, weather_soc_discharge_soc_target: number, weather_soc_battery_soc_target: number, weather_soc_disable_night_grid_discharge: boolean) {
         this._next_full_charge_iso = next_full_charge_iso
         this._above_soc_date_iso = above_soc_date_iso
         this._prev_ess_state = prev_ess_state
@@ -24,6 +28,10 @@ export class Bookkeeping implements BaboonGeneratedLatest {
         this._battery_selected_soc_target = battery_selected_soc_target
         this._charge_battery_extended_today = charge_battery_extended_today
         this._charge_battery_extended_today_date_iso = charge_battery_extended_today_date_iso
+        this._weather_soc_export_soc_threshold = weather_soc_export_soc_threshold
+        this._weather_soc_discharge_soc_target = weather_soc_discharge_soc_target
+        this._weather_soc_battery_soc_target = weather_soc_battery_soc_target
+        this._weather_soc_disable_night_grid_discharge = weather_soc_disable_night_grid_discharge
     }
 
     public get next_full_charge_iso(): string | undefined {
@@ -56,6 +64,18 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     public get charge_battery_extended_today_date_iso(): string | undefined {
         return this._charge_battery_extended_today_date_iso;
     }
+    public get weather_soc_export_soc_threshold(): number {
+        return this._weather_soc_export_soc_threshold;
+    }
+    public get weather_soc_discharge_soc_target(): number {
+        return this._weather_soc_discharge_soc_target;
+    }
+    public get weather_soc_battery_soc_target(): number {
+        return this._weather_soc_battery_soc_target;
+    }
+    public get weather_soc_disable_night_grid_discharge(): boolean {
+        return this._weather_soc_disable_night_grid_discharge;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -68,11 +88,15 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             effective_export_soc_threshold: this._effective_export_soc_threshold,
             battery_selected_soc_target: this._battery_selected_soc_target,
             charge_battery_extended_today: this._charge_battery_extended_today,
-            charge_battery_extended_today_date_iso: this._charge_battery_extended_today_date_iso !== undefined ? this._charge_battery_extended_today_date_iso : undefined
+            charge_battery_extended_today_date_iso: this._charge_battery_extended_today_date_iso !== undefined ? this._charge_battery_extended_today_date_iso : undefined,
+            weather_soc_export_soc_threshold: this._weather_soc_export_soc_threshold,
+            weather_soc_discharge_soc_target: this._weather_soc_discharge_soc_target,
+            weather_soc_battery_soc_target: this._weather_soc_battery_soc_target,
+            weather_soc_disable_night_grid_discharge: this._weather_soc_disable_night_grid_discharge
         };
     }
 
-    public with(overrides: {next_full_charge_iso?: string | undefined; above_soc_date_iso?: string | undefined; prev_ess_state?: number | undefined; zappi_active?: boolean; charge_to_full_required?: boolean; soc_end_of_day_target?: number; effective_export_soc_threshold?: number; battery_selected_soc_target?: number; charge_battery_extended_today?: boolean; charge_battery_extended_today_date_iso?: string | undefined}): Bookkeeping {
+    public with(overrides: {next_full_charge_iso?: string | undefined; above_soc_date_iso?: string | undefined; prev_ess_state?: number | undefined; zappi_active?: boolean; charge_to_full_required?: boolean; soc_end_of_day_target?: number; effective_export_soc_threshold?: number; battery_selected_soc_target?: number; charge_battery_extended_today?: boolean; charge_battery_extended_today_date_iso?: string | undefined; weather_soc_export_soc_threshold?: number; weather_soc_discharge_soc_target?: number; weather_soc_battery_soc_target?: number; weather_soc_disable_night_grid_discharge?: boolean}): Bookkeeping {
         return new Bookkeeping(
             'next_full_charge_iso' in overrides ? overrides.next_full_charge_iso! : this._next_full_charge_iso,
             'above_soc_date_iso' in overrides ? overrides.above_soc_date_iso! : this._above_soc_date_iso,
@@ -83,11 +107,15 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             'effective_export_soc_threshold' in overrides ? overrides.effective_export_soc_threshold! : this._effective_export_soc_threshold,
             'battery_selected_soc_target' in overrides ? overrides.battery_selected_soc_target! : this._battery_selected_soc_target,
             'charge_battery_extended_today' in overrides ? overrides.charge_battery_extended_today! : this._charge_battery_extended_today,
-            'charge_battery_extended_today_date_iso' in overrides ? overrides.charge_battery_extended_today_date_iso! : this._charge_battery_extended_today_date_iso
+            'charge_battery_extended_today_date_iso' in overrides ? overrides.charge_battery_extended_today_date_iso! : this._charge_battery_extended_today_date_iso,
+            'weather_soc_export_soc_threshold' in overrides ? overrides.weather_soc_export_soc_threshold! : this._weather_soc_export_soc_threshold,
+            'weather_soc_discharge_soc_target' in overrides ? overrides.weather_soc_discharge_soc_target! : this._weather_soc_discharge_soc_target,
+            'weather_soc_battery_soc_target' in overrides ? overrides.weather_soc_battery_soc_target! : this._weather_soc_battery_soc_target,
+            'weather_soc_disable_night_grid_discharge' in overrides ? overrides.weather_soc_disable_night_grid_discharge! : this._weather_soc_disable_night_grid_discharge
         );
     }
 
-    public static fromPlain(obj: {next_full_charge_iso: string | undefined; above_soc_date_iso: string | undefined; prev_ess_state: number | undefined; zappi_active: boolean; charge_to_full_required: boolean; soc_end_of_day_target: number; effective_export_soc_threshold: number; battery_selected_soc_target: number; charge_battery_extended_today: boolean; charge_battery_extended_today_date_iso: string | undefined}): Bookkeeping {
+    public static fromPlain(obj: {next_full_charge_iso: string | undefined; above_soc_date_iso: string | undefined; prev_ess_state: number | undefined; zappi_active: boolean; charge_to_full_required: boolean; soc_end_of_day_target: number; effective_export_soc_threshold: number; battery_selected_soc_target: number; charge_battery_extended_today: boolean; charge_battery_extended_today_date_iso: string | undefined; weather_soc_export_soc_threshold: number; weather_soc_discharge_soc_target: number; weather_soc_battery_soc_target: number; weather_soc_disable_night_grid_discharge: boolean}): Bookkeeping {
         return new Bookkeeping(
             obj.next_full_charge_iso,
             obj.above_soc_date_iso,
@@ -98,7 +126,11 @@ export class Bookkeeping implements BaboonGeneratedLatest {
             obj.effective_export_soc_threshold,
             obj.battery_selected_soc_target,
             obj.charge_battery_extended_today,
-            obj.charge_battery_extended_today_date_iso
+            obj.charge_battery_extended_today_date_iso,
+            obj.weather_soc_export_soc_threshold,
+            obj.weather_soc_discharge_soc_target,
+            obj.weather_soc_battery_soc_target,
+            obj.weather_soc_disable_night_grid_discharge
         );
     }
 
@@ -114,7 +146,7 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Bookkeeping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0"]
     public baboonSameInVersions() {
         return Bookkeeping.BaboonSameInVersions
     }
@@ -186,6 +218,10 @@ export class Bookkeeping_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            BinTools.writeF64(buffer, value.weather_soc_export_soc_threshold);
+            BinTools.writeF64(buffer, value.weather_soc_discharge_soc_target);
+            BinTools.writeF64(buffer, value.weather_soc_battery_soc_target);
+            BinTools.writeBool(buffer, value.weather_soc_disable_night_grid_discharge);
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -219,6 +255,10 @@ export class Bookkeeping_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 BinTools.writeString(writer, value.charge_battery_extended_today_date_iso);
             }
+            BinTools.writeF64(writer, value.weather_soc_export_soc_threshold);
+            BinTools.writeF64(writer, value.weather_soc_discharge_soc_target);
+            BinTools.writeF64(writer, value.weather_soc_battery_soc_target);
+            BinTools.writeBool(writer, value.weather_soc_disable_night_grid_discharge);
         }
     }
     
@@ -245,6 +285,10 @@ export class Bookkeeping_UEBACodec {
         const battery_selected_soc_target = BinTools.readF64(reader);
         const charge_battery_extended_today = BinTools.readBool(reader);
         const charge_battery_extended_today_date_iso = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
+        const weather_soc_export_soc_threshold = BinTools.readF64(reader);
+        const weather_soc_discharge_soc_target = BinTools.readF64(reader);
+        const weather_soc_battery_soc_target = BinTools.readF64(reader);
+        const weather_soc_disable_night_grid_discharge = BinTools.readBool(reader);
         return new Bookkeeping(
             next_full_charge_iso,
             above_soc_date_iso,
@@ -256,6 +300,10 @@ export class Bookkeeping_UEBACodec {
             battery_selected_soc_target,
             charge_battery_extended_today,
             charge_battery_extended_today_date_iso,
+            weather_soc_export_soc_threshold,
+            weather_soc_discharge_soc_target,
+            weather_soc_battery_soc_target,
+            weather_soc_disable_night_grid_discharge,
         );
     }
 

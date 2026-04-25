@@ -37,6 +37,19 @@ pub enum ForecastDisagreementStrategy {
     SolcastIfAvailableElseMean,
 }
 
+/// PR-gamma-hold-redesign. Per-knob source selector for the four
+/// weather_soc-driven outputs: `Weather` reads the matching
+/// `bookkeeping.weather_soc_*` slot (default — preserves prior implicit
+/// behaviour where the planner drove these knobs); `Forced` reads the
+/// user-owned knob value directly. There is no priority queue and no
+/// γ-hold — the user picks the source explicitly per knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Weather,
+    Forced,
+}
+
 /// Override for the `charge_battery_extended` bit that the schedules
 /// controller consults. Legacy derivation is
 /// `!disable_night_grid_discharge || charge_to_full_required`, but the
@@ -118,6 +131,15 @@ pub struct Knobs {
     /// Manual override for the legacy `charge_battery_extended`
     /// derivation. Default `Auto` → use the derived value.
     pub charge_battery_extended_mode: ChargeBatteryExtendedMode,
+
+    // --- PR-gamma-hold-redesign: per-knob source selectors ---
+    /// `Weather` (default): controllers read
+    /// `bookkeeping.weather_soc_export_soc_threshold`. `Forced`:
+    /// controllers read `knobs.export_soc_threshold` directly.
+    pub export_soc_threshold_mode: Mode,
+    pub discharge_soc_target_mode: Mode,
+    pub battery_soc_target_mode: Mode,
+    pub disable_night_grid_discharge_mode: Mode,
 }
 
 impl Knobs {
@@ -174,6 +196,14 @@ impl Knobs {
             writes_enabled: false,
             forecast_disagreement_strategy: ForecastDisagreementStrategy::SolcastIfAvailableElseMean,
             charge_battery_extended_mode: ChargeBatteryExtendedMode::Auto,
+            // PR-gamma-hold-redesign: planner-driven defaults so prior
+            // behaviour (weather_soc owns these knobs) is preserved out
+            // of the box. Flip to `Forced` from the dashboard / HA to
+            // pin the user-set knob value through.
+            export_soc_threshold_mode: Mode::Weather,
+            discharge_soc_target_mode: Mode::Weather,
+            battery_soc_target_mode: Mode::Weather,
+            disable_night_grid_discharge_mode: Mode::Weather,
         }
     }
 }
@@ -208,6 +238,11 @@ mod tests {
         // Cold-start safety: observer-mode by default; user/MQTT must
         // explicitly enable writes.
         assert!(!k.writes_enabled);
+        // PR-gamma-hold-redesign: planner-driven by default.
+        assert_eq!(k.export_soc_threshold_mode, Mode::Weather);
+        assert_eq!(k.discharge_soc_target_mode, Mode::Weather);
+        assert_eq!(k.battery_soc_target_mode, Mode::Weather);
+        assert_eq!(k.disable_night_grid_discharge_mode, Mode::Weather);
     }
 
     #[test]

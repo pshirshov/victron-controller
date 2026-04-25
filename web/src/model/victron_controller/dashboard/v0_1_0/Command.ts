@@ -11,7 +11,7 @@ export const Command = {
     BaboonDomainVersion: '0.1.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#Command',
-    BaboonSameInVersions: ["0.1.0", "0.2.0"],
+    BaboonSameInVersions: ["0.1.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#Command',
     binCodec(): Command_UEBACodec {
         return Command_UEBACodec.instance

@@ -567,14 +567,17 @@ proptest! {
 }
 
 // -----------------------------------------------------------------------------
-// Property 9 — γ-rule: Dashboard write + an HA write anywhere in the
-// next 999 ms must be dropped; an HA write at 1000+ ms wins.
+// Property 9 — last-write-wins: γ-hold is gone (PR-gamma-hold-redesign).
+// Both Dashboard and HA writes apply unconditionally; whichever arrives
+// last wins. The forced-value vs weather-source policy is encoded in
+// the `*_mode` knobs, not in owner priority.
 // -----------------------------------------------------------------------------
 
 proptest! {
     #[test]
-    fn gamma_rule_holds_dashboard_over_ha_within_hold_window(
-        hold_ms in 0u64..999,
+    fn last_write_wins_regardless_of_owner(
+        delta_ms in 0u64..100_000,
+        ha_first in proptest::bool::ANY,
     ) {
         use victron_controller_core::types::{Command, KnobId, KnobValue};
 
@@ -583,85 +586,43 @@ proptest! {
         let topo = Topology::defaults();
         let clock = FixedClock::at(naive_noon());
 
-        // Dashboard sets the knob first.
+        let (first_owner, first_val, second_owner, second_val) = if ha_first {
+            (Owner::HaMqtt, 50.0, Owner::Dashboard, 80.0)
+        } else {
+            (Owner::Dashboard, 50.0, Owner::HaMqtt, 80.0)
+        };
+
         let _ = process(
             &Event::Command {
                 command: Command::Knob {
                     id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(50.0),
+                    value: KnobValue::Float(first_val),
                 },
-                owner: Owner::Dashboard,
+                owner: first_owner,
                 at: t0,
             },
             &mut world,
             &clock,
             &topo,
         );
-        prop_assert!((world.knobs.export_soc_threshold - 50.0).abs() < f64::EPSILON);
+        prop_assert!((world.knobs.export_soc_threshold - first_val).abs() < f64::EPSILON);
 
-        // HA writes within the 1 s hold window — should be dropped.
         let _ = process(
             &Event::Command {
                 command: Command::Knob {
                     id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(80.0),
+                    value: KnobValue::Float(second_val),
                 },
-                owner: Owner::HaMqtt,
-                at: t0 + Duration::from_millis(hold_ms),
+                owner: second_owner,
+                at: t0 + Duration::from_millis(delta_ms),
             },
             &mut world,
             &clock,
             &topo,
         );
         prop_assert!(
-            (world.knobs.export_soc_threshold - 50.0).abs() < f64::EPSILON,
-            "HA write at {hold_ms}ms suppressed"
-        );
-    }
-}
-
-proptest! {
-    #[test]
-    fn gamma_rule_allows_ha_after_hold_window(
-        extra_ms in 0u64..100_000,
-    ) {
-        use victron_controller_core::types::{Command, KnobId, KnobValue};
-
-        let t0 = Instant::now();
-        let mut world = seeded_world(t0);
-        let topo = Topology::defaults();
-        let clock = FixedClock::at(naive_noon());
-
-        let _ = process(
-            &Event::Command {
-                command: Command::Knob {
-                    id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(50.0),
-                },
-                owner: Owner::Dashboard,
-                at: t0,
-            },
-            &mut world,
-            &clock,
-            &topo,
-        );
-
-        let _ = process(
-            &Event::Command {
-                command: Command::Knob {
-                    id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(80.0),
-                },
-                owner: Owner::HaMqtt,
-                at: t0 + Duration::from_millis(1000 + extra_ms),
-            },
-            &mut world,
-            &clock,
-            &topo,
-        );
-        prop_assert!(
-            (world.knobs.export_soc_threshold - 80.0).abs() < f64::EPSILON,
-            "HA write at 1000+{extra_ms}ms accepted"
+            (world.knobs.export_soc_threshold - second_val).abs() < f64::EPSILON,
+            "second write ({second_owner:?}={second_val}) at {delta_ms}ms must win regardless of owner"
         );
     }
 }

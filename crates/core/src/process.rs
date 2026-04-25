@@ -22,7 +22,7 @@
 //! which controller" dispatch problem entirely.
 
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 
 use crate::Clock;
@@ -59,10 +59,11 @@ use crate::types::{
 use crate::world::TimerEntry;
 use crate::world::{ForecastSnapshot, World};
 
-/// γ-rule window: dashboard write suppresses HA commands within this
-/// duration. SPEC §5.4.
-const DASHBOARD_HOLD_WINDOW: Duration = Duration::from_secs(1);
-
+/// PR-gamma-hold-redesign: the γ-rule + per-knob hold window are gone.
+/// Conflicts on the four weather_soc-driven knobs are resolved
+/// declaratively via the `*_mode` selectors instead. Knob writes from
+/// any owner are accepted unconditionally (subject to type validity).
+///
 /// Evaluate one event against the world, returning effects for the shell
 /// to execute.
 #[must_use]
@@ -288,26 +289,16 @@ fn apply_command(
     world: &mut World,
     effects: &mut Vec<Effect>,
 ) {
+    let _ = (owner, at);
     match command {
         Command::Knob { id, value } => {
-            if !accept_knob_command(owner, id, at, world) {
-                effects.push(Effect::Log {
-                    level: LogLevel::Debug,
-                    source: "process::command",
-                    message: format!(
-                        "suppressed knob command id={id:?} owner={owner:?} (dashboard γ-hold active for this knob)"
-                    ),
-                });
-                return;
-            }
+            // PR-gamma-hold-redesign: knob writes are accepted from any
+            // owner. The four weather_soc-driven outputs are arbitrated
+            // by the `*_mode` selectors at read-time, not at write-time.
             let changed = apply_knob(id, value, world, effects);
-            if owner == Owner::Dashboard {
-                world.knob_provenance.last_dashboard_write.insert(id, at);
-            }
-            // PR-weather-soc-dynamic: skip the retained-MQTT publish on
-            // no-op writes. Otherwise the dynamic planner (and any
-            // other every-tick caller) would spam the broker with
-            // redundant retains.
+            // Skip the retained-MQTT publish on no-op writes; otherwise
+            // any every-tick caller would spam the broker with redundant
+            // retains.
             if changed {
                 effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
             }
@@ -387,25 +378,11 @@ fn apply_bookkeeping(
     }
 }
 
-fn accept_knob_command(owner: Owner, id: KnobId, at: Instant, world: &World) -> bool {
-    // γ-rule: dashboard writes suppress subsystem commands within the
-    // hold window. Applies to HaMqtt AND WeatherSocPlanner — both are
-    // automatic-path writers a user might want to override temporarily
-    // via the dashboard.
-    //
-    // A-55: per-knob granularity. Touching `battery_soc_target` via
-    // dashboard must not suppress `export_soc_threshold` updates from
-    // HA; the γ-hold applies only to the SPECIFIC knob that was
-    // recently written.
-    if matches!(owner, Owner::HaMqtt | Owner::WeatherSocPlanner) {
-        if let Some(&last) = world.knob_provenance.last_dashboard_write.get(&id) {
-            if at.saturating_duration_since(last) < DASHBOARD_HOLD_WINDOW {
-                return false;
-            }
-        }
-    }
-    true
-}
+// PR-gamma-hold-redesign: `accept_knob_command` is gone — the γ-hold
+// + per-knob provenance map it gated on were the load-bearing pieces
+// of the legacy "owner priority" model. With the new design the user
+// flips `*_mode` to `Forced` to pin a knob; there is no implicit
+// "newer-from-X-beats-Y" rule, so every knob write is accepted.
 
 #[allow(clippy::too_many_lines)]
 /// Apply a `(KnobId, KnobValue)` to `world.knobs`. Returns `true` when
@@ -464,6 +441,19 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         }
         (KnobId::ChargeBatteryExtendedMode, KnobValue::ChargeBatteryExtendedMode(v)) => {
             replace(&mut k.charge_battery_extended_mode, v) != v
+        }
+        // PR-gamma-hold-redesign — the four mode selectors.
+        (KnobId::ExportSocThresholdMode, KnobValue::Mode(v)) => {
+            replace(&mut k.export_soc_threshold_mode, v) != v
+        }
+        (KnobId::DischargeSocTargetMode, KnobValue::Mode(v)) => {
+            replace(&mut k.discharge_soc_target_mode, v) != v
+        }
+        (KnobId::BatterySocTargetMode, KnobValue::Mode(v)) => {
+            replace(&mut k.battery_soc_target_mode, v) != v
+        }
+        (KnobId::DisableNightGridDischargeMode, KnobValue::Mode(v)) => {
+            replace(&mut k.disable_night_grid_discharge_mode, v) != v
         }
         _ => {
             effects.push(Effect::Log {
@@ -551,6 +541,23 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::ChargeBatteryExtendedMode,
             value: V::ChargeBatteryExtendedMode(k.charge_battery_extended_mode),
+        },
+        // PR-gamma-hold-redesign — four mode selectors.
+        PublishPayload::Knob {
+            id: I::ExportSocThresholdMode,
+            value: V::Mode(k.export_soc_threshold_mode),
+        },
+        PublishPayload::Knob {
+            id: I::DischargeSocTargetMode,
+            value: V::Mode(k.discharge_soc_target_mode),
+        },
+        PublishPayload::Knob {
+            id: I::BatterySocTargetMode,
+            value: V::Mode(k.battery_soc_target_mode),
+        },
+        PublishPayload::Knob {
+            id: I::DisableNightGridDischargeMode,
+            value: V::Mode(k.disable_night_grid_discharge_mode),
         },
     ]
 }
@@ -660,6 +667,50 @@ fn run_controllers(
 
 // --- Setpoint -----------------------------------------------------------------
 
+// PR-gamma-hold-redesign: per-knob "effective value" helpers. Each of
+// the four weather_soc-driven outputs has a `*_mode` selector:
+// `Weather` reads the planner's per-tick derivation
+// (`bookkeeping.weather_soc_*`); `Forced` reads the user-owned knob
+// directly. These helpers are the single source of truth — every
+// controller that needs one of these four values dispatches through
+// here so `*_mode` semantics can't drift across consumers.
+
+#[must_use]
+pub(crate) fn effective_export_soc_threshold(world: &World) -> f64 {
+    use crate::knobs::Mode;
+    match world.knobs.export_soc_threshold_mode {
+        Mode::Forced => world.knobs.export_soc_threshold,
+        Mode::Weather => world.bookkeeping.weather_soc_export_soc_threshold,
+    }
+}
+
+#[must_use]
+pub(crate) fn effective_discharge_soc_target(world: &World) -> f64 {
+    use crate::knobs::Mode;
+    match world.knobs.discharge_soc_target_mode {
+        Mode::Forced => world.knobs.discharge_soc_target,
+        Mode::Weather => world.bookkeeping.weather_soc_discharge_soc_target,
+    }
+}
+
+#[must_use]
+pub(crate) fn effective_battery_soc_target(world: &World) -> f64 {
+    use crate::knobs::Mode;
+    match world.knobs.battery_soc_target_mode {
+        Mode::Forced => world.knobs.battery_soc_target,
+        Mode::Weather => world.bookkeeping.weather_soc_battery_soc_target,
+    }
+}
+
+#[must_use]
+pub(crate) fn effective_disable_night_grid_discharge(world: &World) -> bool {
+    use crate::knobs::Mode;
+    match world.knobs.disable_night_grid_discharge_mode {
+        Mode::Forced => world.knobs.disable_night_grid_discharge,
+        Mode::Weather => world.bookkeeping.weather_soc_disable_night_grid_discharge,
+    }
+}
+
 /// Build the `SetpointInput` from the current world. Returns `None`
 /// when the required Fresh-sensor preconditions aren't met (the safety
 /// path fires); otherwise returns the live input the controller would
@@ -684,8 +735,9 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
     Some(SetpointInput {
         globals: SetpointInputGlobals {
             force_disable_export: k.force_disable_export,
-            export_soc_threshold: k.export_soc_threshold,
-            discharge_soc_target: k.discharge_soc_target,
+            // PR-gamma-hold-redesign: dispatch on `*_mode`.
+            export_soc_threshold: effective_export_soc_threshold(world),
+            discharge_soc_target: effective_discharge_soc_target(world),
             full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
             full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
             // A-05 (PR-DAG-B): read `world.derived.zappi_active`, written
@@ -986,7 +1038,8 @@ pub(crate) fn build_current_limit_input(world: &World) -> Option<CurrentLimitInp
             zappi_active: world.derived.zappi_active,
             extended_charge_required: k.charge_car_extended
                 || world.bookkeeping.charge_to_full_required,
-            disable_night_grid_discharge: k.disable_night_grid_discharge,
+            // PR-gamma-hold-redesign: dispatch on `*_mode`.
+            disable_night_grid_discharge: effective_disable_night_grid_discharge(world),
             battery_soc_target: bk.battery_selected_soc_target,
             prev_ess_state: bk.prev_ess_state,
         },
@@ -1121,10 +1174,11 @@ pub(crate) fn build_schedules_input(world: &World) -> Option<SchedulesInput> {
             charge_battery_extended: cbe.effective,
             charge_car_extended: k.charge_car_extended,
             charge_to_full_required: bk.charge_to_full_required,
-            disable_night_grid_discharge: k.disable_night_grid_discharge,
+            // PR-gamma-hold-redesign: dispatch on `*_mode`.
+            disable_night_grid_discharge: effective_disable_night_grid_discharge(world),
             zappi_active: world.derived.zappi_active,
             above_soc_date: bk.above_soc_date,
-            battery_soc_target: k.battery_soc_target,
+            battery_soc_target: effective_battery_soc_target(world),
         },
         battery_soc: world.sensors.battery_soc.value.unwrap(),
     })
@@ -1464,23 +1518,30 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
 
 // --- Weather-SoC --------------------------------------------------------------
 
-/// PR-weather-soc-dynamic: weather_soc now evaluates EVERY tick, not
-/// just at the 01:55 cron moment. As forecasts refresh through the
-/// day (Solcast 5 min, Open-Meteo 30 min, Forecast.Solar 30 min) the
-/// planner re-derives `export_soc_threshold` etc. and pushes any
-/// change through `propose_knob`. Idempotent dedup happens inside
-/// `apply_knob` (returns `bool`); same-value re-fires no-op without
-/// a Publish, so the broker isn't spammed.
+/// PR-weather-soc-dynamic: weather_soc evaluates EVERY tick, not just
+/// at the 01:55 cron moment. As forecasts refresh through the day
+/// (Solcast 5 min, Open-Meteo 30 min, Forecast.Solar 30 min) the
+/// planner re-derives its four outputs.
 ///
-/// The previous 01:55 cron (and the A-21 once-per-day guard that paired
-/// with it) are gone — the dedup-on-change path makes the every-tick
-/// shape both correct and quiet. γ-hold + owner priority continue to
-/// honour dashboard / HA overrides via `accept_knob_command`.
+/// PR-gamma-hold-redesign: the planner no longer writes user-owned
+/// knobs. Instead it writes its derivations to four bookkeeping slots
+/// (`weather_soc_*`); the `*_mode = Weather` default routes the
+/// setpoint / current-limit / schedules controllers to read those
+/// slots. The user picks `Forced` per knob from the dashboard / HA to
+/// pin a manually-set knob value through. There is no γ-hold, no
+/// owner-priority queue, no `propose_knob`.
+///
+/// The Decision write (`world.decisions.weather_soc`) stays as before
+/// — Honesty invariant: every controller emits a Decision every tick.
 pub(crate) fn run_weather_soc(
     world: &mut World,
     clock: &dyn Clock,
     topology: &Topology,
-    effects: &mut Vec<Effect>,
+    // PR-gamma-hold-redesign: weather_soc no longer pushes effects
+    // (knob writes are gone — bookkeeping is mutated in place). The
+    // parameter stays so the registry signature is uniform across
+    // controllers.
+    _effects: &mut Vec<Effect>,
 ) {
     let now = clock.naive();
     let today = now.date();
@@ -1553,117 +1614,34 @@ pub(crate) fn run_weather_soc(
     let d = evaluate_weather_soc(&input, clock);
     world.decisions.weather_soc = Some(d.decision.clone());
 
-    // A-20: check γ-hold once up-front. If a dashboard write is active
-    // on ANY of the four planner knobs, we suppress ALL four atomically
-    // — either every knob moves together (coherent planner state) or
-    // none of them do (the operator's manual override stands). A-55:
-    // with per-knob γ-hold granularity, this check now explicitly walks
-    // all four IDs so the "all-or-nothing" semantic is preserved for
-    // the weather_soc plan while other knobs retain per-knob hold.
-    let at = clock.monotonic();
-    let planner_knobs = [
-        KnobId::ExportSocThreshold,
-        KnobId::DischargeSocTarget,
-        KnobId::BatterySocTarget,
-        KnobId::DisableNightGridDischarge,
-    ];
-    let any_held = planner_knobs
-        .iter()
-        .any(|&id| !accept_knob_command(Owner::WeatherSocPlanner, id, at, world));
-    if any_held {
-        effects.push(Effect::Log {
-            level: LogLevel::Debug,
-            source: "process::weather_soc",
-            message: format!(
-                "suppressed planner knobs owner={:?} (dashboard γ-hold active on ≥1 planner knob)",
-                Owner::WeatherSocPlanner
-            ),
-        });
-        // NOTE: do NOT stamp `last_weather_soc_run_date` when suppressed.
-        // If the operator releases the dashboard knob before the 01:55
-        // window closes, the planner can still fire on a later tick in
-        // the same minute. If the window closes first, we simply missed
-        // today — acceptable: the dashboard write was the most recent
-        // operator intent. See A-21 test
-        // `weather_soc_suppressed_by_dashboard_gamma_hold`.
-        return;
-    }
+    // PR-gamma-hold-redesign: write the planner's per-tick derivations
+    // into the four bookkeeping slots. The `*_mode = Weather` default
+    // routes the setpoint / current-limit / schedules controllers to
+    // read these values. There is no γ-hold and no owner priority —
+    // the user pins a manual override by flipping `*_mode` to `Forced`
+    // from the dashboard / HA. These slots are pure observability;
+    // they're not retained on MQTT (the per-tick recompute is cheap
+    // and forecast-driven, so a reboot just rebuilds them).
+    world.bookkeeping.weather_soc_export_soc_threshold = d.export_soc_threshold;
+    world.bookkeeping.weather_soc_discharge_soc_target = d.discharge_soc_target;
+    world.bookkeeping.weather_soc_battery_soc_target = d.battery_soc_target;
+    world.bookkeeping.weather_soc_disable_night_grid_discharge = d.disable_night_grid_discharge;
 
-    // Translate decision into knob proposals (owner=WeatherSocPlanner).
-    propose_knob(
-        world,
-        Owner::WeatherSocPlanner,
-        at,
-        KnobId::ExportSocThreshold,
-        KnobValue::Float(d.export_soc_threshold),
-        effects,
-    );
-    propose_knob(
-        world,
-        Owner::WeatherSocPlanner,
-        at,
-        KnobId::DischargeSocTarget,
-        KnobValue::Float(d.discharge_soc_target),
-        effects,
-    );
-    propose_knob(
-        world,
-        Owner::WeatherSocPlanner,
-        at,
-        KnobId::BatterySocTarget,
-        KnobValue::Float(d.battery_soc_target),
-        effects,
-    );
-    propose_knob(
-        world,
-        Owner::WeatherSocPlanner,
-        at,
-        KnobId::DisableNightGridDischarge,
-        KnobValue::Bool(d.disable_night_grid_discharge),
-        effects,
-    );
     // A-15: record today's weather_soc decision on a dedicated per-day
     // field. `apply_tick` clears this on calendar-day rollover, so
     // schedules sees a fresh decision each day instead of a sticky OR
     // latch on `charge_to_full_required`.
     world.bookkeeping.charge_battery_extended_today = d.charge_battery_extended;
     world.bookkeeping.charge_battery_extended_today_date = Some(today);
-    // A-21: mark today as handled so the remaining ticks in the
-    // 01:55:00–01:55:59 window short-circuit at the guard above.
+    // A-21: mark today as handled. Now that the planner doesn't fire
+    // knob proposals, the once-per-day guard is informational only —
+    // kept so the dashboard / tests can observe "did the planner run
+    // today yet". Stamped on every successful run.
     world.bookkeeping.last_weather_soc_run_date = Some(today);
 }
 
-fn propose_knob(
-    world: &mut World,
-    owner: Owner,
-    at: Instant,
-    id: KnobId,
-    value: KnobValue,
-    effects: &mut Vec<Effect>,
-) {
-    // A-20: route planner knob proposals through the same γ-hold gate
-    // that `apply_command::Knob` uses. Without this, a dashboard write
-    // at 01:54:59.5 would be clobbered by the 01:55 planner tick half
-    // a second later. Callers SHOULD check `accept_knob_command` once
-    // up-front for atomicity (see `run_weather_soc`), but we also
-    // defend per-call so a future caller can't accidentally bypass it.
-    // A-55: now per-knob — the hold window applies only to the
-    // specific `id` being written.
-    if !accept_knob_command(owner, id, at, world) {
-        effects.push(Effect::Log {
-            level: LogLevel::Debug,
-            source: "process::weather_soc",
-            message: format!(
-                "suppressed planner knob id={id:?} owner={owner:?} (dashboard γ-hold active)"
-            ),
-        });
-        return;
-    }
-    let changed = apply_knob(id, value, world, effects);
-    if changed {
-        effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
-    }
-}
+// PR-gamma-hold-redesign: `propose_knob` is gone. The weather_soc
+// planner writes bookkeeping directly; no other caller used it.
 
 // =============================================================================
 // Tests
@@ -1893,10 +1871,13 @@ mod tests {
                     || bk.charge_battery_extended_today,
                 charge_car_extended: k.charge_car_extended,
                 charge_to_full_required: bk.charge_to_full_required,
-                disable_night_grid_discharge: k.disable_night_grid_discharge,
+                // PR-gamma-hold-redesign: mirror the dispatch in
+                // `build_schedules_input` so the expected wire matches
+                // what the controller actually consumed.
+                disable_night_grid_discharge: super::effective_disable_night_grid_discharge(&world),
                 zappi_active: world.derived.zappi_active,
                 above_soc_date: bk.above_soc_date,
-                battery_soc_target: k.battery_soc_target,
+                battery_soc_target: super::effective_battery_soc_target(&world),
             },
             battery_soc: 75.0,
         };
@@ -2429,16 +2410,19 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Knob command (γ hold)
+    // Knob command (PR-gamma-hold-redesign — γ-hold removed)
     // ------------------------------------------------------------------
 
     #[test]
-    fn ha_knob_command_suppressed_within_dashboard_hold() {
+    fn knob_writes_from_any_owner_are_accepted() {
+        // PR-gamma-hold-redesign: there is no γ-hold. A dashboard write
+        // followed by an HA write inside the (former) 1 s window is
+        // accepted; the user pins a manual override by flipping the
+        // matching `*_mode` to `Forced` instead.
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
 
-        // Dashboard writes first.
-        let e1 = process(
+        let _ = process(
             &Event::Command {
                 command: Command::Knob {
                     id: KnobId::ExportSocThreshold,
@@ -2452,12 +2436,8 @@ mod tests {
             &Topology::defaults(),
         );
         assert_eq!(world.knobs.export_soc_threshold, 50.0);
-        assert!(e1
-            .iter()
-            .any(|e| matches!(e, Effect::Publish(PublishPayload::Knob { .. }))));
 
-        // HA writes immediately after — should be suppressed.
-        let e2 = process(
+        let _ = process(
             &Event::Command {
                 command: Command::Knob {
                     id: KnobId::ExportSocThreshold,
@@ -2470,47 +2450,7 @@ mod tests {
             &c,
             &Topology::defaults(),
         );
-        assert_eq!(world.knobs.export_soc_threshold, 50.0, "HA write suppressed");
-        // There should be a Log effect noting suppression.
-        assert!(
-            e2.iter()
-                .any(|e| matches!(e, Effect::Log { source: "process::command", .. })),
-            "expected a suppression log"
-        );
-    }
-
-    #[test]
-    fn ha_knob_command_accepted_after_hold_expires() {
-        let c = clock_at(12, 0);
-        let mut world = World::fresh_boot(c.monotonic);
-        let _ = process(
-            &Event::Command {
-                command: Command::Knob {
-                    id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(50.0),
-                },
-                owner: Owner::Dashboard,
-                at: c.monotonic,
-            },
-            &mut world,
-            &c,
-            &Topology::defaults(),
-        );
-
-        let later = c.monotonic + StdDuration::from_secs(2); // > 1s hold
-        let _ = process(
-            &Event::Command {
-                command: Command::Knob {
-                    id: KnobId::ExportSocThreshold,
-                    value: KnobValue::Float(67.0),
-                },
-                owner: Owner::HaMqtt,
-                at: later,
-            },
-            &mut world,
-            &c,
-            &Topology::defaults(),
-        );
+        // No γ-hold suppression — the HA write lands on top.
         assert_eq!(world.knobs.export_soc_threshold, 67.0);
     }
 
@@ -3205,12 +3145,6 @@ mod tests {
         FixedClock::new(Instant::now(), nt)
     }
 
-    /// Build a FixedClock at H:M:S on the given calendar date.
-    fn clock_on(date: NaiveDate, h: u32, m: u32, s: u32) -> FixedClock {
-        let nt = date.and_hms_opt(h, m, s).unwrap();
-        FixedClock::new(Instant::now(), nt)
-    }
-
     /// Seed the minimal state `run_weather_soc` needs to fire its full
     /// decision path: outdoor_temperature fresh, and at least one fused
     /// forecast snapshot so `fused_today_kwh` returns Some.
@@ -3223,133 +3157,106 @@ mod tests {
         });
     }
 
-    /// Count Publish(Knob) effects produced by a single `process()` call.
-    fn knob_publish_count(effects: &[Effect]) -> usize {
-        effects
-            .iter()
-            .filter(|e| matches!(e, Effect::Publish(PublishPayload::Knob { .. })))
-            .count()
-    }
-
     #[test]
-    fn weather_soc_publishes_only_on_change() {
-        // PR-weather-soc-dynamic: planner runs EVERY tick, not just at
-        // 01:55. Same-value proposals dedup inside apply_knob (returns
-        // bool); no Publish for no-op writes. A genuine forecast
-        // change mid-day flows through and only the affected knob(s)
-        // republish — no broker spam.
+    fn weather_soc_writes_bookkeeping_does_not_publish_knob() {
+        // PR-gamma-hold-redesign: the planner no longer writes
+        // `Knobs::*` for the four weather_soc-driven outputs. Instead
+        // it writes `Bookkeeping::weather_soc_*`. There must be NO
+        // Publish(Knob) for `ExportSocThreshold` / `DischargeSocTarget`
+        // / `BatterySocTarget` / `DisableNightGridDischarge` from a
+        // weather_soc tick — those topics are user-owned now.
         let c0 = clock_at_hms(12, 0, 0);
         let mut world = World::fresh_boot(c0.monotonic);
         seed_weather_soc_inputs(&mut world, c0.monotonic);
 
-        // First tick: weather_soc-derived knobs differ from safe_defaults
-        // → 4 publishes (export_soc_threshold, discharge_soc_target,
-        // battery_soc_target, disable_night_grid_discharge).
-        let e1 = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
-        assert_eq!(
-            knob_publish_count(&e1),
-            4,
-            "first tick must publish all four planner knobs, got: {e1:#?}"
-        );
-
-        // Second tick same forecast: dedup → 0 publishes.
-        let c1 = clock_on(c0.naive.date(), 12, 0, 30);
-        let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
-        assert_eq!(
-            knob_publish_count(&e2), 0,
-            "same-forecast tick must dedup, got: {e2:#?}"
-        );
-
-        // Forecast revises (today_kwh 25 → 5 — flips from "moderate" to
-        // "low energy", crossing the new low-energy rung). Next tick
-        // republishes whatever changed.
-        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
-            today_kwh: 5.0,
-            tomorrow_kwh: 25.0,
-            fetched_at: c1.monotonic,
-        });
-        let c2 = clock_on(c0.naive.date(), 12, 1, 0);
-        let e3 = process(&Event::Tick { at: c2.monotonic }, &mut world, &c2, &Topology::defaults());
-        assert!(
-            knob_publish_count(&e3) > 0,
-            "forecast change must republish at least one planner knob: {e3:#?}"
-        );
-
-        // Third tick post-change: dedup again — no further publishes
-        // until the forecast moves once more.
-        let c3 = clock_on(c0.naive.date(), 12, 1, 30);
-        let e4 = process(&Event::Tick { at: c3.monotonic }, &mut world, &c3, &Topology::defaults());
-        assert_eq!(
-            knob_publish_count(&e4), 0,
-            "post-change steady-state must dedup, got: {e4:#?}"
-        );
-    }
-
-    #[test]
-    fn weather_soc_suppressed_by_dashboard_gamma_hold() {
-        // A-20: a dashboard knob write at 01:54:59.5 must suppress the
-        // planner knob proposals at 01:55:00 (within the 1-s γ-hold).
-        //
-        // Semantic choice (documented in `run_weather_soc`): when the
-        // planner is suppressed by the γ-hold we do NOT stamp
-        // `last_weather_soc_run_date`. Rationale: if the operator
-        // releases the dashboard knob before the 01:55 minute closes,
-        // the planner still has a chance to run on a later tick in the
-        // same window. More operator-friendly; also means the "already
-        // ran today" guard only trips on a truly successful run.
-        let c0 = clock_at_hms(1, 55, 0);
-        let mut world = World::fresh_boot(c0.monotonic);
-        seed_weather_soc_inputs(&mut world, c0.monotonic);
-
-        // Simulate a dashboard write 500 ms before the planner tick —
-        // specifically on BatterySocTarget, one of the four planner
-        // knobs. A-55: per-knob γ-hold, but weather_soc's planner is
-        // still all-or-nothing across the four.
-        world.knob_provenance.last_dashboard_write.insert(
-            KnobId::BatterySocTarget,
-            c0.monotonic
-                .checked_sub(StdDuration::from_millis(500))
-                .expect("monotonic Instant::now() - 500 ms stays positive"),
-        );
-
         let effects = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
 
-        // No Publish(Knob) for any planner knob.
-        assert_eq!(
-            knob_publish_count(&effects),
-            0,
-            "γ-hold must suppress all planner Publish(Knob) effects: {effects:#?}"
-        );
-        // A Debug-level suppression log must have fired.
-        let has_suppress_log = effects.iter().any(|e| matches!(
-            e,
-            Effect::Log { level: LogLevel::Debug, source: "process::weather_soc", .. }
-        ));
+        // No Publish(Knob) for the four weather_soc-driven outputs.
+        let weather_knob_publishes: Vec<&KnobId> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Publish(PublishPayload::Knob { id, .. }) => match id {
+                    KnobId::ExportSocThreshold
+                    | KnobId::DischargeSocTarget
+                    | KnobId::BatterySocTarget
+                    | KnobId::DisableNightGridDischarge => Some(id),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
         assert!(
-            has_suppress_log,
-            "expected a Debug suppression log from process::weather_soc: {effects:#?}"
-        );
-        // And `last_weather_soc_run_date` must NOT have advanced — the
-        // planner didn't really run today yet.
-        assert_eq!(
-            world.bookkeeping.last_weather_soc_run_date, None,
-            "suppressed planner must not stamp last_weather_soc_run_date"
+            weather_knob_publishes.is_empty(),
+            "weather_soc must not publish knobs; got: {weather_knob_publishes:?}"
         );
 
-        // If the dashboard hold expires (clear provenance) and we tick
-        // again inside the 01:55 minute, the planner can still fire —
-        // this validates the "try again next tick" semantic.
-        world.knob_provenance.last_dashboard_write.clear();
-        let c1 = clock_on(c0.naive.date(), 1, 55, 30);
-        let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
-        assert_eq!(
-            knob_publish_count(&e2),
-            4,
-            "after γ-hold clears, the planner must still fire later in the 01:55 window: {e2:#?}"
+        // Bookkeeping slots populated.
+        assert!((world.bookkeeping.weather_soc_export_soc_threshold - 67.0).abs() < f64::EPSILON
+            || (world.bookkeeping.weather_soc_export_soc_threshold - 100.0).abs() < f64::EPSILON
+            || (world.bookkeeping.weather_soc_export_soc_threshold - 50.0).abs() < f64::EPSILON
+            || (world.bookkeeping.weather_soc_export_soc_threshold - 35.0).abs() < f64::EPSILON
+            || (world.bookkeeping.weather_soc_export_soc_threshold - 80.0).abs() < f64::EPSILON,
+            "weather_soc must populate the bookkeeping slot to one of the legal export thresholds; got {}",
+            world.bookkeeping.weather_soc_export_soc_threshold
         );
+
+        // The user-owned knob is unchanged from safe_defaults.
+        assert!((world.knobs.export_soc_threshold - 80.0).abs() < f64::EPSILON);
+
+        // Once-per-day stamp still advances (informational now).
         assert_eq!(
             world.bookkeeping.last_weather_soc_run_date,
             Some(c0.naive.date())
         );
+    }
+
+    #[test]
+    fn setpoint_reads_weather_soc_threshold_when_mode_weather() {
+        // PR-gamma-hold-redesign: when `export_soc_threshold_mode =
+        // Weather` (the default), the setpoint controller must read
+        // `bookkeeping.weather_soc_export_soc_threshold`, not
+        // `knobs.export_soc_threshold`.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Diverge: knob says 50, bookkeeping says 67.
+        world.knobs.export_soc_threshold = 50.0;
+        world.bookkeeping.weather_soc_export_soc_threshold = 67.0;
+        // Default mode = Weather.
+        assert_eq!(
+            super::effective_export_soc_threshold(&world),
+            67.0,
+            "Weather mode must dispatch to bookkeeping slot"
+        );
+    }
+
+    #[test]
+    fn setpoint_reads_forced_threshold_when_mode_forced() {
+        // PR-gamma-hold-redesign: when `export_soc_threshold_mode =
+        // Forced`, the setpoint controller must read
+        // `knobs.export_soc_threshold`, ignoring the bookkeeping slot.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.knobs.export_soc_threshold = 50.0;
+        world.bookkeeping.weather_soc_export_soc_threshold = 67.0;
+        world.knobs.export_soc_threshold_mode = crate::knobs::Mode::Forced;
+        assert_eq!(
+            super::effective_export_soc_threshold(&world),
+            50.0,
+            "Forced mode must dispatch to user-owned knob"
+        );
+    }
+
+    #[test]
+    fn mode_default_is_weather() {
+        // PR-gamma-hold-redesign back-compat invariant: cold-start
+        // safe_defaults set every `*_mode` to `Weather`. Together with
+        // the bookkeeping initialisation (also matching safe_defaults)
+        // the controller behaviour out-of-the-box matches pre-PR
+        // (planner drives the four weather_soc-driven outputs).
+        let k = crate::knobs::Knobs::safe_defaults();
+        assert_eq!(k.export_soc_threshold_mode, crate::knobs::Mode::Weather);
+        assert_eq!(k.discharge_soc_target_mode, crate::knobs::Mode::Weather);
+        assert_eq!(k.battery_soc_target_mode, crate::knobs::Mode::Weather);
+        assert_eq!(k.disable_night_grid_discharge_mode, crate::knobs::Mode::Weather);
     }
 }
