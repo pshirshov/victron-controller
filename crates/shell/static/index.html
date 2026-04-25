@@ -23,6 +23,25 @@
   </nav>
 
   <div class="tab-panel" data-tab="control">
+    <section id="actuated">
+      <h2>Actuated</h2>
+      <div class="table-wrap">
+        <table id="actuated-table">
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Target</th>
+              <th>Owner</th>
+              <th>Phase</th>
+              <th>Actual</th>
+              <th>Freshness</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="knobs">
       <h2>Knobs</h2>
       <div id="kill-switch" class="kill-switch"></div>
@@ -56,43 +75,9 @@
         </table>
       </div>
     </section>
+  </div>
 
-    <section id="actuated">
-      <h2>Actuated</h2>
-      <div class="table-wrap">
-        <table id="actuated-table">
-          <thead>
-            <tr>
-              <th>Entity</th>
-              <th>Target</th>
-              <th>Owner</th>
-              <th>Phase</th>
-              <th>Actual</th>
-              <th>Freshness</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="cores">
-      <h2>TASS cores</h2>
-      <div class="table-wrap">
-        <table id="cores-table">
-          <thead>
-            <tr>
-              <th>Core</th>
-              <th>Depends on</th>
-              <th>Outcome</th>
-              <th>Payload</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
+  <div class="tab-panel" data-tab="detail" hidden>
     <section id="forecasts">
       <h2>Forecasts</h2>
       <div class="table-wrap">
@@ -103,27 +88,6 @@
               <th>Today (kWh)</th>
               <th>Tomorrow (kWh)</th>
               <th>Fetched</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-
-  <div class="tab-panel" data-tab="detail" hidden>
-    <section id="timers">
-      <h2>Timers</h2>
-      <div class="table-wrap">
-        <table id="timers-table">
-          <thead>
-            <tr>
-              <th>Timer</th>
-              <th>Description</th>
-              <th>Period</th>
-              <th>Last fire</th>
-              <th>Next fire</th>
-              <th>Status</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -155,6 +119,42 @@
       <div class="table-wrap">
         <table id="bk-table">
           <thead><tr><th>Field</th><th>Value</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="cores">
+      <h2>TASS cores</h2>
+      <div class="table-wrap">
+        <table id="cores-table">
+          <thead>
+            <tr>
+              <th>Core</th>
+              <th>Depends on</th>
+              <th>Outcome</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="timers">
+      <h2>Timers</h2>
+      <div class="table-wrap">
+        <table id="timers-table">
+          <thead>
+            <tr>
+              <th>Timer</th>
+              <th>Description</th>
+              <th>Period</th>
+              <th>Last fire</th>
+              <th>Next fire</th>
+              <th>Status</th>
+            </tr>
+          </thead>
           <tbody></tbody>
         </table>
       </div>

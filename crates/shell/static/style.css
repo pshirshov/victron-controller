@@ -489,8 +489,6 @@ footer {
 .table-wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  margin: 0 -4px;
-  padding: 0 4px;
 }
 .table-wrap > table {
   /* Allow tables to expand past the viewport width when content needs
@@ -498,9 +496,16 @@ footer {
   min-width: max-content;
 }
 
-/* Mobile-specific tightening: smaller cell padding + font on narrow
- * viewports so more columns fit before horizontal-scroll kicks in. */
+/* Mobile: each row collapses into a self-contained card. Headers
+ * become per-cell labels via `tbody td:nth-of-type(N)::before`,
+ * keyed per table id so we don't need a `data-label` attribute on
+ * every renderer. Page-level horizontal-scroll safety net via
+ * `html, body { overflow-x: hidden }`; per-row overflow-x stays
+ * `auto` on `.table-wrap` for the rare ultra-narrow case. */
 @media (max-width: 720px) {
+  html, body {
+    overflow-x: hidden;
+  }
   body {
     padding: 0 8px 24px;
   }
@@ -510,13 +515,102 @@ footer {
   }
   h1 { font-size: 18px; }
   h2 { font-size: 13px; margin: 16px 0 6px; }
-  table { font-size: 12px; }
-  th { padding: 5px 6px; }
-  td { padding: 3px 6px; }
   .tabs .tab { padding: 5px 10px; font-size: 12px; }
   .modal-card {
     min-width: 0;
     width: calc(100vw - 24px);
     max-width: calc(100vw - 24px);
   }
+
+  /* Card layout for the main data tables. Modal tables (entity
+   * inspector body) sit outside `.table-wrap` and keep the default
+   * row layout — they're already 2-column field/value pairs. */
+  .table-wrap {
+    overflow-x: visible;
+  }
+  .table-wrap > table,
+  .table-wrap > table > thead,
+  .table-wrap > table > tbody,
+  .table-wrap > table > tbody > tr,
+  .table-wrap > table > tbody > tr > td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .table-wrap > table > thead {
+    /* Headers are surfaced as `::before` labels on each cell below. */
+    display: none;
+  }
+  .table-wrap > table > tbody > tr {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 6px 0;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+  .table-wrap > table > tbody > tr > td {
+    border: none;
+    padding: 3px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .table-wrap > table > tbody > tr > td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--muted);
+    flex-shrink: 0;
+    min-width: 6.5em;
+  }
+
+  /* Per-table column labels. `data-label` is not on the cells (no
+   * renderer change), so map them positionally. Order matches the
+   * `<thead>` in `index.html`; if a column moves, this list must
+   * follow. */
+  #actuated-table tbody tr td:nth-of-type(1)::before { content: "Entity"; }
+  #actuated-table tbody tr td:nth-of-type(2)::before { content: "Target"; }
+  #actuated-table tbody tr td:nth-of-type(3)::before { content: "Owner"; }
+  #actuated-table tbody tr td:nth-of-type(4)::before { content: "Phase"; }
+  #actuated-table tbody tr td:nth-of-type(5)::before { content: "Actual"; }
+  #actuated-table tbody tr td:nth-of-type(6)::before { content: "Freshness"; }
+
+  #knobs-table tbody tr td:nth-of-type(1)::before { content: "Knob"; }
+  #knobs-table tbody tr td:nth-of-type(2)::before { content: "Value"; }
+  #knobs-table tbody tr td:nth-of-type(3)::before { content: "Default"; }
+  #knobs-table tbody tr td:nth-of-type(4)::before { content: "Set"; }
+
+  #decisions-table tbody tr td:nth-of-type(1)::before { content: "Controller"; }
+  #decisions-table tbody tr td:nth-of-type(2)::before { content: "Summary"; }
+  #decisions-table tbody tr td:nth-of-type(3)::before { content: "Factors"; }
+
+  #forecasts-table tbody tr td:nth-of-type(1)::before { content: "Provider"; }
+  #forecasts-table tbody tr td:nth-of-type(2)::before { content: "Today (kWh)"; }
+  #forecasts-table tbody tr td:nth-of-type(3)::before { content: "Tomorrow (kWh)"; }
+  #forecasts-table tbody tr td:nth-of-type(4)::before { content: "Fetched"; }
+
+  #sensors-table tbody tr td:nth-of-type(1)::before { content: "Sensor"; }
+  #sensors-table tbody tr td:nth-of-type(2)::before { content: "Value"; }
+  #sensors-table tbody tr td:nth-of-type(3)::before { content: "Freshness"; }
+  #sensors-table tbody tr td:nth-of-type(4)::before { content: "Reseed"; }
+  #sensors-table tbody tr td:nth-of-type(5)::before { content: "Stale after"; }
+  #sensors-table tbody tr td:nth-of-type(6)::before { content: "Origin"; }
+
+  #bk-table tbody tr td:nth-of-type(1)::before { content: "Field"; }
+  #bk-table tbody tr td:nth-of-type(2)::before { content: "Value"; }
+
+  #cores-table tbody tr td:nth-of-type(1)::before { content: "Core"; }
+  #cores-table tbody tr td:nth-of-type(2)::before { content: "Depends on"; }
+  #cores-table tbody tr td:nth-of-type(3)::before { content: "Outcome"; }
+  #cores-table tbody tr td:nth-of-type(4)::before { content: "Payload"; }
+
+  #timers-table tbody tr td:nth-of-type(1)::before { content: "Timer"; }
+  #timers-table tbody tr td:nth-of-type(2)::before { content: "Description"; }
+  #timers-table tbody tr td:nth-of-type(3)::before { content: "Period"; }
+  #timers-table tbody tr td:nth-of-type(4)::before { content: "Last fire"; }
+  #timers-table tbody tr td:nth-of-type(5)::before { content: "Next fire"; }
+  #timers-table tbody tr td:nth-of-type(6)::before { content: "Status"; }
 }
