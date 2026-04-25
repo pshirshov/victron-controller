@@ -94,6 +94,16 @@ td.freshness-Deprecated {
 .phase-Unset     { color: var(--muted); }
 .phase-Pending   { color: var(--warn); }
 .phase-Commanded { color: var(--accent); }
+
+/* Same anti-jitter trick as the freshness column. Longest label is
+ * "Commanded"/"Confirmed" (9 char). */
+td.phase-Unset,
+td.phase-Pending,
+td.phase-Commanded,
+td.phase-Confirmed {
+  min-width: 7em;
+  white-space: nowrap;
+}
 .phase-Confirmed { color: var(--ok); }
 
 .dim { color: var(--muted); }
