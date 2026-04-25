@@ -336,3 +336,103 @@ footer {
   display: none;
 }
 .ws-retry:hover { filter: brightness(1.15); }
+
+/* TASS core inspector modal. */
+.modal[hidden] { display: none; }
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+.modal-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 480px;
+  max-width: min(720px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.modal-card > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-card > header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-family: ui-monospace, monospace;
+  color: var(--accent);
+}
+#core-modal-close {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+#core-modal-close:hover {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+#core-modal-body {
+  padding: 12px 14px;
+  font-size: 13px;
+}
+#core-modal-body section {
+  margin-bottom: 12px;
+}
+#core-modal-body h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+#core-modal-body table {
+  width: 100%;
+  border-collapse: collapse;
+}
+#core-modal-body th,
+#core-modal-body td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+#core-modal-body th {
+  width: 40%;
+  font-weight: normal;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+}
+#core-modal-body td {
+  font-family: ui-monospace, monospace;
+}
+.core-link {
+  cursor: pointer;
+  text-decoration: underline dotted var(--muted) 1px;
+  text-underline-offset: 3px;
+}
+.core-link:hover {
+  color: var(--accent);
+}

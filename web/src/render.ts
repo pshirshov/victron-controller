@@ -374,7 +374,15 @@ export function renderCoresState(snap: WorldSnapshot) {
     return {
       key: c.id,
       cells: [
-        { cls: "mono", html: nameWithTitle(c.id) },
+        // Core name is a clickable link that opens the inspector modal
+        // (renderCoreModal). Tooltip carries the description from
+        // `entityDescriptions`; the click is wired in `web/src/index.ts`.
+        {
+          cls: "mono",
+          html: `<a class="core-link" data-core-id="${esc(c.id)}" title="${esc(
+            entityDescriptionFor(c.id),
+          )}">${esc(c.id)}</a>`,
+        },
         { cls: "mono", html: deps },
         { html: esc(c.last_run_outcome) },
         { html: payload },
@@ -382,6 +390,88 @@ export function renderCoresState(snap: WorldSnapshot) {
     };
   });
   updateKeyedRows(tbody, rows);
+}
+
+/// Render the TASS core inspector modal for `coreId` against the
+/// current snapshot. Idempotent — safe to call on every applySnapshot
+/// while the modal is open so the body refreshes live.
+export function renderCoreModal(coreId: string, snap: WorldSnapshot) {
+  const titleEl = document.getElementById("core-modal-title");
+  const bodyEl = document.getElementById("core-modal-body");
+  if (!titleEl || !bodyEl) return;
+  titleEl.textContent = `core: ${coreId}`;
+
+  const cs = snap.cores_state as unknown as {
+    cores: Array<{
+      id: string;
+      depends_on: string[];
+      last_run_outcome: string;
+      last_payload: string | null | undefined;
+    }>;
+  };
+  const core = cs?.cores?.find((c) => c.id === coreId);
+  const decision = (snap.decisions as Record<string, any> | undefined)?.[coreId];
+
+  const sections: string[] = [];
+
+  // Description.
+  const desc = entityDescriptionFor(coreId);
+  if (desc) {
+    sections.push(`<section><p style="color:var(--muted);margin:0">${esc(desc)}</p></section>`);
+  }
+
+  // Dependencies + outcome.
+  if (core) {
+    const depsTxt = core.depends_on.length === 0
+      ? '<span class="dim">—</span>'
+      : core.depends_on.map(esc).join(", ");
+    const payload = core.last_payload;
+    const payloadDisp = (() => {
+      if (payload == null) return '<span class="dim">—</span>';
+      const badge = maybeBoolBadge(payload);
+      return badge ?? esc(payload);
+    })();
+    sections.push(
+      `<section><h3>Dependencies & outcome</h3>` +
+        `<table><tbody>` +
+        `<tr><th>depends_on</th><td>${depsTxt}</td></tr>` +
+        `<tr><th>last_run_outcome</th><td>${esc(core.last_run_outcome)}</td></tr>` +
+        `<tr><th>last_payload</th><td>${payloadDisp}</td></tr>` +
+        `</tbody></table></section>`,
+    );
+  } else {
+    sections.push(
+      `<section><p>no entry in cores_state for "${esc(coreId)}"</p></section>`,
+    );
+  }
+
+  // Decision (the controller's narrative of inputs + outputs).
+  if (decision && typeof decision === "object" && "summary" in decision) {
+    const d = decision as { summary?: string; factors?: Array<{ name: string; value: string }> };
+    const summary = d.summary ? esc(d.summary) : "—";
+    const factors = (d.factors ?? [])
+      .map((f) => {
+        const v = maybeBoolBadge(f.value) ?? esc(f.value);
+        return `<tr><th>${esc(f.name)}</th><td>${v}</td></tr>`;
+      })
+      .join("");
+    sections.push(
+      `<section><h3>Decision</h3>` +
+        `<p style="margin:0 0 8px"><b>${summary}</b></p>` +
+        (factors ? `<table><tbody>${factors}</tbody></table>` : "") +
+        `</section>`,
+    );
+  } else {
+    sections.push(
+      `<section><h3>Decision</h3><p class="dim" style="margin:0">no Decision recorded for this core (e.g. derivation cores or SensorBroadcastCore record per-tick state via last_payload only)</p></section>`,
+    );
+  }
+
+  bodyEl.innerHTML = sections.join("");
+}
+
+function entityDescriptionFor(key: string): string {
+  return (entityDescriptions as Record<string, string>)[key] ?? "";
 }
 
 export function renderForecasts(snap: WorldSnapshot) {

@@ -6,6 +6,7 @@ import {
   installCopyHandler,
   renderActuated,
   renderBookkeeping,
+  renderCoreModal,
   renderCoresState,
   renderDecisions,
   renderForecasts,
@@ -22,6 +23,11 @@ function wsUrl(): string {
 
 let managerRef: ConnectionManager | null = null;
 let widgetRef: WsWidget | null = null;
+// TASS core inspector: id of the currently-open core, or null when
+// closed. On every snapshot we re-render the modal body so the user
+// sees live updates.
+let openCoreId: string | null = null;
+let lastSnapshot: WorldSnapshot | null = null;
 
 function sendCommand(cmd: unknown): void {
   managerRef?.sendCommand(cmd);
@@ -57,6 +63,50 @@ function applySnapshot(snap: WorldSnapshot): void {
   renderBookkeeping(snap);
   renderForecasts(snap);
   renderKnobs(snap, sendCommand);
+
+  // Live-refresh the TASS core inspector if it's open.
+  lastSnapshot = snap;
+  if (openCoreId !== null) {
+    renderCoreModal(openCoreId, snap);
+  }
+}
+
+function openCoreInspector(coreId: string): void {
+  openCoreId = coreId;
+  const modal = document.getElementById("core-modal");
+  if (!modal) return;
+  modal.removeAttribute("hidden");
+  if (lastSnapshot) {
+    renderCoreModal(coreId, lastSnapshot);
+  }
+}
+
+function closeCoreInspector(): void {
+  openCoreId = null;
+  const modal = document.getElementById("core-modal");
+  if (modal) modal.setAttribute("hidden", "");
+}
+
+function installCoreInspectorHandlers(): void {
+  // Click on a `.core-link` (the rendered core-name anchor) to open.
+  document.body.addEventListener("click", (ev) => {
+    const target = ev.target as HTMLElement | null;
+    if (!target) return;
+    const link = target.closest(".core-link") as HTMLElement | null;
+    if (link?.dataset.coreId) {
+      ev.preventDefault();
+      openCoreInspector(link.dataset.coreId);
+      return;
+    }
+    if (target.id === "core-modal-close" || target.classList.contains("modal-backdrop")) {
+      closeCoreInspector();
+    }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && openCoreId !== null) {
+      closeCoreInspector();
+    }
+  });
 }
 
 function init(): void {
@@ -71,6 +121,7 @@ function init(): void {
   widgetRef = widget;
 
   installCopyHandler();
+  installCoreInspectorHandlers();
 
   manager.start();
 }
