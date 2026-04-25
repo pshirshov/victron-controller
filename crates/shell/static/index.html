@@ -17,124 +17,149 @@
 
   <p class="inspect-hint">Click any entity name to inspect.</p>
 
-  <section id="decisions">
-    <h2>Decisions</h2>
-    <table id="decisions-table">
-      <thead>
-        <tr>
-          <th>Controller</th>
-          <th>Summary</th>
-          <th>Factors</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab" data-tab="control" aria-selected="true">Control</button>
+    <button type="button" class="tab" data-tab="detail" aria-selected="false">Detail</button>
+  </nav>
 
-  <section id="actuated">
-    <h2>Actuated</h2>
-    <table id="actuated-table">
-      <thead>
-        <tr>
-          <th>Entity</th>
-          <th>Target</th>
-          <th>Owner</th>
-          <th>Phase</th>
-          <th>Actual</th>
-          <th>Freshness</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  <div class="tab-panel" data-tab="control">
+    <section id="knobs">
+      <h2>Knobs</h2>
+      <div id="kill-switch" class="kill-switch"></div>
+      <div class="table-wrap">
+        <table id="knobs-table">
+          <thead>
+            <tr>
+              <th>Knob</th>
+              <th>Value</th>
+              <th>Default</th>
+              <th>Set</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="sensors">
-    <h2>Sensors</h2>
-    <table id="sensors-table">
-      <thead>
-        <tr>
-          <th>Sensor</th>
-          <th>Value</th>
-          <th>Freshness</th>
-          <th title="Safety-net re-seed interval; ItemsChanged signals can arrive more often">Reseed</th>
-          <th>Stale after</th>
-          <th>Origin</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <section id="decisions">
+      <h2>Decisions</h2>
+      <div class="table-wrap">
+        <table id="decisions-table">
+          <thead>
+            <tr>
+              <th>Controller</th>
+              <th>Summary</th>
+              <th>Factors</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="cores">
-    <h2>TASS cores</h2>
-    <table id="cores-table">
-      <thead>
-        <tr>
-          <th>Core</th>
-          <th>Depends on</th>
-          <th>Outcome</th>
-          <th>Payload</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <section id="actuated">
+      <h2>Actuated</h2>
+      <div class="table-wrap">
+        <table id="actuated-table">
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Target</th>
+              <th>Owner</th>
+              <th>Phase</th>
+              <th>Actual</th>
+              <th>Freshness</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="timers">
-    <h2>Timers</h2>
-    <table id="timers-table">
-      <thead>
-        <tr>
-          <th>Timer</th>
-          <th>Description</th>
-          <th>Period</th>
-          <th>Last fire</th>
-          <th>Next fire</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <section id="cores">
+      <h2>TASS cores</h2>
+      <div class="table-wrap">
+        <table id="cores-table">
+          <thead>
+            <tr>
+              <th>Core</th>
+              <th>Depends on</th>
+              <th>Outcome</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="bookkeeping">
-    <h2>Bookkeeping</h2>
-    <table id="bk-table">
-      <thead><tr><th>Field</th><th>Value</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <section id="forecasts">
+      <h2>Forecasts</h2>
+      <div class="table-wrap">
+        <table id="forecasts-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Today (kWh)</th>
+              <th>Tomorrow (kWh)</th>
+              <th>Fetched</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 
-  <section id="forecasts">
-    <h2>Forecasts</h2>
-    <table id="forecasts-table">
-      <thead>
-        <tr>
-          <th>Provider</th>
-          <th>Today (kWh)</th>
-          <th>Tomorrow (kWh)</th>
-          <th>Fetched</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  <div class="tab-panel" data-tab="detail" hidden>
+    <section id="timers">
+      <h2>Timers</h2>
+      <div class="table-wrap">
+        <table id="timers-table">
+          <thead>
+            <tr>
+              <th>Timer</th>
+              <th>Description</th>
+              <th>Period</th>
+              <th>Last fire</th>
+              <th>Next fire</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <section id="knobs">
-    <h2>Knobs</h2>
-    <div id="kill-switch" class="kill-switch"></div>
-    <table id="knobs-table">
-      <thead>
-        <tr>
-          <th>Knob</th>
-          <th>Value</th>
-          <th>Default</th>
-          <th>Set</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <section id="sensors">
+      <h2>Sensors</h2>
+      <div class="table-wrap">
+        <table id="sensors-table">
+          <thead>
+            <tr>
+              <th>Sensor</th>
+              <th>Value</th>
+              <th>Freshness</th>
+              <th title="Safety-net re-seed interval; ItemsChanged signals can arrive more often">Reseed</th>
+              <th>Stale after</th>
+              <th>Origin</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="bookkeeping">
+      <h2>Bookkeeping</h2>
+      <div class="table-wrap">
+        <table id="bk-table">
+          <thead><tr><th>Field</th><th>Value</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 
   <footer>
     <span id="last-error"></span>

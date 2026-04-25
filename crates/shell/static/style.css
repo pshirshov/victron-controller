@@ -444,3 +444,79 @@ footer {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ----- Tabs ---------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin: 16px 0 16px;
+  padding: 0;
+}
+.tabs .tab {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.tabs .tab[aria-selected="true"] {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--bg);
+}
+.tabs .tab:hover {
+  color: var(--fg);
+}
+.tab-panel[hidden] { display: none; }
+
+/* ----- Responsive table wrapping ------------------------------------- */
+
+/* Each table sits inside `.table-wrap` so horizontal overflow scrolls
+ * within the wrapper instead of forcing the whole page to scroll on
+ * narrow viewports. Combined with the body's `max-width: 1400px` cap
+ * and `padding: 0 16px` (line ~30), this keeps the layout viewport-
+ * fitted on phones while still showing every column when the user
+ * scrolls horizontally inside the table. */
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.table-wrap > table {
+  /* Allow tables to expand past the viewport width when content needs
+   * it — the wrapper's overflow-x handles the visual scroll. */
+  min-width: max-content;
+}
+
+/* Mobile-specific tightening: smaller cell padding + font on narrow
+ * viewports so more columns fit before horizontal-scroll kicks in. */
+@media (max-width: 720px) {
+  body {
+    padding: 0 8px 24px;
+  }
+  header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  h1 { font-size: 18px; }
+  h2 { font-size: 13px; margin: 16px 0 6px; }
+  table { font-size: 12px; }
+  th { padding: 5px 6px; }
+  td { padding: 3px 6px; }
+  .tabs .tab { padding: 5px 10px; font-size: 12px; }
+  .modal-card {
+    min-width: 0;
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+}

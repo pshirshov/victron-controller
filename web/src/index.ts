@@ -141,8 +141,43 @@ function init(): void {
 
   installCopyHandler();
   installEntityInspectorHandlers();
+  installTabSwitcher();
 
   manager.start();
+}
+
+/// Two-tab layout: Control (knobs / decisions / actuated / cores /
+/// forecasts) vs Detail (timers / sensors / bookkeeping). Active tab
+/// persists in `location.hash` so a refresh / shared link lands on
+/// the same view.
+function installTabSwitcher(): void {
+  const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".tabs .tab"));
+  const panels = Array.from(document.querySelectorAll<HTMLElement>(".tab-panel"));
+  if (buttons.length === 0 || panels.length === 0) return;
+
+  const apply = (target: string) => {
+    for (const btn of buttons) {
+      btn.setAttribute("aria-selected", btn.dataset.tab === target ? "true" : "false");
+    }
+    for (const panel of panels) {
+      if (panel.dataset.tab === target) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+    }
+  };
+
+  const initial = (location.hash || "").replace(/^#/, "");
+  const valid = buttons.some((b) => b.dataset.tab === initial);
+  apply(valid ? initial : "control");
+
+  for (const btn of buttons) {
+    btn.addEventListener("click", () => {
+      const t = btn.dataset.tab ?? "control";
+      apply(t);
+      // replaceState (not `location.hash =`) avoids growing a history
+      // entry per tab click.
+      history.replaceState(null, "", `#${t}`);
+    });
+  }
 }
 
 init();
