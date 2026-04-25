@@ -163,8 +163,10 @@ fn phases(w: &World) -> PhaseSnapshot {
 ///
 /// The two hard rules:
 /// - never go back to `Unset` (once set, always set to something);
-/// - `Confirmed` is only reached from `Commanded` (the only place
-///   `confirm_if` has an effect).
+/// - `Confirmed` is only reached from `Commanded` or `Pending` —
+///   `Pending → Confirmed` covers the propose-but-don't-write paths
+///   (e.g. eddi `Leave` action, observer mode) where reality already
+///   matches the target without a write.
 fn valid_phase_transition(a: TargetPhase, b: TargetPhase) -> bool {
     if a == b {
         return true;
@@ -172,7 +174,10 @@ fn valid_phase_transition(a: TargetPhase, b: TargetPhase) -> bool {
     if b == TargetPhase::Unset {
         return false;
     }
-    if b == TargetPhase::Confirmed && a != TargetPhase::Commanded {
+    if b == TargetPhase::Confirmed
+        && a != TargetPhase::Commanded
+        && a != TargetPhase::Pending
+    {
         return false;
     }
     true

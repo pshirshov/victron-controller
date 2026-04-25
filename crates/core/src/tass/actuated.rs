@@ -66,16 +66,27 @@ impl<V> Actuated<V> {
         self.actual.on_reading(value, now);
     }
 
-    /// Attempt `Commanded → Confirmed` using a user-supplied predicate.
+    /// Attempt `Pending | Commanded → Confirmed` using a user-supplied
+    /// predicate.
     ///
     /// `close(&target, &actual)` should return true when the actual reading
-    /// is close enough to the target to consider the write confirmed. Use
-    /// strict equality for discrete values, or a tolerance check for analog
-    /// ones.
+    /// is close enough to the target to consider it confirmed. Use strict
+    /// equality for discrete values, or a tolerance check for analog ones.
+    ///
+    /// `Pending` qualifies as well as `Commanded`: a controller may have
+    /// chosen not to write (for example the eddi controller's `Leave`
+    /// action — "the device is already in the desired state"); when the
+    /// readback then matches the target, that observation is just as
+    /// valid a confirmation as one that follows a write. Without this,
+    /// any propose-but-don't-write path would leave the target stuck at
+    /// `Pending` forever even though reality agrees.
     ///
     /// Returns `true` if the phase transitioned.
     pub fn confirm_if<F: FnOnce(&V, &V) -> bool>(&mut self, close: F, now: Instant) -> bool {
-        if !matches!(self.target.phase, TargetPhase::Commanded) {
+        if !matches!(
+            self.target.phase,
+            TargetPhase::Commanded | TargetPhase::Pending
+        ) {
             return false;
         }
         let Some(target) = &self.target.value else {
@@ -250,16 +261,26 @@ mod tests {
     }
 
     #[test]
-    fn confirm_if_outside_commanded_is_noop() {
+    fn confirm_if_from_unset_is_noop() {
         let t0 = Instant::now();
         let mut e: Actuated<i32> = Actuated::new(t0);
-        // Unset
         assert!(!e.confirm_if(|_, _| true, at(t0, 1)));
-        // Pending
-        e.propose_target(1, Owner::SetpointController, at(t0, 2));
-        e.on_reading(1, at(t0, 3));
-        assert!(!e.confirm_if(|t, a| t == a, at(t0, 4)));
+        assert_eq!(e.target.phase, TargetPhase::Unset);
+    }
+
+    /// `Pending → Confirmed` is now a legal transition: a controller
+    /// that chose not to write (e.g. eddi `Leave`) sees a matching
+    /// readback and the target is confirmed without ever passing
+    /// through `Commanded`.
+    #[test]
+    fn confirm_if_from_pending_promotes_when_predicate_holds() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 1));
         assert_eq!(e.target.phase, TargetPhase::Pending);
+        e.on_reading(1, at(t0, 2));
+        assert!(e.confirm_if(|t, a| t == a, at(t0, 3)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
     }
 
     #[test]
