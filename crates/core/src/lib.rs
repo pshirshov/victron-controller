@@ -13,6 +13,7 @@ pub mod owner;
 pub mod process;
 pub mod tass;
 pub mod topology;
+pub mod tz;
 pub mod types;
 pub mod world;
 
@@ -22,6 +23,7 @@ pub use owner::Owner;
 pub use process::process;
 pub use tass::{Actual, Actuated, Freshness, Target, TargetPhase, Timestamped};
 pub use topology::{ControllerParams, HardwareParams, Topology};
+pub use tz::TzHandle;
 pub use types::{
     check_staleness_invariant, ActuatedId, BookkeepingId, BookkeepingKey,
     BookkeepingValue, Command, DbusTarget, DbusValue, Effect, Event, ForecastProvider,

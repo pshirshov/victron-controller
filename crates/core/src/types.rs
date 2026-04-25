@@ -753,7 +753,7 @@ pub enum Command {
 }
 
 /// Everything the pure core consumes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Sensor(SensorReading),
     TypedSensor(TypedReading),
@@ -787,6 +787,21 @@ pub enum Event {
         last_fire_epoch_ms: i64,
         next_fire_epoch_ms: Option<i64>,
         status: TimerStatus,
+        at: Instant,
+    },
+    /// PR-tz-from-victron: Victron-supplied display timezone string
+    /// (read from `com.victronenergy.settings`
+    /// `/Settings/System/TimeZone`). `apply_event` validates the
+    /// string with `chrono_tz::Tz::from_str`; on success it updates
+    /// `world.timezone` + bumps `world.timezone_updated_at` and stores
+    /// the parsed Tz into `topology.tz_handle` so subsequent
+    /// `RealClock::naive()` calls use the operator-configured zone.
+    /// Invalid strings emit an `Effect::Log(Warn)` and are dropped —
+    /// the controller continues with the previously-loaded Tz (or
+    /// UTC at boot). The variant carries `String` so `Event` is no
+    /// longer `Copy`.
+    Timezone {
+        value: String,
         at: Instant,
     },
 }

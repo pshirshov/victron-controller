@@ -22,8 +22,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _decisions: Decisions;
     private readonly _cores_state: CoresState;
     private readonly _timers: Timers;
+    private readonly _timezone: string;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, timezone: string) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -35,6 +36,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._decisions = decisions
         this._cores_state = cores_state
         this._timers = timers
+        this._timezone = timezone
     }
 
     public get captured_at_epoch_ms(): bigint {
@@ -70,6 +72,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get timers(): Timers {
         return this._timers;
     }
+    public get timezone(): string {
+        return this._timezone;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -83,11 +88,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             forecasts: this._forecasts,
             decisions: this._decisions,
             cores_state: this._cores_state,
-            timers: this._timers
+            timers: this._timers,
+            timezone: this._timezone
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; timezone?: string}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -99,11 +105,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'forecasts' in overrides ? overrides.forecasts! : this._forecasts,
             'decisions' in overrides ? overrides.decisions! : this._decisions,
             'cores_state' in overrides ? overrides.cores_state! : this._cores_state,
-            'timers' in overrides ? overrides.timers! : this._timers
+            'timers' in overrides ? overrides.timers! : this._timers,
+            'timezone' in overrides ? overrides.timezone! : this._timezone
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; timezone: string}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -115,7 +122,8 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.forecasts,
             obj.decisions,
             obj.cores_state,
-            obj.timers
+            obj.timers,
+            obj.timezone
         );
     }
 
@@ -221,6 +229,13 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeString(buffer, value.timezone);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -242,6 +257,7 @@ export class WorldSnapshot_UEBACodec {
             Decisions_UEBACodec.instance.encode(ctx, value.decisions, writer);
             CoresState_UEBACodec.instance.encode(ctx, value.cores_state, writer);
             Timers_UEBACodec.instance.encode(ctx, value.timers, writer);
+            BinTools.writeString(writer, value.timezone);
         }
     }
     
@@ -253,7 +269,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 9; i++) {
+            for (let i = 0; i < 10; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -269,6 +285,7 @@ export class WorldSnapshot_UEBACodec {
         const decisions = Decisions_UEBACodec.instance.decode(ctx, reader);
         const cores_state = CoresState_UEBACodec.instance.decode(ctx, reader);
         const timers = Timers_UEBACodec.instance.decode(ctx, reader);
+        const timezone = BinTools.readString(reader);
         return new WorldSnapshot(
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -281,6 +298,7 @@ export class WorldSnapshot_UEBACodec {
             decisions,
             cores_state,
             timers,
+            timezone,
         );
     }
 

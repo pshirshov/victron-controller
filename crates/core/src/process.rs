@@ -116,6 +116,44 @@ fn apply_event(
             *status,
             world,
         ),
+        Event::Timezone { value, at } => {
+            apply_timezone(value, *at, world, topology, effects);
+        }
+    }
+}
+
+/// PR-tz-from-victron: validate + apply the Victron-supplied display
+/// timezone. On a parseable IANA name we update `world.timezone`,
+/// bump `timezone_updated_at`, and atomically swap the parsed Tz into
+/// `topology.tz_handle` so the shell-side `RealClock::naive()` reads
+/// it on its next call. On parse failure we log a Warn and leave both
+/// world state and the live handle untouched (controller continues
+/// with the previously-loaded Tz, or UTC at boot).
+fn apply_timezone(
+    value: &str,
+    at: Instant,
+    world: &mut World,
+    topology: &Topology,
+    effects: &mut Vec<Effect>,
+) {
+    use std::str::FromStr;
+    match chrono_tz::Tz::from_str(value) {
+        Ok(tz) => {
+            if world.timezone != value {
+                world.timezone = value.to_string();
+            }
+            world.timezone_updated_at = Some(at);
+            topology.tz_handle.set(tz);
+        }
+        Err(e) => {
+            effects.push(Effect::Log {
+                level: LogLevel::Warn,
+                source: "timezone",
+                message: format!(
+                    "invalid TZ from Victron: {value:?} — {e}; keeping previous"
+                ),
+            });
+        }
     }
 }
 
@@ -2535,9 +2573,88 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------
+    // PR-tz-from-victron: Event::Timezone
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn event_timezone_updates_world_and_handle() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let topo = Topology::defaults();
+        // Sanity: starts at UTC default.
+        assert_eq!(world.timezone, "Etc/UTC");
+        assert!(world.timezone_updated_at.is_none());
+        assert_eq!(topo.tz_handle.current(), chrono_tz::UTC);
+
+        let _ = process(
+            &Event::Timezone {
+                value: "Europe/London".to_string(),
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &topo,
+        );
+        assert_eq!(world.timezone, "Europe/London");
+        assert_eq!(world.timezone_updated_at, Some(c.monotonic));
+        assert_eq!(topo.tz_handle.current(), chrono_tz::Europe::London);
+    }
+
+    #[test]
+    fn event_timezone_invalid_logs_warn_and_leaves_state() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Pre-seed a known-good Tz so we can assert it is NOT replaced.
+        let topo = Topology::defaults();
+        let _ = process(
+            &Event::Timezone {
+                value: "Europe/London".to_string(),
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &topo,
+        );
+        assert_eq!(world.timezone, "Europe/London");
+        let stamped_at = world.timezone_updated_at;
+
+        let effects = process(
+            &Event::Timezone {
+                value: "Not/A/Real/Zone".to_string(),
+                at: c.monotonic + StdDuration::from_secs(1),
+            },
+            &mut world,
+            &c,
+            &topo,
+        );
+        // World state unchanged.
+        assert_eq!(world.timezone, "Europe/London");
+        assert_eq!(world.timezone_updated_at, stamped_at);
+        assert_eq!(topo.tz_handle.current(), chrono_tz::Europe::London);
+        // Warn log emitted.
+        let warns: Vec<_> = effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Log {
+                        level: LogLevel::Warn,
+                        source: "timezone",
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(
+            warns.len(),
+            1,
+            "expected exactly one Warn log from the timezone arm; got {effects:#?}",
+        );
+    }
+
     // PR-AS-C: the ex-`zappi_mode_readback_drives_confirmation_on_exact_match`
-    // test was deleted. It exercised the deleted `apply_readback::ZappiMode`
-    // arm; production never constructed `Event::Readback(ActuatedReadback::
+    // test was deleted. It exercised the deleted `apply_readback::ZappiMode`    // arm; production never constructed `Event::Readback(ActuatedReadback::
     // ZappiMode)`, and the production `apply_typed_reading::Zappi` arm
     // updates only `world.typed_sensors.zappi_state` — there is no
     // production path that confirms `world.zappi_mode.target.phase`.

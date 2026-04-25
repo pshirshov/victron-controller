@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use crate::tz::TzHandle;
+
 /// Tunables for the controller dispatch layer. These are separate from
 /// the user-facing [`crate::knobs::Knobs`] — they don't belong on the
 /// dashboard and rarely change.
@@ -136,29 +138,44 @@ impl Default for HardwareParams {
 }
 
 /// Topology = structural configuration (service instance IDs, MQTT
-/// broker, controller tunables). Built once at startup; immutable.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// broker, controller tunables). Built once at startup; immutable in
+/// the sense that no controller mutates it — but the embedded
+/// [`TzHandle`] is itself a shared atomic cell that the shell's D-Bus
+/// timezone subscriber writes to.
+///
+/// PR-tz-from-victron: `tz_handle` was added; the struct is no longer
+/// `Copy` because `TzHandle` holds an `Arc`. Pass by reference (already
+/// the convention) or `clone()` at the boundary.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Topology {
     pub controller_params: ControllerParams,
     pub hardware: HardwareParams,
+    /// PR-tz-from-victron: the live timezone fed from D-Bus
+    /// `/Settings/System/TimeZone`. Cloned across threads cheaply via
+    /// the inner Arc; `apply_event(Event::Timezone, ...)` writes to it.
+    pub tz_handle: TzHandle,
 }
 
 impl Topology {
+    /// Default topology with all-defaults plus a fresh UTC `TzHandle`.
+    /// Not `const fn` because `TzHandle::new_utc` allocates an Arc.
     #[must_use]
-    pub const fn defaults() -> Self {
+    pub fn defaults() -> Self {
         Self {
             controller_params: ControllerParams::defaults(),
             hardware: HardwareParams::defaults(),
+            tz_handle: TzHandle::new_utc(),
         }
     }
 
     /// Builder helper: replace only the hardware section, keep all
     /// other defaults.
     #[must_use]
-    pub const fn with_hardware(hardware: HardwareParams) -> Self {
+    pub fn with_hardware(hardware: HardwareParams) -> Self {
         Self {
             controller_params: ControllerParams::defaults(),
             hardware,
+            tz_handle: TzHandle::new_utc(),
         }
     }
 }

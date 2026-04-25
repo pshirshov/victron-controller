@@ -23,13 +23,14 @@ pub struct WorldSnapshot {
     pub decisions: Decisions,
     pub cores_state: CoresState,
     pub timers: Timers,
+    pub timezone: String,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        9
+        10
     }
 }
 
@@ -117,6 +118,14 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.timezone.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -135,6 +144,7 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             value.decisions.encode_ueba(ctx, writer)?;
             value.cores_state.encode_ueba(ctx, writer)?;
             value.timers.encode_ueba(ctx, writer)?;
+            value.timezone.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -164,6 +174,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
         let decisions = Decisions::decode_ueba(ctx, reader)?;
         let cores_state = CoresState::decode_ueba(ctx, reader)?;
         let timers = Timers::decode_ueba(ctx, reader)?;
+        let timezone = crate::baboon_runtime::bin_tools::read_string(reader)?;
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -176,6 +187,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             decisions,
             cores_state,
             timers,
+            timezone,
         })
     }
 }

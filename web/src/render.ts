@@ -197,6 +197,33 @@ export function renderSensors(snap: WorldSnapshot) {
       ],
     };
   });
+
+  // PR-tz-from-victron: synthetic row for the Victron-supplied display
+  // timezone. The wire field is a plain string (not an Actual<f64>), so
+  // it lives outside `snap.sensors`/`snap.sensors_meta` and is built
+  // here. Freshness is "Fresh" if the dashboard's snapshot was captured
+  // — `captured_at_epoch_ms` is the live-now stamp, and the controller
+  // updates `timezone` every D-Bus reseed (60 s on the settings
+  // service); we don't have a per-row timestamp, so we always show
+  // Fresh and pin staleness/cadence at static "informational" values.
+  const tz = (snap as unknown as { timezone?: string }).timezone ?? "Etc/UTC";
+  const tzKey = "system.timezone";
+  rows.push({
+    key: tzKey,
+    cells: [
+      { cls: "mono", html: entityLink(tzKey, "sensor") },
+      { cls: "mono", html: esc(tz) },
+      { cls: "freshness-Fresh", html: "Fresh" },
+      { cls: "mono", html: fmtDurationMs(60_000) },
+      { cls: "mono", html: fmtDurationMs(120_000) },
+      { cls: "mono", html: "D-Bus settings" },
+    ],
+  });
+
+  // Re-sort so the synthetic row lands alphabetically alongside the rest.
+  rows.sort((a, b) =>
+    displayNameOfTyped(a.key, "sensor").localeCompare(displayNameOfTyped(b.key, "sensor")),
+  );
   updateKeyedRows(tbody, rows);
 }
 

@@ -54,10 +54,14 @@ impl Runtime {
                 panic!("{msg}");
             }
         }
+        // PR-tz-from-victron: the clock and the core's `Topology` share
+        // the same `TzHandle` so a D-Bus `/Settings/System/TimeZone`
+        // update lands in `RealClock::naive()` immediately.
+        let clock = RealClock::new(topology.tz_handle.clone());
         Self {
             world,
             topology,
-            clock: RealClock,
+            clock,
             writer,
             myenergi,
             mqtt,

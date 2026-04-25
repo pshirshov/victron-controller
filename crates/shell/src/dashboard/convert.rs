@@ -330,6 +330,8 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         decisions: decisions_to_model(&world.decisions),
         cores_state: cores_state_to_model(&world.cores_state),
         timers: timers_to_model(&world.timers),
+        // PR-tz-from-victron: surface the Victron-supplied display TZ.
+        timezone: world.timezone.clone(),
     }
 }
 

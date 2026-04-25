@@ -22,6 +22,18 @@ use victron_controller_core::types::{
     Event, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
 };
 
+/// PR-tz-from-victron: extract an IANA timezone string from a zvariant
+/// `Value`. Only `Value::Str` is accepted; empty strings are rejected
+/// (Venus has been observed to emit `""` momentarily during settings
+/// service startup). Caller (`route_to_event`) wraps the result into
+/// `Event::Timezone`.
+fn extract_string(v: &Value<'_>) -> Option<String> {
+    match v {
+        Value::Str(s) if !s.is_empty() => Some(s.as_str().to_string()),
+        _ => None,
+    }
+}
+
 use crate::config::DbusServices;
 
 /// Defensive fallback cadence for a service that ends up with no
@@ -74,9 +86,16 @@ fn build_service_timer_ids(s: &DbusServices) -> HashMap<String, TimerId> {
 /// rollup that used to live behind `Route::ScheduleField` is preserved
 /// as a subscriber-internal side-effect (see `sensor_id_to_schedule_field`
 /// + the `SchedulePartial` accumulator).
+///
+/// PR-tz-from-victron added `Route::Timezone` for the
+/// `/Settings/System/TimeZone` string path on the settings service.
+/// Strings need a separate extraction helper (`extract_string`) and a
+/// dedicated event variant (`Event::Timezone`) — they don't fit the
+/// f64-shaped sensor pipeline.
 #[derive(Debug, Clone)]
 enum Route {
     Sensor(SensorId),
+    Timezone,
 }
 
 /// Which field of a ScheduleSpec this D-Bus path corresponds to.
@@ -177,6 +196,13 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     );
     add(&mut r, &s.settings, "/Settings/CGwacs/BatteryLife/State", Route::Sensor(EssState));
 
+    // PR-tz-from-victron: Victron-supplied display timezone string.
+    // Cadence inherits from the per-service min on the settings
+    // service (5 s after PR-AS-B); freshness is dashboard-side, not
+    // managed by the universal sensor pipeline because the value is
+    // a String, not an f64.
+    add(&mut r, &s.settings, "/Settings/System/TimeZone", Route::Timezone);
+
     // Schedule readback — 5 fields × 2 schedules. Each leaf path lands
     // as its own `Route::Sensor(...)` row; the per-field SensorId feeds
     // both the universal sensor freshness machinery and the
@@ -224,12 +250,18 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     r
 }
 
-/// Reseed cadence for a single route. After PR-AS-B every route is
-/// `Route::Sensor(id)`, so this defers entirely to the per-sensor
-/// authoritative table on `SensorId::reseed_cadence`.
+/// Reseed cadence for a single route. After PR-AS-B sensor routes
+/// defer entirely to the per-sensor authoritative table on
+/// `SensorId::reseed_cadence`. PR-tz-from-victron added `Route::Timezone`
+/// — it's a settings-service string with no per-id cadence table; we
+/// pin it at 60 s so it doesn't drag the settings service's
+/// `min(cadence)` below the existing 5 s floor (which is already set by
+/// `GridSetpointActual`) but still gets reseeded on the same scale as
+/// the schedule leaves.
 fn cadence_for_route(route: &Route) -> Duration {
     match route {
         Route::Sensor(id) => id.reseed_cadence(),
+        Route::Timezone => Duration::from_secs(60),
     }
 }
 
@@ -807,15 +839,15 @@ impl Subscriber {
                                     continue;
                                 };
                                 let Some(v) = child_value.value() else { continue };
-                                let Some(value) = extract_scalar(v) else {
+                                let now = Instant::now();
+                                let mut emitted: Vec<Event> = Vec::new();
+                                let routed = self.route_to_event(&route, v, now, &mut emitted);
+                                if !routed {
                                     continue;
-                                };
+                                }
                                 self.routed_signals_since_last_heartbeat =
                                     self.routed_signals_since_last_heartbeat.saturating_add(1);
-                                let now = Instant::now();
                                 self.last_signal_at = Some(now);
-                                let mut emitted: Vec<Event> = Vec::new();
-                                self.route_to_event(&route, value, now, &mut emitted);
                                 for event in emitted {
                                     if tx.send(event).await.is_err() {
                                         return Ok(());
@@ -1085,18 +1117,20 @@ impl Subscriber {
         Ok(())
     }
 
-    /// Turn a routed (value, time) into 0..=2 Events, appending them
-    /// to `out`. Thin wrapper around the free `route_to_event` helper;
+    /// Turn a routed (raw value, time) into 0..=2 Events, appending them
+    /// to `out`. Returns `true` iff the route produced at least one
+    /// event (i.e. the value was extractable in the route's expected
+    /// shape). Thin wrapper around the free `route_to_event` helper;
     /// the same logic is invoked from `seed_service` (which cannot take
     /// `&mut self`).
     fn route_to_event(
         &mut self,
         route: &Route,
-        value: f64,
+        value: &Value<'_>,
         at: Instant,
         out: &mut Vec<Event>,
-    ) {
-        route_to_event(route, value, at, &mut self.schedule_accumulators, out);
+    ) -> bool {
+        route_to_event(route, value, at, &mut self.schedule_accumulators, out)
     }
 }
 
@@ -1105,27 +1139,35 @@ impl Subscriber {
 /// accumulator is passed in by `&mut` so callers can own it in different
 /// places (on `Self` for the signal arm, via caller for seed).
 ///
-/// Always emits exactly one `Event::Sensor(...)` for the routed value.
-/// For the 10 schedule-leaf SensorIds, additionally updates the
-/// matching `schedule_accumulators[idx]`; if `take_spec()` then returns
-/// a complete spec, also emits an `Event::ScheduleReadback{...}`.
+/// `Route::Sensor`: extracts the value as `f64` and emits exactly one
+/// `Event::Sensor(...)`; for the 10 schedule-leaf SensorIds, additionally
+/// updates the matching `schedule_accumulators[idx]` and — if
+/// `take_spec()` returns a complete spec — appends an
+/// `Event::ScheduleReadback{...}` rollup.
+///
+/// `Route::Timezone`: extracts the value as a non-empty `String` and
+/// emits one `Event::Timezone{...}`. PR-tz-from-victron.
+///
+/// Returns `true` iff the route produced at least one event (i.e. value
+/// extraction succeeded in the route's expected shape).
 fn route_to_event(
     route: &Route,
-    value: f64,
+    value: &Value<'_>,
     at: Instant,
     schedule_accumulators: &mut [SchedulePartial; 2],
     out: &mut Vec<Event>,
-) {
+) -> bool {
     match route {
         Route::Sensor(id) => {
+            let Some(v) = extract_scalar(value) else { return false; };
             out.push(Event::Sensor(SensorReading {
                 id: *id,
-                value,
+                value: v,
                 at,
             }));
             if let Some((idx, field)) = sensor_id_to_schedule_field(*id) {
                 let acc = &mut schedule_accumulators[idx as usize];
-                acc.apply(field, value);
+                acc.apply(field, v);
                 // Emit the rollup ONLY when all 5 fields are present
                 // AND consume them: `take_spec` resets the accumulator
                 // after each emit so the next readback requires a
@@ -1141,6 +1183,12 @@ fn route_to_event(
                     });
                 }
             }
+            true
+        }
+        Route::Timezone => {
+            let Some(s) = extract_string(value) else { return false; };
+            out.push(Event::Timezone { value: s, at });
+            true
         }
     }
 }
@@ -1233,11 +1281,10 @@ async fn seed_service(
             continue;
         };
         let Some(v) = entry.value() else { continue };
-        let Some(value) = extract_scalar(v) else {
-            continue;
-        };
         let mut emitted: Vec<Event> = Vec::new();
-        route_to_event(&route, value, at, schedule_accumulators, &mut emitted);
+        if !route_to_event(&route, v, at, schedule_accumulators, &mut emitted) {
+            continue;
+        }
         for event in emitted {
             if tx.send(event).await.is_err() {
                 return Ok(());
@@ -1599,6 +1646,7 @@ mod tests {
     fn route_sensor_id(routes: &HashMap<(String, String), Route>, key: &(String, String)) -> SensorId {
         match routes.get(key).expect("routing table entry") {
             Route::Sensor(id) => *id,
+            other @ Route::Timezone => panic!("expected Route::Sensor, got {other:?}"),
         }
     }
 
@@ -1669,7 +1717,13 @@ mod tests {
         ];
         let mut emitted: Vec<Event> = Vec::new();
         for (id, v) in leaves {
-            route_to_event(&Route::Sensor(id), v, at, &mut accumulators, &mut emitted);
+            route_to_event(
+                &Route::Sensor(id),
+                &Value::F64(v),
+                at,
+                &mut accumulators,
+                &mut emitted,
+            );
         }
         // Expect 5 sensor events + 1 rollup = 6 total.
         assert_eq!(emitted.len(), 6, "5 sensors + 1 rollup");
@@ -1712,7 +1766,13 @@ mod tests {
         ];
         let mut emitted: Vec<Event> = Vec::new();
         for (id, v) in initial {
-            route_to_event(&Route::Sensor(id), v, at, &mut accumulators, &mut emitted);
+            route_to_event(
+                &Route::Sensor(id),
+                &Value::F64(v),
+                at,
+                &mut accumulators,
+                &mut emitted,
+            );
         }
         let initial_rollups = emitted
             .iter()
@@ -1726,13 +1786,65 @@ mod tests {
         let mut second: Vec<Event> = Vec::new();
         route_to_event(
             &Route::Sensor(SensorId::Schedule0DaysActual),
-            7.0,
+            &Value::F64(7.0),
             at,
             &mut accumulators,
             &mut second,
         );
         assert_eq!(second.len(), 1, "single leaf emits exactly one event");
         assert!(matches!(second[0], Event::Sensor(_)), "and it is the sensor leaf");
+    }
+
+    /// PR-tz-from-victron: settings/`/Settings/System/TimeZone` must
+    /// route to `Route::Timezone`, not the f64 sensor pipeline.
+    #[test]
+    fn routing_table_routes_timezone() {
+        let (services, routes) = canonical_routes();
+        let key = (services.settings.clone(), "/Settings/System/TimeZone".to_string());
+        match routes.get(&key).expect("routing table entry") {
+            Route::Timezone => {}
+            other @ Route::Sensor(_) => panic!("expected Route::Timezone, got {other:?}"),
+        }
+    }
+
+    /// PR-tz-from-victron: `extract_string` returns `Some` for non-empty
+    /// `Value::Str` and `None` for empty / non-string values.
+    #[test]
+    fn extract_string_accepts_str_rejects_empty() {
+        assert_eq!(
+            extract_string(&Value::Str("Europe/London".into())),
+            Some("Europe/London".to_string()),
+        );
+        assert_eq!(extract_string(&Value::Str("".into())), None);
+        // Non-string types reject.
+        assert_eq!(extract_string(&Value::F64(1.5)), None);
+        assert_eq!(extract_string(&Value::I32(7)), None);
+    }
+
+    /// PR-tz-from-victron: drive `route_to_event` end-to-end for the
+    /// timezone path; expect exactly one `Event::Timezone` with the
+    /// extracted string.
+    #[test]
+    fn route_to_event_emits_timezone_for_str_value() {
+        let mut accumulators = [SchedulePartial::default(); 2];
+        let at = Instant::now();
+        let mut emitted: Vec<Event> = Vec::new();
+        let routed = route_to_event(
+            &Route::Timezone,
+            &Value::Str("Europe/London".into()),
+            at,
+            &mut accumulators,
+            &mut emitted,
+        );
+        assert!(routed, "non-empty Str must route");
+        assert_eq!(emitted.len(), 1);
+        match &emitted[0] {
+            Event::Timezone { value, at: emitted_at } => {
+                assert_eq!(value, "Europe/London");
+                assert_eq!(*emitted_at, at);
+            }
+            other => panic!("expected Event::Timezone, got {other:?}"),
+        }
     }
 
     #[test]

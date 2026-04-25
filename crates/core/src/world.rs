@@ -388,6 +388,19 @@ pub struct World {
     /// PR-timers-section: per-timer observability snapshot. Updated by
     /// the shell via `Event::TimerState`; pure observability.
     pub timers: Timers,
+
+    /// PR-tz-from-victron: the Victron-supplied display timezone (IANA
+    /// name, e.g. `"Europe/London"`). Updated by `apply_event` on every
+    /// successful `Event::Timezone`. Defaults to `"Etc/UTC"` so a
+    /// fresh-boot controller has a sensible value before the first
+    /// D-Bus reading lands.
+    pub timezone: String,
+
+    /// Monotonic timestamp of the most recent successful `Event::Timezone`
+    /// observation. `None` until the first reading lands; the dashboard
+    /// uses it to mark the synthetic `system.timezone` row Stale once
+    /// the freshness window lapses.
+    pub timezone_updated_at: Option<Instant>,
 }
 
 impl World {
@@ -411,6 +424,10 @@ impl World {
             cores_state: CoresState::default(),
             published_cache: PublishedCache::default(),
             timers: Timers::default(),
+            // PR-tz-from-victron: default UTC until the first D-Bus
+            // `/Settings/System/TimeZone` reading lands.
+            timezone: "Etc/UTC".to_string(),
+            timezone_updated_at: None,
         }
     }
 }

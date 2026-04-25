@@ -218,4 +218,8 @@ root data WorldSnapshot {
   cores_state: CoresState
   // 0.2.0 addition (PR-timers-section).
   timers: Timers
+  // 0.2.0 addition (PR-tz-from-victron). IANA name (e.g. "Europe/London").
+  // Defaults to "Etc/UTC" until the first D-Bus reseed lands the real
+  // value from `/Settings/System/TimeZone` on com.victronenergy.settings.
+  timezone: str
 }

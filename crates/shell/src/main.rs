@@ -450,9 +450,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // `RealClock` is Copy; just reference to silence "unused import"
-    // in the crate. (The runtime already has its own copy.)
-    let _ = RealClock;
+    // Reference the type to silence "unused import" — the runtime
+    // already constructs its own clock from `topology.tz_handle`.
+    let _ = std::marker::PhantomData::<RealClock>;
 
     Ok(())
 }

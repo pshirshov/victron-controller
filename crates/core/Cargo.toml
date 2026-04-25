@@ -8,6 +8,8 @@ description = "Pure TASS core for the victron-controller service"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10", default-features = false }
+arc-swap = "1"
 
 [dev-dependencies]
 proptest = "1"
