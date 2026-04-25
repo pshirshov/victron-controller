@@ -65,9 +65,12 @@ fi
 # Copy out of /nix/store (read-only, perms 0555) into a writable path
 # so the optional UPX step can rewrite it in place. ELF interpreter
 # is already /lib/ld-linux-armhf.so.3 (postFixup in the derivation).
+# `mktemp` creates the temp file as 0600; `cp` keeps the destination
+# perms, so the file lands without an execute bit and UPX rejects
+# it as "file not executable". `u+wx` restores both.
 BINARY_PATH="$(mktemp -t victron-controller.XXXXXX)"
 cp "$NIX_BIN" "$BINARY_PATH"
-chmod u+w "$BINARY_PATH"
+chmod u+wx "$BINARY_PATH"
 echo "[local] nix output: $NIX_BIN"
 
 # UPX-compress the binary to minimise eMMC write volume on each deploy
