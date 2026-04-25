@@ -32,14 +32,12 @@ use victron_controller_core::myenergi::{
 ///
 /// `state.zappi_last_change_signature` is stamped by the poller via
 /// [`ZappiChangeTracker`] — this parser does not touch wall-clock
-/// time.
+/// time. `state.session_kwh` comes from the myenergi `che` field and
+/// is consumed by the Zappi-mode controller's night auto-stop rule
+/// (A-13 / A-14).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiObservation {
     pub state: ZappiState,
-    /// Session energy delivered so far (kWh). We keep this even though
-    /// it's not on `ZappiState` so the Zappi-mode controller can gate
-    /// night auto-stop on it via a future bookkeeping field.
-    pub session_che_kwh: f64,
 }
 
 /// Per-poller state used to decide whether the observed
@@ -116,8 +114,8 @@ pub fn parse_zappi(
             zappi_plug_state: zappi_plug_state_from_str(pst),
             zappi_status: zappi_status_from_code(sta),
             zappi_last_change_signature: stamp,
+            session_kwh: che,
         },
-        session_che_kwh: che,
     })
 }
 
@@ -217,7 +215,7 @@ mod tests {
         assert_eq!(obs.state.zappi_status, ZappiStatus::DivertingOrCharging);
         assert_eq!(obs.state.zappi_plug_state, ZappiPlugState::Charging);
         assert_eq!(obs.state.zappi_last_change_signature, stamp);
-        assert!((obs.session_che_kwh - 5.3).abs() < f64::EPSILON);
+        assert!((obs.state.session_kwh - 5.3).abs() < f64::EPSILON);
     }
 
     #[test]

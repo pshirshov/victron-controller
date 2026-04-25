@@ -367,7 +367,7 @@ mod tests {
         // path would either time out or fail; reaching this point at
         // all proves we short-circuited before `connection()`.
         let w = Writer::new(test_services(), true);
-        w.write(DbusTarget::GridSetpoint, DbusValue::Int(0)).await;
+        w.write(DbusTarget::GridSetpoint, DbusValue::Float(0.0)).await;
         // Inner state must be untouched: no conn opened, backoff still
         // at initial, no warn timestamp.
         let inner = w.inner.lock().await;

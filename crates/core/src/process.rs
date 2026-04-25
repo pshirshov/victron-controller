@@ -757,9 +757,14 @@ fn maybe_propose_setpoint(
         return;
     }
 
+    // Probed live-Venus type for `/Settings/CGwacs/AcPowerSetPoint` is `double`
+    // (scripts/probe-schedule-types.sh, 2026-04-25). Sending `Int` would be a
+    // ticking time bomb the moment writes_enabled flips on — Venus replies
+    // "Wrong type" to every tick and the setpoint never lands. Closes A-29's
+    // setpoint-side aspect.
     effects.push(Effect::WriteDbus {
         target: DbusTarget::GridSetpoint,
-        value: DbusValue::Int(value),
+        value: DbusValue::Float(f64::from(value)),
     });
     world.grid_setpoint.mark_commanded(now);
     effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
@@ -1061,12 +1066,18 @@ fn maybe_propose_schedule(
         },
         value: DbusValue::Int(spec.duration_s),
     });
+    // Probed live-Venus type for Schedule/Charge/{i}/Soc is `int32` despite the
+    // SoC value being a percentage (scripts/probe-schedule-types.sh, 2026-04-25).
+    // ScheduleSpec.soc is f64 to flow naturally through the planning math; cast
+    // to i32 at the wire boundary. Closes A-29 / A-65.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let soc_i32 = spec.soc.round().clamp(0.0, 100.0) as i32;
     effects.push(Effect::WriteDbus {
         target: DbusTarget::Schedule {
             index,
             field: ScheduleField::Soc,
         },
-        value: DbusValue::Float(spec.soc),
+        value: DbusValue::Int(soc_i32),
     });
     effects.push(Effect::WriteDbus {
         target: DbusTarget::Schedule {
@@ -1095,22 +1106,22 @@ pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut
     if !world.typed_sensors.zappi_state.is_usable() {
         return;
     }
-    let current_mode = world.typed_sensors.zappi_state.value.unwrap().zappi_mode;
+    let zappi_state = world.typed_sensors.zappi_state.value.unwrap();
+    let current_mode = zappi_state.zappi_mode;
+    // A-13 + A-14: session kWh now flows straight from the poller via
+    // `ZappiState::session_kwh` (myenergi `che`). Compared kWh-to-kWh
+    // against `zappi_limit` (also kWh — see A-14 unit fix).
+    let session_kwh = zappi_state.session_kwh;
 
     let k = &world.knobs;
-    // Derive session_charged_pct: we don't have a real channel for this
-    // yet (future: add to ZappiState). Assume 0 % for now — the shell will
-    // populate once we add the field to the myenergi parser.
-    let session_charged_pct = 0.0;
-
     let input = ZappiModeInput {
         globals: ZappiModeInputGlobals {
             charge_car_boost: k.charge_car_boost,
             charge_car_extended: k.charge_car_extended,
-            zappi_limit_pct: k.zappi_limit,
+            zappi_limit_kwh: k.zappi_limit,
         },
         current_mode,
-        session_charged_pct,
+        session_kwh,
     };
 
     let out = evaluate_zappi_mode(&input, clock);
@@ -1509,6 +1520,7 @@ mod tests {
                 zappi_plug_state: ZappiPlugState::EvDisconnected,
                 zappi_status: ZappiStatus::Paused,
                 zappi_last_change_signature: at,
+                session_kwh: 0.0,
             },
             at,
         );
@@ -1528,9 +1540,10 @@ mod tests {
 
         // Phase moved Unset → Commanded.
         assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
-        // An Int WriteDbus to GridSetpoint was emitted.
+        // A Float WriteDbus to GridSetpoint was emitted (Venus path is `double`
+        // — see scripts/probe-schedule-types.sh for the live-firmware check).
         let wd = effects.iter().find_map(|e| match e {
-            Effect::WriteDbus { target: DbusTarget::GridSetpoint, value: DbusValue::Int(v) } => Some(*v),
+            Effect::WriteDbus { target: DbusTarget::GridSetpoint, value: DbusValue::Float(v) } => Some(*v),
             _ => None,
         });
         assert!(wd.is_some());
@@ -2025,7 +2038,7 @@ mod tests {
                 e,
                 Effect::WriteDbus {
                     target: DbusTarget::GridSetpoint,
-                    value: DbusValue::Int(_)
+                    value: DbusValue::Float(_)
                 }
             )),
             "post-reset tick must emit a fresh GridSetpoint WriteDbus (got {eff_on:#?})"
@@ -2573,6 +2586,7 @@ mod tests {
             zappi_plug_state: ZappiPlugState::Charging,
             zappi_status: ZappiStatus::DivertingOrCharging,
             zappi_last_change_signature: c.monotonic,
+            session_kwh: 0.0,
         };
         let _ = process(
             &Event::TypedSensor(TypedReading::Zappi {
@@ -2763,6 +2777,7 @@ mod tests {
                 zappi_plug_state: ZappiPlugState::Charging,
                 zappi_status: ZappiStatus::DivertingOrCharging,
                 zappi_last_change_signature: c.monotonic,
+                session_kwh: 0.0,
             },
             c.monotonic,
         );
@@ -2821,6 +2836,7 @@ mod tests {
                 zappi_plug_state: ZappiPlugState::EvDisconnected,
                 zappi_status: ZappiStatus::Paused,
                 zappi_last_change_signature: c.monotonic,
+                session_kwh: 0.0,
             },
             c.monotonic,
         );

@@ -165,7 +165,10 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::FullChargeExportSocThreshold, 1.0, Some("%")),
         number_knob(KnobId::PessimismMultiplierModifier, 0.05, None),
         number_knob(KnobId::ZappiCurrentTarget, 0.5, Some("A")),
-        number_knob(KnobId::ZappiLimit, 1.0, Some("%")),
+        // A-14: zappi_limit is kWh (per-session EV charge ceiling), not
+        // a percentage. Step 0.5 kWh — matches typical EV metering
+        // granularity.
+        number_knob(KnobId::ZappiLimit, 0.5, Some("kWh")),
         number_knob(KnobId::ZappiEmergencyMargin, 0.5, Some("A")),
         number_knob(KnobId::GridExportLimitW, 50.0, Some("W")),
         number_knob(KnobId::GridImportLimitW, 10.0, Some("W")),

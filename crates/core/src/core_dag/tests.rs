@@ -369,6 +369,7 @@ mod d02_boundary_consistency {
                 zappi_plug_state: ZappiPlugState::WaitingForEv,
                 zappi_status: ZappiStatus::DivertingOrCharging,
                 zappi_last_change_signature: last_change_mono,
+                session_kwh: 0.0,
             },
             mono,
         );

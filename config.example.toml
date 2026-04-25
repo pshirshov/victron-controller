@@ -77,6 +77,15 @@ writes_enabled = false
 # Each provider is optional; when its required fields are empty the
 # provider task isn't spawned and no events are emitted.
 
+[forecast]
+# Site timezone for solar-boundary bucketing; do not rely on machine TZ.
+# Venus OS defaults to TZ=UTC, but Open-Meteo's `timezone=auto` returns
+# site-local times — comparing those against `Local::now()` on a UTC
+# machine shifts the today/tomorrow split by the site's offset. Set
+# this to the IANA name of the site (e.g. "Europe/London", "America/
+# Los_Angeles"). A typo fails fast at startup.
+timezone = "Europe/London"
+
 [forecast.solcast]
 # api_key  = "REPLACE_ME"
 # site_ids = ["rooftop-site-uuid-1", "rooftop-site-uuid-2"]

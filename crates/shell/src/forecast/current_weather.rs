@@ -12,6 +12,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono_tz::Tz;
 use reqwest::Client as HttpClient;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -26,17 +27,20 @@ pub async fn run_open_meteo_temperature(
     latitude: f64,
     longitude: f64,
     cadence: Duration,
+    tz: Tz,
     tx: mpsc::Sender<Event>,
 ) -> Result<()> {
     info!(
         latitude,
         longitude,
         cadence_s = cadence.as_secs(),
+        tz = tz.name(),
         "open-meteo current-temperature poller started"
     );
     let url = "https://api.open-meteo.com/v1/forecast";
     let lat = format!("{latitude}");
     let lon = format!("{longitude}");
+    let tz_name = tz.name();
     let mut ticker = interval(cadence);
     loop {
         ticker.tick().await;
@@ -44,7 +48,9 @@ pub async fn run_open_meteo_temperature(
             ("latitude", lat.as_str()),
             ("longitude", lon.as_str()),
             ("current", "temperature_2m"),
-            ("timezone", "auto"),
+            // A-50: match the configured site TZ (don't leak machine TZ
+            // into the forecast pipeline).
+            ("timezone", tz_name),
         ];
         match fetch_json(&http, url, &query).await {
             Ok(body) => {

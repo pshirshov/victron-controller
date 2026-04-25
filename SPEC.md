@@ -120,7 +120,7 @@ Cascading ladder (order matters, last-write-wins):
 
 15 s polling of myenergi. `zappi_state` function normalises to `{zappi_mode, zappi_status, zappi_plug_state, zappi_state_signature, zappi_last_change_*, amps, power, voltage, last_update}`.
 
-At any `TariffBandKind.Night`, if `zappi_limit ≤ 65` ∧ `charged ≥ limit`, set Zappi to Off. Cron at 02:00–04:59 switches mode based on `charge_car_boost`; cron at 05:00–07:59 based on `charge_car_extended`.
+The `zappi_limit` knob is a **per-session EV charge ceiling in kWh** (A-14). During any `TariffBandKind.Night`, the controller forces the Zappi Off once the session has delivered ≥ `zappi_limit` kWh — but only when `zappi_limit ≤ 65` kWh, the legacy NR gate that arms auto-stop only for users who've configured a sub-full-charge cap. The session kWh figure comes from myenergi's `che` field via `ZappiState::session_kwh` (A-13). Cron at 02:00–04:59 switches mode based on `charge_car_boost`; cron at 05:00–07:59 based on `charge_car_extended`. Default `zappi_limit = 65 kWh` (covers a Tesla Model 3 LR full charge and sits on the auto-stop gate boundary).
 
 ### 3.6. HA tab
 
@@ -130,7 +130,7 @@ Fallback defaults encoded in the legacy parsers (preserved as **legacy baselines
 
 | Knob | Legacy fallback | Range |
 |---|---|---|
-| `zappi_limit` | 100 | 1..100 |
+| `zappi_limit` | 100 (legacy: `%` semantic; current: `kWh` per A-14) | 0..100 kWh |
 | `zappi_current_target` | 9.5 | 7.5..32.5 |
 | `force_disable_export` | `true` | bool |
 | `battery_soc_target` | 100 | 50..100 |
@@ -437,7 +437,7 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `charge_car_boost` | `false` | |
 | `charge_car_extended` | `false` | |
 | `zappi_current_target` | `9.5` A | Unchanged |
-| `zappi_limit` | `100` | Unchanged |
+| `zappi_limit` | `65` kWh | A-14: unit is kWh (per-session EV charge ceiling), not % as earlier revisions advertised. 65 kWh default sits on the `<= 65` auto-stop gate and covers a Tesla Model 3 LR full charge. |
 | `zappi_emergency_margin` | `5.0` A | Unchanged |
 | `grid_export_limit_w` | `4900` | **NEW** grid-meter-side hard cap on export (applied in `_prepare_setpoint` post-processing). See §5.11 / PR-09a. Safe-max clamped to 10 kW at ingest (A-09). |
 | `grid_import_limit_w` | `10` | **NEW** grid-meter-side hard cap on import. Symmetric with `grid_export_limit_w`. Default `10 W` preserves the idle-bleed invariant (§5.11): the setpoint controller never emits `> 10 W` by default, so any positive setpoint (a bug, an operator override, an undetected branch) is pinned at 10 W. Raise explicitly only when the user wants the controller to actively import (e.g. charge-to-full from grid). A-10 / PR-09a. |

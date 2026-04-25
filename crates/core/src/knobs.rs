@@ -80,6 +80,13 @@ pub struct Knobs {
     pub charge_car_boost: bool,
     pub charge_car_extended: bool,
     pub zappi_current_target: f64,
+    /// Per-session EV charge ceiling in **kWh** (A-14: was `%` in earlier
+    /// revisions; now matches the legacy NR semantic). The Zappi-mode
+    /// controller compares `ZappiState::session_kwh` against this value
+    /// during Night tariff bands and forces the mode Off once the car
+    /// has drawn ≥ `zappi_limit` kWh — but only when `zappi_limit ≤ 65`
+    /// (the legacy "only arm when user configured a sub-full-charge
+    /// cap" gate).
     pub zappi_limit: f64,
     pub zappi_emergency_margin: f64,
 
@@ -133,7 +140,11 @@ impl Knobs {
             charge_car_boost: false,
             charge_car_extended: false,
             zappi_current_target: 9.5,
-            zappi_limit: 100.0,
+            // A-14: kWh, not %. 65 kWh covers a Tesla Model 3 LR full
+            // charge and sits on the `<= 65` gate boundary in the
+            // zappi-mode controller, so auto-stop is armed by default
+            // for typical EV sessions. Tune per vehicle.
+            zappi_limit: 65.0,
             zappi_emergency_margin: 5.0,
             grid_export_limit_w: 4900,
             grid_import_limit_w: 10,

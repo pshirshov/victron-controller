@@ -5,10 +5,10 @@
 //!    else Off. Drives from cronplus `5-59 2` + `* 3-4`.
 //! 2. **NightExtended window (05:00–08:00)**: mode = Fast if
 //!    `charge_car_extended`, else Off. Drives from cronplus `* 5-7`.
-//! 3. **Night-time auto-stop**: when in any Night tariff band, the Zappi
-//!    `zappi_limit` is ≤ 65 %, and the session `charged_pct` ≥ `zappi_limit`,
-//!    force mode Off. Drives from the 15 s poll + `zappi charge limit`
-//!    function (lines 503-545 of legacy/debug/…-functions.txt).
+//! 3. **Night-time auto-stop**: when in any Night tariff band, the user's
+//!    `zappi_limit` is ≤ 65 kWh, and the session `session_kwh` has
+//!    reached `zappi_limit`, force mode Off. Drives from the 15 s poll
+//!    plus the legacy NR `zappi charge limit` function (A-13 + A-14).
 //!
 //! Outside all three of those windows (daytime, no auto-stop), returns
 //! `None` — leave the mode alone so the user's manual setting in the
@@ -24,20 +24,21 @@ pub struct ZappiModeInput {
     pub globals: ZappiModeInputGlobals,
     /// Current mode as last observed from myenergi.
     pub current_mode: ZappiMode,
-    /// Session-charged percentage of the configured limit, i.e.
-    /// `min(100, round(session_kwh / limit_kwh * 100))`. Legacy NR reads
-    /// `msg.payload.che` (session kWh) and compares to `limit`. In this
-    /// controller we expect the shell to do the scale alignment.
-    pub session_charged_pct: f64,
+    /// Session energy delivered so far (kWh), straight from myenergi's
+    /// `che` field. Compared directly against `zappi_limit_kwh` — no
+    /// percent-of-limit rescaling.
+    pub session_kwh: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiModeInputGlobals {
     pub charge_car_boost: bool,
     pub charge_car_extended: bool,
-    /// User's target charge-ceiling (`zappi_limit`) as a percent 1..100.
-    /// The 15-s auto-stop path only runs when `zappi_limit <= 65`.
-    pub zappi_limit_pct: f64,
+    /// User's target per-session charge ceiling (`zappi_limit`) in kWh.
+    /// The 15-s auto-stop path only runs when `zappi_limit_kwh <= 65`,
+    /// which matches the legacy NR gate: only arm the stop when the user
+    /// configured a sub-full-charge cap.
+    pub zappi_limit_kwh: f64,
 }
 
 /// Decision returned by the controller: either "set the mode to X" or
@@ -66,8 +67,8 @@ pub fn evaluate_zappi_mode(input: &ZappiModeInput, clock: &dyn Clock) -> ZappiMo
         .with_factor("charge_car_boost", format!("{}", g.charge_car_boost))
         .with_factor("charge_car_extended", format!("{}", g.charge_car_extended))
         .with_factor("current_mode", format!("{:?}", input.current_mode))
-        .with_factor("zappi_limit_pct", format!("{:.0}%", g.zappi_limit_pct))
-        .with_factor("session_charged_pct", format!("{:.0}%", input.session_charged_pct));
+        .with_factor("zappi_limit_kwh", format!("{:.2} kWh", g.zappi_limit_kwh))
+        .with_factor("session_kwh", format!("{:.2} kWh", input.session_kwh));
 
     // 1. Boost window — flag-driven Fast/Off.
     if band == TariffBand::BOOST {
@@ -95,17 +96,24 @@ pub fn evaluate_zappi_mode(input: &ZappiModeInput, clock: &dyn Clock) -> ZappiMo
         };
     }
 
-    // 3. Night-time auto-stop.
+    // 3. Night-time auto-stop. The `<= 65 kWh` gate mirrors the legacy
+    // NR behaviour: auto-stop only fires when the user has configured a
+    // sub-full-charge session cap; above 65 kWh (typical big-battery
+    // full-charge figure) we assume the user wants the Zappi to run to
+    // completion on its own schedule.
     let is_night = band.kind == TariffBandKind::Night;
     if is_night
-        && g.zappi_limit_pct <= 65.0
-        && input.session_charged_pct >= g.zappi_limit_pct
+        && g.zappi_limit_kwh <= 65.0
+        && input.session_kwh >= g.zappi_limit_kwh
         && input.current_mode != ZappiMode::Off
     {
         return ZappiModeOutput {
             action: ZappiModeAction::Set(ZappiMode::Off),
             decision: Decision {
-                summary: "Night auto-stop — session charged ≥ zappi_limit → Off".to_string(),
+                summary: format!(
+                    "Night auto-stop — session {:.2} kWh ≥ zappi_limit {:.2} kWh → Off",
+                    input.session_kwh, g.zappi_limit_kwh
+                ),
                 factors: common.factors,
             },
         };
@@ -144,10 +152,11 @@ mod tests {
             globals: ZappiModeInputGlobals {
                 charge_car_boost: false,
                 charge_car_extended: false,
-                zappi_limit_pct: 100.0,
+                // 100 kWh = auto-stop disarmed (above the 65 kWh gate).
+                zappi_limit_kwh: 100.0,
             },
             current_mode: ZappiMode::Eco,
-            session_charged_pct: 0.0,
+            session_kwh: 0.0,
         }
     }
 
@@ -195,9 +204,10 @@ mod tests {
 
     #[test]
     fn night_start_auto_stop_triggers_when_over_limit() {
+        // User set 50 kWh cap; car already pulled 60 kWh → stop.
         let mut input = base_input();
-        input.globals.zappi_limit_pct = 50.0;
-        input.session_charged_pct = 60.0;
+        input.globals.zappi_limit_kwh = 50.0;
+        input.session_kwh = 60.0;
         input.current_mode = ZappiMode::Eco;
         // NightStart (23:30)
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
@@ -205,10 +215,28 @@ mod tests {
     }
 
     #[test]
+    fn zappi_mode_stops_when_session_kwh_meets_kwh_limit() {
+        // A-13 / A-14 fresh coverage: compare kWh-to-kWh with a small
+        // overshoot (session = 20.5 kWh, cap = 20 kWh) and confirm the
+        // controller forces the Zappi Off.
+        let mut input = base_input();
+        input.globals.zappi_limit_kwh = 20.0;
+        input.session_kwh = 20.5;
+        input.current_mode = ZappiMode::Eco;
+        let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
+        // Honesty invariant: the Decision must surface both operands in
+        // the new kWh semantic.
+        let factor_names: Vec<_> = d.decision.factors.iter().map(|f| f.name.as_str()).collect();
+        assert!(factor_names.contains(&"zappi_limit_kwh"));
+        assert!(factor_names.contains(&"session_kwh"));
+    }
+
+    #[test]
     fn night_auto_stop_noop_when_already_off() {
         let mut input = base_input();
-        input.globals.zappi_limit_pct = 50.0;
-        input.session_charged_pct = 60.0;
+        input.globals.zappi_limit_kwh = 50.0;
+        input.session_kwh = 60.0;
         input.current_mode = ZappiMode::Off;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
         assert_eq!(d.action, ZappiModeAction::Leave);
@@ -216,9 +244,11 @@ mod tests {
 
     #[test]
     fn night_auto_stop_skipped_when_limit_above_65() {
+        // 90 kWh cap means "charge whatever" — auto-stop disarmed even
+        // if session would technically be ≥ limit.
         let mut input = base_input();
-        input.globals.zappi_limit_pct = 90.0;
-        input.session_charged_pct = 95.0;
+        input.globals.zappi_limit_kwh = 90.0;
+        input.session_kwh = 95.0;
         input.current_mode = ZappiMode::Eco;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
         assert_eq!(d.action, ZappiModeAction::Leave);
@@ -227,8 +257,8 @@ mod tests {
     #[test]
     fn night_auto_stop_skipped_when_under_limit() {
         let mut input = base_input();
-        input.globals.zappi_limit_pct = 50.0;
-        input.session_charged_pct = 30.0;
+        input.globals.zappi_limit_kwh = 50.0;
+        input.session_kwh = 30.0;
         input.current_mode = ZappiMode::Eco;
         let d = evaluate_zappi_mode(&input, &clock_at(23, 30));
         assert_eq!(d.action, ZappiModeAction::Leave);
@@ -242,8 +272,8 @@ mod tests {
     fn daytime_always_leaves_mode_alone() {
         let mut input = base_input();
         input.current_mode = ZappiMode::Eco;
-        input.globals.zappi_limit_pct = 50.0;
-        input.session_charged_pct = 80.0;
+        input.globals.zappi_limit_kwh = 50.0;
+        input.session_kwh = 80.0;
         // Daytime — even with all auto-stop conditions met, we don't touch.
         let d = evaluate_zappi_mode(&input, &clock_at(12, 0));
         assert_eq!(d.action, ZappiModeAction::Leave);
@@ -264,8 +294,8 @@ mod tests {
     fn boost_window_with_auto_stop_conditions_still_uses_boost_rule() {
         let mut input = base_input();
         input.globals.charge_car_boost = true;
-        input.globals.zappi_limit_pct = 50.0;
-        input.session_charged_pct = 80.0;
+        input.globals.zappi_limit_kwh = 50.0;
+        input.session_kwh = 80.0;
         input.current_mode = ZappiMode::Eco;
         // Boost rule wins — mode becomes Fast regardless of over-limit.
         let d = evaluate_zappi_mode(&input, &clock_at(3, 0));

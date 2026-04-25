@@ -21,7 +21,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Local;
+use chrono::Utc;
+use chrono_tz::Tz;
 use reqwest::Client as HttpClient;
 
 use victron_controller_core::types::ForecastProvider;
@@ -34,16 +35,26 @@ pub struct ForecastSolarClient {
     latitude: f64,
     longitude: f64,
     planes: Vec<Plane>,
+    /// Site timezone — `watt_hours_day` keys are site-local dates, so
+    /// we must bucket against the site TZ, not the machine TZ (A-50).
+    tz: Tz,
 }
 
 impl ForecastSolarClient {
     #[must_use]
-    pub fn new(http: HttpClient, latitude: f64, longitude: f64, planes: Vec<Plane>) -> Self {
+    pub fn new(
+        http: HttpClient,
+        latitude: f64,
+        longitude: f64,
+        planes: Vec<Plane>,
+        tz: Tz,
+    ) -> Self {
         Self {
             http,
             latitude,
             longitude,
             planes,
+            tz,
         }
     }
 
@@ -60,7 +71,7 @@ impl ForecastFetcher for ForecastSolarClient {
     }
 
     async fn fetch(&self) -> Result<ForecastTotals> {
-        let today = Local::now().date_naive();
+        let today = Utc::now().with_timezone(&self.tz).date_naive();
         let tomorrow = today.succ_opt().context("today.succ_opt")?;
 
         let mut totals_today_wh = 0.0;
@@ -147,7 +158,13 @@ mod tests {
 
     #[test]
     fn not_configured_without_planes() {
-        let c = ForecastSolarClient::new(super::super::http_client(), 50.0, 0.0, vec![]);
+        let c = ForecastSolarClient::new(
+            super::super::http_client(),
+            50.0,
+            0.0,
+            vec![],
+            chrono_tz::Europe::London,
+        );
         assert!(!c.is_configured());
     }
 }

@@ -207,11 +207,17 @@ async fn main() -> Result<()> {
 
     // Forecast fetchers — one task per configured provider.
     let http = forecast::http_client();
+    // A-50: already validated in `config::load()`; unwrap is safe.
+    let forecast_tz = cfg
+        .forecast
+        .parse_timezone()
+        .expect("forecast timezone validated at config load");
     let mut forecast_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let solcast = SolcastClient::new(
         http.clone(),
         cfg.forecast.solcast.api_key.clone(),
         cfg.forecast.solcast.site_ids.clone(),
+        forecast_tz,
     );
     if solcast.is_configured() {
         let tx_f = tx.clone();
@@ -236,6 +242,7 @@ async fn main() -> Result<()> {
         cfg.forecast.forecast_solar.latitude,
         cfg.forecast.forecast_solar.longitude,
         fs_planes,
+        forecast_tz,
     );
     if fs_client.is_configured() {
         let tx_f = tx.clone();
@@ -264,6 +271,7 @@ async fn main() -> Result<()> {
         om_lon,
         om_planes,
         cfg.forecast.open_meteo.system_efficiency,
+        forecast_tz,
     );
     if om_client.is_configured() {
         let tx_f = tx.clone();
@@ -283,7 +291,7 @@ async fn main() -> Result<()> {
         let http_t = http;
         forecast_tasks.push(tokio::spawn(async move {
             let _ = forecast::current_weather::run_open_meteo_temperature(
-                http_t, om_lat, om_lon, om_cadence, tx_t,
+                http_t, om_lat, om_lon, om_cadence, forecast_tz, tx_t,
             )
             .await;
         }));

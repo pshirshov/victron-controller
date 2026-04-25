@@ -19,7 +19,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Local, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use chrono_tz::Tz;
 use reqwest::Client as HttpClient;
 use serde_json::Value;
 
@@ -32,15 +33,18 @@ pub struct SolcastClient {
     http: HttpClient,
     api_key: String,
     site_ids: Vec<String>,
+    /// Site timezone — NOT the machine TZ. See A-50.
+    tz: Tz,
 }
 
 impl SolcastClient {
     #[must_use]
-    pub fn new(http: HttpClient, api_key: String, site_ids: Vec<String>) -> Self {
+    pub fn new(http: HttpClient, api_key: String, site_ids: Vec<String>, tz: Tz) -> Self {
         Self {
             http,
             api_key,
             site_ids,
+            tz,
         }
     }
 
@@ -59,7 +63,7 @@ impl ForecastFetcher for SolcastClient {
     async fn fetch(&self) -> Result<ForecastTotals> {
         let mut totals_today = 0.0;
         let mut totals_tomorrow = 0.0;
-        let now = Local::now();
+        let now = Utc::now().with_timezone(&self.tz);
         let today = now.date_naive();
         let tomorrow = today.succ_opt().context("today.succ_opt")?;
 
@@ -88,7 +92,7 @@ impl ForecastFetcher for SolcastClient {
                 let Some(kwh_contrib) = item_to_kwh(item) else {
                     continue;
                 };
-                let day = match item_day_local(item) {
+                let day = match item_day_in_tz(item, self.tz) {
                     Some(d) => d,
                     None => continue,
                 };
@@ -149,14 +153,16 @@ fn period_to_hours(s: &str) -> Option<f64> {
 /// bucket's `period_end` is 00:00 of the next day, so 30 min of
 /// Monday's production gets bucketed into Tuesday. A-27: use the
 /// period's midpoint (= `period_end - period/2`) for day attribution.
-fn item_day_local(item: &Value) -> Option<NaiveDate> {
+/// A-50: project the midpoint into the configured site TZ, not the
+/// machine's `Local` (Venus runs UTC).
+fn item_day_in_tz(item: &Value, tz: Tz) -> Option<NaiveDate> {
     let s = item.get("period_end").and_then(|v| v.as_str())?;
     let utc: DateTime<Utc> = s.parse().ok()?;
     let period_str = item.get("period").and_then(|v| v.as_str()).unwrap_or("PT30M");
     let period_hours = period_to_hours(period_str).unwrap_or(0.5);
     let half = chrono::Duration::milliseconds((period_hours * 1_800_000.0) as i64);
     let midpoint_utc = utc.checked_sub_signed(half)?;
-    let local = midpoint_utc.with_timezone(&Local);
+    let local = midpoint_utc.with_timezone(&tz);
     Some(local.date_naive())
 }
 
@@ -188,10 +194,11 @@ mod tests {
     #[test]
     fn is_configured_requires_both_key_and_sites() {
         let http = http_client_blank();
-        assert!(!SolcastClient::new(http.clone(), String::new(), vec![]).is_configured());
-        assert!(!SolcastClient::new(http.clone(), "key".into(), vec![]).is_configured());
-        assert!(!SolcastClient::new(http.clone(), String::new(), vec!["s".into()]).is_configured());
-        assert!(SolcastClient::new(http, "key".into(), vec!["s".into()]).is_configured());
+        let tz = chrono_tz::Europe::London;
+        assert!(!SolcastClient::new(http.clone(), String::new(), vec![], tz).is_configured());
+        assert!(!SolcastClient::new(http.clone(), "key".into(), vec![], tz).is_configured());
+        assert!(!SolcastClient::new(http.clone(), String::new(), vec!["s".into()], tz).is_configured());
+        assert!(SolcastClient::new(http, "key".into(), vec!["s".into()], tz).is_configured());
     }
 
     fn http_client_blank() -> HttpClient {

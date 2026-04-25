@@ -35,7 +35,7 @@ const ZAPPI_AMPS_FALLBACK_THRESHOLD: f64 = 1.0;
 /// Lower sanity bound on grid voltage. EN 50160 caps legitimate readings
 /// at -10% of nominal (207 V). Below this we treat the measurement as
 /// grid loss / sensor glitch / NaN and fall back to [`NOMINAL_GRID_V`].
-const MIN_SENSIBLE_GRID_V: f64 = 207.0;
+pub(crate) const MIN_SENSIBLE_GRID_V: f64 = 207.0;
 /// Upper sanity bound on grid voltage. EN 50160 caps legitimate
 /// readings at +10% of nominal (253 V) but we allow a 7 V headroom
 /// band above that for benign sensor noise and short transient
@@ -43,13 +43,27 @@ const MIN_SENSIBLE_GRID_V: f64 = 207.0;
 /// Anything > 260 is treated as a glitch and falls back to
 /// NOMINAL_GRID_V. PR-02-D08: the 260 ceiling vs 253 SPEC spec was
 /// previously a comment/code mismatch — now explained explicitly.
-const MAX_SENSIBLE_GRID_V: f64 = 260.0;
+pub(crate) const MAX_SENSIBLE_GRID_V: f64 = 260.0;
 /// UK nominal mains voltage — used when the measured value is unusable.
-const NOMINAL_GRID_V: f64 = 230.0;
+pub(crate) const NOMINAL_GRID_V: f64 = 230.0;
 
-/// Sanity gate for grid-voltage-based arithmetic.
-/// Returns (effective_voltage, fell_back).
-fn effective_grid_v(measured: f64) -> (f64, bool) {
+/// EN 50160-band-validated grid voltage for `grid_power / grid_voltage`
+/// style derivations. Returns `(v_eff, fell_back)`:
+///
+/// - When `measured` is outside
+///   `[MIN_SENSIBLE_GRID_V, MAX_SENSIBLE_GRID_V]` (or non-finite), the
+///   function falls back to [`NOMINAL_GRID_V`] and sets
+///   `fell_back = true`.
+/// - Otherwise returns `(measured, false)`.
+///
+/// Callers MUST use this for any `grid_power / grid_voltage` style
+/// derivation (closes defect A-03: a naive division would re-introduce
+/// the ÷0 / ghost-voltage hazard that PR-02 fixed).
+///
+/// Architectural lock (see `tasks.md`): the ET112 grid current sensor
+/// is not trusted — derive `grid_current` from `grid_power / v_eff`
+/// instead.
+pub(crate) fn effective_grid_v(measured: f64) -> (f64, bool) {
     if !measured.is_finite() || !(MIN_SENSIBLE_GRID_V..=MAX_SENSIBLE_GRID_V).contains(&measured) {
         (NOMINAL_GRID_V, true)
     } else {
@@ -376,6 +390,7 @@ mod tests {
             zappi_last_change_signature: fixed_mono_anchor()
                 .checked_sub(StdDuration::from_secs(60))
                 .unwrap(),
+            session_kwh: 0.0,
         }
     }
 
@@ -435,6 +450,7 @@ mod tests {
             zappi_plug_state: ZappiPlugState::WaitingForEv,
             zappi_status: ZappiStatus::Paused,
             zappi_last_change_signature: six_min_ago,
+            session_kwh: 0.0,
         };
         // zappi_active is independently supplied; debug should still
         // report the wait-timeout derived locally from state.
@@ -592,6 +608,7 @@ mod tests {
                 .monotonic
                 .checked_sub(StdDuration::from_secs(60))
                 .unwrap(),
+            session_kwh: 0.0,
         };
         input.zappi_current = 9.5;
         input.globals.zappi_active = true;
@@ -614,6 +631,7 @@ mod tests {
                 .monotonic
                 .checked_sub(StdDuration::from_secs(60))
                 .unwrap(),
+            session_kwh: 0.0,
         };
         input.zappi_current = 2.0; // well below zappi_current_target-1 = 8.5
         input.globals.zappi_active = true;

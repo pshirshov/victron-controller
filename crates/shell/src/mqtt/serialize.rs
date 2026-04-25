@@ -272,6 +272,12 @@ fn encode_knob_value(v: KnobValue) -> String {
 /// previously discovery.rs had its own parallel table and drift was
 /// silent — moved to a single function here so that any future range
 /// change updates both ingress and egress atomically.
+// A-14: `ZappiLimit` shares the numeric range `(0.0, 100.0)` with the
+// SoC-percentage knobs, but is semantically kWh (per-session EV charge
+// ceiling), not %. Keeping the arm separate documents the unit
+// distinction at the site of truth; clippy's `match_same_arms` is
+// silenced intentionally for that reason.
+#[allow(clippy::match_same_arms)]
 pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
     Some(match id {
         // Percentages (0..100)
@@ -281,8 +287,10 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::FullChargeDischargeSocTarget
         | KnobId::FullChargeExportSocThreshold => (0.0, 100.0),
 
-        // Percentages with tighter HA-advertised bounds.
-        KnobId::ZappiLimit => (1.0, 100.0),
+        // A-14: zappi_limit is kWh now (per-session EV charge ceiling).
+        // Range 0..100 kWh fits a typical EV full-charge plus some
+        // headroom; step is 0.5 kWh (see discovery.rs).
+        KnobId::ZappiLimit => (0.0, 100.0),
         KnobId::EddiEnableSoc | KnobId::EddiDisableSoc => (50.0, 100.0),
 
         // Currents (A)
@@ -817,8 +825,9 @@ mod tests {
             (KnobId::ExportSocThreshold, "101"),
             (KnobId::ExportSocThreshold, "-1"),
             (KnobId::DischargeSocTarget, "9999"),
-            // ZappiLimit (HA advertises 1..100)
-            (KnobId::ZappiLimit, "0"),
+            // A-14: ZappiLimit is kWh now (HA advertises 0..100 kWh).
+            // Negatives and > 100 must reject.
+            (KnobId::ZappiLimit, "-0.1"),
             (KnobId::ZappiLimit, "101"),
             // Eddi soc (HA advertises 50..100)
             (KnobId::EddiEnableSoc, "49"),
@@ -878,6 +887,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_knob_value_zappi_limit_kwh_round_trip() {
+        // A-14: ZappiLimit wire value is kWh. A retained "50" must
+        // decode as 50.0 kWh (not a percentage, and not rejected).
+        match parse_knob_value(KnobId::ZappiLimit, "50") {
+            Some(KnobValue::Float(v)) => {
+                assert!((v - 50.0).abs() < f64::EPSILON, "kWh round-trip lost precision: {v}");
+            }
+            other => panic!("expected Float(50.0) for 50 kWh, got {other:?}"),
+        }
+        // Fractional kWh (step is 0.5) must also round-trip.
+        match parse_knob_value(KnobId::ZappiLimit, "7.5") {
+            Some(KnobValue::Float(v)) => {
+                assert!((v - 7.5).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Float(7.5) for 7.5 kWh, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_knob_value_accepts_exact_boundaries() {
         // PR-06-D04: ensure min and max bounds are inclusive (`>=` /
         // `<=`) and an off-by-one flip to `>` / `<` would be caught.
@@ -888,8 +916,8 @@ mod tests {
             (KnobId::ExportSocThreshold, "100"),
             (KnobId::DischargeSocTarget, "0"),
             (KnobId::DischargeSocTarget, "100"),
-            // Zappi limit (1..100 inclusive)
-            (KnobId::ZappiLimit, "1"),
+            // A-14: Zappi limit is kWh (0..100 inclusive).
+            (KnobId::ZappiLimit, "0"),
             (KnobId::ZappiLimit, "100"),
             // Eddi soc (50..100 inclusive)
             (KnobId::EddiEnableSoc, "50"),

@@ -171,7 +171,7 @@ fn default_myenergi_poll() -> Duration {
 // Forecast config — three providers, each optional.
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ForecastConfig {
     #[serde(default)]
     pub solcast: SolcastProviderConfig,
@@ -179,6 +179,43 @@ pub struct ForecastConfig {
     pub forecast_solar: ForecastSolarProviderConfig,
     #[serde(default)]
     pub open_meteo: OpenMeteoProviderConfig,
+    /// IANA name of the site's timezone — used both when querying
+    /// Open-Meteo (`timezone=…`) and when bucketing Solcast / Open-Meteo
+    /// responses into today/tomorrow. Do NOT rely on the machine TZ:
+    /// Venus OS runs UTC by default, so a site-local forecast returned
+    /// by `timezone=auto` gets mis-bucketed against `Local::now()` by
+    /// the site's UTC offset (A-50).
+    #[serde(default = "default_forecast_timezone")]
+    pub timezone: String,
+}
+
+impl Default for ForecastConfig {
+    fn default() -> Self {
+        Self {
+            solcast: SolcastProviderConfig::default(),
+            forecast_solar: ForecastSolarProviderConfig::default(),
+            open_meteo: OpenMeteoProviderConfig::default(),
+            timezone: default_forecast_timezone(),
+        }
+    }
+}
+
+fn default_forecast_timezone() -> String {
+    "Europe/London".to_string()
+}
+
+impl ForecastConfig {
+    /// Parse the configured IANA timezone string. Called at startup so
+    /// a typo fails fast rather than silently falling back to UTC
+    /// during the first forecast fetch.
+    pub fn parse_timezone(&self) -> Result<chrono_tz::Tz> {
+        self.timezone
+            .parse::<chrono_tz::Tz>()
+            .map_err(|e| anyhow::anyhow!(
+                "[forecast] timezone = {:?} is not a valid IANA TZ name: {e}",
+                self.timezone
+            ))
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -417,16 +454,22 @@ mod humantime_serde_compat {
 /// Load + parse a TOML config from disk. An empty/missing file yields
 /// all defaults.
 pub fn load(path: &Path) -> Result<Config> {
-    if !path.exists() {
+    let cfg: Config = if path.exists() {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?
+    } else {
         tracing::warn!(
             "config file {} does not exist; using defaults",
             path.display()
         );
-        return Ok(Config::default());
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        Config::default()
+    };
+    // A-50: validate the forecast TZ string at startup so a typo fails
+    // fast instead of silently poisoning the today/tomorrow buckets on
+    // the first fetch.
+    cfg.forecast.parse_timezone()?;
+    Ok(cfg)
 }
 
 impl Default for Config {
@@ -497,6 +540,40 @@ mod tests {
         assert_eq!(parse_human("1h"), Ok(Duration::from_secs(3600)));
         assert_eq!(parse_human("15m"), Ok(Duration::from_secs(900)));
         assert_eq!(parse_human("1d"), Ok(Duration::from_secs(86400)));
+    }
+
+    #[test]
+    fn forecast_timezone_defaults_to_europe_london() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.forecast.timezone, "Europe/London");
+        let tz = c.forecast.parse_timezone().unwrap();
+        assert_eq!(tz, chrono_tz::Europe::London);
+    }
+
+    #[test]
+    fn forecast_timezone_accepts_custom_iana_name() {
+        let t = r#"
+            [forecast]
+            timezone = "America/Los_Angeles"
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        let tz = c.forecast.parse_timezone().unwrap();
+        assert_eq!(tz, chrono_tz::America::Los_Angeles);
+    }
+
+    #[test]
+    fn forecast_timezone_rejects_invalid_name() {
+        let t = r#"
+            [forecast]
+            timezone = "Atlantis/R'lyeh"
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        let err = c.forecast.parse_timezone().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Atlantis/R'lyeh"),
+            "error must mention the offending value, got: {msg}"
+        );
     }
 
     #[test]

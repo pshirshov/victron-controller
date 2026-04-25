@@ -99,14 +99,14 @@ reviewing a specific PR's patch.
 **Suggested fix:** Version/sequence token in `SchedulePartial`. Emit a readback only when all five fields have been re-observed since the last emission. Or: emit only when *all five* came from the same batch (seed pass, or same `ItemsChanged` envelope).
 
 ### [A-13] Zappi night auto-stop is advertised end-to-end but `session_charged_pct` is hardcoded 0 in `run_zappi_mode`
-**Status:** open
+**Status:** resolved (PR-zappi-kwh)
 **Severity:** major
 **Location:** `crates/core/src/process.rs:860`
 **Description:** SPEC §3.5 + dashboard Decision all show the night auto-stop rule. But `run_zappi_mode` feeds literal `0.0` into the controller. The real `che` kWh is parsed by the myenergi poller (`types.rs:30`) and dropped. For users setting `zappi_limit ≤ 65`, the car charges until the tariff window closes regardless — hours of unnecessary grid pull.
 **Suggested fix:** Plumb `session_kwh` from `ZappiObservation` through `TypedReading::Zappi` / `ZappiState` into `run_zappi_mode`. Compute `session_charged_pct` from a user knob (see A-14 for the unit bug).
 
 ### [A-14] `zappi_limit` documented as % but legacy semantic was kWh — wrong comparison unit
-**Status:** open
+**Status:** resolved (PR-zappi-kwh — user picked kWh)
 **Severity:** major
 **Location:** `crates/core/src/controllers/zappi_mode.rs:39-41`, HA discovery `discovery.rs:143`
 **Description:** HA advertises `"%"` unit; legacy NR compared `che` kWh against a kWh limit. Even after A-13 is fixed, `session_charged_pct >= zappi_limit_pct` compares kWh-as-% against %-as-%. User setting `zappi_limit=30` meaning "30 kWh" gets "stop at 30%", firing at session 1.35 kWh.
@@ -211,11 +211,12 @@ reviewing a specific PR's patch.
 **Suggested fix:** Match status codes. 401/403 → fail the client entirely; 429 → exponential backoff (re-enter scheduler loop with a delay); 5xx → normal backoff + retry.
 
 ### [A-29] `SetValue` on Schedule paths sends fixed type assumptions; Venus firmware variance causes retry-loop log spam + partial writes
-**Status:** open
+**Status:** resolved (PR-dbus-types — probe-driven type alignment)
 **Severity:** minor
 **Location:** `crates/shell/src/dbus/writer.rs:86-104`
-**Description:** Soc field is f64 in our code but some Venus firmwares expect i32; silent "Wrong type" errors that TASS re-proposes every tick. Worse with partial schedule (half fields written, half rejected).
-**Suggested fix:** `GetProperties` at connect to cache variant signature per path; or submit best-guess then fall back. Stop retrying after N failures; raise kill switch.
+**Description:** Soc field was sent as f64 in our code but the live Venus firmware expects i32; would have produced silent "Wrong type" errors every tick once `writes_enabled=true`. The setpoint path (`/Settings/CGwacs/AcPowerSetPoint`) had the inverse problem — sent as i32 but Venus expects double.
+**Root cause:** Two assumptions in `process.rs` mis-typed the wire write. `read-only probe (`scripts/probe-schedule-types.sh`) called `GetValue` on every relevant path on the live Venus and printed the variant signature: all 5 schedule fields are `int32`; AcPowerSetPoint is `double`. Empirical, not guessed.
+**Fix:** `process.rs:766` — `DbusValue::Int(value)` → `DbusValue::Float(f64::from(value))` for AcPowerSetPoint. `process.rs:1080` — `DbusValue::Float(spec.soc)` → `DbusValue::Int(spec.soc.round().clamp(0.0, 100.0) as i32)` for Schedule.Soc. Tests updated to assert the new wire types. The `try-i32-fallback-to-f64` defensive wrapper considered but rejected — definitive probe data makes it unnecessary noise.
 
 ### [A-30] Event channel `mpsc::channel(256)` has no watermark; stale-batched events stamped `Fresh`
 **Status:** resolved (partially addressed — channel size is now 4096 per PR-URGENT-13 with a 75%-full watermark watcher + trend direction per PR-HYGIENE-10. The remaining "stamp on consumer" suggestion is rejected: producer-side stamping is the correct semantic — `Actual::tick(now, threshold)` compares the reading's producer-stamped `at` against `clock.monotonic()` at tick time, which correctly measures age-at-processing-time. Stamping on the consumer would hide genuine producer-side latency)
@@ -329,13 +330,13 @@ reviewing a specific PR's patch.
 **Description:** SPEC says 5 s; code changed to 2 s (G3 tuning). Stale SPEC + stale comment.
 **Suggested fix:** Update SPEC §5.3 to "2 s (G3 tuning)"; fix the subscriber comment's "5-second freshness window" language.
 
-### [A-46] Evening discharge + `allow_battery_to_car=true` can net-import at peak tariff if Zappi draws > export_cap
-**Status:** resolved (note-only — the concern is about physical grid-flow under inverter rate limits, not about a bug in the commanded setpoint. An attempted code fix was reverted after adversarial review demonstrated it was vacuous; see **Root cause** below. Remaining risk is inherent to the `allow_battery_to_car=true` opt-in per SPEC §5.9)
+### [A-46] Evening discharge + `allow_battery_to_car=true` may net-import only when Zappi exceeds inverter discharge cap
+**Status:** resolved (note-only — original defect was filed against the wrong layer. User confirmed the opt-in intent: honour `allow_battery_to_car=true` literally; net-import only happens when Zappi draw exceeds the inverter's max discharge, and that's an explicit and acceptable opt-in cost. SPEC §5.9 to clarify)
 **Severity:** minor
 **Location:** `crates/core/src/controllers/setpoint.rs:224-244, 245-345`
-**Description:** Zappi-clamp branch is bypassed by design (SPEC §5.9). `-export_power` is capped at `-grid_export_limit_w` only; nothing prevents a positive net grid import when Zappi draw exceeds the rate at which battery+PV can fund the EV branch. User opted in — money risk only.
-**Root cause:** The defect as originally filed described a non-existent failure mode in the setpoint controller. Adversarial review (PR-A46-review-round-1) of an attempted fix proved: in the evening discharge branch, `setpoint_target = min_pre.min(-export_power)` where `min_pre ∈ {10, -200}`, so `setpoint_target` is structurally upper-bounded at +10 W. No positive setpoint > 10 W can occur from that branch. The actual scenario — 7 kW Zappi draw exceeding what battery+PV can source instantaneously — is a physics/rate-limit concern at the inverter, not a commanded-setpoint concern. The battery's `BATTERY_SIDE_MAX_DISCHARGE_W = -5000 W` cap combined with `grid_export_limit_w` means commanding a very negative setpoint doesn't produce more export — the inverter throttles, and the grid tie net-imports whatever the AC load demands. No controller-layer clamp can fix this without changing the battery discharge rate limit or disabling the evening branch outright when Zappi is drawing heavily.
-**Fix deferred / out of scope:** The vacuous-clamp fix was reverted. The two honest paths forward are (a) document this as inherent opt-in risk in SPEC §5.9 (current behaviour), or (b) add a defensive early-return to idle when `g.allow_battery_to_car && input.evcharger_ac_power > N` (accept battery-waste to avoid peak-tariff draw). Option (b) requires a user product decision — it reverses the `allow_battery_to_car=true` intent (user said "let battery fund the car"; option (b) says "only if battery can fund it fully"). Flagged for user clarification.
+**Description:** Zappi-clamp branch is bypassed by design (SPEC §5.9). `-export_power` is capped at `-grid_export_limit_w` only; net grid import can occur if Zappi draw exceeds the inverter's discharge capacity (battery is over-sized vs the inverter, so the binding constraint is the **inverter**, not the battery). User opted in — money risk only.
+**Root cause:** Adversarial review of an attempted fix (PR-A46-review-round-1) proved a setpoint-layer clamp is vacuous: in the evening discharge branch, `setpoint_target = min_pre.min(-export_power)` with `min_pre ∈ {10, -200}`, so commanded setpoint is structurally ≤ +10 W. No positive setpoint > 10 W can occur. The actual scenario — Zappi draw > `BATTERY_SIDE_MAX_DISCHARGE_W` (~5 kW inverter cap) — is a physical inverter rate limit; the battery itself is over-spec'd and not the bottleneck. When Zappi pulls 7 kW: inverter discharges at full ~5 kW from battery, grid imports the remaining 2 kW. This is exactly what `allow_battery_to_car=true` opts in to — drain battery to fund the car as much as the inverter physically allows.
+**Fix:** No code change. SPEC §5.9 to be updated with one explanatory sentence: "When Zappi draw exceeds inverter discharge capacity (~5 kW), the residual is net-imported at whatever tariff is in effect — this is the literal cost of the `allow_battery_to_car=true` opt-in".
 
 ### [A-47] `check_c4` `i32 - i32` can overflow (see A-31, duplicate)
 **Status:** resolved (duplicate of A-31 — closed by PR-setpoint-deadband-i64)
@@ -356,7 +357,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Accept `HH:MM` and `HH:MM:SS` by stripping the seconds suffix.
 
 ### [A-50] Forecast baseline uses `Local::now().date_naive()` while Open-Meteo returns site-local; TZ drift on Venus UTC install
-**Status:** open
+**Status:** resolved (PR-forecast-tz — Europe/London default; chrono-tz parsed at config load; URL `timezone=` matches bucketing)
 **Severity:** minor
 **Location:** `crates/shell/src/forecast/solcast.rs:62-65`, `crates/shell/src/forecast/open_meteo.rs:71-72,92-94`
 **Description:** `timezone=auto` on Open-Meteo returns site-local times; we compare against `Local::now()` (machine-local). On a Venus with TZ=UTC the buckets are offset by the site's TZ difference.
@@ -405,11 +406,11 @@ reviewing a specific PR's patch.
 **Fix:** `Writer::new` is pure/infallible; lazy `Connection::system()` with bounded backoff (500 ms → 30 s, cap reached in 7 failures). `tokio::sync::Mutex<WriterInner>` lock released before `SetValue` and before `Connection::system()` (per round-1 D01). `set_value` extracted as free function taking `&Connection`. Healthy-reset anchor: `last_healthy_at` cleared on every failure; `mark_healthy` is sole writer (per round-1 D02). Throttled-skip `warn!` deduped via `THROTTLED_WARN_DEDUP`; SetValue-failure `error!` deduped via separate `last_error_at` (per round-1 D03). Writer does NOT publish `ActuatedPhase{Unset}` — phase management stays in core/runtime (justified in `docs/drafts/20260424-2245-pr-writer-reconnect.md` §3). Callsite `main.rs:137` simplified from `Writer::connect(...).await?` to `Writer::new(...)`.
 
 ### [A-57] Schedules: 5 separate writes not atomic; partial writes leave inconsistent schedule on bus
-**Status:** open
+**Status:** resolved (PR-dbus-types — root cause was type mismatch on Soc; with all 5 fields now sent as `int32` per the probe, the partial-write scenario is removed at the source)
 **Severity:** minor
 **Location:** `crates/core/src/process.rs:806-841`, `crates/shell/src/dbus/writer.rs:39-55`
-**Description:** If Start/Duration succeed and Soc fails, Venus runs the new window with the old SoC target. TASS readback doesn't converge; dashboard shows Commanded forever.
-**Suggested fix:** Serialise the 5-write burst in the writer; on any failure, reset `target = unset` so TASS re-proposes. Treat the burst as atomic at the controller layer.
+**Description:** Originally hypothesised: if Start/Duration succeed and Soc fails, Venus runs the new window with the old SoC target. The actual mechanism by which Soc would have failed was the type mismatch closed by A-29's probe-driven fix. Without a type-rejection path the failure mode is gone. Network-loss / individual-RPC-fail atomicity is still theoretically present but observable via TASS readback divergence and the new writer reconnect/dedup path (PR-writer-reconnect, A-56) — TASS will re-propose the full schedule on next tick, regenerating all 5 writes consistently.
+**Fix:** Same as A-29 (type alignment from `scripts/probe-schedule-types.sh`). No separate burst-atomicity wrapper — TASS's idempotent re-propose loop handles the residual case.
 
 ### [A-58] Event channel send stalls runtime indefinitely on slow MQTT publish
 **Status:** resolved (dashboard side; forecast/myenergi poller backpressure remains as separate concerns — A-28 already addresses HTTP-driven stalls)
@@ -461,7 +462,7 @@ reviewing a specific PR's patch.
 **Suggested fix:** Update comment.
 
 ### [A-65] `Writer::set_value` sends `Value::I32` for Schedule Settings that may be `double` on older Venus
-**Status:** open
+**Status:** resolved (PR-dbus-types — duplicate of A-29; closed by the same probe-driven type alignment. On THIS Venus firmware the schedule fields are all `int32`, including Soc; the originally-hypothesised `double` variance was wrong for our specific deployment. Other firmwares may differ; if a future deploy hits a `double`-variant firmware, re-run `scripts/probe-schedule-types.sh` and adjust the wire type at `process.rs:1080`. The probe is the contract)
 **Severity:** minor
 **Location:** `crates/shell/src/dbus/writer.rs:86-104`
 **Description:** Venus 3.60 variance; silent "Wrong type" errors that get retried every tick. Dup of A-29 sub-aspect.
@@ -690,9 +691,8 @@ defects section follows below with review-round findings.)
 **Suggested fix:** Compute once at the top of `evaluate_current_limit`: `let (v_eff, grid_v_fell_back) = effective_grid_v(input.grid_voltage);`. Use `v_eff` at all three sites. Remove the `_1/_2/_3` suffixes and the tautological OR.
 
 ### [PR-02-D07] `effective_grid_v` file-private; future controllers that divide by `grid_voltage` will silently re-open A-03
-**Status:** open (deferred)
+**Status:** resolved (PR-effective-grid-v-pub — user picked option (b): track voltage; visibility lifted to `pub(crate)` so sibling controllers can reuse the EN 50160 gate)
 **Severity:** nit
-**Note:** Rendered moot if the user picks option (a) on the grid_voltage design question (drop voltage tracking entirely; use 230 V constant + direct grid_current sensor).
 
 ### [PR-02-D08] `MAX_SENSIBLE_GRID_V = 260.0` doc comment says "EN 50160 caps at +10% (253 V)" — code/comment mismatch
 **Status:** resolved

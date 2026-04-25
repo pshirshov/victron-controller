@@ -31,7 +31,8 @@ const KNOB_SPEC: Record<string, KnobSpec> = {
   charge_car_boost: { kind: "bool" },
   charge_car_extended: { kind: "bool" },
   zappi_current_target: { kind: "float", min: 6, max: 32, step: 0.5 },
-  zappi_limit: { kind: "float", min: 1, max: 100, step: 1 },
+  // A-14: kWh (per-session EV charge ceiling), not %.
+  zappi_limit: { kind: "float", min: 0, max: 100, step: 0.5 },
   zappi_emergency_margin: { kind: "float", min: 0, max: 10, step: 0.5 },
   grid_export_limit_w: { kind: "int", min: 0, max: 10000, step: 50 },
   grid_import_limit_w: { kind: "int", min: 0, max: 10000, step: 10 },

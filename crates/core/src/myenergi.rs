@@ -55,7 +55,7 @@ impl PartialEq<ZappiStatus> for u8 {
 }
 
 /// Normalised Zappi state snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiState {
     pub zappi_mode: ZappiMode,
     pub zappi_plug_state: ZappiPlugState,
@@ -67,6 +67,12 @@ pub struct ZappiState {
     /// so DST flips and tz mismatches (myenergi UTC vs local) cannot
     /// poison the delta — see defects A-04 and A-24.
     pub zappi_last_change_signature: Instant,
+    /// Session energy delivered so far (kWh). Sourced from myenergi's
+    /// `che` field. Feeds the night auto-stop rule in
+    /// `run_zappi_mode`: when `zappi_limit_kwh` is set to a sensible
+    /// per-session ceiling (≤ 65 kWh by default), the controller stops
+    /// the Zappi once `session_kwh >= zappi_limit_kwh`. See A-13 / A-14.
+    pub session_kwh: f64,
 }
 
 /// Eddi mode target or actual state.

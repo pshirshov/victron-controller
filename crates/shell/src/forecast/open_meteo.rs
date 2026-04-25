@@ -24,7 +24,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Local;
+use chrono::Utc;
+use chrono_tz::Tz;
 use reqwest::Client as HttpClient;
 
 use victron_controller_core::types::ForecastProvider;
@@ -45,6 +46,12 @@ pub struct OpenMeteoClient {
     longitude: f64,
     planes: Vec<Plane>,
     system_efficiency: f64,
+    /// Site timezone. A-50: pinned both in the `timezone=` query
+    /// parameter (so Open-Meteo returns site-local timestamps) AND
+    /// used for our today/tomorrow bucketing. Previously we sent
+    /// `timezone=auto` and compared against `Local::now()` — on a
+    /// Venus with TZ=UTC the two disagree by the site's UTC offset.
+    tz: Tz,
 }
 
 impl OpenMeteoClient {
@@ -55,6 +62,7 @@ impl OpenMeteoClient {
         longitude: f64,
         planes: Vec<Plane>,
         system_efficiency: f64,
+        tz: Tz,
     ) -> Self {
         // Defensive clamp — config parsing accepts any f64; out-of-range
         // values would silently skew weather_soc if we didn't clamp.
@@ -65,6 +73,7 @@ impl OpenMeteoClient {
             longitude,
             planes,
             system_efficiency,
+            tz,
         }
     }
 
@@ -81,13 +90,14 @@ impl ForecastFetcher for OpenMeteoClient {
     }
 
     async fn fetch(&self) -> Result<ForecastTotals> {
-        let today = Local::now().date_naive();
+        let today = Utc::now().with_timezone(&self.tz).date_naive();
         let tomorrow = today.succ_opt().context("today.succ_opt")?;
 
         let mut totals_today_kwh = 0.0;
         let mut totals_tomorrow_kwh = 0.0;
 
         let url = "https://api.open-meteo.com/v1/forecast";
+        let tz_name = self.tz.name();
         for plane in &self.planes {
             let tilt = format!("{}", plane.tilt_deg);
             let az = format!("{}", forecast_solar_azimuth_pub(plane.azimuth_deg));
@@ -102,7 +112,9 @@ impl ForecastFetcher for OpenMeteoClient {
                     ("hourly", "global_tilted_irradiance"),
                     ("tilt", &tilt),
                     ("azimuth", &az),
-                    ("timezone", "auto"),
+                    // A-50: pin site TZ explicitly (reqwest URL-encodes
+                    // the slash) so the API and our bucketing agree.
+                    ("timezone", tz_name),
                     ("forecast_days", "2"),
                 ],
             )
@@ -155,6 +167,7 @@ mod tests {
             0.0,
             vec![],
             DEFAULT_SYSTEM_EFFICIENCY,
+            chrono_tz::Europe::London,
         );
         assert!(!c.is_configured());
     }
