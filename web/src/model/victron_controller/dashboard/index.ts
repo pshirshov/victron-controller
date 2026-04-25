@@ -35,6 +35,8 @@ export * from './Sensors';
 export * from './SocChart';
 export * from './SocHistorySample';
 export * from './SocProjection';
+export * from './SocProjectionKind';
+export * from './SocProjectionSegment';
 export * from './TargetPhase';
 export * from './Timer';
 export * from './Timers';

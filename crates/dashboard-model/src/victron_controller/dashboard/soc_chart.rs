@@ -8,6 +8,8 @@ pub struct SocChart {
     #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
     pub now_epoch_ms: i64,
     pub now_soc_pct: Option<f64>,
+    pub discharge_target_pct: Option<f64>,
+    pub charge_target_pct: Option<f64>,
 }
 
 impl PartialEq for SocChart {
@@ -42,13 +44,21 @@ impl Ord for SocChart {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match crate::baboon_runtime::__opt_f64_total_cmp(&self.discharge_target_pct, &other.discharge_target_pct) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match crate::baboon_runtime::__opt_f64_total_cmp(&self.charge_target_pct, &other.charge_target_pct) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for SocChart {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        3
+        5
     }
 }
 
@@ -92,6 +102,34 @@ impl crate::baboon_runtime::BaboonBinEncode for SocChart {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.discharge_target_pct {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.charge_target_pct {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -102,6 +140,20 @@ impl crate::baboon_runtime::BaboonBinEncode for SocChart {
             value.projection.encode_ueba(ctx, writer)?;
             value.now_epoch_ms.encode_ueba(ctx, writer)?;
             match &value.now_soc_pct {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
+            match &value.discharge_target_pct {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
+            match &value.charge_target_pct {
                 None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
                 Some(v) => {
                     crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
@@ -129,11 +181,21 @@ impl crate::baboon_runtime::BaboonBinDecode for SocChart {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
         };
+        let discharge_target_pct = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
+        };
+        let charge_target_pct = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
+        };
         Ok(SocChart {
             history,
             projection,
             now_epoch_ms,
             now_soc_pct,
+            discharge_target_pct,
+            charge_target_pct,
         })
     }
 }

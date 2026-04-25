@@ -1,13 +1,11 @@
-
+use crate::victron_controller::dashboard::soc_projection_segment::SocProjectionSegment;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SocProjection {
-    pub slope_pct_per_hour: Option<f64>,
-    #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
-    pub terminus_epoch_ms: Option<i64>,
-    pub terminus_soc_pct: Option<f64>,
+    pub segments: Vec<SocProjectionSegment>,
     pub net_power_w: Option<f64>,
     pub capacity_wh: Option<f64>,
+    pub charge_rate_w: Option<f64>,
 }
 
 impl PartialEq for SocProjection {
@@ -26,15 +24,7 @@ impl PartialOrd for SocProjection {
 
 impl Ord for SocProjection {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match crate::baboon_runtime::__opt_f64_total_cmp(&self.slope_pct_per_hour, &other.slope_pct_per_hour) {
-            std::cmp::Ordering::Equal => {},
-            ord => return ord,
-        }
-        match self.terminus_epoch_ms.cmp(&other.terminus_epoch_ms) {
-            std::cmp::Ordering::Equal => {},
-            ord => return ord,
-        }
-        match crate::baboon_runtime::__opt_f64_total_cmp(&self.terminus_soc_pct, &other.terminus_soc_pct) {
+        match self.segments.cmp(&other.segments) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
@@ -46,13 +36,17 @@ impl Ord for SocProjection {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match crate::baboon_runtime::__opt_f64_total_cmp(&self.charge_rate_w, &other.charge_rate_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for SocProjection {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        5
+        4
     }
 }
 
@@ -65,40 +59,9 @@ impl crate::baboon_runtime::BaboonBinEncode for SocProjection {
             {
                 let before = buffer.len();
                 crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.slope_pct_per_hour {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
-            }
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.terminus_epoch_ms {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
-            }
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.terminus_soc_pct {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
+                crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.segments.len() as i32)?;
+            for item in (value.segments).iter() {
+                item.encode_ueba(ctx, &mut buffer)?;
             }
                 let after = buffer.len();
                 let length = after - before;
@@ -132,29 +95,26 @@ impl crate::baboon_runtime::BaboonBinEncode for SocProjection {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.charge_rate_w {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
-            match &value.slope_pct_per_hour {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
-            }
-            match &value.terminus_epoch_ms {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
-            }
-            match &value.terminus_soc_pct {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
+            crate::baboon_runtime::bin_tools::write_i32(writer, value.segments.len() as i32)?;
+            for item in (value.segments).iter() {
+                item.encode_ueba(ctx, writer)?;
             }
             match &value.net_power_w {
                 None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
@@ -164,6 +124,13 @@ impl crate::baboon_runtime::BaboonBinEncode for SocProjection {
                 }
             }
             match &value.capacity_wh {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
+            match &value.charge_rate_w {
                 None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
                 Some(v) => {
                     crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
@@ -181,17 +148,9 @@ impl crate::baboon_runtime::BaboonBinDecode for SocProjection {
         if ctx.use_indices() {
             assert_eq!(index.len(), <Self as crate::baboon_runtime::BaboonBinCodecIndexed>::index_elements_count(ctx) as usize);
         }
-        let slope_pct_per_hour = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
-        };
-        let terminus_epoch_ms = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_i64(reader)?) }
-        };
-        let terminus_soc_pct = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
+        let segments = {
+            let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
+            (0..count).map(|_| Ok(SocProjectionSegment::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
         };
         let net_power_w = {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
@@ -201,12 +160,15 @@ impl crate::baboon_runtime::BaboonBinDecode for SocProjection {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
         };
+        let charge_rate_w = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_f64(reader)?) }
+        };
         Ok(SocProjection {
-            slope_pct_per_hour,
-            terminus_epoch_ms,
-            terminus_soc_pct,
+            segments,
             net_power_w,
             capacity_wh,
+            charge_rate_w,
         })
     }
 }

@@ -11,18 +11,44 @@ data SocHistorySample {
   soc_pct: f64
 }
 
+// PR-soc-chart-segments: classification of a single projection segment.
+//
+//   * Natural          — current battery_dc_power-derived slope, no
+//                         schedule active.
+//   * Idle             — |net_power| below threshold; flat segment.
+//   * ScheduledCharge  — inside an enabled (days==7) schedule window.
+//   * FullChargePush   — inside a 1 h window starting at
+//                         bookkeeping.next_full_charge.
+//   * Clamped          — SoC sits at 10% or 100%; no further movement
+//                         until conditions change.
+enum SocProjectionKind {
+  Natural
+  Idle
+  ScheduledCharge
+  FullChargePush
+  Clamped
+}
+
+// PR-soc-chart-segments: one piecewise-linear segment of the projection.
+data SocProjectionSegment {
+  start_epoch_ms: i64
+  end_epoch_ms: i64
+  start_soc_pct: f64
+  end_soc_pct: f64
+  kind: SocProjectionKind
+}
+
 data SocProjection {
-  // Slope in %/hour. Positive = filling. None when the battery is idle
-  // (|net_power| below threshold) or the inputs are stale.
-  slope_pct_per_hour: opt[f64]
-  // Where the projection line crosses 100% (filling) or 10%
-  // (depleting), or its clamp at +24h. None when slope ≈ 0 — the
-  // caller draws a flat line out to a horizon (now + 12h) instead.
-  terminus_epoch_ms: opt[i64]
-  terminus_soc_pct: opt[f64]
-  // Diagnostic fields so the operator can sanity-check what we used.
+  // PR-soc-chart-segments: piecewise-linear projection split at schedule
+  // window edges, SoC clamps, and the next-full-charge timestamp.
+  // Empty when the projection inputs are unusable (e.g. SoC stale).
+  segments: lst[SocProjectionSegment]
+  // Diagnostic fields so the operator can sanity-check the inputs.
   net_power_w: opt[f64]
   capacity_wh: opt[f64]
+  // Charging rate used inside ScheduledCharge / FullChargePush
+  // segments. None when not derivable.
+  charge_rate_w: opt[f64]
 }
 
 data SocChart {
@@ -32,6 +58,14 @@ data SocChart {
   // marker doesn't have to dig through `sensors`.
   now_epoch_ms: i64
   now_soc_pct: opt[f64]
+  // PR-soc-chart-segments: discharge target — the SoC floor the
+  // controller is protecting (today: bookkeeping.soc_end_of_day_target).
+  // None when not yet computed.
+  discharge_target_pct: opt[f64]
+  // PR-soc-chart-segments: charge target — the SoC ceiling the
+  // controller will charge to in the next active window
+  // (today: bookkeeping.battery_selected_soc_target).
+  charge_target_pct: opt[f64]
 }
 
 // ---------------------------------------------------------------------------

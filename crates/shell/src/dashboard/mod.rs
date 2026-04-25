@@ -8,6 +8,7 @@
 //! the runtime consumes.
 
 pub mod convert;
+pub mod convert_soc_chart;
 pub mod server;
 pub mod soc_history;
 pub mod ws;

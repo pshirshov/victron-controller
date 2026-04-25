@@ -1,12 +1,16 @@
-// PR-soc-chart: hand-rolled SVG renderer for the battery-SoC chart.
+// PR-soc-chart / PR-soc-chart-segments: hand-rolled SVG renderer for
+// the battery-SoC chart.
 //
-// Three traces on a single SVG:
-//   1. History    — recorded samples (last 48 h, every 15 min) as a
-//                   solid polyline.
-//   2. Now marker — vertical dashed line at the current snapshot time.
-//   3. Projection — straight-line linear extrapolation forward, ending
-//                   at SoC = 100 % (filling), 10 % (depleting), the
-//                   +24 h clamp, or a flat horizon when slope is None.
+// Traces:
+//   1. History           — recorded samples (last 48 h, every 15 min) as
+//                          a solid polyline.
+//   2. Now marker        — vertical dashed line at the current snapshot
+//                          time.
+//   3. Projection        — piecewise-linear extrapolation forward, one
+//                          polyline per segment with class
+//                          `trace-projection-<kind>`.
+//   4. Reference targets — two horizontal lines drawn underneath the
+//                          projection: discharge floor and charge ceiling.
 //
 // Interactivity: a mouse-/touch-driven hairline with a tooltip showing
 // the time + SoC at that x-position. No charting library; everything is
@@ -15,29 +19,49 @@
 import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSnapshot.js";
 
 type HistorySample = { epoch_ms: number; soc_pct: number };
+
+type SegmentKind =
+  | "Natural"
+  | "Idle"
+  | "ScheduledCharge"
+  | "FullChargePush"
+  | "Clamped";
+
+type ProjectionSegment = {
+  start_epoch_ms: number;
+  end_epoch_ms: number;
+  start_soc_pct: number;
+  end_soc_pct: number;
+  kind: SegmentKind;
+};
+
 type Projection = {
-  slope_pct_per_hour: number | null;
-  terminus_epoch_ms: number | null;
-  terminus_soc_pct: number | null;
+  segments: ProjectionSegment[];
   net_power_w: number | null;
   capacity_wh: number | null;
+  charge_rate_w: number | null;
 };
+
 type SocChart = {
   history: HistorySample[];
   projection: Projection;
   now_epoch_ms: number;
   now_soc_pct: number | null;
+  discharge_target_pct: number | null;
+  charge_target_pct: number | null;
 };
 
-// SVG layout. viewBox is fluid via preserveAspectRatio="none" so the
-// chart scales to the wrapping div's width.
-const VB_W = 800;
+// SVG layout. We measure the host container's width at render time and
+// build a viewBox that matches its actual pixel dimensions (1 SVG
+// unit = 1 px). This avoids the `preserveAspectRatio="none"` stretch
+// that would distort circles into ellipses on wide containers. Height
+// stays fixed at 220 px.
+const VB_W_FALLBACK = 800;
 const VB_H = 220;
 const PAD_L = 40;
 const PAD_R = 8;
 const PAD_T = 8;
 const PAD_B = 30;
-const PLOT_W = VB_W - PAD_L - PAD_R;
 const PLOT_H = VB_H - PAD_T - PAD_B;
 
 const HOUR_MS = 3_600_000;
@@ -56,6 +80,14 @@ const X_STEPS_MS: number[] = [
   24 * HOUR_MS,
 ];
 
+const VALID_KINDS: ReadonlySet<string> = new Set([
+  "Natural",
+  "Idle",
+  "ScheduledCharge",
+  "FullChargePush",
+  "Clamped",
+]);
+
 function asNum(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "number" && isFinite(v)) return v;
@@ -68,18 +100,41 @@ function asNum(v: unknown): number | null {
   return null;
 }
 
+function asKind(v: unknown): SegmentKind | null {
+  if (typeof v !== "string") return null;
+  return VALID_KINDS.has(v) ? (v as SegmentKind) : null;
+}
+
 function readChart(snap: WorldSnapshot): SocChart | null {
   const raw = (snap as unknown as { soc_chart?: unknown }).soc_chart;
   if (!raw || typeof raw !== "object") return null;
   const c = raw as Record<string, unknown>;
   const history = (c.history as Array<{ epoch_ms: unknown; soc_pct: unknown }>) ?? [];
   const projRaw = (c.projection as Record<string, unknown>) ?? {};
+  const segmentsRaw = (projRaw.segments as Array<Record<string, unknown>>) ?? [];
+  const segments: ProjectionSegment[] = [];
+  for (const sRaw of segmentsRaw) {
+    const start_epoch_ms = asNum(sRaw.start_epoch_ms);
+    const end_epoch_ms = asNum(sRaw.end_epoch_ms);
+    const start_soc_pct = asNum(sRaw.start_soc_pct);
+    const end_soc_pct = asNum(sRaw.end_soc_pct);
+    const kind = asKind(sRaw.kind);
+    if (
+      start_epoch_ms === null ||
+      end_epoch_ms === null ||
+      start_soc_pct === null ||
+      end_soc_pct === null ||
+      kind === null
+    ) {
+      continue;
+    }
+    segments.push({ start_epoch_ms, end_epoch_ms, start_soc_pct, end_soc_pct, kind });
+  }
   const proj: Projection = {
-    slope_pct_per_hour: asNum(projRaw.slope_pct_per_hour),
-    terminus_epoch_ms: asNum(projRaw.terminus_epoch_ms),
-    terminus_soc_pct: asNum(projRaw.terminus_soc_pct),
+    segments,
     net_power_w: asNum(projRaw.net_power_w),
     capacity_wh: asNum(projRaw.capacity_wh),
+    charge_rate_w: asNum(projRaw.charge_rate_w),
   };
   return {
     history: history
@@ -91,6 +146,8 @@ function readChart(snap: WorldSnapshot): SocChart | null {
     projection: proj,
     now_epoch_ms: asNum(c.now_epoch_ms) ?? Date.now(),
     now_soc_pct: asNum(c.now_soc_pct),
+    discharge_target_pct: asNum(c.discharge_target_pct),
+    charge_target_pct: asNum(c.charge_target_pct),
   };
 }
 
@@ -118,10 +175,10 @@ function pickXStep(domainMs: number): number {
   return X_STEPS_MS[X_STEPS_MS.length - 1];
 }
 
-function xToSvg(epochMs: number, x0: number, x1: number): number {
+function xToSvg(epochMs: number, x0: number, x1: number, plotW: number): number {
   if (x1 === x0) return PAD_L;
   const t = (epochMs - x0) / (x1 - x0);
-  return PAD_L + Math.max(0, Math.min(1, t)) * PLOT_W;
+  return PAD_L + Math.max(0, Math.min(1, t)) * plotW;
 }
 
 function yToSvg(soc: number): number {
@@ -130,10 +187,10 @@ function yToSvg(soc: number): number {
   return PAD_T + (1 - t) * PLOT_H;
 }
 
-function svgFromX(svgX: number, x0: number, x1: number): number {
+function svgFromX(svgX: number, x0: number, x1: number, plotW: number): number {
   // Inverse of xToSvg — clamp to the plot rect.
-  const cx = Math.max(PAD_L, Math.min(PAD_L + PLOT_W, svgX));
-  const t = (cx - PAD_L) / PLOT_W;
+  const cx = Math.max(PAD_L, Math.min(PAD_L + plotW, svgX));
+  const t = (cx - PAD_L) / plotW;
   return x0 + t * (x1 - x0);
 }
 
@@ -152,18 +209,41 @@ function nearestHistory(history: HistorySample[], epochMs: number): HistorySampl
   return best;
 }
 
-// SoC at `epochMs` along the projection line, given (now, slope).
-// Returns null when the inputs aren't usable.
-function projectionSocAt(
+// Find the projection segment containing `epochMs`. Returns null if no
+// segment matches (e.g. before the first segment or after the last).
+function segmentAt(
+  segments: ProjectionSegment[],
   epochMs: number,
-  nowMs: number,
-  nowSoc: number | null,
-  slopePctPerHour: number | null,
-): number | null {
-  if (nowSoc === null || slopePctPerHour === null) return null;
-  const dh = (epochMs - nowMs) / HOUR_MS;
-  return nowSoc + slopePctPerHour * dh;
+): ProjectionSegment | null {
+  for (const s of segments) {
+    if (epochMs >= s.start_epoch_ms && epochMs <= s.end_epoch_ms) return s;
+  }
+  return null;
 }
+
+// Linearly interpolate SoC inside a segment.
+function interpolateSegment(seg: ProjectionSegment, epochMs: number): number {
+  const span = seg.end_epoch_ms - seg.start_epoch_ms;
+  if (span <= 0) return seg.start_soc_pct;
+  const t = (epochMs - seg.start_epoch_ms) / span;
+  return seg.start_soc_pct + (seg.end_soc_pct - seg.start_soc_pct) * t;
+}
+
+const KIND_SUFFIX: Record<SegmentKind, string> = {
+  Natural: "natural",
+  Idle: "idle",
+  ScheduledCharge: "scheduled charge",
+  FullChargePush: "full-charge push",
+  Clamped: "clamped",
+};
+
+const KIND_CSS: Record<SegmentKind, string> = {
+  Natural: "trace-projection-natural",
+  Idle: "trace-projection-idle",
+  ScheduledCharge: "trace-projection-scheduledcharge",
+  FullChargePush: "trace-projection-fullchargepush",
+  Clamped: "trace-projection-clamped",
+};
 
 function escAttr(s: string): string {
   return s.replace(/[&<>"']/g, (ch) =>
@@ -180,25 +260,26 @@ export function renderSocChart(snap: WorldSnapshot): void {
     return;
   }
 
+  // Measure host width so the viewBox matches actual rendered pixels.
+  // 1 SVG unit = 1 px → circles stay round and aspect doesn't distort
+  // when the container is wider than the historical 800-unit fallback.
+  // Use ResizeObserver below to re-render on container resize.
+  const vbW = Math.max(320, Math.round(host.clientWidth || VB_W_FALLBACK));
+  const plotW = vbW - PAD_L - PAD_R;
+
   const nowMs = chart.now_epoch_ms;
-  const nowSoc = chart.now_soc_pct;
-  const projection = chart.projection;
-  const slope = projection.slope_pct_per_hour;
-  const projectionTerminusMs = projection.terminus_epoch_ms;
-  const projectionTerminusSoc = projection.terminus_soc_pct;
+  const segments = chart.projection.segments;
 
   // X domain. When history is empty (boot state), fall back to a
-  // 13-hour window centered on `now`.
+  // 13-hour window centered on `now`. Right edge stretches to the end
+  // of the last projection segment (or now+12h if there's nothing).
   const firstHistMs =
     chart.history.length > 0 ? chart.history[0].epoch_ms : nowMs - 1 * HOUR_MS;
-  // The right edge is the latest of (now + 1h, projection terminus, or
-  // now + 12h when slope is None). We want a visible right margin past
-  // the now-marker even with no projection.
   let rightMs = nowMs + HOUR_MS;
-  if (projectionTerminusMs !== null && projectionTerminusMs > rightMs) {
-    rightMs = projectionTerminusMs;
-  }
-  if (slope === null) {
+  if (segments.length > 0) {
+    const lastSeg = segments[segments.length - 1];
+    if (lastSeg.end_epoch_ms > rightMs) rightMs = lastSeg.end_epoch_ms;
+  } else {
     rightMs = Math.max(rightMs, nowMs + DEFAULT_PROJECTION_HORIZON_MS);
   }
   const x0 = Math.min(firstHistMs, nowMs - HOUR_MS);
@@ -207,12 +288,12 @@ export function renderSocChart(snap: WorldSnapshot): void {
   // --- assemble SVG --------------------------------------------------
   const parts: string[] = [];
   parts.push(
-    `<svg viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="none" role="img" aria-label="Battery SoC history and projection">`,
+    `<svg viewBox="0 0 ${vbW} ${VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Battery SoC history and projection">`,
   );
 
   // Plot rect (transparent — gives the hairline a hit area).
   parts.push(
-    `<rect class="plot-bg" x="${PAD_L}" y="${PAD_T}" width="${PLOT_W}" height="${PLOT_H}" fill="transparent" />`,
+    `<rect class="plot-bg" x="${PAD_L}" y="${PAD_T}" width="${plotW}" height="${PLOT_H}" fill="transparent" />`,
   );
 
   // Y gridlines at 0, 25, 50, 75, 100.
@@ -220,7 +301,7 @@ export function renderSocChart(snap: WorldSnapshot): void {
   for (const v of yTicks) {
     const y = yToSvg(v);
     parts.push(
-      `<line class="axis-grid" x1="${PAD_L}" y1="${y}" x2="${PAD_L + PLOT_W}" y2="${y}" />`,
+      `<line class="axis-grid" x1="${PAD_L}" y1="${y}" x2="${PAD_L + plotW}" y2="${y}" />`,
     );
     parts.push(
       `<text class="axis-label" x="${PAD_L - 4}" y="${y + 3}" text-anchor="end">${v}%</text>`,
@@ -230,12 +311,11 @@ export function renderSocChart(snap: WorldSnapshot): void {
   // X gridlines + labels at adaptive step. Align to local-clock
   // boundaries so labels sit on round HH:MM values.
   const step = pickXStep(x1 - x0);
-  // First tick ≥ x0 aligned to a step from the local-clock midnight.
   const midnight = new Date(x0);
   midnight.setHours(0, 0, 0, 0);
   const startTick = midnight.getTime() + Math.ceil((x0 - midnight.getTime()) / step) * step;
   for (let t = startTick; t <= x1; t += step) {
-    const x = xToSvg(t, x0, x1);
+    const x = xToSvg(t, x0, x1, plotW);
     parts.push(
       `<line class="axis-grid" x1="${x}" y1="${PAD_T}" x2="${x}" y2="${PAD_T + PLOT_H}" />`,
     );
@@ -244,64 +324,83 @@ export function renderSocChart(snap: WorldSnapshot): void {
     );
   }
 
+  // Reference target lines — drawn before the projection so projection
+  // segments overlay on top. Skipped when null.
+  const drawTargetLine = (
+    pct: number,
+    cssClass: string,
+    labelPrefix: string,
+  ): void => {
+    const y = yToSvg(pct);
+    parts.push(
+      `<line class="${cssClass}" x1="${PAD_L}" y1="${y}" x2="${PAD_L + plotW}" y2="${y}" />`,
+    );
+    parts.push(
+      `<text class="target-label" x="${PAD_L + plotW - 4}" y="${y - 3}" text-anchor="end">${labelPrefix} ${pct.toFixed(0)}%</text>`,
+    );
+  };
+  if (chart.discharge_target_pct !== null) {
+    drawTargetLine(chart.discharge_target_pct, "target-line-discharge", "discharge");
+  }
+  if (chart.charge_target_pct !== null) {
+    drawTargetLine(chart.charge_target_pct, "target-line-charge", "charge");
+  }
+
   // History polyline.
   if (chart.history.length >= 2) {
     const points = chart.history
-      .map((s) => `${xToSvg(s.epoch_ms, x0, x1).toFixed(2)},${yToSvg(s.soc_pct).toFixed(2)}`)
+      .map((s) => `${xToSvg(s.epoch_ms, x0, x1, plotW).toFixed(2)},${yToSvg(s.soc_pct).toFixed(2)}`)
       .join(" ");
     parts.push(`<polyline class="trace-history" points="${points}" />`);
   } else if (chart.history.length === 1) {
-    // Single point — render as a small circle so it's visible.
     const s = chart.history[0];
     parts.push(
-      `<circle class="trace-history" cx="${xToSvg(s.epoch_ms, x0, x1)}" cy="${yToSvg(s.soc_pct)}" r="2" />`,
+      `<circle class="trace-history" cx="${xToSvg(s.epoch_ms, x0, x1, plotW)}" cy="${yToSvg(s.soc_pct)}" r="2" />`,
     );
   }
 
   // Empty-history note.
   if (chart.history.length === 0) {
     parts.push(
-      `<text class="terminus-label" x="${PAD_L + PLOT_W / 2}" y="${PAD_T + PLOT_H / 2}" text-anchor="middle">no history yet</text>`,
+      `<text class="terminus-label" x="${PAD_L + plotW / 2}" y="${PAD_T + PLOT_H / 2}" text-anchor="middle">no history yet</text>`,
     );
   }
 
-  // Projection line.
-  if (nowSoc !== null) {
-    if (slope !== null && projectionTerminusMs !== null && projectionTerminusSoc !== null) {
-      const x1p = xToSvg(nowMs, x0, x1);
-      const y1p = yToSvg(nowSoc);
-      const x2p = xToSvg(projectionTerminusMs, x0, x1);
-      const y2p = yToSvg(projectionTerminusSoc);
-      parts.push(
-        `<line class="trace-projection" x1="${x1p}" y1="${y1p}" x2="${x2p}" y2="${y2p}" />`,
-      );
-      // Annotation: "→ 100% at HH:MM" / "→ 10% at HH:MM".
-      const targetSocLabel =
-        Math.abs(projectionTerminusSoc - 100) < 0.1
-          ? "100%"
-          : Math.abs(projectionTerminusSoc - 10) < 0.1
-            ? "10%"
-            : `${projectionTerminusSoc.toFixed(0)}%`;
-      const annotX = Math.min(x2p + 4, PAD_L + PLOT_W - 60);
-      parts.push(
-        `<text class="terminus-label" x="${annotX}" y="${Math.max(PAD_T + 12, y2p - 4)}" text-anchor="start">→ ${targetSocLabel} at ${fmtClock(projectionTerminusMs)}</text>`,
-      );
-    } else {
-      // Slope None (idle) — flat horizontal line out to +12h.
-      const x1p = xToSvg(nowMs, x0, x1);
-      const yFlat = yToSvg(nowSoc);
-      const x2p = xToSvg(nowMs + DEFAULT_PROJECTION_HORIZON_MS, x0, x1);
-      parts.push(
-        `<line class="trace-projection" x1="${x1p}" y1="${yFlat}" x2="${x2p}" y2="${yFlat}" />`,
-      );
-      parts.push(
-        `<text class="terminus-label" x="${Math.min(x2p + 4, PAD_L + PLOT_W - 30)}" y="${Math.max(PAD_T + 12, yFlat - 4)}" text-anchor="start">idle</text>`,
-      );
-    }
+  // Projection segments — one polyline per segment so CSS can style
+  // each `kind` independently.
+  for (const seg of segments) {
+    const xa = xToSvg(seg.start_epoch_ms, x0, x1, plotW);
+    const ya = yToSvg(seg.start_soc_pct);
+    const xb = xToSvg(seg.end_epoch_ms, x0, x1, plotW);
+    const yb = yToSvg(seg.end_soc_pct);
+    parts.push(
+      `<polyline class="${KIND_CSS[seg.kind]}" data-kind="${escAttr(seg.kind)}" points="${xa.toFixed(2)},${ya.toFixed(2)} ${xb.toFixed(2)},${yb.toFixed(2)}" />`,
+    );
+  }
+
+  // Terminus annotation on the LAST segment (the one that ends at the
+  // chart's right edge or terminates in a Clamped tail). Skip when no
+  // segments.
+  if (segments.length > 0) {
+    const last = segments[segments.length - 1];
+    const xb = xToSvg(last.end_epoch_ms, x0, x1, plotW);
+    const yb = yToSvg(last.end_soc_pct);
+    const annotX = Math.min(xb + 4, PAD_L + plotW - 60);
+    const labelPct = `${last.end_soc_pct.toFixed(0)}%`;
+    parts.push(
+      `<text class="terminus-label" x="${annotX}" y="${Math.max(PAD_T + 12, yb - 4)}" text-anchor="start">→ ${labelPct} at ${fmtClock(last.end_epoch_ms)}</text>`,
+    );
+  } else if (chart.now_soc_pct !== null) {
+    // No projection — emit an "idle" marker at the now SoC.
+    const yFlat = yToSvg(chart.now_soc_pct);
+    const xNow = xToSvg(nowMs, x0, x1, plotW);
+    parts.push(
+      `<text class="terminus-label" x="${Math.min(xNow + 8, PAD_L + plotW - 30)}" y="${Math.max(PAD_T + 12, yFlat - 4)}" text-anchor="start">no projection</text>`,
+    );
   }
 
   // Now marker (drawn last over the projection start so it's visible).
-  const xNow = xToSvg(nowMs, x0, x1);
+  const xNow = xToSvg(nowMs, x0, x1, plotW);
   parts.push(
     `<line class="now-marker" x1="${xNow}" y1="${PAD_T}" x2="${xNow}" y2="${PAD_T + PLOT_H}" />`,
   );
@@ -311,7 +410,7 @@ export function renderSocChart(snap: WorldSnapshot): void {
     `<line class="hairline" id="soc-chart-hairline" x1="0" y1="${PAD_T}" x2="0" y2="${PAD_T + PLOT_H}" style="display:none" />`,
   );
   parts.push(
-    `<text class="hairline-label" id="soc-chart-hairline-label" x="${PAD_L + PLOT_W - 4}" y="${PAD_T + 12}" text-anchor="end" style="display:none"></text>`,
+    `<text class="hairline-label" id="soc-chart-hairline-label" x="${PAD_L + plotW - 4}" y="${PAD_T + 12}" text-anchor="end" style="display:none"></text>`,
   );
 
   parts.push(`</svg>`);
@@ -319,7 +418,11 @@ export function renderSocChart(snap: WorldSnapshot): void {
 
   // Wire mouse + touch handlers. The SVG is fully replaced on every
   // applySnapshot, so we re-attach each render.
-  installHairlineHandlers(host, chart, x0, x1);
+  installHairlineHandlers(host, chart, x0, x1, vbW, plotW);
+  // Re-render on container resize so the viewBox tracks actual width.
+  // `applySnapshot` re-renders us anyway every snapshot tick, so we
+  // only need to handle the one-shot resize between ticks.
+  installResizeObserver(host, snap);
 }
 
 function installHairlineHandlers(
@@ -327,6 +430,8 @@ function installHairlineHandlers(
   chart: SocChart,
   x0: number,
   x1: number,
+  vbW: number,
+  plotW: number,
 ): void {
   const svg = host.querySelector("svg");
   if (!svg) return;
@@ -337,31 +442,30 @@ function installHairlineHandlers(
   const onMove = (clientX: number) => {
     const rect = svg.getBoundingClientRect();
     if (rect.width === 0) return;
-    // Map clientX → viewBox x.
-    const svgX = ((clientX - rect.left) / rect.width) * VB_W;
-    if (svgX < PAD_L || svgX > PAD_L + PLOT_W) {
+    const svgX = ((clientX - rect.left) / rect.width) * vbW;
+    if (svgX < PAD_L || svgX > PAD_L + plotW) {
       hairline.style.display = "none";
       label.style.display = "none";
       return;
     }
-    const epochMs = svgFromX(svgX, x0, x1);
+    const epochMs = svgFromX(svgX, x0, x1, plotW);
     let soc: number | null = null;
+    let kindSuffix = "";
     if (epochMs <= chart.now_epoch_ms) {
       const nearest = nearestHistory(chart.history, epochMs);
       soc = nearest ? nearest.soc_pct : null;
     } else {
-      soc = projectionSocAt(
-        epochMs,
-        chart.now_epoch_ms,
-        chart.now_soc_pct,
-        chart.projection.slope_pct_per_hour,
-      );
+      const seg = segmentAt(chart.projection.segments, epochMs);
+      if (seg !== null) {
+        soc = interpolateSegment(seg, epochMs);
+        kindSuffix = ` (${KIND_SUFFIX[seg.kind]})`;
+      }
     }
     hairline.setAttribute("x1", String(svgX));
     hairline.setAttribute("x2", String(svgX));
     hairline.style.display = "";
     const socText = soc === null ? "—" : `${soc.toFixed(1)}%`;
-    label.textContent = `${fmtClockSec(epochMs)} — ${socText}`;
+    label.textContent = `${fmtClockSec(epochMs)} — ${socText}${kindSuffix}`;
     label.style.display = "";
   };
 
@@ -388,8 +492,30 @@ function installHairlineHandlers(
   );
   svg.addEventListener("touchend", leave);
   svg.addEventListener("touchcancel", leave);
+}
 
-  // Suppress an unused-binding warning for the helper above, in case
-  // this branch never fires under tsc's strict mode.
-  void escAttr;
+// Re-render on container resize so the viewBox tracks actual width.
+// Snapshot ticks already re-render every ~1s, so this only matters for
+// the moments between ticks (e.g. user rotating their phone or
+// resizing the browser). We attach the observer once per host element
+// and remember the last snapshot for redraws driven by the observer.
+let resizeObserver: ResizeObserver | null = null;
+let lastSnapshotForResize: WorldSnapshot | null = null;
+let lastObservedWidth = 0;
+function installResizeObserver(host: HTMLElement, snap: WorldSnapshot): void {
+  lastSnapshotForResize = snap;
+  if (resizeObserver !== null) return;
+  if (typeof ResizeObserver === "undefined") return;
+  resizeObserver = new ResizeObserver((entries) => {
+    if (lastSnapshotForResize === null) return;
+    for (const e of entries) {
+      const w = Math.round(e.contentRect.width);
+      if (Math.abs(w - lastObservedWidth) >= 4) {
+        lastObservedWidth = w;
+        renderSocChart(lastSnapshotForResize);
+        return;
+      }
+    }
+  });
+  resizeObserver.observe(host);
 }

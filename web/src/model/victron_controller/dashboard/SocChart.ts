@@ -8,12 +8,16 @@ export class SocChart implements BaboonGeneratedLatest {
     private readonly _projection: SocProjection;
     private readonly _now_epoch_ms: bigint;
     private readonly _now_soc_pct: number | undefined;
+    private readonly _discharge_target_pct: number | undefined;
+    private readonly _charge_target_pct: number | undefined;
 
-    constructor(history: Array<SocHistorySample>, projection: SocProjection, now_epoch_ms: bigint, now_soc_pct: number | undefined) {
+    constructor(history: Array<SocHistorySample>, projection: SocProjection, now_epoch_ms: bigint, now_soc_pct: number | undefined, discharge_target_pct: number | undefined, charge_target_pct: number | undefined) {
         this._history = history
         this._projection = projection
         this._now_epoch_ms = now_epoch_ms
         this._now_soc_pct = now_soc_pct
+        this._discharge_target_pct = discharge_target_pct
+        this._charge_target_pct = charge_target_pct
     }
 
     public get history(): Array<SocHistorySample> {
@@ -28,31 +32,43 @@ export class SocChart implements BaboonGeneratedLatest {
     public get now_soc_pct(): number | undefined {
         return this._now_soc_pct;
     }
+    public get discharge_target_pct(): number | undefined {
+        return this._discharge_target_pct;
+    }
+    public get charge_target_pct(): number | undefined {
+        return this._charge_target_pct;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
             history: this._history,
             projection: this._projection,
             now_epoch_ms: this._now_epoch_ms,
-            now_soc_pct: this._now_soc_pct !== undefined ? this._now_soc_pct : undefined
+            now_soc_pct: this._now_soc_pct !== undefined ? this._now_soc_pct : undefined,
+            discharge_target_pct: this._discharge_target_pct !== undefined ? this._discharge_target_pct : undefined,
+            charge_target_pct: this._charge_target_pct !== undefined ? this._charge_target_pct : undefined
         };
     }
 
-    public with(overrides: {history?: Array<SocHistorySample>; projection?: SocProjection; now_epoch_ms?: bigint; now_soc_pct?: number | undefined}): SocChart {
+    public with(overrides: {history?: Array<SocHistorySample>; projection?: SocProjection; now_epoch_ms?: bigint; now_soc_pct?: number | undefined; discharge_target_pct?: number | undefined; charge_target_pct?: number | undefined}): SocChart {
         return new SocChart(
             'history' in overrides ? overrides.history! : this._history,
             'projection' in overrides ? overrides.projection! : this._projection,
             'now_epoch_ms' in overrides ? overrides.now_epoch_ms! : this._now_epoch_ms,
-            'now_soc_pct' in overrides ? overrides.now_soc_pct! : this._now_soc_pct
+            'now_soc_pct' in overrides ? overrides.now_soc_pct! : this._now_soc_pct,
+            'discharge_target_pct' in overrides ? overrides.discharge_target_pct! : this._discharge_target_pct,
+            'charge_target_pct' in overrides ? overrides.charge_target_pct! : this._charge_target_pct
         );
     }
 
-    public static fromPlain(obj: {history: Array<SocHistorySample>; projection: SocProjection; now_epoch_ms: bigint; now_soc_pct: number | undefined}): SocChart {
+    public static fromPlain(obj: {history: Array<SocHistorySample>; projection: SocProjection; now_epoch_ms: bigint; now_soc_pct: number | undefined; discharge_target_pct: number | undefined; charge_target_pct: number | undefined}): SocChart {
         return new SocChart(
             obj.history,
             obj.projection,
             obj.now_epoch_ms,
-            obj.now_soc_pct
+            obj.now_soc_pct,
+            obj.discharge_target_pct,
+            obj.charge_target_pct
         );
     }
 
@@ -116,6 +132,30 @@ export class SocChart_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.discharge_target_pct === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeF64(buffer, value.discharge_target_pct);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.charge_target_pct === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeF64(buffer, value.charge_target_pct);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -131,6 +171,18 @@ export class SocChart_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 BinTools.writeF64(writer, value.now_soc_pct);
             }
+            if (value.discharge_target_pct === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeF64(writer, value.discharge_target_pct);
+            }
+            if (value.charge_target_pct === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeF64(writer, value.charge_target_pct);
+            }
         }
     }
     
@@ -142,7 +194,7 @@ export class SocChart_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 3; i++) {
+            for (let i = 0; i < 5; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -151,11 +203,15 @@ export class SocChart_UEBACodec {
         const projection = SocProjection_UEBACodec.instance.decode(ctx, reader);
         const now_epoch_ms = BinTools.readI64(reader);
         const now_soc_pct = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
+        const discharge_target_pct = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
+        const charge_target_pct = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
         return new SocChart(
             history,
             projection,
             now_epoch_ms,
             now_soc_pct,
+            discharge_target_pct,
+            charge_target_pct,
         );
     }
 

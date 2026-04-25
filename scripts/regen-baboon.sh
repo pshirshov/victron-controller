@@ -107,19 +107,25 @@ find "$RS_OUT/src" -path '*/dashboard*/actuated_f64.rs' -print0 | while IFS= rea
     "$f"
 done
 
-# PR-soc-chart adds Option<f64> fields on SocProjection and SocChart.
-# Same upstream codegen bug as actual_f64/actuated_f64.
-for field in slope_pct_per_hour terminus_soc_pct net_power_w capacity_wh; do
+# PR-soc-chart / PR-soc-chart-segments add Option<f64> fields on
+# SocProjection and SocChart. Same upstream codegen bug as
+# actual_f64/actuated_f64. Older 0.2.0 had slope_pct_per_hour /
+# terminus_soc_pct on SocProjection — now replaced by `segments` plus
+# charge_rate_w. The list below covers every Option<f64> field present
+# in any version still in models/.
+for field in slope_pct_per_hour terminus_soc_pct net_power_w capacity_wh charge_rate_w; do
   find "$RS_OUT/src" -path '*/dashboard*/soc_projection.rs' -print0 | while IFS= read -r -d '' f; do
     sed -i \
       -e "s|self\.${field}\.total_cmp(&other\.${field})|crate::baboon_runtime::__opt_f64_total_cmp(\&self.${field}, \&other.${field})|" \
       "$f"
   done
 done
-find "$RS_OUT/src" -path '*/dashboard*/soc_chart.rs' -print0 | while IFS= read -r -d '' f; do
-  sed -i \
-    -e 's|self\.now_soc_pct\.total_cmp(&other\.now_soc_pct)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.now_soc_pct, \&other.now_soc_pct)|' \
-    "$f"
+for field in now_soc_pct discharge_target_pct charge_target_pct; do
+  find "$RS_OUT/src" -path '*/dashboard*/soc_chart.rs' -print0 | while IFS= read -r -d '' f; do
+    sed -i \
+      -e "s|self\.${field}\.total_cmp(&other\.${field})|crate::baboon_runtime::__opt_f64_total_cmp(\&self.${field}, \&other.${field})|" \
+      "$f"
+  done
 done
 
 # --- TypeScript -----------------------------------------------------------

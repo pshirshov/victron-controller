@@ -1,29 +1,22 @@
 // @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
+import {SocProjectionSegment, SocProjectionSegment_UEBACodec} from './SocProjectionSegment'
 
 export class SocProjection implements BaboonGeneratedLatest {
-    private readonly _slope_pct_per_hour: number | undefined;
-    private readonly _terminus_epoch_ms: bigint | undefined;
-    private readonly _terminus_soc_pct: number | undefined;
+    private readonly _segments: Array<SocProjectionSegment>;
     private readonly _net_power_w: number | undefined;
     private readonly _capacity_wh: number | undefined;
+    private readonly _charge_rate_w: number | undefined;
 
-    constructor(slope_pct_per_hour: number | undefined, terminus_epoch_ms: bigint | undefined, terminus_soc_pct: number | undefined, net_power_w: number | undefined, capacity_wh: number | undefined) {
-        this._slope_pct_per_hour = slope_pct_per_hour
-        this._terminus_epoch_ms = terminus_epoch_ms
-        this._terminus_soc_pct = terminus_soc_pct
+    constructor(segments: Array<SocProjectionSegment>, net_power_w: number | undefined, capacity_wh: number | undefined, charge_rate_w: number | undefined) {
+        this._segments = segments
         this._net_power_w = net_power_w
         this._capacity_wh = capacity_wh
+        this._charge_rate_w = charge_rate_w
     }
 
-    public get slope_pct_per_hour(): number | undefined {
-        return this._slope_pct_per_hour;
-    }
-    public get terminus_epoch_ms(): bigint | undefined {
-        return this._terminus_epoch_ms;
-    }
-    public get terminus_soc_pct(): number | undefined {
-        return this._terminus_soc_pct;
+    public get segments(): Array<SocProjectionSegment> {
+        return this._segments;
     }
     public get net_power_w(): number | undefined {
         return this._net_power_w;
@@ -31,34 +24,34 @@ export class SocProjection implements BaboonGeneratedLatest {
     public get capacity_wh(): number | undefined {
         return this._capacity_wh;
     }
+    public get charge_rate_w(): number | undefined {
+        return this._charge_rate_w;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
-            slope_pct_per_hour: this._slope_pct_per_hour !== undefined ? this._slope_pct_per_hour : undefined,
-            terminus_epoch_ms: this._terminus_epoch_ms !== undefined ? this._terminus_epoch_ms : undefined,
-            terminus_soc_pct: this._terminus_soc_pct !== undefined ? this._terminus_soc_pct : undefined,
+            segments: this._segments,
             net_power_w: this._net_power_w !== undefined ? this._net_power_w : undefined,
-            capacity_wh: this._capacity_wh !== undefined ? this._capacity_wh : undefined
+            capacity_wh: this._capacity_wh !== undefined ? this._capacity_wh : undefined,
+            charge_rate_w: this._charge_rate_w !== undefined ? this._charge_rate_w : undefined
         };
     }
 
-    public with(overrides: {slope_pct_per_hour?: number | undefined; terminus_epoch_ms?: bigint | undefined; terminus_soc_pct?: number | undefined; net_power_w?: number | undefined; capacity_wh?: number | undefined}): SocProjection {
+    public with(overrides: {segments?: Array<SocProjectionSegment>; net_power_w?: number | undefined; capacity_wh?: number | undefined; charge_rate_w?: number | undefined}): SocProjection {
         return new SocProjection(
-            'slope_pct_per_hour' in overrides ? overrides.slope_pct_per_hour! : this._slope_pct_per_hour,
-            'terminus_epoch_ms' in overrides ? overrides.terminus_epoch_ms! : this._terminus_epoch_ms,
-            'terminus_soc_pct' in overrides ? overrides.terminus_soc_pct! : this._terminus_soc_pct,
+            'segments' in overrides ? overrides.segments! : this._segments,
             'net_power_w' in overrides ? overrides.net_power_w! : this._net_power_w,
-            'capacity_wh' in overrides ? overrides.capacity_wh! : this._capacity_wh
+            'capacity_wh' in overrides ? overrides.capacity_wh! : this._capacity_wh,
+            'charge_rate_w' in overrides ? overrides.charge_rate_w! : this._charge_rate_w
         );
     }
 
-    public static fromPlain(obj: {slope_pct_per_hour: number | undefined; terminus_epoch_ms: bigint | undefined; terminus_soc_pct: number | undefined; net_power_w: number | undefined; capacity_wh: number | undefined}): SocProjection {
+    public static fromPlain(obj: {segments: Array<SocProjectionSegment>; net_power_w: number | undefined; capacity_wh: number | undefined; charge_rate_w: number | undefined}): SocProjection {
         return new SocProjection(
-            obj.slope_pct_per_hour,
-            obj.terminus_epoch_ms,
-            obj.terminus_soc_pct,
+            obj.segments,
             obj.net_power_w,
-            obj.capacity_wh
+            obj.capacity_wh,
+            obj.charge_rate_w
         );
     }
 
@@ -95,35 +88,9 @@ export class SocProjection_UEBACodec {
             {
                 const before = buffer.position();
                 BinTools.writeI32(writer, before);
-                if (value.slope_pct_per_hour === undefined) {
-                BinTools.writeByte(buffer, 0);
-            } else {
-                BinTools.writeByte(buffer, 1);
-                BinTools.writeF64(buffer, value.slope_pct_per_hour);
-            }
-                const after = buffer.position();
-                BinTools.writeI32(writer, after - before);
-            }
-            {
-                const before = buffer.position();
-                BinTools.writeI32(writer, before);
-                if (value.terminus_epoch_ms === undefined) {
-                BinTools.writeByte(buffer, 0);
-            } else {
-                BinTools.writeByte(buffer, 1);
-                BinTools.writeI64(buffer, value.terminus_epoch_ms);
-            }
-                const after = buffer.position();
-                BinTools.writeI32(writer, after - before);
-            }
-            {
-                const before = buffer.position();
-                BinTools.writeI32(writer, before);
-                if (value.terminus_soc_pct === undefined) {
-                BinTools.writeByte(buffer, 0);
-            } else {
-                BinTools.writeByte(buffer, 1);
-                BinTools.writeF64(buffer, value.terminus_soc_pct);
+                BinTools.writeI32(buffer, Array.from(value.segments).length);
+            for (const item of value.segments) {
+                SocProjectionSegment_UEBACodec.instance.encode(ctx, item, buffer);
             }
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
@@ -152,26 +119,24 @@ export class SocProjection_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.charge_rate_w === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeF64(buffer, value.charge_rate_w);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
-            if (value.slope_pct_per_hour === undefined) {
-                BinTools.writeByte(writer, 0);
-            } else {
-                BinTools.writeByte(writer, 1);
-                BinTools.writeF64(writer, value.slope_pct_per_hour);
-            }
-            if (value.terminus_epoch_ms === undefined) {
-                BinTools.writeByte(writer, 0);
-            } else {
-                BinTools.writeByte(writer, 1);
-                BinTools.writeI64(writer, value.terminus_epoch_ms);
-            }
-            if (value.terminus_soc_pct === undefined) {
-                BinTools.writeByte(writer, 0);
-            } else {
-                BinTools.writeByte(writer, 1);
-                BinTools.writeF64(writer, value.terminus_soc_pct);
+            BinTools.writeI32(writer, Array.from(value.segments).length);
+            for (const item of value.segments) {
+                SocProjectionSegment_UEBACodec.instance.encode(ctx, item, writer);
             }
             if (value.net_power_w === undefined) {
                 BinTools.writeByte(writer, 0);
@@ -185,6 +150,12 @@ export class SocProjection_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 BinTools.writeF64(writer, value.capacity_wh);
             }
+            if (value.charge_rate_w === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeF64(writer, value.charge_rate_w);
+            }
         }
     }
     
@@ -196,22 +167,20 @@ export class SocProjection_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 4; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
         }
-        const slope_pct_per_hour = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
-        const terminus_epoch_ms = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readI64(reader));
-        const terminus_soc_pct = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
+        const segments = Array.from({ length: BinTools.readI32(reader) }, () => SocProjectionSegment_UEBACodec.instance.decode(ctx, reader));
         const net_power_w = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
         const capacity_wh = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
+        const charge_rate_w = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readF64(reader));
         return new SocProjection(
-            slope_pct_per_hour,
-            terminus_epoch_ms,
-            terminus_soc_pct,
+            segments,
             net_power_w,
             capacity_wh,
+            charge_rate_w,
         );
     }
 
