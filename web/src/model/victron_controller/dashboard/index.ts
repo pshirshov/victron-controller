@@ -12,6 +12,8 @@ export * from './Bookkeeping';
 export * from './ChargeBatteryExtendedMode';
 export * from './Command';
 export * from './CommandAck';
+export * from './CoreState';
+export * from './CoresState';
 export * from './DebugFullCharge';
 export * from './Decision';
 export * from './DecisionFactor';

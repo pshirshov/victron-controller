@@ -6,6 +6,7 @@ import {
   installCopyHandler,
   renderActuated,
   renderBookkeeping,
+  renderCoresState,
   renderDecisions,
   renderForecasts,
   renderSensors,
@@ -52,6 +53,7 @@ function applySnapshot(snap: WorldSnapshot): void {
   renderSensors(snap);
   renderDecisions(snap);
   renderActuated(snap);
+  renderCoresState(snap);
   renderBookkeeping(snap);
   renderForecasts(snap);
   renderKnobs(snap, sendCommand);

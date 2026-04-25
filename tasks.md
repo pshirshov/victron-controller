@@ -1019,11 +1019,16 @@ PR-tass-dag-view rides the same bump or its own minor follow-on.
   judgement that's wrong for kill-switch flags like
   `force_disable_export=false`). Wire format unchanged.
 
-- [ ] **PR-tass-dag-view** — New dashboard section showing
-  `production_cores()` with `depends_on` edges + per-core last-run
-  outcome and (for derivation cores) last payload. Adds `CoreState` /
-  `CoresState` types to `dashboard.baboon`. Coordinate wire-format
-  bump with PR-session-kwh-sensor.
+- [x] **PR-tass-dag-view** — New dashboard section between Decisions
+  and Bookkeeping showing `production_cores()` with `depends_on` edges,
+  per-core outcome, and (for `ZappiActiveCore`) last payload. Wire
+  format extended within 0.2.0: new `CoreState` / `CoresState` baboon
+  types + `WorldSnapshot.cores_state`. `CoreRegistry::run_all`
+  clears+repopulates `world.cores_state` after each tick; topo_order
+  locked from validated registry order. Bool-typed payloads route
+  through the existing `maybeBoolBadge` helper. Back-compat 0.1.0 →
+  0.2.0 stub initialises `cores_state` to empty; regression test
+  added. Bundle 36.2 → 37.1 KB. 0 review defects (inline review).
 
 ### Cross-cutting (M-UX-1)
 

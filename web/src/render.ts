@@ -351,6 +351,39 @@ export function renderDecisions(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
+// PR-tass-dag-view: TASS-core DAG view. One row per core in canonical
+// topological order; columns mirror the CoreState wire fields.
+export function renderCoresState(snap: WorldSnapshot) {
+  const tbody = document.querySelector("#cores-table tbody") as HTMLElement;
+  const cs = snap.cores_state as unknown as {
+    cores: Array<{ id: string; depends_on: string[]; last_run_outcome: string; last_payload: string | null | undefined }>;
+    topo_order: string[];
+  };
+  const cores = cs?.cores ?? [];
+  const rows: KeyedRow[] = cores.map((c) => {
+    const deps = c.depends_on.length === 0
+      ? '<span class="dim">—</span>'
+      : c.depends_on.map((d) => esc(d)).join(", ");
+    const payload = (() => {
+      const v = c.last_payload;
+      if (v === null || v === undefined) return '<span class="dim">—</span>';
+      const badge = maybeBoolBadge(v);
+      if (badge !== null) return badge;
+      return esc(v);
+    })();
+    return {
+      key: c.id,
+      cells: [
+        { cls: "mono", html: nameWithTitle(c.id) },
+        { cls: "mono", html: deps },
+        { html: esc(c.last_run_outcome) },
+        { html: payload },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
+}
+
 export function renderForecasts(snap: WorldSnapshot) {
   const tbody = document.querySelector("#forecasts-table tbody") as HTMLElement;
   const providers: Array<[string, any]> = [

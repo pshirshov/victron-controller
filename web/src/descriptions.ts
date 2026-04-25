@@ -148,6 +148,19 @@ export const entityDescriptions: Record<string, string> = {
   charge_battery_extended_mode:
     "Override for the charge_battery_extended derivation: Auto / Forced / Disabled.",
 
+  // --- TASS cores (PR-tass-dag-view) ---
+  // CoreId names from crates/core/src/core_dag/mod.rs::CoreId::name(),
+  // matching production_cores() in crates/core/src/core_dag/cores.rs.
+  // Note: keys that collide with sensors / actuated / decisions
+  // (zappi_mode, eddi_mode, weather_soc) keep their existing entry —
+  // the description registry is global by design.
+  setpoint:
+    "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",
+  current_limit:
+    "VE.Bus input-current-limit controller — caps grid import to the inverter; primary lever for grid-charge throttling.",
+  schedules:
+    "ESS schedule controller — populates schedule_0 / schedule_1 with start/duration/SoC/enabled bits per current policy.",
+
   // --- Forecast providers ---
   solcast: "Solcast forecast provider (free tier, paid for accuracy on this site).",
   forecast_solar: "Forecast.Solar forecast provider (free tier).",

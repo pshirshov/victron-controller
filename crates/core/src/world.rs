@@ -165,6 +165,34 @@ pub struct DerivedState {
     pub zappi_active: bool,
 }
 
+/// Per-core observability snapshot, populated by `CoreRegistry::run_all`
+/// after each core runs. Pure observability — no controller reads this.
+/// PR-tass-dag-view.
+///
+/// `last_run_outcome` is currently always `"success"` because every
+/// production core runs unconditionally per tick (see
+/// `CoreRegistry::run_all`); we treat "ran without panicking" as success.
+/// The field exists so future cores that conditionally early-return or
+/// fail open can surface that to the dashboard without another wire bump.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreState {
+    pub id: String,
+    pub depends_on: Vec<String>,
+    pub last_run_outcome: String,
+    /// For derivation cores, the stringified derived value
+    /// (e.g. `"true"` / `"false"` for `ZappiActiveCore`). `None` for
+    /// actuator cores whose effect is on Decisions/Actuated rather
+    /// than a single payload.
+    pub last_payload: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CoresState {
+    pub cores: Vec<CoreState>,
+    /// Canonical Kahn output order (matches `CoreRegistry::order`).
+    pub topo_order: Vec<String>,
+}
+
 /// Latest "why?" explanation per controller. Overwritten on every
 /// evaluation, so the snapshot always matches the live target state.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -229,6 +257,11 @@ pub struct World {
     /// Latest human-readable explanation for each controller. See
     /// SPEC §5.12 and `types::Decision`.
     pub decisions: Decisions,
+
+    /// Per-tick observability snapshot of the TASS core DAG. Populated
+    /// by `CoreRegistry::run_all` after each core runs; consumed by
+    /// `dashboard::convert::world_to_snapshot`. PR-tass-dag-view.
+    pub cores_state: CoresState,
 }
 
 impl World {
@@ -250,6 +283,7 @@ impl World {
             bookkeeping: Bookkeeping::fresh_boot(),
             derived: DerivedState::default(),
             decisions: Decisions::default(),
+            cores_state: CoresState::default(),
         }
     }
 }

@@ -37,6 +37,23 @@ pub enum CoreId {
     WeatherSoc,
 }
 
+impl CoreId {
+    /// Stable `snake_case` name used in the dashboard wire format and
+    /// the description registry. PR-tass-dag-view.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ZappiActive => "zappi_active",
+            Self::Setpoint => "setpoint",
+            Self::CurrentLimit => "current_limit",
+            Self::Schedules => "schedules",
+            Self::ZappiMode => "zappi_mode",
+            Self::EddiMode => "eddi_mode",
+            Self::WeatherSoc => "weather_soc",
+        }
+    }
+}
+
 /// A single unit of orchestrated work. One impl per `run_*` today.
 ///
 /// PR-DAG-B: cross-core derivations live in `World::derived` (see
@@ -56,6 +73,16 @@ pub trait Core: Send + Sync {
         topology: &Topology,
         effects: &mut Vec<Effect>,
     );
+
+    /// Optional payload to surface in the dashboard's TASS DAG view
+    /// (`world.cores_state`). Default `None` for actuator cores whose
+    /// effect is on `Decisions`/`Actuated` rather than a single value.
+    /// Derivation cores override this to stringify their derived value
+    /// (e.g. `ZappiActiveCore` returns `"true"`/`"false"`).
+    /// PR-tass-dag-view.
+    fn last_payload(&self, _world: &World) -> Option<String> {
+        None
+    }
 }
 
 /// Errors that can arise while validating a set of cores into a DAG.
@@ -171,8 +198,28 @@ impl CoreRegistry {
         topology: &Topology,
         effects: &mut Vec<Effect>,
     ) {
+        // Reset the per-tick observability snapshot. We rebuild it
+        // entry-by-entry as cores run; topo_order is fixed by the
+        // registry so we can lock it in up-front. PR-tass-dag-view.
+        world.cores_state.cores.clear();
+        world.cores_state.cores.reserve(self.order.len());
+        if world.cores_state.topo_order.len() != self.order.len() {
+            world.cores_state.topo_order =
+                self.order.iter().map(|&i| self.cores[i].id().name().to_string()).collect();
+        }
         for &idx in &self.order {
-            self.cores[idx].run(world, clock, topology, effects);
+            let core = &self.cores[idx];
+            core.run(world, clock, topology, effects);
+            // "ran without panicking" == success today; see CoresState
+            // doc-comment in `crate::world` for why this placeholder is
+            // honest given current core semantics.
+            let entry = crate::world::CoreState {
+                id: core.id().name().to_string(),
+                depends_on: core.depends_on().iter().map(|d| d.name().to_string()).collect(),
+                last_run_outcome: "success".to_string(),
+                last_payload: core.last_payload(world),
+            };
+            world.cores_state.cores.push(entry);
         }
     }
 

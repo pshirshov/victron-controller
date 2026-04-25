@@ -1,11 +1,13 @@
 model victron_controller.dashboard
 version "0.2.0"
 
-import "0.1.0" { * } without { Sensors }
+import "0.1.0" { * } without { Sensors WorldSnapshot }
 
 // ---------------------------------------------------------------------------
-// 0.2.0 — additive: surface myenergi-sourced Zappi session energy as a
-// first-class dashboard sensor. See M-UX-1 / PR-session-kwh-sensor.
+// 0.2.0 — additive:
+//   * surface myenergi-sourced Zappi session energy as a first-class
+//     dashboard sensor (PR-session-kwh-sensor).
+//   * surface the TASS core DAG (PR-tass-dag-view).
 // ---------------------------------------------------------------------------
 
 data Sensors {
@@ -30,4 +32,32 @@ data Sensors {
   outdoor_temperature: ActualF64
   // 0.2.0 addition (PR-session-kwh-sensor).
   session_kwh: ActualF64
+}
+
+// 0.2.0 addition (PR-tass-dag-view). Per-core observability snapshot
+// produced by `CoreRegistry::run_all` after each tick.
+data CoreState {
+  id: str
+  depends_on: lst[str]
+  last_run_outcome: str
+  last_payload: opt[str]
+}
+
+data CoresState {
+  cores: lst[CoreState]
+  topo_order: lst[str]
+}
+
+root data WorldSnapshot {
+  captured_at_epoch_ms: i64
+  captured_at_naive_iso: str
+  sensors: Sensors
+  sensors_meta: map[str, SensorMeta]
+  actuated: Actuated
+  knobs: Knobs
+  bookkeeping: Bookkeeping
+  forecasts: Forecasts
+  decisions: Decisions
+  // 0.2.0 addition (PR-tass-dag-view).
+  cores_state: CoresState
 }

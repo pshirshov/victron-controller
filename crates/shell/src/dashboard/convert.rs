@@ -49,6 +49,8 @@ use victron_controller_dashboard_model::victron_controller::dashboard::actual_f6
 use victron_controller_dashboard_model::victron_controller::dashboard::actual_i32::ActualI32 as ModelActualI32;
 use victron_controller_dashboard_model::victron_controller::dashboard::bookkeeping::Bookkeeping as ModelBookkeeping;
 use victron_controller_dashboard_model::victron_controller::dashboard::command::Command as ModelCommand;
+use victron_controller_dashboard_model::victron_controller::dashboard::core_state::CoreState as ModelCoreState;
+use victron_controller_dashboard_model::victron_controller::dashboard::cores_state::CoresState as ModelCoresState;
 use victron_controller_dashboard_model::victron_controller::dashboard::decision::Decision as ModelDecision;
 use victron_controller_dashboard_model::victron_controller::dashboard::decision_factor::DecisionFactor as ModelDecisionFactor;
 use victron_controller_dashboard_model::victron_controller::dashboard::decisions::Decisions as ModelDecisions;
@@ -313,6 +315,23 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             open_meteo: f.forecast_open_meteo.as_ref().map(forecast_snapshot),
         },
         decisions: decisions_to_model(&world.decisions),
+        cores_state: cores_state_to_model(&world.cores_state),
+    }
+}
+
+fn cores_state_to_model(c: &victron_controller_core::world::CoresState) -> ModelCoresState {
+    ModelCoresState {
+        cores: c
+            .cores
+            .iter()
+            .map(|s| ModelCoreState {
+                id: s.id.clone(),
+                depends_on: s.depends_on.clone(),
+                last_run_outcome: s.last_run_outcome.clone(),
+                last_payload: s.last_payload.clone(),
+            })
+            .collect(),
+        topo_order: c.topo_order.clone(),
     }
 }
 

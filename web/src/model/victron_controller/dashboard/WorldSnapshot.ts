@@ -5,6 +5,7 @@ import {Bookkeeping, Bookkeeping_UEBACodec} from './Bookkeeping'
 import {SensorMeta, SensorMeta_UEBACodec} from './SensorMeta'
 import {Actuated, Actuated_UEBACodec} from './Actuated'
 import {Sensors, Sensors_UEBACodec} from './Sensors'
+import {CoresState, CoresState_UEBACodec} from './CoresState'
 import {Forecasts, Forecasts_UEBACodec} from './Forecasts'
 import {Decisions, Decisions_UEBACodec} from './Decisions'
 
@@ -18,8 +19,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _bookkeeping: Bookkeeping;
     private readonly _forecasts: Forecasts;
     private readonly _decisions: Decisions;
+    private readonly _cores_state: CoresState;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -29,6 +31,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._bookkeeping = bookkeeping
         this._forecasts = forecasts
         this._decisions = decisions
+        this._cores_state = cores_state
     }
 
     public get captured_at_epoch_ms(): bigint {
@@ -58,6 +61,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get decisions(): Decisions {
         return this._decisions;
     }
+    public get cores_state(): CoresState {
+        return this._cores_state;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -69,11 +75,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             knobs: this._knobs,
             bookkeeping: this._bookkeeping,
             forecasts: this._forecasts,
-            decisions: this._decisions
+            decisions: this._decisions,
+            cores_state: this._cores_state
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -83,11 +90,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'knobs' in overrides ? overrides.knobs! : this._knobs,
             'bookkeeping' in overrides ? overrides.bookkeeping! : this._bookkeeping,
             'forecasts' in overrides ? overrides.forecasts! : this._forecasts,
-            'decisions' in overrides ? overrides.decisions! : this._decisions
+            'decisions' in overrides ? overrides.decisions! : this._decisions,
+            'cores_state' in overrides ? overrides.cores_state! : this._cores_state
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -97,7 +105,8 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.knobs,
             obj.bookkeeping,
             obj.forecasts,
-            obj.decisions
+            obj.decisions,
+            obj.cores_state
         );
     }
 
@@ -189,6 +198,13 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                CoresState_UEBACodec.instance.encode(ctx, value.cores_state, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -208,6 +224,7 @@ export class WorldSnapshot_UEBACodec {
             Bookkeeping_UEBACodec.instance.encode(ctx, value.bookkeeping, writer);
             Forecasts_UEBACodec.instance.encode(ctx, value.forecasts, writer);
             Decisions_UEBACodec.instance.encode(ctx, value.decisions, writer);
+            CoresState_UEBACodec.instance.encode(ctx, value.cores_state, writer);
         }
     }
     
@@ -219,7 +236,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < 8; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -233,6 +250,7 @@ export class WorldSnapshot_UEBACodec {
         const bookkeeping = Bookkeeping_UEBACodec.instance.decode(ctx, reader);
         const forecasts = Forecasts_UEBACodec.instance.decode(ctx, reader);
         const decisions = Decisions_UEBACodec.instance.decode(ctx, reader);
+        const cores_state = CoresState_UEBACodec.instance.decode(ctx, reader);
         return new WorldSnapshot(
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -243,6 +261,7 @@ export class WorldSnapshot_UEBACodec {
             bookkeeping,
             forecasts,
             decisions,
+            cores_state,
         );
     }
 

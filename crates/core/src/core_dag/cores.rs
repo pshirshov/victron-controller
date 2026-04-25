@@ -57,6 +57,11 @@ impl Core for ZappiActiveCore {
     ) {
         world.derived.zappi_active = classify_zappi_active(world, clock);
     }
+    /// Surface the freshly-derived `zappi_active` flag as the TASS DAG
+    /// payload for the dashboard. PR-tass-dag-view.
+    fn last_payload(&self, world: &World) -> Option<String> {
+        Some(world.derived.zappi_active.to_string())
+    }
 }
 
 pub(crate) struct SetpointCore;
