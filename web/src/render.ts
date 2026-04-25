@@ -108,8 +108,8 @@ function copyIcon(identifier: string): string {
 // The textual key stays visible elsewhere; this replaces only the value.
 function boolBadge(value: boolean): string {
   return value
-    ? '<span class="bool-badge bool-true" title="true">●</span>'
-    : '<span class="bool-badge bool-false" title="false">○</span>';
+    ? '<span class="bool-badge bool-true" title="true">✓</span>'
+    : '<span class="bool-badge bool-false" title="false">✗</span>';
 }
 
 // Convert `"true"` / `"false"` (or the booleans themselves) to a badge,

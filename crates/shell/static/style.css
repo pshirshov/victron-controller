@@ -133,8 +133,8 @@ tr:hover .copy-btn.icon { opacity: 1; }
 .copy-btn.icon.copied      { opacity: 1; color: var(--ok); }
 .copy-btn.icon.copy-failed { opacity: 1; color: var(--bad); }
 
-/* Boolean value badge — filled disc for true, hollow circle for false.
- * Both render in the default foreground colour: many of our booleans
+/* Boolean value badge — checkmark for true, cross for false. Both render
+ * in the default foreground colour: many of our booleans
  * (force_disable_export, disable_night_grid_discharge, charge_to_full_required,
  * etc.) treat `false` as the *good* state, so green/red would impose a
  * value judgement that doesn't apply universally. Tooltip carries the

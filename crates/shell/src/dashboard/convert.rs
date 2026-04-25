@@ -29,7 +29,6 @@ use victron_controller_core::world::World;
 use victron_controller_core::Owner;
 
 use crate::config::DbusServices;
-use crate::dbus::subscriber::{SEED_INTERVAL_DEFAULT, SEED_INTERVAL_SETTINGS};
 
 /// Runtime inputs needed to build `sensors_meta`. Bundled so callers
 /// can pass one reference rather than juggling four arguments.
@@ -345,18 +344,9 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
     let s = &ctx.services;
     let om_cadence_ms: i64 = ctx.open_meteo_cadence.as_millis().try_into().unwrap_or(i64::MAX);
 
-    // Reseed cadence for each D-Bus service is 60 s default, 300 s for
-    // settings (see `crates/shell/src/dbus/subscriber.rs` — matrix
-    // authoritative). Staleness is per-SensorId — see
-    // `SensorId::freshness_threshold`.
-    let default_cadence_ms: i64 = SEED_INTERVAL_DEFAULT
-        .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX);
-    let settings_cadence_ms: i64 = SEED_INTERVAL_SETTINGS
-        .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX);
+    // Per-sensor reseed cadence + staleness — both authoritative on
+    // `SensorId` (PR-cadence-per-sensor). Drives the dashboard's
+    // Origin / cadence / staleness columns.
     let staleness_ms = |id: SensorId| -> i64 {
         id.freshness_threshold()
             .as_millis()
@@ -364,153 +354,102 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             .unwrap_or(i64::MAX)
     };
 
-    let dbus = |svc: &str, path: &str, cadence_ms: i64, id: SensorId| ModelSensorMeta {
+    let dbus = |svc: &str, path: &str, id: SensorId| ModelSensorMeta {
         origin: "dbus".to_string(),
         identifier: format!("{svc}{path}"),
-        cadence_ms,
+        cadence_ms: id
+            .reseed_cadence()
+            .as_millis()
+            .try_into()
+            .unwrap_or(i64::MAX),
         staleness_ms: staleness_ms(id),
     };
     let mut m: BTreeMap<String, ModelSensorMeta> = BTreeMap::new();
     m.insert(
         "battery_soc".into(),
-        dbus(&s.battery, "/Soc", default_cadence_ms, SensorId::BatterySoc),
+        dbus(&s.battery, "/Soc", SensorId::BatterySoc),
     );
     m.insert(
         "battery_soh".into(),
-        dbus(&s.battery, "/Soh", default_cadence_ms, SensorId::BatterySoh),
+        dbus(&s.battery, "/Soh", SensorId::BatterySoh),
     );
     m.insert(
         "battery_installed_capacity".into(),
         dbus(
             &s.battery,
             "/InstalledCapacity",
-            default_cadence_ms,
             SensorId::BatteryInstalledCapacity,
         ),
     );
     m.insert(
         "battery_dc_power".into(),
-        dbus(
-            &s.battery,
-            "/Dc/0/Power",
-            default_cadence_ms,
-            SensorId::BatteryDcPower,
-        ),
+        dbus(&s.battery, "/Dc/0/Power", SensorId::BatteryDcPower),
     );
     m.insert(
         "mppt_power_0".into(),
-        dbus(
-            &s.mppt_0,
-            "/Yield/Power",
-            default_cadence_ms,
-            SensorId::MpptPower0,
-        ),
+        dbus(&s.mppt_0, "/Yield/Power", SensorId::MpptPower0),
     );
     m.insert(
         "mppt_power_1".into(),
-        dbus(
-            &s.mppt_1,
-            "/Yield/Power",
-            default_cadence_ms,
-            SensorId::MpptPower1,
-        ),
+        dbus(&s.mppt_1, "/Yield/Power", SensorId::MpptPower1),
     );
     m.insert(
         "soltaro_power".into(),
-        dbus(
-            &s.pvinverter_soltaro,
-            "/Ac/Power",
-            default_cadence_ms,
-            SensorId::SoltaroPower,
-        ),
+        dbus(&s.pvinverter_soltaro, "/Ac/Power", SensorId::SoltaroPower),
     );
     m.insert(
         "power_consumption".into(),
         dbus(
             &s.system,
             "/Ac/Consumption/L1/Power",
-            default_cadence_ms,
             SensorId::PowerConsumption,
         ),
     );
     m.insert(
         "grid_power".into(),
-        dbus(
-            &s.system,
-            "/Ac/Grid/L1/Power",
-            default_cadence_ms,
-            SensorId::GridPower,
-        ),
+        dbus(&s.system, "/Ac/Grid/L1/Power", SensorId::GridPower),
     );
     m.insert(
         "grid_voltage".into(),
-        dbus(
-            &s.grid,
-            "/Ac/L1/Voltage",
-            default_cadence_ms,
-            SensorId::GridVoltage,
-        ),
+        dbus(&s.grid, "/Ac/L1/Voltage", SensorId::GridVoltage),
     );
     m.insert(
         "grid_current".into(),
-        dbus(
-            &s.grid,
-            "/Ac/L1/Current",
-            default_cadence_ms,
-            SensorId::GridCurrent,
-        ),
+        dbus(&s.grid, "/Ac/L1/Current", SensorId::GridCurrent),
     );
     m.insert(
         "consumption_current".into(),
         dbus(
             &s.system,
             "/Ac/Consumption/L1/Current",
-            default_cadence_ms,
             SensorId::ConsumptionCurrent,
         ),
     );
     m.insert(
         "offgrid_power".into(),
-        dbus(
-            &s.vebus,
-            "/Ac/Out/L1/P",
-            default_cadence_ms,
-            SensorId::OffgridPower,
-        ),
+        dbus(&s.vebus, "/Ac/Out/L1/P", SensorId::OffgridPower),
     );
     m.insert(
         "offgrid_current".into(),
-        dbus(
-            &s.vebus,
-            "/Ac/Out/L1/I",
-            default_cadence_ms,
-            SensorId::OffgridCurrent,
-        ),
+        dbus(&s.vebus, "/Ac/Out/L1/I", SensorId::OffgridCurrent),
     );
     m.insert(
         "vebus_input_current".into(),
         dbus(
             &s.vebus,
             "/Ac/ActiveIn/L1/I",
-            default_cadence_ms,
             SensorId::VebusInputCurrent,
         ),
     );
     m.insert(
         "evcharger_ac_power".into(),
-        dbus(
-            &s.evcharger,
-            "/Ac/Power",
-            default_cadence_ms,
-            SensorId::EvchargerAcPower,
-        ),
+        dbus(&s.evcharger, "/Ac/Power", SensorId::EvchargerAcPower),
     );
     m.insert(
         "evcharger_ac_current".into(),
         dbus(
             &s.evcharger,
             "/Ac/Current",
-            default_cadence_ms,
             SensorId::EvchargerAcCurrent,
         ),
     );
@@ -519,7 +458,6 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
         dbus(
             &s.settings,
             "/Settings/CGwacs/BatteryLife/State",
-            settings_cadence_ms,
             SensorId::EssState,
         ),
     );
@@ -539,7 +477,11 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
         ModelSensorMeta {
             origin: "myenergi".to_string(),
             identifier: "zappi/che".to_string(),
-            cadence_ms: 300_000,
+            cadence_ms: SensorId::SessionKwh
+                .reseed_cadence()
+                .as_millis()
+                .try_into()
+                .unwrap_or(i64::MAX),
             staleness_ms: staleness_ms(SensorId::SessionKwh),
         },
     );

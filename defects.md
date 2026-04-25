@@ -1351,3 +1351,56 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Severity:** trivia
 **Location:** `crates/shell/src/mqtt/serialize.rs::tests`
 **Fix:** None — coverage is equivalent; plan-vs-implementation count discrepancy noted.
+
+---
+
+## PR-cadence-per-sensor — Review round 1 (executor `a3208d128383e9f91`, reviewer `afb867a9072c75643`)
+
+### [PR-cadence-per-sensor-D01] Matrix doc "Updates" paragraph contradicted the table on MPPT cadence
+**Status:** resolved
+**Severity:** minor (doc drift)
+**Location:** `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md` Updates bullet
+**Description:** The new bullet said MPPTs drop to 15 s reseed / 30 s staleness; the table itself (and code) had them at 5 s / 15 s after the user's late-stage tweak.
+**Fix:** Bullet rewritten to "the MPPTs join the fast-organic group at 5 s reseed / 15 s staleness (per user observation: PV power is sub-second when sun is up)".
+
+### [PR-cadence-per-sensor-D02] Matrix doc worst-case reseed-load arithmetic was stale
+**Status:** resolved
+**Severity:** minor (doc drift)
+**Location:** same doc, line 110
+**Description:** Quoted "9 services × ~1 call / 60 s = 0.15 GetItems/s" — pre-PR figure. With the new schedule it's 8 fast services × 1/5 + settings × 1/300 ≈ 1.60 GetItems/s.
+**Fix:** Paragraph rewritten with the post-PR arithmetic and updated comparison ("~12× the previous schedule but still ~11× gentler than the original 500 ms broadcast").
+
+### [PR-cadence-per-sensor-D03] Plan doc still cited the obsolete 15 s MPPT cadence
+**Status:** open (deferred — plan docs are historical artefacts)
+**Severity:** nit
+**Location:** `docs/drafts/20260425-1103-pr-cadence-per-sensor-plan.md` §2 + §3
+**Description:** Plan §2 worst-case (~1.34) and §3 audit row (15 s/30 s) are stale relative to the implemented 5 s/15 s.
+**Suggested fix:** Update §3 row + §2 worst-case; defer to a hygiene rollup since the matrix doc is the authoritative live reference.
+
+### [PR-cadence-per-sensor-D04] `freshness_threshold_invariant_holds_for_every_sensor` no longer cross-checked `regime()`
+**Status:** resolved
+**Severity:** minor (test quality)
+**Location:** `crates/core/src/types.rs` test
+**Description:** The rewrite dropped the per-variant `regime()` cross-check. A regression that mis-classified a sensor (e.g. flipping BatterySoc → ReseedDriven) would have passed silently because the universal rule depends only on `reseed_cadence()` + `is_external_polled()`.
+**Fix:** Added a per-variant `expected_regime` arm that pins every variant; assert `id.regime() == expected_regime` so a regime regression still fails loud.
+
+### [PR-cadence-per-sensor-D05] `FreshnessRegime` is unread by runtime / tests
+**Status:** resolved (note-only — D04 fix re-establishes a test-time consumer of `regime()`; the enum stays as a doc aid AND has a hard test asserting per-variant classification, so it can no longer silently rot)
+**Severity:** nit
+**Location:** `crates/core/src/types.rs::FreshnessRegime`, `crate::lib`
+**Description:** After the Fast deletion, `regime()` was unread; risked drift.
+**Fix:** Subsumed by D04. Per-variant test pins the classification.
+
+### [PR-cadence-per-sensor-D06] `fast_organic_sensors_satisfy_universal_rule` filter is misleading
+**Status:** open (deferred — trivial)
+**Severity:** trivia
+**Location:** `crates/core/src/types.rs` test
+**Description:** Filter is `cadence > 15s → continue`; with current data only 5 s sensors pass. If MPPTs ever moved back to 15 s, the test would need a re-think.
+**Suggested fix:** Tighten to `cadence != Duration::from_secs(5)` or rename. Defer.
+
+### [PR-cadence-per-sensor-D07] `BatterySoh` reseed silently re-tightened from 300 s → 60 s
+**Status:** resolved (matrix Updates bullet now documents this; invariant still holds — staleness 900 s ≥ 2 × 60 s)
+**Severity:** nit (doc only — no functional break)
+**Location:** `crates/core/src/types.rs` `reseed_cadence` arm; matrix doc
+**Description:** Pre-PR matrix had `BatterySoh = 300 s` reseed; the rewrite folds it into the standard battery-service 60 s cadence (since the per-service min is now 5 s anyway, this is a free tightening). Plan called it "no change".
+**Fix:** Matrix Updates bullet now mentions the BatterySoh tightening explicitly.

@@ -26,6 +26,6 @@ pub use types::{
     check_staleness_invariant, ActuatedId, ActuatedReadback, BookkeepingId, BookkeepingKey,
     BookkeepingValue, Command, DbusTarget, DbusValue, Effect, Event, ForecastProvider,
     FreshnessRegime, KnobId, KnobValue, LogLevel, MyenergiAction, PublishPayload, ScheduleField,
-    SensorId, SensorReading, TypedReading, FAST_REGIME_STALENESS_FLOOR,
+    SensorId, SensorReading, TypedReading,
 };
 pub use world::{Bookkeeping, ForecastSnapshot, KnobProvenance, Sensors, TypedSensors, World};

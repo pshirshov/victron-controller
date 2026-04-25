@@ -24,22 +24,25 @@ use victron_controller_core::types::{
 
 use crate::config::DbusServices;
 
-/// Default per-service reseed cadence.
+/// Defensive fallback cadence for a service that ends up with no
+/// routed sensors / readbacks (shouldn't happen — the routing table
+/// drives both `service_set` and `service_cadence`). Picked to match
+/// the historical default reseed cadence so the failure mode is
+/// "behaves like the old code" rather than "spins at 1 ms".
+const RESEED_FALLBACK: Duration = Duration::from_secs(60);
+
+/// Static map: actuated readback path → reseed cadence. Mirrors
+/// `ActuatedId::freshness_threshold / 2` for each readback variant,
+/// expressed as the bare cadence so `routing_table` rows can use it
+/// without the core having a dedicated `ActuatedId::reseed_cadence`
+/// method (intentionally avoided per the plan).
 ///
-/// Victron emits `ItemsChanged` only on value changes, so without a
-/// periodic safety-net `GetItems` stable values would eventually time
-/// out of the per-sensor freshness window. Every data-bearing service
-/// (system, battery, vebus, solarcharger.*, pvinverter.*, grid,
-/// evcharger) is reseeded on this cadence. Per-sensor freshness
-/// windows are defined on `SensorId::freshness_threshold` (A-45, was
-/// previously "5 s (G3 tuning)" in SPEC §5.3 — superseded by the
-/// per-path matrix). Authoritative per
-/// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
-pub const SEED_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
-/// Reseed cadence for `com.victronenergy.settings`. Schedule / setpoint
-/// readbacks and the ESS state field live here; all are reseed-driven
-/// slow metrics, so a 5 min cadence is correct (matrix-authoritative).
-pub const SEED_INTERVAL_SETTINGS: Duration = Duration::from_secs(300);
+/// The numbers come from `crates/core/src/types.rs::ActuatedId::freshness_threshold`:
+/// - `InputCurrentLimit` 600 s → 300 s reseed
+/// - `GridSetpoint` / Schedule 0,1 fields 900 s → 450 s reseed
+const ACTUATED_RESEED_CURRENT_LIMIT: Duration = Duration::from_secs(300);
+const ACTUATED_RESEED_GRID_SETPOINT: Duration = Duration::from_secs(450);
+const ACTUATED_RESEED_SCHEDULE_FIELD: Duration = Duration::from_secs(450);
 
 /// Table mapping `(service, path)` to the core Event we should emit.
 ///
@@ -143,6 +146,44 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     r
 }
 
+/// Reseed cadence for a single route. For sensor routes this defers
+/// to `SensorId::reseed_cadence()` (the per-sensor authoritative
+/// table); for actuated readbacks it consults the small static table
+/// at the top of this module (mirrors `ActuatedId::freshness_threshold / 2`).
+fn cadence_for_route(route: &Route) -> Duration {
+    match route {
+        Route::Sensor(id) => id.reseed_cadence(),
+        Route::CurrentLimitReadback => ACTUATED_RESEED_CURRENT_LIMIT,
+        Route::GridSetpointReadback => ACTUATED_RESEED_GRID_SETPOINT,
+        Route::ScheduleField { .. } => ACTUATED_RESEED_SCHEDULE_FIELD,
+    }
+}
+
+/// Compute per-service reseed cadence as `min(cadence_for_route)` over
+/// every route in `routes` that targets each service in `service_set`.
+/// Defensive: any service in `service_set` with no routes (shouldn't
+/// happen) gets [`RESEED_FALLBACK`].
+fn compute_service_cadence(
+    routes: &HashMap<(String, String), Route>,
+    service_set: &HashSet<String>,
+) -> HashMap<String, Duration> {
+    let mut out: HashMap<String, Duration> = HashMap::new();
+    for ((svc, _path), route) in routes {
+        let cadence = cadence_for_route(route);
+        out.entry(svc.clone())
+            .and_modify(|existing| {
+                if cadence < *existing {
+                    *existing = cadence;
+                }
+            })
+            .or_insert(cadence);
+    }
+    for svc in service_set {
+        out.entry(svc.clone()).or_insert(RESEED_FALLBACK);
+    }
+    out
+}
+
 /// Accumulator for partial ScheduleSpec updates. Each schedule's
 /// fields trickle in one D-Bus signal at a time; we emit a complete
 /// ScheduleSpec to the core every time any of them changes, populating
@@ -219,11 +260,11 @@ pub struct Subscriber {
     /// Unique set of service well-known names, derived from `routes`.
     /// Cached to avoid rebuilding on every reconnect.
     service_set: HashSet<String>,
-    /// Well-known name of the settings service, which gets the slower
-    /// [`SEED_INTERVAL_SETTINGS`] reseed cadence. Kept separately so
-    /// the per-service scheduler can classify services without string
-    /// matching on a scattered pattern.
-    settings_service: String,
+    /// Per-service reseed cadence: `min(reseed_cadence)` over the
+    /// sensors and actuated readbacks routed to each service. Computed
+    /// once in [`Subscriber::new`] from the routing table and reused
+    /// across every reconnect. PR-cadence-per-sensor.
+    service_cadence: HashMap<String, Duration>,
     /// Accumulator for partial schedule field updates — one per
     /// schedule index (0, 1). Persistent across reconnects so a
     /// mid-accumulation blip doesn't discard fields already received.
@@ -351,16 +392,27 @@ impl Subscriber {
         let routes = Arc::new(routing_table(services));
         let service_set: HashSet<String> =
             routes.keys().map(|(s, _)| s.clone()).collect();
-        let settings_service = services.settings.clone();
+        let service_cadence = compute_service_cadence(&routes, &service_set);
         info!(
             paths = routes.len(),
             services = service_set.len(),
             "D-Bus subscriber configured"
         );
+        // One line per service so field-debug can correlate observed
+        // GetItems cadence with what the routing table computed.
+        let mut sorted: Vec<(&String, &Duration)> = service_cadence.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        for (svc, cadence) in sorted {
+            info!(
+                service = %svc,
+                reseed_s = cadence.as_secs(),
+                "D-Bus subscriber: per-service reseed cadence"
+            );
+        }
         Self {
             routes,
             service_set,
-            settings_service,
+            service_cadence,
             schedule_accumulators: [SchedulePartial::default(); 2],
             poll_ticks_since_last_heartbeat: 0,
             raw_signals_since_last_heartbeat: 0,
@@ -371,14 +423,16 @@ impl Subscriber {
         }
     }
 
-    /// Per-service reseed cadence: settings is slow, everything else
-    /// runs on the default cadence. Matrix-authoritative.
+    /// Per-service reseed cadence: `min(reseed_cadence)` over the
+    /// sensors and actuated readbacks that route to this service.
+    /// Falls back to [`RESEED_FALLBACK`] if a service somehow ended up
+    /// with no routes (shouldn't happen — the routing table drives both
+    /// the service set and this map at construction time).
     fn reseed_interval_for(&self, service: &str) -> Duration {
-        if service == self.settings_service {
-            SEED_INTERVAL_SETTINGS
-        } else {
-            SEED_INTERVAL_DEFAULT
-        }
+        self.service_cadence
+            .get(service)
+            .copied()
+            .unwrap_or(RESEED_FALLBACK)
     }
 
     /// Outer reconnect loop. Repeatedly opens a fresh D-Bus session and
@@ -561,8 +615,6 @@ impl Subscriber {
         }
 
         info!(
-            default_reseed_s = SEED_INTERVAL_DEFAULT.as_secs(),
-            settings_reseed_s = SEED_INTERVAL_SETTINGS.as_secs(),
             scheduled_services = schedule.len(),
             "D-Bus subscriber running"
         );
@@ -1270,6 +1322,48 @@ mod tests {
         assert!(
             acc.take_spec().is_none(),
             "single-field update after emit must not re-emit stale values"
+        );
+    }
+
+    #[test]
+    fn service_cadence_is_min_over_routed_sensors() {
+        // Build a routing table from the canonical Venus v3.70 topology
+        // and assert the per-service cadence comes out as the per-route
+        // min. PR-cadence-per-sensor regression test.
+        let services = DbusServices::default_venus_3_70();
+        let routes = routing_table(&services);
+        let service_set: HashSet<String> =
+            routes.keys().map(|(s, _)| s.clone()).collect();
+        let cadence = compute_service_cadence(&routes, &service_set);
+
+        // battery hosts BatterySoc / BatterySoh / BatteryInstalledCapacity
+        // (60 s) and BatteryDcPower (5 s). Min = 5 s.
+        assert_eq!(
+            cadence.get(&services.battery).copied(),
+            Some(Duration::from_secs(5)),
+            "battery min cadence"
+        );
+        // system hosts PowerConsumption / ConsumptionCurrent / GridPower —
+        // all 5 s. Min = 5 s.
+        assert_eq!(
+            cadence.get(&services.system).copied(),
+            Some(Duration::from_secs(5)),
+            "system min cadence"
+        );
+        // settings hosts EssState (300 s) and GridSetpoint readback
+        // (450 s) and Schedule fields (450 s). Min = 300 s.
+        assert_eq!(
+            cadence.get(&services.settings).copied(),
+            Some(Duration::from_secs(300)),
+            "settings min cadence"
+        );
+        // solarcharger.ttyS2 hosts only MpptPower1 (5 s, fast-organic
+        // alongside the other PV-flow sensors) per the
+        // default_venus_3_70 mapping. Min = 5 s. Same for ttyUSB1.
+        assert_eq!(
+            cadence.get(&services.mppt_1).copied(),
+            Some(Duration::from_secs(5)),
+            "solarcharger.ttyS2 min cadence"
         );
     }
 

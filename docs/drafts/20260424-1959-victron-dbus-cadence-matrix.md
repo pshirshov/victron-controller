@@ -73,38 +73,45 @@ One row per subscribed `(service, path)` in `routing_table`. Classifications:
 - **Reseed-driven**: organic signals almost never fire (static or user-set values). Reseed IS the freshness source → staleness > reseed.
 - **Readback**: changes only when we (or another client) write. Same as reseed-driven for freshness purposes.
 
-| Sensor / readback | Service | Path | Classification | Reseed | Staleness |
-|---|---|---|---|---|---|
-| `PowerConsumption` | system | `/Ac/Consumption/L1/Power` | Fast | 60 s | 5 s |
-| `ConsumptionCurrent` | system | `/Ac/Consumption/L1/Current` | Fast | 60 s | 5 s |
-| `GridPower` | system | `/Ac/Grid/L1/Power` | Fast | 60 s | 5 s |
-| `BatterySoc` | battery | `/Soc` | Slow-signalled (1 Hz changing, minutes idle) | 60 s | 120 s |
-| `BatterySoh` | battery | `/Soh` | Reseed-driven (minutes–hours) | 300 s | 900 s |
-| `BatteryInstalledCapacity` | battery | `/InstalledCapacity` | Reseed-driven (static) | 600 s | 3600 s |
-| `BatteryDcPower` | battery | `/Dc/0/Power` | **Fast** (user: "updates once/sec") | 60 s | 5 s |
-| `MpptPower0` | solarcharger.ttyS2 | `/Yield/Power` | Slow-signalled (sub-second sunny; idle at night) | 60 s | 30 s |
-| `MpptPower1` | solarcharger.ttyUSB1 | `/Yield/Power` | Slow-signalled (same) | 60 s | 30 s |
-| `SoltaroPower` | pvinverter_soltaro | `/Ac/Power` | Fast | 60 s | 5 s |
-| `GridVoltage` | grid | `/Ac/L1/Voltage` | Fast (slow-moving value but regular emissions) | 60 s | 10 s |
-| `GridCurrent` | grid | `/Ac/L1/Current` | Fast | 60 s | 5 s |
-| `OffgridPower` | vebus | `/Ac/Out/L1/P` | Fast | 60 s | 5 s |
-| `OffgridCurrent` | vebus | `/Ac/Out/L1/I` | Fast | 60 s | 5 s |
-| `VebusInputCurrent` | vebus | `/Ac/ActiveIn/L1/I` | Fast | 60 s | 5 s |
-| `EvchargerAcPower` | evcharger | `/Ac/Power` | Fast | 60 s | 5 s |
-| `EvchargerAcCurrent` | evcharger | `/Ac/Current` | Fast | 60 s | 5 s |
-| `EssState` | settings | `/Settings/CGwacs/BatteryLife/State` | Reseed-driven (user/GUI changes) | 300 s | 900 s |
-| **Readback** `CurrentLimit` | vebus | `/Ac/In/1/CurrentLimit` | Readback | 120 s | 600 s |
-| **Readback** `GridSetpoint` | settings | `/Settings/CGwacs/AcPowerSetPoint` | Readback | 300 s | 900 s |
-| **Readback** `Schedule0.Start` | settings | `…/Schedule/Charge/0/Start` | Readback (one of 5 fields) | 300 s | 900 s |
-| **Readback** `Schedule0.Duration` | settings | `…/Schedule/Charge/0/Duration` | Readback | 300 s | 900 s |
-| **Readback** `Schedule0.Soc` | settings | `…/Schedule/Charge/0/Soc` | Readback | 300 s | 900 s |
-| **Readback** `Schedule0.Day` | settings | `…/Schedule/Charge/0/Day` | Readback | 300 s | 900 s |
-| **Readback** `Schedule0.AllowDischarge` | settings | `…/Schedule/Charge/0/AllowDischarge` | Readback | 300 s | 900 s |
-| **Readback** `Schedule1.*` (5 fields) | settings | `…/Schedule/Charge/1/*` | Readback (mirror of above) | 300 s | 900 s |
+Source legend (Expected organic update frequency column):
+- **VW** = Victron wiki / dbus reference docs
+- **I789** = `venus/issues/789` (signal-rate numbers from CGWACS / VE.Bus / solarcharger producers)
+- **U** = user / field observation
 
-Worst-case reseed load under this schedule: 9 services × ~1 call / 60 s = **0.15 GetItems/s** across all services — about 120× gentler than the current 500 ms broadcast (18/s), well below anything Victron's reference clients do, and low enough that dbus-flashmq's documented 3-republish/s ceiling isn't approached. The alternative single-path reseed (more surgical than whole-service `GetItems`) would drop load further but is harder to implement; see per-service sections below for discussion.
+| Sensor / readback | Service | Path | Classification | Expected organic update frequency | Reseed | Staleness |
+|---|---|---|---|---|---|---|
+| `PowerConsumption` | system | `/Ac/Consumption/L1/Power` | Slow-signalled | ≤ 1 Hz coalesced (I789, dbus-systemcalc-py) | 5 s | 15 s |
+| `ConsumptionCurrent` | system | `/Ac/Consumption/L1/Current` | Slow-signalled | ≤ 1 Hz (I789) | 5 s | 15 s |
+| `GridPower` | system | `/Ac/Grid/L1/Power` | Slow-signalled | ≤ 1 Hz (I789) | 5 s | 15 s |
+| `BatterySoc` | battery | `/Soc` | Slow-signalled | ~1 Hz changing, minutes idle (VW Pylontech CAN) | 60 s | 120 s |
+| `BatterySoh` | battery | `/Soh` | Reseed-driven | minutes–hours (VW) | 60 s | 900 s |
+| `BatteryInstalledCapacity` | battery | `/InstalledCapacity` | Reseed-driven | static (VW) | 60 s | 3600 s |
+| `BatteryDcPower` | battery | `/Dc/0/Power` | Slow-signalled | ~1 Hz (U: "updates once/sec") | 5 s | 15 s |
+| `MpptPower0` | solarcharger.ttyS2 | `/Yield/Power` | Slow-signalled | sub-second sunny / silent at night (I789, VW, U) | 5 s | 15 s |
+| `MpptPower1` | solarcharger.ttyUSB1 | `/Yield/Power` | Slow-signalled | same (I789, VW, U) | 5 s | 15 s |
+| `SoltaroPower` | pvinverter_soltaro | `/Ac/Power` | Slow-signalled | ~1–9 Hz when flowing (I789) | 5 s | 15 s |
+| `GridVoltage` | grid | `/Ac/L1/Voltage` | Slow-signalled | ~1 Hz, slow-moving (I789, VW) | 5 s | 15 s |
+| `GridCurrent` | grid | `/Ac/L1/Current` | Slow-signalled | sub-second when loaded (I789) | 5 s | 15 s |
+| `OffgridPower` | vebus | `/Ac/Out/L1/P` | Slow-signalled | sub-second when inverting (I789) | 5 s | 15 s |
+| `OffgridCurrent` | vebus | `/Ac/Out/L1/I` | Slow-signalled | sub-second (I789) | 5 s | 15 s |
+| `VebusInputCurrent` | vebus | `/Ac/ActiveIn/L1/I` | Slow-signalled | sub-second (I789) | 5 s | 15 s |
+| `EvchargerAcPower` | evcharger | `/Ac/Power` | Slow-signalled | ~1–9 Hz when flowing (I789) | 5 s | 15 s |
+| `EvchargerAcCurrent` | evcharger | `/Ac/Current` | Slow-signalled | ~1–9 Hz (I789) | 5 s | 15 s |
+| `EssState` | settings | `/Settings/CGwacs/BatteryLife/State` | Reseed-driven | rare, on user/GUI action (VW) | 300 s | 900 s |
+| **Readback** `CurrentLimit` | vebus | `/Ac/In/1/CurrentLimit` | Readback | on write only (VW; ESS writes ≤ 5 s) | 300 s | 600 s |
+| **Readback** `GridSetpoint` | settings | `/Settings/CGwacs/AcPowerSetPoint` | Readback | on write only (VW) | 450 s | 900 s |
+| **Readback** `Schedule0.Start` | settings | `…/Schedule/Charge/0/Start` | Readback (one of 5 fields) | on write only, ≤ once/day (VW) | 450 s | 900 s |
+| **Readback** `Schedule0.Duration` | settings | `…/Schedule/Charge/0/Duration` | Readback | on write only (VW) | 450 s | 900 s |
+| **Readback** `Schedule0.Soc` | settings | `…/Schedule/Charge/0/Soc` | Readback | on write only (VW) | 450 s | 900 s |
+| **Readback** `Schedule0.Day` | settings | `…/Schedule/Charge/0/Day` | Readback | on write only (VW) | 450 s | 900 s |
+| **Readback** `Schedule0.AllowDischarge` | settings | `…/Schedule/Charge/0/AllowDischarge` | Readback | on write only (VW) | 450 s | 900 s |
+| **Readback** `Schedule1.*` (5 fields) | settings | `…/Schedule/Charge/1/*` | Readback (mirror of above) | on write only (VW) | 450 s | 900 s |
 
-**Updates:** `BatterySoc` staleness revised `15 s → 120 s` (M-UX-1 PR-staleness-floor, 2026-04-25): the original 15 s violated the slow-signalled invariant `staleness ≥ 2 × cadence` (60 s reseed → ≥ 120 s).
+Worst-case reseed load under this schedule: **8 fast services × 1 call / 5 s + settings × 1 call / 300 s ≈ 1.60 GetItems/s** — ~12× the previous schedule but still ~11× gentler than the original 500 ms broadcast (18/s), well below anything Victron's reference clients do, and below dbus-flashmq's documented 3-republish/s ceiling. The alternative single-path reseed (more surgical than whole-service `GetItems`) would drop load further but is harder to implement; see per-service sections below for discussion.
+
+**Updates:**
+- `BatterySoc` staleness revised `15 s → 120 s` (M-UX-1 PR-staleness-floor, 2026-04-25): the original 15 s violated the slow-signalled invariant `staleness ≥ 2 × cadence` (60 s reseed → ≥ 120 s).
+- PR-cadence-per-sensor (2026-04-25): the `FreshnessRegime::Fast` carve-out was removed and the staleness invariant became universal (`staleness ≥ 2 × reseed_cadence` for every non-external-polled sensor). Reseed cadence is now per-sensor on `SensorId::reseed_cadence()`, with the D-Bus subscriber computing each service's poll cadence as `min(reseed_cadence)` over the sensors and actuated readbacks routed to it. Concretely: `BatteryDcPower` 60 s/5 s → 5 s/15 s; the other fast-organic sensors (`PowerConsumption`, `GridPower`, `OffgridPower`, …) likewise drop reseed to 5 s and raise staleness to 15 s; the MPPTs join the fast-organic group at 5 s reseed / 15 s staleness (per user observation: PV power is sub-second when sun is up). `BatterySoh` reseed tightened 300 s → 60 s as a side effect of joining the battery service whose min-cadence is now driven by `BatteryDcPower` — staleness 900 s unchanged, invariant still satisfied. Settings sensors (`EssState`) and external-polled sensors (`OutdoorTemperature`, `SessionKwh`) are unchanged. The `Expected organic update frequency` column above documents the source of each cadence number.
 
 Every row satisfies the `staleness > max(organic-gap, reseed)` invariant:
 - Fast paths: `staleness ≪ reseed` because the signal stream's ~1 Hz cadence is the freshness driver. The reseed is a safety net for signal outages — but on signal loss we want to fail fast, so staleness is tight.
