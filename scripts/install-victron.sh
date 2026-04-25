@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build the armv7 binary, copy it + config to the Venus, and install a
-# `/data/rcS.local` hook so it survives firmware upgrades (per SPEC §5.1).
+# Build the armv7 binary via `nix build .#victron-controller-armv7`,
+# copy it + config to the Venus, and install a `/data/rcS.local` hook
+# so it survives firmware upgrades (per SPEC §5.1).
 #
 # Usage:
 #   ./scripts/install-victron.sh user@victron-host [ssh-opts...]
 #
 # Requirements on the build host (local):
-#   - A Rust toolchain with the `armv7-unknown-linux-gnueabihf` target.
-#     `nix develop` provides it; if you run outside the flake, you'll
-#     need `rustup target add armv7-unknown-linux-gnueabihf` and a
-#     matching linker (see flake.nix's shellHook for the linker env var).
+#   - Nix with flakes enabled. The flake's `victron-controller-armv7`
+#     derivation builds the bundle, cross-compiles the binary, and
+#     patches the ELF interpreter to /lib/ld-linux-armhf.so.3.
 #
 # Requirements on the target (Venus):
 #   - SSH access as root (the default on stock Venus).
@@ -54,35 +54,21 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-TARGET_TRIPLE="armv7-unknown-linux-gnueabihf"
-BINARY_PATH="target/${TARGET_TRIPLE}/release/victron-controller"
-
 # ----- build --------------------------------------------------------------
-echo "[local] building web frontend..."
-"$REPO_ROOT/scripts/build-web.sh"
-
-echo "[local] building ${TARGET_TRIPLE} release..."
-cargo build -p victron-controller-shell --release --target "${TARGET_TRIPLE}"
-
-if [[ ! -f "$BINARY_PATH" ]]; then
-  echo "ERROR: $BINARY_PATH not found after build" >&2
+echo "[local] building via nix build .#victron-controller-armv7..."
+NIX_OUT=$(nix build --no-link --print-out-paths .#victron-controller-armv7)
+NIX_BIN="$NIX_OUT/bin/victron-controller"
+if [[ ! -f "$NIX_BIN" ]]; then
+  echo "ERROR: $NIX_BIN not found after nix build" >&2
   exit 3
 fi
-
-# Rewrite the ELF interpreter. The nix cross-toolchain bakes in a
-# nix-store path for /ld-linux-armhf.so.3 which doesn't exist on the
-# Venus. Patchelf to the standard location Venus provides.
-if command -v patchelf >/dev/null 2>&1; then
-  PATCHED_BINARY="${BINARY_PATH}.patched"
-  cp "$BINARY_PATH" "$PATCHED_BINARY"
-  patchelf --set-interpreter /lib/ld-linux-armhf.so.3 "$PATCHED_BINARY"
-  patchelf --set-rpath '' "$PATCHED_BINARY"
-  BINARY_PATH="$PATCHED_BINARY"
-  echo "[local] patchelf'd ELF interpreter to /lib/ld-linux-armhf.so.3"
-else
-  echo "[local] WARNING: patchelf not found on \$PATH; binary ELF interpreter still points at nix-store."
-  echo "[local]          If it refuses to run on the Venus, install patchelf or \`nix develop\` first."
-fi
+# Copy out of /nix/store (read-only, perms 0555) into a writable path
+# so the optional UPX step can rewrite it in place. ELF interpreter
+# is already /lib/ld-linux-armhf.so.3 (postFixup in the derivation).
+BINARY_PATH="$(mktemp -t victron-controller.XXXXXX)"
+cp "$NIX_BIN" "$BINARY_PATH"
+chmod u+w "$BINARY_PATH"
+echo "[local] nix output: $NIX_BIN"
 
 # UPX-compress the binary to minimise eMMC write volume on each deploy
 # and cut scp transfer time. UPX decompresses in-process on startup
