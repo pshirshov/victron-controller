@@ -454,6 +454,7 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `weathersoc_too_much_energy_threshold` | `45` kWh | Updated 2026-04-25 (was 80 kWh, NR legacy) |
 | `writes_enabled` | `false` (G3: safe cold-start; see `Knobs::safe_defaults` in `crates/core/src/knobs.rs`) | |
 | `forecast_disagreement_strategy` | `solcast_if_available_else_mean` | |
+| `inverter_safe_discharge_enable` | `false` | **NEW** Gates the legacy 4020 W "inverter safe discharge" margin in the setpoint controller's `max_discharge` formula. Default OFF — inverter discharges at full `inverter_max_discharge_w`. Flip on if the MultiPlus firmware reproduces the legacy "forced grid charge during 4.8 kW+ discharge" glitch. |
 
 ### 7.1. Deploy-time hardware constants (PR-hardware-config)
 

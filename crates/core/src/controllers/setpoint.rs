@@ -63,6 +63,15 @@ pub struct SetpointInputGlobals {
     pub debug_full_charge: DebugFullCharge,
     pub pessimism_multiplier_modifier: f64,
     pub next_full_charge: Option<NaiveDateTime>,
+    /// PR-inverter-safe-discharge-knob. When `true`, the legacy 4020 W
+    /// "inverter safe discharge" margin is applied to the `max_discharge`
+    /// floor (preserving Node-RED's behaviour). When `false` (the new
+    /// default), the inverter discharges at the full hardware ceiling
+    /// `inverter_max_discharge_w`. The user's MultiPlus firmware does
+    /// not reproduce the legacy "forced grid charge during 4.8 kW+
+    /// discharge" glitch, so the margin is OFF by default; affected
+    /// firmware users can flip the knob to `true`.
+    pub inverter_safe_discharge_enable: bool,
 }
 
 /// Full output of the setpoint controller. The shell turns this into a
@@ -205,8 +214,21 @@ pub fn evaluate_setpoint(
     };
 
     // `max_discharge = max(-5000, -max(0, battery_discharge_limit + solar_export))`
-    let max_discharge = battery_side_max_discharge_w
-        .max(-((battery_discharge_limit_w + solar_export).max(0.0)));
+    //
+    // PR-inverter-safe-discharge-knob: gated on `inverter_safe_discharge_enable`.
+    // When `true`, apply the legacy 4020 W safety margin (calibrated for an
+    // observed "forced grid charge during 4.8 kW+ discharge" glitch on some
+    // MultiPlus firmware). When `false` (default), the inverter discharges
+    // at the full hardware ceiling `inverter_max_discharge_w` — the user's
+    // firmware does not reproduce the glitch.
+    let max_discharge = if g.inverter_safe_discharge_enable {
+        battery_side_max_discharge_w
+            .max(-((battery_discharge_limit_w + solar_export).max(0.0)))
+    } else {
+        // Knob off — the inverter glitch margin doesn't apply.
+        // max_discharge is just the hardware ceiling.
+        battery_side_max_discharge_w
+    };
 
     let mut hours_remaining: f64 = -1.0;
     let mut exportable_capacity: f64 = -1.0;
@@ -470,9 +492,16 @@ pub fn evaluate_setpoint(
     let final_setpoint = prepare_setpoint(max_discharge, setpoint_target, idle_setpoint_w);
 
     // Record the post-processing facts that affected the final number.
+    // PR-inverter-safe-discharge-knob: surface the knob state next to
+    // `max_discharge` so the dashboard shows whether the legacy margin
+    // was in play for this tick (honesty invariant).
     decision = decision
         .with_factor("pre_clamp_setpoint_W", format!("{setpoint_target:.0}"))
         .with_factor("max_discharge_W", format!("{max_discharge:.0}"))
+        .with_factor(
+            "inverter_safe_discharge_enable",
+            format!("{}", g.inverter_safe_discharge_enable),
+        )
         .with_factor("final_setpoint_W", format!("{final_setpoint}"));
 
     // `mppt_power`, `soltaro_power`, `battery_soh` are used in the debug
@@ -605,6 +634,11 @@ mod tests {
                 debug_full_charge: DebugFullCharge::None,
                 pessimism_multiplier_modifier: 1.0,
                 next_full_charge: None,
+                // PR-inverter-safe-discharge-knob: default for fixtures
+                // is `false` (the production default). Tests asserting
+                // legacy safety/discharge-cap/max_discharge behaviour
+                // override this to `true` per their globals literal.
+                inverter_safe_discharge_enable: false,
             },
             power_consumption: 1500.0,
             battery_soc: 80.0,
@@ -1143,9 +1177,16 @@ mod tests {
 
     #[test]
     fn discharge_is_clamped_to_5000w_floor() {
+        // PR-inverter-safe-discharge-knob: this test exists to pin the
+        // legacy `max_discharge` safety clamp. Force the knob `true` so
+        // the assertion exercises the original 4020 W margin path.
         let input = SetpointInput {
             battery_soc: 100.0,
             power_consumption: 10_000.0,
+            globals: SetpointInputGlobals {
+                inverter_safe_discharge_enable: true,
+                ..base_input().globals
+            },
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);

@@ -150,6 +150,8 @@ export const entityDescriptions: Record<string, string> = {
     "Fusion strategy when forecast providers disagree: Max / Mean / Min / SolcastIfAvailableElseMean.",
   "schedule.extended.charge.mode":
     "Override for the schedule.extended.charge derivation: Auto / Forced / Disabled.",
+  "inverter.safe-discharge.enable":
+    "When true, applies the legacy 4020 W safety margin below the inverter's full discharge rating to avoid an observed 'forced grid charge during 4.8 kW+ discharge' glitch on some MultiPlus firmware. Default false — the margin is OFF and the inverter discharges at its full rated capacity. Flip to true if your specific firmware reproduces the glitch.",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

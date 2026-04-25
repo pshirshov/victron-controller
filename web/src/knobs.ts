@@ -95,6 +95,8 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     options: ["Weather", "Forced"],
     default: "Weather",
   },
+  // PR-inverter-safe-discharge-knob.
+  "inverter.safe-discharge.enable": { kind: "bool", default: false },
 };
 
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it

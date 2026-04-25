@@ -139,6 +139,10 @@ data Knobs {
   discharge_soc_target_mode: Mode
   battery_soc_target_mode: Mode
   disable_night_grid_discharge_mode: Mode
+  // PR-inverter-safe-discharge-knob — gates the legacy 4020 W safety margin
+  // applied to `max_discharge` in the setpoint controller. Default false
+  // (margin OFF — inverter discharges at full `inverter_max_discharge_w`).
+  inverter_safe_discharge_enable: bit
 }
 
 // PR-gamma-hold-redesign: 0.2.0 redefinition of `Bookkeeping`. Adds four

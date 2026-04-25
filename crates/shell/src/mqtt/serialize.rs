@@ -317,6 +317,7 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::DischargeSocTargetMode => "battery.soc.target.discharge.mode",
         KnobId::BatterySocTargetMode => "battery.soc.target.charge.mode",
         KnobId::DisableNightGridDischargeMode => "grid.night.discharge.disable.mode",
+        KnobId::InverterSafeDischargeEnable => "inverter.safe-discharge.enable",
     }
 }
 
@@ -355,6 +356,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "battery.soc.target.discharge.mode" => KnobId::DischargeSocTargetMode,
         "battery.soc.target.charge.mode" => KnobId::BatterySocTargetMode,
         "grid.night.discharge.disable.mode" => KnobId::DisableNightGridDischargeMode,
+        "inverter.safe-discharge.enable" => KnobId::InverterSafeDischargeEnable,
         _ => return None,
     })
 }
@@ -516,7 +518,9 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::ExportSocThresholdMode
         | KnobId::DischargeSocTargetMode
         | KnobId::BatterySocTargetMode
-        | KnobId::DisableNightGridDischargeMode => return None,
+        | KnobId::DisableNightGridDischargeMode
+        // bool — no range
+        | KnobId::InverterSafeDischargeEnable => return None,
     })
 }
 
@@ -581,7 +585,8 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::DisableNightGridDischarge
         | KnobId::ChargeCarBoost
         | KnobId::ChargeCarExtended
-        | KnobId::AllowBatteryToCar => parse_bool(body).map(KnobValue::Bool),
+        | KnobId::AllowBatteryToCar
+        | KnobId::InverterSafeDischargeEnable => parse_bool(body).map(KnobValue::Bool),
         KnobId::ExportSocThreshold
         | KnobId::DischargeSocTarget
         | KnobId::BatterySocTarget

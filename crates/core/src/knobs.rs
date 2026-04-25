@@ -140,6 +140,16 @@ pub struct Knobs {
     pub discharge_soc_target_mode: Mode,
     pub battery_soc_target_mode: Mode,
     pub disable_night_grid_discharge_mode: Mode,
+
+    /// PR-safe-discharge-enable: gates the legacy 4020 W "inverter
+    /// safe discharge" margin in the setpoint controller's
+    /// `max_discharge` formula. When `false` (default) the safety
+    /// margin is OFF — setpoint discharges at full
+    /// `inverter_max_discharge_w`. When `true`, the legacy margin
+    /// applies (was empirically calibrated against an observed
+    /// "forced grid charge during 4.8k+ discharge" inverter glitch
+    /// on some MultiPlus firmware).
+    pub inverter_safe_discharge_enable: bool,
 }
 
 impl Knobs {
@@ -204,6 +214,11 @@ impl Knobs {
             discharge_soc_target_mode: Mode::Weather,
             battery_soc_target_mode: Mode::Weather,
             disable_night_grid_discharge_mode: Mode::Weather,
+            // PR-safe-discharge-enable: default OFF — full inverter
+            // discharge rate. User explicitly chose this default after
+            // confirming their MultiPlus firmware doesn't reproduce
+            // the legacy "forced grid charge during 4.8k+" glitch.
+            inverter_safe_discharge_enable: false,
         }
     }
 }
@@ -243,6 +258,10 @@ mod tests {
         assert_eq!(k.discharge_soc_target_mode, Mode::Weather);
         assert_eq!(k.battery_soc_target_mode, Mode::Weather);
         assert_eq!(k.disable_night_grid_discharge_mode, Mode::Weather);
+        // PR-safe-discharge-enable: legacy 4020 W margin OFF by default
+        // (full `inverter_max_discharge_w` discharge); user can flip on
+        // affected MultiPlus firmware.
+        assert!(!k.inverter_safe_discharge_enable);
     }
 
     #[test]

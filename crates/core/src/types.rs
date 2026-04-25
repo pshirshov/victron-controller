@@ -415,6 +415,9 @@ pub enum KnobId {
     DischargeSocTargetMode,
     BatterySocTargetMode,
     DisableNightGridDischargeMode,
+    // PR-inverter-safe-discharge-knob — gates the legacy 4020 W
+    // safety margin in the setpoint controller's `max_discharge`.
+    InverterSafeDischargeEnable,
 }
 
 /// Forecast providers.

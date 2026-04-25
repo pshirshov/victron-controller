@@ -40,8 +40,9 @@ export class Knobs implements BaboonGeneratedLatest {
     private readonly _discharge_soc_target_mode: Mode;
     private readonly _battery_soc_target_mode: Mode;
     private readonly _disable_night_grid_discharge_mode: Mode;
+    private readonly _inverter_safe_discharge_enable: boolean;
 
-    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended: boolean, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode) {
+    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended: boolean, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean) {
         this._force_disable_export = force_disable_export
         this._export_soc_threshold = export_soc_threshold
         this._discharge_soc_target = discharge_soc_target
@@ -75,6 +76,7 @@ export class Knobs implements BaboonGeneratedLatest {
         this._discharge_soc_target_mode = discharge_soc_target_mode
         this._battery_soc_target_mode = battery_soc_target_mode
         this._disable_night_grid_discharge_mode = disable_night_grid_discharge_mode
+        this._inverter_safe_discharge_enable = inverter_safe_discharge_enable
     }
 
     public get force_disable_export(): boolean {
@@ -176,6 +178,9 @@ export class Knobs implements BaboonGeneratedLatest {
     public get disable_night_grid_discharge_mode(): Mode {
         return this._disable_night_grid_discharge_mode;
     }
+    public get inverter_safe_discharge_enable(): boolean {
+        return this._inverter_safe_discharge_enable;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -211,11 +216,12 @@ export class Knobs implements BaboonGeneratedLatest {
             export_soc_threshold_mode: this._export_soc_threshold_mode,
             discharge_soc_target_mode: this._discharge_soc_target_mode,
             battery_soc_target_mode: this._battery_soc_target_mode,
-            disable_night_grid_discharge_mode: this._disable_night_grid_discharge_mode
+            disable_night_grid_discharge_mode: this._disable_night_grid_discharge_mode,
+            inverter_safe_discharge_enable: this._inverter_safe_discharge_enable
         };
     }
 
-    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended?: boolean; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode}): Knobs {
+    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended?: boolean; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean}): Knobs {
         return new Knobs(
             'force_disable_export' in overrides ? overrides.force_disable_export! : this._force_disable_export,
             'export_soc_threshold' in overrides ? overrides.export_soc_threshold! : this._export_soc_threshold,
@@ -249,11 +255,12 @@ export class Knobs implements BaboonGeneratedLatest {
             'export_soc_threshold_mode' in overrides ? overrides.export_soc_threshold_mode! : this._export_soc_threshold_mode,
             'discharge_soc_target_mode' in overrides ? overrides.discharge_soc_target_mode! : this._discharge_soc_target_mode,
             'battery_soc_target_mode' in overrides ? overrides.battery_soc_target_mode! : this._battery_soc_target_mode,
-            'disable_night_grid_discharge_mode' in overrides ? overrides.disable_night_grid_discharge_mode! : this._disable_night_grid_discharge_mode
+            'disable_night_grid_discharge_mode' in overrides ? overrides.disable_night_grid_discharge_mode! : this._disable_night_grid_discharge_mode,
+            'inverter_safe_discharge_enable' in overrides ? overrides.inverter_safe_discharge_enable! : this._inverter_safe_discharge_enable
         );
     }
 
-    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended: boolean; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode}): Knobs {
+    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended: boolean; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean}): Knobs {
         return new Knobs(
             obj.force_disable_export,
             obj.export_soc_threshold,
@@ -287,7 +294,8 @@ export class Knobs implements BaboonGeneratedLatest {
             obj.export_soc_threshold_mode,
             obj.discharge_soc_target_mode,
             obj.battery_soc_target_mode,
-            obj.disable_night_grid_discharge_mode
+            obj.disable_night_grid_discharge_mode,
+            obj.inverter_safe_discharge_enable
         );
     }
 
@@ -354,6 +362,7 @@ export class Knobs_UEBACodec {
             Mode_UEBACodec.instance.encode(ctx, value.discharge_soc_target_mode, buffer);
             Mode_UEBACodec.instance.encode(ctx, value.battery_soc_target_mode, buffer);
             Mode_UEBACodec.instance.encode(ctx, value.disable_night_grid_discharge_mode, buffer);
+            BinTools.writeBool(buffer, value.inverter_safe_discharge_enable);
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -390,6 +399,7 @@ export class Knobs_UEBACodec {
             Mode_UEBACodec.instance.encode(ctx, value.discharge_soc_target_mode, writer);
             Mode_UEBACodec.instance.encode(ctx, value.battery_soc_target_mode, writer);
             Mode_UEBACodec.instance.encode(ctx, value.disable_night_grid_discharge_mode, writer);
+            BinTools.writeBool(writer, value.inverter_safe_discharge_enable);
         }
     }
     
@@ -439,6 +449,7 @@ export class Knobs_UEBACodec {
         const discharge_soc_target_mode = Mode_UEBACodec.instance.decode(ctx, reader);
         const battery_soc_target_mode = Mode_UEBACodec.instance.decode(ctx, reader);
         const disable_night_grid_discharge_mode = Mode_UEBACodec.instance.decode(ctx, reader);
+        const inverter_safe_discharge_enable = BinTools.readBool(reader);
         return new Knobs(
             force_disable_export,
             export_soc_threshold,
@@ -473,6 +484,7 @@ export class Knobs_UEBACodec {
             discharge_soc_target_mode,
             battery_soc_target_mode,
             disable_night_grid_discharge_mode,
+            inverter_safe_discharge_enable,
         );
     }
 

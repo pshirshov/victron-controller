@@ -39,6 +39,7 @@ pub struct Knobs {
     pub discharge_soc_target_mode: Mode,
     pub battery_soc_target_mode: Mode,
     pub disable_night_grid_discharge_mode: Mode,
+    pub inverter_safe_discharge_enable: bool,
 }
 
 impl PartialEq for Knobs {
@@ -189,6 +190,10 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.inverter_safe_discharge_enable.cmp(&other.inverter_safe_discharge_enable) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -238,6 +243,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.discharge_soc_target_mode.encode_ueba(ctx, &mut buffer)?;
             value.battery_soc_target_mode.encode_ueba(ctx, &mut buffer)?;
             value.disable_night_grid_discharge_mode.encode_ueba(ctx, &mut buffer)?;
+            value.inverter_safe_discharge_enable.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -274,6 +280,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.discharge_soc_target_mode.encode_ueba(ctx, writer)?;
             value.battery_soc_target_mode.encode_ueba(ctx, writer)?;
             value.disable_night_grid_discharge_mode.encode_ueba(ctx, writer)?;
+            value.inverter_safe_discharge_enable.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -318,6 +325,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let discharge_soc_target_mode = Mode::decode_ueba(ctx, reader)?;
         let battery_soc_target_mode = Mode::decode_ueba(ctx, reader)?;
         let disable_night_grid_discharge_mode = Mode::decode_ueba(ctx, reader)?;
+        let inverter_safe_discharge_enable = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -352,6 +360,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             discharge_soc_target_mode,
             battery_soc_target_mode,
             disable_night_grid_discharge_mode,
+            inverter_safe_discharge_enable,
         })
     }
 }

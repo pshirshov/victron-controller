@@ -289,5 +289,10 @@ mod tests {
         assert!((converted.bookkeeping.weather_soc_discharge_soc_target - 80.0).abs() < f64::EPSILON);
         assert!((converted.bookkeeping.weather_soc_battery_soc_target - 80.0).abs() < f64::EPSILON);
         assert!(!converted.bookkeeping.weather_soc_disable_night_grid_discharge);
+
+        // PR-inverter-safe-discharge-knob — back-compat default is `false`
+        // (legacy 4020 W margin OFF; inverter at full
+        // `inverter_max_discharge_w`).
+        assert!(!converted.knobs.inverter_safe_discharge_enable);
     }
 }

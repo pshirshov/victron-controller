@@ -631,6 +631,7 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         discharge_soc_target_mode: mode(k.discharge_soc_target_mode),
         battery_soc_target_mode: mode(k.battery_soc_target_mode),
         disable_night_grid_discharge_mode: mode(k.disable_night_grid_discharge_mode),
+        inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
     }
 }
 
@@ -790,6 +791,7 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "discharge_soc_target_mode" => KnobId::DischargeSocTargetMode,
         "battery_soc_target_mode" => KnobId::BatterySocTargetMode,
         "disable_night_grid_discharge_mode" => KnobId::DisableNightGridDischargeMode,
+        "inverter_safe_discharge_enable" => KnobId::InverterSafeDischargeEnable,
         _ => return None,
     })
 }

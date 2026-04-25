@@ -455,6 +455,10 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::DisableNightGridDischargeMode, KnobValue::Mode(v)) => {
             replace(&mut k.disable_night_grid_discharge_mode, v) != v
         }
+        // PR-inverter-safe-discharge-knob.
+        (KnobId::InverterSafeDischargeEnable, KnobValue::Bool(v)) => {
+            replace(&mut k.inverter_safe_discharge_enable, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -558,6 +562,11 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::DisableNightGridDischargeMode,
             value: V::Mode(k.disable_night_grid_discharge_mode),
+        },
+        // PR-inverter-safe-discharge-knob.
+        PublishPayload::Knob {
+            id: I::InverterSafeDischargeEnable,
+            value: V::Bool(k.inverter_safe_discharge_enable),
         },
     ]
 }
@@ -750,6 +759,8 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
             debug_full_charge: k.debug_full_charge,
             pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
             next_full_charge: bk.next_full_charge,
+            // PR-inverter-safe-discharge-knob.
+            inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
         },
         power_consumption: world.sensors.power_consumption.value.unwrap(),
         battery_soc: world.sensors.battery_soc.value.unwrap(),

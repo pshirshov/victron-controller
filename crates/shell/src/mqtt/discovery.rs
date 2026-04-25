@@ -101,6 +101,17 @@ fn number_knob(
 const HA_ROOT: &str = "homeassistant";
 const NODE_ID: &str = "victron_controller";
 
+/// HA's MQTT discovery spec restricts `unique_id` and the topic-tail
+/// `<object_id>` segment to `[a-zA-Z0-9_-]+`. Dots silently make HA
+/// reject the entire entity. Our user-visible / MQTT-state-topic
+/// names use the dotted form (e.g. `battery.soc.threshold.export.
+/// forced-value`), so for HA-bound strings we substitute `.` → `_`.
+/// State topics (which the controller publishes to and HA reads from)
+/// are NOT HA-restricted — those keep the dotted form.
+fn ha_safe(name: &str) -> String {
+    name.replace('.', "_")
+}
+
 fn device_block() -> serde_json::Value {
     json!({
         "identifiers": ["victron_controller"],
@@ -126,10 +137,11 @@ async fn publish_knobs(client: &AsyncClient, topic_root: &str) -> Result<usize> 
     let mut count = 0;
     for (id, component, extra) in knob_schemas() {
         let name = knob_name(id);
+        let ha_name = ha_safe(name);
         let state_topic = format!("{topic_root}/knob/{name}/state");
         let command_topic = format!("{topic_root}/knob/{name}/set");
-        let unique_id = format!("{NODE_ID}_knob_{name}");
-        let config_topic = format!("{HA_ROOT}/{component}/{NODE_ID}/knob_{name}/config");
+        let unique_id = format!("{NODE_ID}_knob_{ha_name}");
+        let config_topic = format!("{HA_ROOT}/{component}/{NODE_ID}/knob_{ha_name}/config");
 
         let mut config = json!({
             "name": format!("Knob: {name}"),
@@ -188,10 +200,11 @@ async fn publish_phases(client: &AsyncClient, topic_root: &str) -> Result<usize>
     ];
     let mut count = 0;
     for (_id, name) in ids {
-        let topic = format!("{HA_ROOT}/sensor/{NODE_ID}/phase_{name}/config");
+        let ha_name = ha_safe(name);
+        let topic = format!("{HA_ROOT}/sensor/{NODE_ID}/phase_{ha_name}/config");
         let config = json!({
             "name": format!("Phase: {name}"),
-            "unique_id": format!("{NODE_ID}_phase_{name}"),
+            "unique_id": format!("{NODE_ID}_phase_{ha_name}"),
             "state_topic": format!("{topic_root}/entity/{name}/phase"),
             "value_template": "{{ value_json.phase }}",
             "device": device_block(),
@@ -213,10 +226,11 @@ async fn publish_sensors(client: &AsyncClient, topic_root: &str) -> Result<usize
     let mut count = 0;
     for &id in SensorId::ALL {
         let name = sensor_name(id);
+        let ha_name = ha_safe(name);
         let meta = sensor_meta(id);
         let state_topic = format!("{topic_root}/sensor/{name}/state");
-        let unique_id = format!("{NODE_ID}_sensor_{name}");
-        let config_topic = format!("{HA_ROOT}/sensor/{NODE_ID}/sensor_{name}/config");
+        let unique_id = format!("{NODE_ID}_sensor_{ha_name}");
+        let config_topic = format!("{HA_ROOT}/sensor/{NODE_ID}/sensor_{ha_name}/config");
 
         let mut config = json!({
             "name": format!("Sensor: {name}"),
@@ -261,12 +275,13 @@ async fn publish_bookkeeping(client: &AsyncClient, topic_root: &str) -> Result<u
         BookkeepingId::ChargeBatteryExtendedToday,
     ] {
         let name = id.name();
+        let ha_name = ha_safe(name);
         let state_topic = format!("{topic_root}/bookkeeping/{name}/state");
         let config_topic =
-            format!("{HA_ROOT}/binary_sensor/{NODE_ID}/bookkeeping_{name}/config");
+            format!("{HA_ROOT}/binary_sensor/{NODE_ID}/bookkeeping_{ha_name}/config");
         let config = json!({
             "name": format!("Bookkeeping: {name}"),
-            "unique_id": format!("{NODE_ID}_bookkeeping_{name}"),
+            "unique_id": format!("{NODE_ID}_bookkeeping_{ha_name}"),
             "state_topic": state_topic,
             "payload_on": "true",
             "payload_off": "false",
@@ -288,12 +303,13 @@ async fn publish_bookkeeping(client: &AsyncClient, topic_root: &str) -> Result<u
         (BookkeepingId::BatterySelectedSocTarget, Some("%")),
     ] {
         let name = id.name();
+        let ha_name = ha_safe(name);
         let state_topic = format!("{topic_root}/bookkeeping/{name}/state");
         let config_topic =
-            format!("{HA_ROOT}/sensor/{NODE_ID}/bookkeeping_{name}/config");
+            format!("{HA_ROOT}/sensor/{NODE_ID}/bookkeeping_{ha_name}/config");
         let mut config = json!({
             "name": format!("Bookkeeping: {name}"),
-            "unique_id": format!("{NODE_ID}_bookkeeping_{name}"),
+            "unique_id": format!("{NODE_ID}_bookkeeping_{ha_name}"),
             "state_topic": state_topic,
             "state_class": "measurement",
             "device": device_block(),
@@ -376,6 +392,8 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         (KnobId::ChargeCarBoost, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::ChargeCarExtended, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::AllowBatteryToCar, "switch", json!({"payload_on": "true", "payload_off": "false"})),
+        // PR-inverter-safe-discharge-knob.
+        (KnobId::InverterSafeDischargeEnable, "switch", json!({"payload_on": "true", "payload_off": "false"})),
 
         // PR-06-D01: min/max come from knob_range() — the single
         // source of truth shared with parse_knob_value's ingest

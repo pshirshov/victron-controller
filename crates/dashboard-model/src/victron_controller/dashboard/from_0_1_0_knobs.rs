@@ -43,5 +43,11 @@ pub fn convert__knobs__from__0_1_0(from: &crate::victron_controller::dashboard::
         discharge_soc_target_mode: Mode::Weather,
         battery_soc_target_mode: Mode::Weather,
         disable_night_grid_discharge_mode: Mode::Weather,
+        // PR-inverter-safe-discharge-knob — back-compat init: default
+        // `false` matches the new 0.2.0 behaviour (legacy 4020 W safety
+        // margin OFF; the inverter discharges at the full
+        // `inverter_max_discharge_w`). Users who reproduce the legacy
+        // glitch can flip the knob to `true`.
+        inverter_safe_discharge_enable: false,
     }
 }

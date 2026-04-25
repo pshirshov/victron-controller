@@ -48,6 +48,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   battery_soc_target_mode: "battery.soc.target.charge.mode",
   disable_night_grid_discharge: "grid.night.discharge.disable.forced-value",
   disable_night_grid_discharge_mode: "grid.night.discharge.disable.mode",
+  inverter_safe_discharge_enable: "inverter.safe-discharge.enable",
   full_charge_discharge_soc_target: "battery.soc.target.full-charge.discharge",
   full_charge_export_soc_threshold: "battery.soc.threshold.full-charge.export",
   discharge_time: "battery.discharge.time",
