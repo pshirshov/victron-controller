@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use victron_controller_core::HardwareParams;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -24,6 +25,11 @@ pub struct Config {
     pub tuning: TuningConfig,
     #[serde(default)]
     pub outdoor_temperature_local: OutdoorTemperatureLocalConfig,
+    /// PR-hardware-config: deploy-time hardware constants
+    /// (inverter / breaker / grid voltage band / capacity model). Not
+    /// runtime-tunable — see `core::topology::HardwareParams`.
+    #[serde(default)]
+    pub hardware: HardwareConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -415,6 +421,142 @@ impl Default for TuningConfig {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Hardware (deploy-time constants — see SPEC §7 / PR-hardware-config)
+// -----------------------------------------------------------------------------
+
+/// Deploy-time hardware constants. Promoted out of per-controller
+/// `const`s so a different physical install can override them without
+/// recompiling the core. NOT runtime knobs — they don't appear on the
+/// dashboard, are not retained in MQTT, and should not change at
+/// runtime. The wire form here uses positive magnitudes throughout
+/// (e.g. `inverter_max_discharge_w = 5000`); the `From` impl below
+/// flips the sign when feeding `HardwareParams`, which stores
+/// `inverter_max_discharge_w` as the negative floor that
+/// `prepare_setpoint` actually consumes.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+pub struct HardwareConfig {
+    /// MultiPlus AC-export ceiling (positive magnitude). Default 5000.
+    #[serde(default = "default_inverter_max_discharge_w")]
+    pub inverter_max_discharge_w: u32,
+    /// Margin below the inverter "forced grid charge above ~4.8 kW"
+    /// glitch — used by setpoint's `max_discharge` formula. Default 4020.
+    #[serde(default = "default_inverter_safe_discharge_w")]
+    pub inverter_safe_discharge_w: u32,
+    /// Main breaker rating ceiling (A) for the current-limit
+    /// controller. Default 65.
+    #[serde(default = "default_max_grid_current_a")]
+    pub max_grid_current_a: u32,
+    /// Floor — keeps inverter aux fed. Default 10.
+    #[serde(default = "default_min_system_current_a")]
+    pub min_system_current_a: u32,
+    /// Forced-import baseline (Soltaro 23:55 quirk). Default 10.
+    #[serde(default = "default_idle_setpoint_w")]
+    pub idle_setpoint_w: u32,
+    /// Evening planner: `preserve_battery` baseload threshold.
+    /// Default 1200.
+    #[serde(default = "default_baseload_consumption_w")]
+    pub baseload_consumption_w: u32,
+    /// Caps `grid_export_limit_w` knob. ESB G99 typical authorisation
+    /// = 6000 W.
+    #[serde(default = "default_grid_export_knob_max_w")]
+    pub grid_export_knob_max_w: u32,
+    /// Caps `grid_import_limit_w` knob. MultiPlus continuous import
+    /// capability ≈ 13 000 W.
+    #[serde(default = "default_grid_import_knob_max_w")]
+    pub grid_import_knob_max_w: u32,
+    /// Pylontech 48 V stack — capacity model nominal voltage.
+    #[serde(default = "default_battery_nominal_voltage_v")]
+    pub battery_nominal_voltage_v: f64,
+    /// EN 50160 nominal grid voltage. Default 230.0.
+    #[serde(default = "default_grid_nominal_voltage_v")]
+    pub grid_nominal_voltage_v: f64,
+    /// EN 50160 -10% sanity floor. Default 207.0.
+    #[serde(default = "default_grid_min_sensible_voltage_v")]
+    pub grid_min_sensible_voltage_v: f64,
+    /// EN 50160 +10% + ~7 V noise headroom — sanity ceiling.
+    /// Default 260.0.
+    #[serde(default = "default_grid_max_sensible_voltage_v")]
+    pub grid_max_sensible_voltage_v: f64,
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self {
+            inverter_max_discharge_w: default_inverter_max_discharge_w(),
+            inverter_safe_discharge_w: default_inverter_safe_discharge_w(),
+            max_grid_current_a: default_max_grid_current_a(),
+            min_system_current_a: default_min_system_current_a(),
+            idle_setpoint_w: default_idle_setpoint_w(),
+            baseload_consumption_w: default_baseload_consumption_w(),
+            grid_export_knob_max_w: default_grid_export_knob_max_w(),
+            grid_import_knob_max_w: default_grid_import_knob_max_w(),
+            battery_nominal_voltage_v: default_battery_nominal_voltage_v(),
+            grid_nominal_voltage_v: default_grid_nominal_voltage_v(),
+            grid_min_sensible_voltage_v: default_grid_min_sensible_voltage_v(),
+            grid_max_sensible_voltage_v: default_grid_max_sensible_voltage_v(),
+        }
+    }
+}
+
+impl From<HardwareConfig> for HardwareParams {
+    fn from(c: HardwareConfig) -> Self {
+        Self {
+            // Sign-flip: the controller stores this as the negative
+            // floor used in `prepare_setpoint(max_discharge, …)`.
+            inverter_max_discharge_w: -f64::from(c.inverter_max_discharge_w),
+            inverter_safe_discharge_w: f64::from(c.inverter_safe_discharge_w),
+            max_grid_current_a: f64::from(c.max_grid_current_a),
+            min_system_current_a: f64::from(c.min_system_current_a),
+            idle_setpoint_w: f64::from(c.idle_setpoint_w),
+            baseload_consumption_w: f64::from(c.baseload_consumption_w),
+            grid_export_knob_max_w: c.grid_export_knob_max_w,
+            grid_import_knob_max_w: c.grid_import_knob_max_w,
+            battery_nominal_voltage_v: c.battery_nominal_voltage_v,
+            grid_nominal_voltage_v: c.grid_nominal_voltage_v,
+            grid_min_sensible_voltage_v: c.grid_min_sensible_voltage_v,
+            grid_max_sensible_voltage_v: c.grid_max_sensible_voltage_v,
+        }
+    }
+}
+
+fn default_inverter_max_discharge_w() -> u32 {
+    5000
+}
+fn default_inverter_safe_discharge_w() -> u32 {
+    4020
+}
+fn default_max_grid_current_a() -> u32 {
+    65
+}
+fn default_min_system_current_a() -> u32 {
+    10
+}
+fn default_idle_setpoint_w() -> u32 {
+    10
+}
+fn default_baseload_consumption_w() -> u32 {
+    1200
+}
+fn default_grid_export_knob_max_w() -> u32 {
+    6000
+}
+fn default_grid_import_knob_max_w() -> u32 {
+    13000
+}
+fn default_battery_nominal_voltage_v() -> f64 {
+    48.0
+}
+fn default_grid_nominal_voltage_v() -> f64 {
+    230.0
+}
+fn default_grid_min_sensible_voltage_v() -> f64 {
+    207.0
+}
+fn default_grid_max_sensible_voltage_v() -> f64 {
+    260.0
+}
+
 // --- defaults ---
 
 fn default_true() -> bool {
@@ -523,6 +665,7 @@ impl Default for Config {
             dashboard: DashboardConfig::default(),
             tuning: TuningConfig::default(),
             outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
+            hardware: HardwareConfig::default(),
         }
     }
 }

@@ -15,6 +15,7 @@ use chrono::{Datelike, NaiveDateTime, TimeDelta, Timelike};
 
 use crate::Clock;
 use crate::knobs::{DebugFullCharge, DischargeTime};
+use crate::topology::HardwareParams;
 use crate::types::Decision;
 
 /// Inputs for the setpoint controller — mirrors `SetPointInput` in the
@@ -117,26 +118,13 @@ pub struct SetpointBookkeeping {
     pub export_soc_threshold: f64,
 }
 
-// --- Constants (named so they can be promoted to config) ---
-
-/// Nominal battery voltage used by the capacity model (kWh ≈ Ah × 48 V).
-const NOMINAL_VOLTAGE_V: f64 = 48.0;
-
-/// Assumed baseline house consumption (W) used in `preserve_battery` logic.
-const BASELOAD_CONSUMPTION_W: f64 = 1200.0;
-
-/// Hard cap on battery-side discharge (W). Historical note in the TS code
-/// mentions "observed weird forced charges from grid during 4.8k+ discharges".
-const BATTERY_DISCHARGE_LIMIT_W: f64 = 4020.0;
-
-/// Hard cap on the magnitude of setpoints that [`prepare_setpoint`] can
-/// clamp against the battery-side. The grid-side export cap is a separate
-/// knob (see SPEC §5.11) applied on top; the more restrictive wins.
-const BATTERY_SIDE_MAX_DISCHARGE_W: f64 = -5000.0;
-
-/// Minimum setpoint for positive values — any proposed setpoint ≥ 0 is
-/// promoted to this (never let the service actively idle or import zero).
-const IDLE_SETPOINT_W: f64 = 10.0;
+// --- Constants (now sourced from `HardwareParams`; see `crate::topology`) ---
+//
+// Previously these lived as module-level `const`s
+// (`nominal_voltage_v` / `baseload_consumption_w` /
+// `battery_discharge_limit_w` / `battery_side_max_discharge_w` /
+// `idle_setpoint_w`). They are now deploy-time hardware parameters
+// threaded into the controller from `Topology::hardware`.
 
 // -----------------------------------------------------------------------------
 // Main controller
@@ -148,7 +136,17 @@ const IDLE_SETPOINT_W: f64 = 10.0;
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::float_cmp)]
 #[must_use]
-pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOutput {
+pub fn evaluate_setpoint(
+    input: &SetpointInput,
+    clock: &dyn Clock,
+    hw: &HardwareParams,
+) -> SetpointOutput {
+    // Local rebind so the body reads identically to the legacy form.
+    let nominal_voltage_v = hw.battery_nominal_voltage_v;
+    let baseload_consumption_w = hw.baseload_consumption_w;
+    let battery_discharge_limit_w = hw.inverter_safe_discharge_w;
+    let battery_side_max_discharge_w = hw.inverter_max_discharge_w;
+    let idle_setpoint_w = hw.idle_setpoint_w;
     let g = &input.globals;
     let now = clock.naive();
 
@@ -184,7 +182,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     let soltaro_power = input.soltaro_power;
     let battery_capacity = input.capacity;
 
-    let total_capacity = battery_capacity * (battery_soh / 100.0) * NOMINAL_VOLTAGE_V;
+    let total_capacity = battery_capacity * (battery_soh / 100.0) * nominal_voltage_v;
     let current_capacity = total_capacity * (battery_soc / 100.0);
     let end_of_day_target = total_capacity * (soc_end_of_day_target / 100.0);
     let mut current_target = end_of_day_target;
@@ -207,8 +205,8 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     };
 
     // `max_discharge = max(-5000, -max(0, battery_discharge_limit + solar_export))`
-    let max_discharge = BATTERY_SIDE_MAX_DISCHARGE_W
-        .max(-((BATTERY_DISCHARGE_LIMIT_W + solar_export).max(0.0)));
+    let max_discharge = battery_side_max_discharge_w
+        .max(-((battery_discharge_limit_w + solar_export).max(0.0)));
 
     let mut hours_remaining: f64 = -1.0;
     let mut exportable_capacity: f64 = -1.0;
@@ -217,7 +215,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     // Placeholder; every branch below assigns a real value. `mut` is needed
     // because the evening sub-branch reassigns after its initial write.
     #[allow(unused_assignments)]
-    let mut setpoint_target: f64 = IDLE_SETPOINT_W;
+    let mut setpoint_target: f64 = idle_setpoint_w;
     let mut pessimism_multiplier: f64 = 1.0;
     let mut preserve_battery: bool = false;
 
@@ -236,12 +234,12 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     // through the grid into the EV).
     let mut decision: Decision;
     if g.force_disable_export {
-        setpoint_target = IDLE_SETPOINT_W;
+        setpoint_target = idle_setpoint_w;
         decision = Decision::new("Export killed by force_disable_export → idle 10 W")
             .with_factor("force_disable_export", "true");
     } else if g.zappi_active && !g.allow_battery_to_car {
         if (2..8).contains(&hour) {
-            setpoint_target = IDLE_SETPOINT_W - soltaro_export;
+            setpoint_target = idle_setpoint_w - soltaro_export;
             decision = Decision::new(
                 "Zappi active in early-morning window — dump Soltaro surplus only, preserve battery"
             )
@@ -263,7 +261,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     } else if hour == 23 && minute >= 55 {
         // "qendercore protection window" — avoid feeding Soltaro during the
         // 23:59–00:00 grid quirk; start 5 min early for export rampdown.
-        setpoint_target = IDLE_SETPOINT_W;
+        setpoint_target = idle_setpoint_w;
         decision = Decision::new(
             "23:55-00:00 Soltaro-feed protection window → idle 10 W",
         )
@@ -318,7 +316,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
         };
 
         if millis_remaining <= 0.0 {
-            setpoint_target = IDLE_SETPOINT_W;
+            setpoint_target = idle_setpoint_w;
             decision = Decision::new("Evening window past discharge-end time → idle 10 W")
                 .with_factor("hour", format!("{hour:02}:{minute:02}"))
                 .with_factor("discharge_time_knob", format!("{:?}", g.discharge_time));
@@ -344,7 +342,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
             };
             let export_power = exportable_power - current_consumption;
 
-            let remaining_baseload_consumption = BASELOAD_CONSUMPTION_W * hours_remaining;
+            let remaining_baseload_consumption = baseload_consumption_w * hours_remaining;
             let baseload_to_be_consumed =
                 0.0_f64.max(remaining_baseload_consumption * pessimism_multiplier);
 
@@ -372,7 +370,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
     } else if (8..17).contains(&hour) {
         // Daytime PV-multiplier controller.
         if export_soc_threshold == 100.0 {
-            setpoint_target = IDLE_SETPOINT_W;
+            setpoint_target = idle_setpoint_w;
             decision = Decision::new(
                 "Daytime but export_soc_threshold=100 → hold at idle 10 W",
             )
@@ -434,7 +432,7 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
 
             let day_branch: &'static str;
             if battery_soc < export_soc_threshold {
-                setpoint_target = IDLE_SETPOINT_W;
+                setpoint_target = idle_setpoint_w;
                 day_branch = "SoC below export threshold — hold at idle";
             } else if battery_soc == export_soc_threshold {
                 setpoint_target = min_setpoint;
@@ -455,21 +453,21 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
         }
     } else if (2..5).contains(&hour) {
         // Boost window — the (2..5) and final-else branches both set
-        // the same setpoint (IDLE_SETPOINT_W), but they emit different
+        // the same setpoint (idle_setpoint_w), but they emit different
         // Decision text so the operator dashboard can tell which window
         // produced "idle 10 W" today. Not mechanically redundant; the
         // separation is for decision-log honesty (A-64).
-        setpoint_target = IDLE_SETPOINT_W;
+        setpoint_target = idle_setpoint_w;
         decision = Decision::new("Boost window (02:00–05:00) → idle 10 W")
             .with_factor("hour", format!("{hour:02}:{minute:02}"));
     } else {
         // 05:00–08:00 extended night.
-        setpoint_target = IDLE_SETPOINT_W;
+        setpoint_target = idle_setpoint_w;
         decision = Decision::new("Extended night (05:00–08:00) → idle 10 W")
             .with_factor("hour", format!("{hour:02}:{minute:02}"));
     }
 
-    let final_setpoint = prepare_setpoint(max_discharge, setpoint_target);
+    let final_setpoint = prepare_setpoint(max_discharge, setpoint_target, idle_setpoint_w);
 
     // Record the post-processing facts that affected the final number.
     decision = decision
@@ -527,17 +525,17 @@ pub fn evaluate_setpoint(input: &SetpointInput, clock: &dyn Clock) -> SetpointOu
 /// - clamp to `max_discharge` on the negative side,
 /// - floor,
 /// - round to nearest 50 W,
-/// - promote any non-negative value to [`IDLE_SETPOINT_W`].
+/// - promote any non-negative value to `idle_setpoint_w`.
 ///
 /// Matches `_prepare_setpoint` in the TS source.
 #[must_use]
-pub fn prepare_setpoint(max_discharge: f64, setpoint_target: f64) -> i32 {
+pub fn prepare_setpoint(max_discharge: f64, setpoint_target: f64, idle_setpoint_w: f64) -> i32 {
     let mut x = max_discharge.max(setpoint_target.floor());
     x = (x / 50.0).round() * 50.0;
     if x >= 0.0 {
         #[allow(clippy::cast_possible_truncation)]
         {
-            IDLE_SETPOINT_W as i32
+            idle_setpoint_w as i32
         }
     } else {
         #[allow(clippy::cast_possible_truncation)]
@@ -585,6 +583,12 @@ mod tests {
     use super::*;
     use crate::clock::FixedClock;
     use chrono::NaiveDate;
+
+    /// Default `HardwareParams` for tests — matches the legacy
+    /// hard-coded const values, so existing assertions keep holding.
+    fn hw() -> HardwareParams {
+        HardwareParams::defaults()
+    }
 
     /// Equivalent to the Jest `createBaseInput()` helper.
     fn base_input() -> SetpointInput {
@@ -637,7 +641,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
 
         let expected_total = 100.0 * (95.0 / 100.0) * 48.0; // 4560
         let expected_current = expected_total * (80.0 / 100.0); // 3648
@@ -654,7 +658,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         let expected = ((2000.0_f64 + 1500.0).max(0.0) + 800.0_f64.max(0.0)).floor();
         assert!((out.debug.solar_export - expected).abs() < 1e-9);
     }
@@ -673,7 +677,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(
             (out.debug.solar_export - 3200.0).abs() < 1e-9,
             "expected 3200, got {}",
@@ -693,7 +697,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(
             (out.debug.solar_export - 2000.0).abs() < 1e-9,
             "expected 2000 (mppt only, Zappi import ignored), got {}",
@@ -710,7 +714,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         // mppt_sum = 1400 (>0); soltaro clamped to 0
         let expected = (((-100.0_f64) + 1500.0).max(0.0) + (-200.0_f64).max(0.0)).floor();
         assert!((out.debug.solar_export - expected).abs() < 1e-9);
@@ -730,7 +734,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -750,7 +754,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 5, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         // soltaro_export = max(10 + 600 - 1200, 0) = 0
         // setpoint = 10 - 0 = 10 → after rounding/≥0 rule → 10
         assert_eq!(out.setpoint_target, 10);
@@ -780,7 +784,7 @@ mod tests {
         };
         // 20:30 — evening branch.
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         // Evening controller engages: hours_remaining is set (it's -1 in
         // other branches). That's the strongest signal that we took the
         // evening path, not the zappi path.
@@ -803,7 +807,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30); // evening
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         let expected_solar_export = (3500.0_f64.max(0.0) + 500.0_f64.max(0.0)).floor();
         assert_eq!(out.setpoint_target, -(expected_solar_export as i32));
         // hours_remaining stays at its -1 sentinel — evening branch did NOT run.
@@ -823,7 +827,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -840,7 +844,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 14, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         let expected_solar_export = (3500.0_f64.max(0.0) + 500.0_f64.max(0.0)).floor(); // 4000
         // raw target = -4000; no clamp (max_discharge = -5000 - 4020 - 4000 capped at -5000)
         // Actually max_discharge = max(-5000, -(4020+4000)) = max(-5000, -8020) = -5000.
@@ -866,7 +870,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
 
         assert!(out.debug.hours_remaining > 0.0);
         assert!(out.debug.exportable_capacity >= 0.0);
@@ -884,7 +888,7 @@ mod tests {
         };
         // 02:30 is past the 02:00 discharge end (millis_remaining becomes ≤ 0).
         let c = clock_at(2026, 1, 15, 2, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -906,7 +910,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.setpoint_target < 10);
         assert!(out.debug.pv_multiplier > 0.0);
     }
@@ -922,7 +926,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -940,7 +944,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -955,7 +959,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -967,7 +971,7 @@ mod tests {
     fn last_5_minutes_before_midnight_pins_to_idle() {
         let input = base_input();
         let c = clock_at(2026, 1, 15, 23, 57);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -975,7 +979,7 @@ mod tests {
     fn boost_window_pins_to_idle() {
         let input = base_input();
         let c = clock_at(2026, 1, 15, 3, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -983,7 +987,7 @@ mod tests {
     fn extended_night_pins_to_idle() {
         let input = base_input();
         let c = clock_at(2026, 1, 15, 6, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
@@ -1001,7 +1005,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
 
         assert!(out.debug.charge_to_full_required);
         // full_charge_export_soc_threshold=85 wins
@@ -1025,7 +1029,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(!out.debug.charge_to_full_required);
     }
 
@@ -1045,7 +1049,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(!out.debug.charge_to_full_required);
     }
 
@@ -1067,7 +1071,7 @@ mod tests {
         };
         // Wednesday 2026-04-22 as our "now"
         let c = clock_at(2026, 4, 22, 10, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
 
         let next = out.debug.next_full_charge;
         assert_eq!(next.hour(), 17);
@@ -1091,7 +1095,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
 
         let next = out.debug.next_full_charge;
         assert_eq!(next.hour(), 1);
@@ -1110,7 +1114,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.debug.current_capacity, 0.0);
         assert!(out.setpoint_target >= -5000);
     }
@@ -1122,7 +1126,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!((out.debug.current_capacity - out.debug.total_capacity).abs() < 1e-9);
     }
 
@@ -1133,7 +1137,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.debug.consumption, 0.0);
     }
 
@@ -1145,7 +1149,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.setpoint_target >= -5000);
     }
 
@@ -1163,7 +1167,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target % 50, 0);
     }
 
@@ -1177,7 +1181,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         // Daytime, battery_soc=80, export_soc_threshold=70 (from base),
         // pv_multiplier branch — could produce any number. We just check
         // the ≥0 → 10 rule holds.
@@ -1202,7 +1206,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.debug.pessimism_multiplier > 1.0);
         assert!(out.debug.pessimism_multiplier <= 1.8);
     }
@@ -1220,7 +1224,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.debug.pv_multiplier > 1.0);
     }
 
@@ -1237,7 +1241,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 12, 0);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.debug.pv_multiplier > 1.0);
     }
 
@@ -1255,7 +1259,7 @@ mod tests {
             ..base_input()
         };
         let c = clock_at(2026, 1, 15, 20, 30);
-        let out = evaluate_setpoint(&input, &c);
+        let out = evaluate_setpoint(&input, &c, &hw());
         assert!(out.debug.preserve_battery);
     }
 
@@ -1265,27 +1269,27 @@ mod tests {
 
     #[test]
     fn prepare_setpoint_rounds_to_50() {
-        assert_eq!(prepare_setpoint(-5000.0, -1237.0), -1250);
-        assert_eq!(prepare_setpoint(-5000.0, -1212.0), -1200);
+        assert_eq!(prepare_setpoint(-5000.0, -1237.0, 10.0), -1250);
+        assert_eq!(prepare_setpoint(-5000.0, -1212.0, 10.0), -1200);
     }
 
     #[test]
     fn prepare_setpoint_clamps_to_max_discharge() {
-        assert_eq!(prepare_setpoint(-2000.0, -3500.0), -2000);
+        assert_eq!(prepare_setpoint(-2000.0, -3500.0, 10.0), -2000);
     }
 
     #[test]
     fn prepare_setpoint_floors_before_rounding() {
         // floor(-100.9) = -101; round(-101/50) = round(-2.02) = -2; -2*50 = -100
-        assert_eq!(prepare_setpoint(-5000.0, -100.9), -100);
+        assert_eq!(prepare_setpoint(-5000.0, -100.9, 10.0), -100);
     }
 
     #[test]
     fn prepare_setpoint_promotes_zero_or_positive_to_10() {
-        assert_eq!(prepare_setpoint(-5000.0, 0.0), 10);
-        assert_eq!(prepare_setpoint(-5000.0, 42.0), 10);
+        assert_eq!(prepare_setpoint(-5000.0, 0.0, 10.0), 10);
+        assert_eq!(prepare_setpoint(-5000.0, 42.0, 10.0), 10);
         // An input that rounds to exactly 0 also gets promoted.
-        assert_eq!(prepare_setpoint(-5000.0, -24.0), 10); // floor=-24, /50=-0.48, round=0, *50=0 → ≥0 → 10
+        assert_eq!(prepare_setpoint(-5000.0, -24.0, 10.0), 10); // floor=-24, /50=-0.48, round=0, *50=0 → ≥0 → 10
     }
 
     // ------------------------------------------------------------------

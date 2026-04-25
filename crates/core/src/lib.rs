@@ -21,7 +21,7 @@ pub use knobs::{DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Kn
 pub use owner::Owner;
 pub use process::process;
 pub use tass::{Actual, Actuated, Freshness, Target, TargetPhase, Timestamped};
-pub use topology::{ControllerParams, Topology};
+pub use topology::{ControllerParams, HardwareParams, Topology};
 pub use types::{
     check_staleness_invariant, ActuatedId, ActuatedReadback, BookkeepingId, BookkeepingKey,
     BookkeepingValue, Command, DbusTarget, DbusValue, Effect, Event, ForecastProvider,

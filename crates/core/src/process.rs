@@ -778,19 +778,30 @@ pub(crate) fn run_setpoint(
 
     let k = &world.knobs;
 
-    let out = evaluate_setpoint(&input, clock);
+    let out = evaluate_setpoint(&input, clock, &topology.hardware);
 
     // SPEC §5.11: grid-side hard cap — two-sided clamp.
-    // SAFE_MAX caps the user knob irrespective of what the MQTT/dashboard
-    // ingest validators accept. A-09: without it, a grid_export_limit_w
-    // above i32::MAX would pass `i32::try_from` → fall to `unwrap_or(i32::MAX)`
-    // and yield effectively unbounded export (since we then unary-minus it).
-    // `.min(SAFE_MAX_GRID_LIMIT_W).try_into()` is guaranteed to succeed.
-    const SAFE_MAX_GRID_LIMIT_W: u32 = 10_000;
-    let export_cap = i32::try_from(k.grid_export_limit_w.min(SAFE_MAX_GRID_LIMIT_W))
-        .expect("SAFE_MAX_GRID_LIMIT_W fits in i32");
-    let import_cap = i32::try_from(k.grid_import_limit_w.min(SAFE_MAX_GRID_LIMIT_W))
-        .expect("SAFE_MAX_GRID_LIMIT_W fits in i32");
+    // PR-hardware-config: split the former single SAFE_MAX_GRID_LIMIT_W
+    // = 10_000 into two per-direction ceilings sourced from
+    // `topology.hardware`: export defaults to 6000 W (ESB G99 typical
+    // authorisation), import defaults to 13_000 W (MultiPlus continuous
+    // import capability). The clamp caps the user knob irrespective of
+    // what the MQTT/dashboard ingest validators accept. A-09: without
+    // these clamps, a grid_*_limit_w above i32::MAX would pass
+    // `i32::try_from` → fall to `unwrap_or(i32::MAX)` and yield
+    // effectively unbounded export (since we then unary-minus it).
+    // `.min(...).try_into()` is guaranteed to succeed because both
+    // ceilings fit in i32.
+    let export_cap = i32::try_from(
+        k.grid_export_limit_w
+            .min(topology.hardware.grid_export_knob_max_w),
+    )
+    .expect("grid_export_knob_max_w fits in i32");
+    let import_cap = i32::try_from(
+        k.grid_import_limit_w
+            .min(topology.hardware.grid_import_knob_max_w),
+    )
+    .expect("grid_import_knob_max_w fits in i32");
     let pre_clamp = out.setpoint_target;
     let clamped = pre_clamp.clamp(-export_cap, import_cap);
     // A-10: re-assert the idle-bleed invariant AFTER the clamp. With
@@ -1069,7 +1080,7 @@ pub(crate) fn run_current_limit(
         return;
     };
 
-    let out = evaluate_current_limit(&input, clock);
+    let out = evaluate_current_limit(&input, clock, &topology.hardware);
     world.decisions.input_current_limit = Some(out.decision.clone());
 
     // Bookkeeping exports.

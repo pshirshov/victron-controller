@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let topology = Topology::defaults();
+    let topology = Topology::with_hardware(cfg.hardware.into());
     let meta = victron_controller_shell::dashboard::convert::MetaContext {
         services: services.clone(),
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,

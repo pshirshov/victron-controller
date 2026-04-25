@@ -19,41 +19,29 @@
 use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, tariff_band};
 use crate::myenergi::{ZappiMode, ZappiPlugState, ZappiState};
+use crate::topology::HardwareParams;
 use crate::types::Decision;
 
 // --- Constants ---
+//
+// `MAX_GRID_CURRENT_A` / `MIN_SYSTEM_CURRENT_A` /
+// `MIN_SENSIBLE_GRID_V` / `MAX_SENSIBLE_GRID_V` / `NOMINAL_GRID_V`
+// were previously hard-coded `const`s here; they are now sourced from
+// [`HardwareParams`] threaded in via `Topology::hardware`.
 
-/// House service's main-breaker headroom in amps.
-const MAX_GRID_CURRENT_A: f64 = 65.0;
-/// Never cap below this — the system always gets at least this many amps.
-const MIN_SYSTEM_CURRENT_A: f64 = 10.0;
 /// Waiting-for-EV timeout (minutes) after which we treat Zappi as inactive.
 const WAIT_TIMEOUT_MIN: f64 = 5.0;
 /// Margin of the `zappi_amps > N` fallback that triggers `zappi_active`
 /// even when the state machine disagrees. Matches legacy NR flow.
 const ZAPPI_AMPS_FALLBACK_THRESHOLD: f64 = 1.0;
-/// Lower sanity bound on grid voltage. EN 50160 caps legitimate readings
-/// at -10% of nominal (207 V). Below this we treat the measurement as
-/// grid loss / sensor glitch / NaN and fall back to [`NOMINAL_GRID_V`].
-pub(crate) const MIN_SENSIBLE_GRID_V: f64 = 207.0;
-/// Upper sanity bound on grid voltage. EN 50160 caps legitimate
-/// readings at +10% of nominal (253 V) but we allow a 7 V headroom
-/// band above that for benign sensor noise and short transient
-/// surges (observed on the user's ET340 during kettle-start spikes).
-/// Anything > 260 is treated as a glitch and falls back to
-/// NOMINAL_GRID_V. PR-02-D08: the 260 ceiling vs 253 SPEC spec was
-/// previously a comment/code mismatch — now explained explicitly.
-pub(crate) const MAX_SENSIBLE_GRID_V: f64 = 260.0;
-/// UK nominal mains voltage — used when the measured value is unusable.
-pub(crate) const NOMINAL_GRID_V: f64 = 230.0;
 
 /// EN 50160-band-validated grid voltage for `grid_power / grid_voltage`
 /// style derivations. Returns `(v_eff, fell_back)`:
 ///
 /// - When `measured` is outside
-///   `[MIN_SENSIBLE_GRID_V, MAX_SENSIBLE_GRID_V]` (or non-finite), the
-///   function falls back to [`NOMINAL_GRID_V`] and sets
-///   `fell_back = true`.
+///   `[hw.grid_min_sensible_voltage_v, hw.grid_max_sensible_voltage_v]`
+///   (or non-finite), the function falls back to
+///   `hw.grid_nominal_voltage_v` and sets `fell_back = true`.
 /// - Otherwise returns `(measured, false)`.
 ///
 /// Callers MUST use this for any `grid_power / grid_voltage` style
@@ -63,9 +51,11 @@ pub(crate) const NOMINAL_GRID_V: f64 = 230.0;
 /// Architectural lock (see `tasks.md`): the ET112 grid current sensor
 /// is not trusted — derive `grid_current` from `grid_power / v_eff`
 /// instead.
-pub(crate) fn effective_grid_v(measured: f64) -> (f64, bool) {
-    if !measured.is_finite() || !(MIN_SENSIBLE_GRID_V..=MAX_SENSIBLE_GRID_V).contains(&measured) {
-        (NOMINAL_GRID_V, true)
+pub(crate) fn effective_grid_v(measured: f64, hw: &HardwareParams) -> (f64, bool) {
+    if !measured.is_finite()
+        || !(hw.grid_min_sensible_voltage_v..=hw.grid_max_sensible_voltage_v).contains(&measured)
+    {
+        (hw.grid_nominal_voltage_v, true)
     } else {
         (measured, false)
     }
@@ -155,7 +145,11 @@ fn round2(f: f64) -> f64 {
 pub fn evaluate_current_limit(
     input: &CurrentLimitInput,
     clock: &dyn Clock,
+    hw: &HardwareParams,
 ) -> CurrentLimitOutput {
+    let max_grid_current_a = hw.max_grid_current_a;
+    let min_system_current_a = hw.min_system_current_a;
+    let nominal_grid_v = hw.grid_nominal_voltage_v;
     let g = &input.globals;
     let now = clock.naive();
     let now_mono = clock.monotonic();
@@ -188,9 +182,9 @@ pub fn evaluate_current_limit(
     // if the meter reports something physically implausible. If you are
     // tempted to "simplify" by using the direct grid_current sensor, DON'T:
     // it will silently report ghost amps and starve the controller.
-    let (v_eff, grid_v_fell_back) = effective_grid_v(input.grid_voltage);
+    let (v_eff, grid_v_fell_back) = effective_grid_v(input.grid_voltage, hw);
     let grid_current = input.grid_power / v_eff;
-    let grid_underuse = (MAX_GRID_CURRENT_A - grid_current).ceil().max(0.0);
+    let grid_underuse = (max_grid_current_a - grid_current).ceil().max(0.0);
 
     // --- Zappi activity classification ---
     // PR-DAG-B: `zappi_active` flows in via
@@ -251,6 +245,8 @@ pub fn evaluate_current_limit(
         gridside_consumption_current,
         gridside_consumption_no_zappi,
         grid_underuse,
+        max_grid_current_a,
+        min_system_current_a,
     );
 
     // --- compute_limit() ---
@@ -262,17 +258,17 @@ pub fn evaluate_current_limit(
         } else if g.disable_night_grid_discharge {
             (input.offgrid_current, "boost/extended + disable_night_grid_discharge → cap at offgrid current")
         } else {
-            (MAX_GRID_CURRENT_A, "boost/extended + idle → full grid (65 A)")
+            (max_grid_current_a, "boost/extended + idle → full grid")
         }
     } else if zappi_active {
         (available_pv_power_as_gridside_amps, "outside charge window + Zappi active → cap at PV availability")
     } else if g.disable_night_grid_discharge && is_extended_charge {
         (input.offgrid_current, "extended window + disable_night_grid_discharge → cap at offgrid current")
     } else {
-        (MAX_GRID_CURRENT_A, "idle / default → full grid (65 A)")
+        (max_grid_current_a, "idle / default → full grid")
     };
 
-    let input_current_limit = target.clamp(0.0, MAX_GRID_CURRENT_A);
+    let input_current_limit = target.clamp(0.0, max_grid_current_a);
 
     let mut decision = Decision::new(branch)
         .with_factor("tariff", format!("{tariff:?}"))
@@ -287,7 +283,7 @@ pub fn evaluate_current_limit(
     if grid_v_fell_back {
         decision = decision.with_factor(
             "grid_v_fallback",
-            format!("{:.2}V → {NOMINAL_GRID_V:.2}V", input.grid_voltage),
+            format!("{:.2}V → {nominal_grid_v:.2}V", input.grid_voltage),
         );
     }
 
@@ -332,12 +328,14 @@ fn fit_current(
     gridside_consumption_current: f64,
     gridside_consumption_no_zappi: f64,
     grid_underuse: f64,
+    max_grid_current_a: f64,
+    min_system_current_a: f64,
 ) -> (f64, f64) {
     let (max_system_current, out_limit) = if (zappi_active && zappi_mode == ZappiMode::Fast)
         || zappi_amps > ZAPPI_AMPS_FALLBACK_THRESHOLD
     {
-        let max_sys = MAX_GRID_CURRENT_A - zappi_current_target;
-        let mut ol = round2(MAX_GRID_CURRENT_A - gridside_consumption_no_zappi - zappi_current_target);
+        let max_sys = max_grid_current_a - zappi_current_target;
+        let mut ol = round2(max_grid_current_a - gridside_consumption_no_zappi - zappi_current_target);
         // Additional margin when zappi hasn't reached its target yet.
         if zappi_amps <= zappi_current_target - 1.0 {
             ol -= zappi_emergency_margin;
@@ -345,13 +343,13 @@ fn fit_current(
         (max_sys, ol)
     } else {
         (
-            MAX_GRID_CURRENT_A,
-            round2(MAX_GRID_CURRENT_A - gridside_consumption_current),
+            max_grid_current_a,
+            round2(max_grid_current_a - gridside_consumption_current),
         )
     };
 
     let relaxed_limit = out_limit + grid_underuse;
-    let target = relaxed_limit.clamp(MIN_SYSTEM_CURRENT_A, max_system_current);
+    let target = relaxed_limit.clamp(min_system_current_a, max_system_current);
     (target, max_system_current)
 }
 
@@ -372,6 +370,16 @@ mod tests {
     fn fixed_mono_anchor() -> Instant {
         Instant::now() + StdDuration::from_secs(86_400)
     }
+
+    /// Default hardware params — matches the legacy const values, so
+    /// existing assertions keep holding.
+    fn hw() -> HardwareParams {
+        HardwareParams::defaults()
+    }
+
+    /// Local re-exposed name to keep the legacy assertion form readable.
+    /// Mirrors `HardwareParams::defaults().max_grid_current_a` (65.0 A).
+    const MAX_GRID_CURRENT_A: f64 = 65.0;
 
     fn clock_at(h: u32, m: u32) -> FixedClock {
         let nt = NaiveDate::from_ymd_opt(2026, 4, 21)
@@ -433,7 +441,7 @@ mod tests {
     fn zappi_active_true_propagates_to_debug() {
         let mut input = base_input();
         input.globals.zappi_active = true;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(out.debug.zappi_active);
     }
 
@@ -455,7 +463,7 @@ mod tests {
         // zappi_active is independently supplied; debug should still
         // report the wait-timeout derived locally from state.
         input.globals.zappi_active = false;
-        let out = evaluate_current_limit(&input, &clk);
+        let out = evaluate_current_limit(&input, &clk, &hw());
         assert!(out.debug.zappi_wait_timeout);
     }
 
@@ -466,7 +474,7 @@ mod tests {
     #[test]
     fn daytime_with_no_zappi_allows_full_grid() {
         let input = base_input();
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!((out.input_current_limit - 65.0).abs() < f64::EPSILON);
     }
 
@@ -479,7 +487,7 @@ mod tests {
         input.grid_voltage = 230.0;
         input.zappi_current = 5.0;
         input.globals.zappi_active = true;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         // available_pv = 3000 - 500 = 2500; /230 ≈ 10.87; clamped [0,65]
         assert!(out.input_current_limit > 0.0);
         assert!(out.input_current_limit < MAX_GRID_CURRENT_A);
@@ -490,7 +498,7 @@ mod tests {
     fn boost_window_with_battery_charging_uses_fitted_current() {
         let mut input = base_input();
         input.battery_power = 1000.0; // charging
-        let out = evaluate_current_limit(&input, &clock_at(3, 0));
+        let out = evaluate_current_limit(&input, &clock_at(3, 0), &hw());
         assert_eq!(out.debug.tariff, TariffBand::BOOST);
         assert!(out.input_current_limit > 0.0);
         assert!(out.input_current_limit <= MAX_GRID_CURRENT_A);
@@ -503,7 +511,7 @@ mod tests {
         input.offgrid_current = 3.0;
         input.zappi_current = 5.0;
         input.globals.zappi_active = true;
-        let out = evaluate_current_limit(&input, &clock_at(3, 0));
+        let out = evaluate_current_limit(&input, &clock_at(3, 0), &hw());
         assert!((out.input_current_limit - 3.0).abs() < f64::EPSILON);
     }
 
@@ -513,14 +521,14 @@ mod tests {
         input.battery_power = 0.0;
         input.globals.disable_night_grid_discharge = true;
         input.offgrid_current = 4.0;
-        let out = evaluate_current_limit(&input, &clock_at(3, 30));
+        let out = evaluate_current_limit(&input, &clock_at(3, 30), &hw());
         assert!((out.input_current_limit - 4.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn extended_night_disabled_allows_full_grid() {
         let input = base_input();
-        let out = evaluate_current_limit(&input, &clock_at(6, 30));
+        let out = evaluate_current_limit(&input, &clock_at(6, 30), &hw());
         assert_eq!(out.debug.tariff, TariffBand::NIGHT_EXTENDED);
         assert!((out.input_current_limit - 65.0).abs() < f64::EPSILON);
     }
@@ -530,7 +538,7 @@ mod tests {
         let mut input = base_input();
         input.globals.extended_charge_required = true;
         input.battery_power = 500.0; // charging
-        let out = evaluate_current_limit(&input, &clock_at(6, 30));
+        let out = evaluate_current_limit(&input, &clock_at(6, 30), &hw());
         assert!(out.input_current_limit > 0.0);
         assert!(out.input_current_limit <= MAX_GRID_CURRENT_A);
     }
@@ -540,7 +548,7 @@ mod tests {
         let mut input = base_input();
         input.globals.disable_night_grid_discharge = true;
         input.offgrid_current = 5.0;
-        let out = evaluate_current_limit(&input, &clock_at(6, 0));
+        let out = evaluate_current_limit(&input, &clock_at(6, 0), &hw());
         assert!((out.input_current_limit - 5.0).abs() < f64::EPSILON);
     }
 
@@ -554,7 +562,7 @@ mod tests {
         // Offgrid_current of 1000 to try to push limit out of range
         input.offgrid_current = 1000.0;
         input.globals.disable_night_grid_discharge = true;
-        let out = evaluate_current_limit(&input, &clock_at(6, 0));
+        let out = evaluate_current_limit(&input, &clock_at(6, 0), &hw());
         assert!(out.input_current_limit >= 0.0);
         assert!(out.input_current_limit <= MAX_GRID_CURRENT_A);
     }
@@ -563,20 +571,20 @@ mod tests {
     fn prev_ess_state_updates_on_change_ignoring_9() {
         let mut input = base_input();
         // First call: ess_state moves from 10 → 10 (no change, keeps prev 10)
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert_eq!(out.bookkeeping.prev_ess_state, Some(10));
 
         // Second call: ess_state moves 10 → 9 (override state — ignored,
         // prev should stay at 10)
         input.ess_state = 9;
         input.globals.prev_ess_state = Some(10);
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert_eq!(out.bookkeeping.prev_ess_state, Some(10));
 
         // Third call: ess_state moves 9 → 5 (new non-9 value captured)
         input.ess_state = 5;
         input.globals.prev_ess_state = Some(10);
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert_eq!(out.bookkeeping.prev_ess_state, Some(5));
     }
 
@@ -588,7 +596,7 @@ mod tests {
         // The debug field is still populated for dashboard parity.
         let mut input = base_input();
         input.globals.zappi_active = true;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(out.debug.zappi_active);
     }
 
@@ -613,7 +621,7 @@ mod tests {
         input.zappi_current = 9.5;
         input.globals.zappi_active = true;
         input.battery_power = 1000.0; // charging, so fitted target is used
-        let out = evaluate_current_limit(&input, &clk);
+        let out = evaluate_current_limit(&input, &clk, &hw());
         // max_system_current becomes 65 - 9.5 = 55.5
         assert!((out.debug.max_system_current - 55.5).abs() < 0.01);
         assert!(out.input_current_limit <= 55.5);
@@ -639,11 +647,11 @@ mod tests {
         input.battery_power = 1000.0;
         input.consumption_power = 1000.0;
         input.offgrid_power = 0.0;
-        let out_ramping = evaluate_current_limit(&input, &clk);
+        let out_ramping = evaluate_current_limit(&input, &clk, &hw());
 
         // Change to zappi_amps above threshold to disable margin
         input.zappi_current = 9.5;
-        let out_steady = evaluate_current_limit(&input, &clk);
+        let out_steady = evaluate_current_limit(&input, &clk, &hw());
 
         assert!(
             out_ramping.input_current_limit <= out_steady.input_current_limit + 0.001,
@@ -673,7 +681,7 @@ mod tests {
         input.offgrid_power = 500.0;
         input.zappi_current = 5.0;
         input.globals.zappi_active = true; // force PV branch
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(out.input_current_limit.is_finite());
         assert!(out.debug.grid_current.is_finite());
         assert!(out.debug.available_pv_power_as_gridside_amps.is_finite());
@@ -691,7 +699,7 @@ mod tests {
         let mut input = base_input();
         input.grid_voltage = 240.0;
         input.grid_power = 2400.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(!has_factor(&out.decision, "grid_v_fallback"));
         // Pre-PR arithmetic: grid_current = 2400 / 240 = 10.0
         assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
@@ -702,7 +710,7 @@ mod tests {
         let mut input = base_input();
         input.grid_voltage = f64::NAN;
         input.grid_power = 1000.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(out.input_current_limit.is_finite());
         assert!(has_factor(&out.decision, "grid_v_fallback"));
     }
@@ -713,7 +721,7 @@ mod tests {
         // ("just below threshold") matches the post-PR-02 207 V floor.
         let mut input = base_input();
         input.grid_voltage = 205.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(has_factor(&out.decision, "grid_v_fallback"));
     }
 
@@ -723,7 +731,7 @@ mod tests {
         let mut input = base_input();
         input.grid_voltage = 207.0;
         input.grid_power = 2070.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(!has_factor(&out.decision, "grid_v_fallback"));
         // grid_current = 2070 / 207.0 = 10.0
         assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
@@ -735,7 +743,7 @@ mod tests {
         let mut input = base_input();
         input.grid_voltage = 260.0;
         input.grid_power = 2600.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(!has_factor(&out.decision, "grid_v_fallback"));
         assert!((out.debug.grid_current - 10.0).abs() < f64::EPSILON);
     }
@@ -746,7 +754,7 @@ mod tests {
         let mut input = base_input();
         input.grid_voltage = 270.0;
         input.grid_power = 2300.0;
-        let out = evaluate_current_limit(&input, &clock_at(12, 0));
+        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
         assert!(has_factor(&out.decision, "grid_v_fallback"));
         // grid_current uses 230.0 V nominal
         let expected_current = input.grid_power / 230.0;
