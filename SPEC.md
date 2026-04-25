@@ -145,8 +145,10 @@ Fallback defaults encoded in the legacy parsers (preserved as **legacy baselines
 | `full_charge_export_soc_threshold` | 100 | 0..100 |
 | `charge_car_{extended,boost}` | `false` | bool |
 | `weathersoc_winter_temperature_threshold` | 12 | 0..100 °C |
-| `weathersoc_{low,ok}_energy_threshold` | 12 / 20 | 0..1000 kWh |
-| `weathersoc_{high,too_much}_energy_threshold` | 80 / 80 | 0..1000 kWh |
+| `weathersoc_{low,ok}_energy_threshold` | 8 / 15 | 0..1000 kWh |
+| `weathersoc_{high,too_much}_energy_threshold` | 30 / 45 | 0..1000 kWh |
+
+The energy-band defaults (low / ok / high / too_much = 8 / 15 / 30 / 45 kWh) are calibrated for the user's installation — peak good-day forecast ≈ 50 kWh. The legacy Node-RED values (12 / 20 / 80 / 80) were tuned for a much larger installation; under those defaults a 52 kWh forecast still fell into the `≤ high` rung and triggered `disable_export(threshold=100)`, pinning the controller at idle 10 W on what should have been a heavy-export day. Updated 2026-04-25 after live observation. Operators with materially different install sizes should re-tune.
 
 ### 3.7. Global state inventory
 
@@ -446,10 +448,10 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `eddi_disable_soc` | `94` | **NEW** |
 | `eddi_dwell_s` | `60` | **NEW** |
 | `weathersoc_winter_temperature_threshold` | `12` °C | |
-| `weathersoc_low_energy_threshold` | `12` kWh | |
-| `weathersoc_ok_energy_threshold` | `20` kWh | |
-| `weathersoc_high_energy_threshold` | `80` kWh | |
-| `weathersoc_too_much_energy_threshold` | `80` kWh | |
+| `weathersoc_low_energy_threshold` | `8` kWh | Updated 2026-04-25 (was 12 kWh, NR legacy) |
+| `weathersoc_ok_energy_threshold` | `15` kWh | Updated 2026-04-25 (was 20 kWh, NR legacy) |
+| `weathersoc_high_energy_threshold` | `30` kWh | Updated 2026-04-25 (was 80 kWh, NR legacy) — see §3.6 sizing rationale |
+| `weathersoc_too_much_energy_threshold` | `45` kWh | Updated 2026-04-25 (was 80 kWh, NR legacy) |
 | `writes_enabled` | `false` (G3: safe cold-start; see `Knobs::safe_defaults` in `crates/core/src/knobs.rs`) | |
 | `forecast_disagreement_strategy` | `solcast_if_available_else_mean` | |
 

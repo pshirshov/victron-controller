@@ -153,10 +153,19 @@ impl Knobs {
             eddi_disable_soc: 94.0,
             eddi_dwell_s: 60,
             weathersoc_winter_temperature_threshold: 12.0,
-            weathersoc_low_energy_threshold: 12.0,
-            weathersoc_ok_energy_threshold: 20.0,
-            weathersoc_high_energy_threshold: 80.0,
-            weathersoc_too_much_energy_threshold: 80.0,
+            // Energy-band thresholds calibrated for the user's
+            // installation (peak ~50 kWh good-day forecast). The Node-RED
+            // legacy values (12/20/80/80) were tuned for a much larger
+            // installation; defaulting to those left every day below the
+            // 80 kWh "high" rung, which fires `disable_export` and pins
+            // `export_soc_threshold = 100` — the controller would then
+            // hold at idle 10 W on a sunny 52 kWh forecast day. Updated
+            // 2026-04-25 after live observation; SPEC §3.4 documents the
+            // sizing rationale.
+            weathersoc_low_energy_threshold: 8.0,
+            weathersoc_ok_energy_threshold: 15.0,
+            weathersoc_high_energy_threshold: 30.0,
+            weathersoc_too_much_energy_threshold: 45.0,
             // Safe cold-start: no actuation effects until either a
             // retained MQTT `<root>/writes_enabled/state = true` seeds us
             // or a user flips the kill switch explicitly from the
