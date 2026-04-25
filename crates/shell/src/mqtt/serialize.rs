@@ -12,8 +12,11 @@ use tracing::warn;
 use victron_controller_core::knobs::{
     ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
 };
+#[cfg(test)]
+use victron_controller_core::tass::Freshness;
 use victron_controller_core::types::{
-    ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue, PublishPayload,
+    ActuatedId, BookkeepingKey, BookkeepingValue, Command, Event, KnobId, KnobValue,
+    PublishPayload, SensorId, encode_sensor_body,
 };
 use victron_controller_core::Owner;
 
@@ -41,7 +44,44 @@ pub fn encode_publish_payload(p: &PublishPayload) -> Option<(String, String, boo
             let body = encode_bookkeeping_value(*value);
             Some((format!("bookkeeping/{name}/state"), body, true))
         }
+        // PR-ha-discovery-expand: scalar sensors. Body encoding lives
+        // in core's `encode_sensor_body` so the SensorBroadcastCore
+        // dedup cache and this wire encoder cannot drift.
+        PublishPayload::Sensor { id, value, freshness } => {
+            let name = sensor_name(*id);
+            let body = encode_sensor_body(*value, *freshness);
+            Some((format!("sensor/{name}/state"), body, true))
+        }
+        PublishPayload::BookkeepingNumeric { id, value } => {
+            let name = id.name();
+            Some((
+                format!("bookkeeping/{name}/state"),
+                format_sensor_value(*value),
+                true,
+            ))
+        }
+        PublishPayload::BookkeepingBool { id, value } => {
+            let name = id.name();
+            let body = if *value { "true" } else { "false" }.to_string();
+            Some((format!("bookkeeping/{name}/state"), body, true))
+        }
     }
+}
+
+/// Format a sensor / bookkeeping numeric for the wire. Trims pointless
+/// trailing zeros via `f64::Display` (e.g. `42.0` → `"42"`, `42.5`
+/// → `"42.5"`). Keeps three decimals for finer-grained values
+/// (`1234.5678` → `"1234.568"`) so HA's number formatting has signal
+/// without flooding bytes for whole-number readings.
+fn format_sensor_value(v: f64) -> String {
+    if !v.is_finite() {
+        return "unavailable".to_string();
+    }
+    // f64::Display already drops `.0` for integer-valued floats
+    // and uses the shortest round-trip form otherwise. Cap at three
+    // decimals to keep the wire size small for fast-path sensors.
+    let rounded = (v * 1000.0).round() / 1000.0;
+    format!("{rounded}")
 }
 
 /// Decode an incoming MQTT `<root>/knob/<name>/set` or
@@ -229,6 +269,35 @@ fn bookkeeping_name(k: BookkeepingKey) -> &'static str {
         BookkeepingKey::NextFullCharge => "next_full_charge",
         BookkeepingKey::AboveSocDate => "above_soc_date",
         BookkeepingKey::PrevEssState => "prev_ess_state",
+    }
+}
+
+/// PR-ha-discovery-expand: stable `snake_case` topic-tail name for each
+/// sensor. Mirrors the `Sensors`-struct field names in
+/// `crates/core/src/world.rs`. See the topic taxonomy comment at the
+/// top of `crates/shell/src/mqtt/discovery.rs`.
+pub(crate) fn sensor_name(id: SensorId) -> &'static str {
+    match id {
+        SensorId::BatterySoc => "battery_soc",
+        SensorId::BatterySoh => "battery_soh",
+        SensorId::BatteryInstalledCapacity => "battery_installed_capacity",
+        SensorId::BatteryDcPower => "battery_dc_power",
+        SensorId::MpptPower0 => "mppt_power_0",
+        SensorId::MpptPower1 => "mppt_power_1",
+        SensorId::SoltaroPower => "soltaro_power",
+        SensorId::PowerConsumption => "power_consumption",
+        SensorId::GridPower => "grid_power",
+        SensorId::GridVoltage => "grid_voltage",
+        SensorId::GridCurrent => "grid_current",
+        SensorId::ConsumptionCurrent => "consumption_current",
+        SensorId::OffgridPower => "offgrid_power",
+        SensorId::OffgridCurrent => "offgrid_current",
+        SensorId::VebusInputCurrent => "vebus_input_current",
+        SensorId::EvchargerAcPower => "evcharger_ac_power",
+        SensorId::EvchargerAcCurrent => "evcharger_ac_current",
+        SensorId::EssState => "ess_state",
+        SensorId::OutdoorTemperature => "outdoor_temperature",
+        SensorId::SessionKwh => "session_kwh",
     }
 }
 
@@ -478,6 +547,7 @@ fn encode_bookkeeping_value(v: BookkeepingValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use victron_controller_core::types::BookkeepingId;
 
     // ------------------------------------------------------------------
     // Knob → wire
@@ -949,6 +1019,97 @@ mod tests {
                 "exact-boundary value {body:?} rejected for {id:?}"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ha-discovery-expand: Sensor / BookkeepingNumeric / BookkeepingBool
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn encode_sensor_stale_is_unavailable() {
+        let p = PublishPayload::Sensor {
+            id: SensorId::BatterySoc,
+            value: Some(75.0),
+            freshness: Freshness::Stale,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "sensor/battery_soc/state");
+        assert_eq!(b, "unavailable");
+        assert!(r);
+    }
+
+    #[test]
+    fn encode_sensor_unknown_is_unavailable() {
+        let p = PublishPayload::Sensor {
+            id: SensorId::GridPower,
+            value: None,
+            freshness: Freshness::Unknown,
+        };
+        let (_, b, _) = encode_publish_payload(&p).unwrap();
+        assert_eq!(b, "unavailable");
+    }
+
+    #[test]
+    fn encode_sensor_fresh_emits_numeric() {
+        let p = PublishPayload::Sensor {
+            id: SensorId::OutdoorTemperature,
+            value: Some(42.5),
+            freshness: Freshness::Fresh,
+        };
+        let (t, b, _) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "sensor/outdoor_temperature/state");
+        assert_eq!(b, "42.5");
+    }
+
+    #[test]
+    fn encode_sensor_fresh_integer_drops_zero() {
+        // f64::Display drops `.0` for integer-valued floats so HA sees
+        // a clean "75" rather than "75.000".
+        let p = PublishPayload::Sensor {
+            id: SensorId::BatterySoc,
+            value: Some(75.0),
+            freshness: Freshness::Fresh,
+        };
+        let (_, b, _) = encode_publish_payload(&p).unwrap();
+        assert_eq!(b, "75");
+    }
+
+    #[test]
+    fn encode_bookkeeping_bool_true_false() {
+        let (t, b, r) = encode_publish_payload(&PublishPayload::BookkeepingBool {
+            id: BookkeepingId::ZappiActive,
+            value: true,
+        })
+        .unwrap();
+        assert_eq!(t, "bookkeeping/zappi_active/state");
+        assert_eq!(b, "true");
+        assert!(r);
+
+        let (_, b, _) = encode_publish_payload(&PublishPayload::BookkeepingBool {
+            id: BookkeepingId::ChargeToFullRequired,
+            value: false,
+        })
+        .unwrap();
+        assert_eq!(b, "false");
+    }
+
+    #[test]
+    fn encode_bookkeeping_numeric_formats_value() {
+        let (t, b, _) = encode_publish_payload(&PublishPayload::BookkeepingNumeric {
+            id: BookkeepingId::SocEndOfDayTarget,
+            value: 75.0,
+        })
+        .unwrap();
+        assert_eq!(t, "bookkeeping/soc_end_of_day_target/state");
+        // Integer-valued float drops `.0` per `f64::Display`.
+        assert_eq!(b, "75");
+
+        let (_, b, _) = encode_publish_payload(&PublishPayload::BookkeepingNumeric {
+            id: BookkeepingId::EffectiveExportSocThreshold,
+            value: 87.5,
+        })
+        .unwrap();
+        assert_eq!(b, "87.5");
     }
 
     #[test]

@@ -35,6 +35,11 @@ pub enum CoreId {
     ZappiMode,
     EddiMode,
     WeatherSoc,
+
+    // Observability — must run AFTER every actuator core so the
+    // broadcast sees the latest derived/bookkeeping state. PR-ha-
+    // discovery-expand.
+    SensorBroadcast,
 }
 
 impl CoreId {
@@ -50,6 +55,7 @@ impl CoreId {
             Self::ZappiMode => "zappi_mode",
             Self::EddiMode => "eddi_mode",
             Self::WeatherSoc => "weather_soc",
+            Self::SensorBroadcast => "sensor_broadcast",
         }
     }
 }

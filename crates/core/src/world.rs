@@ -7,7 +7,7 @@ use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
-use crate::types::{Decision, ForecastProvider};
+use crate::types::{BookkeepingId, Decision, ForecastProvider, SensorId};
 
 /// All scalar sensor readings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +38,37 @@ pub struct Sensors {
 }
 
 impl Sensors {
+    /// Read the `Actual<f64>` for a given sensor id. Single source of
+    /// truth for the `SensorId → world.sensors.<field>` mapping; mirrors
+    /// the per-arm match in `apply_sensor_reading` (process.rs) and the
+    /// freshness-decay loop in `apply_tick`. Used by
+    /// `SensorBroadcastCore` to publish every sensor uniformly.
+    #[must_use]
+    pub fn by_id(&self, id: SensorId) -> Actual<f64> {
+        match id {
+            SensorId::BatterySoc => self.battery_soc,
+            SensorId::BatterySoh => self.battery_soh,
+            SensorId::BatteryInstalledCapacity => self.battery_installed_capacity,
+            SensorId::BatteryDcPower => self.battery_dc_power,
+            SensorId::MpptPower0 => self.mppt_power_0,
+            SensorId::MpptPower1 => self.mppt_power_1,
+            SensorId::SoltaroPower => self.soltaro_power,
+            SensorId::PowerConsumption => self.power_consumption,
+            SensorId::GridPower => self.grid_power,
+            SensorId::GridVoltage => self.grid_voltage,
+            SensorId::GridCurrent => self.grid_current,
+            SensorId::ConsumptionCurrent => self.consumption_current,
+            SensorId::OffgridPower => self.offgrid_power,
+            SensorId::OffgridCurrent => self.offgrid_current,
+            SensorId::VebusInputCurrent => self.vebus_input_current,
+            SensorId::EvchargerAcPower => self.evcharger_ac_power,
+            SensorId::EvchargerAcCurrent => self.evcharger_ac_current,
+            SensorId::EssState => self.ess_state,
+            SensorId::OutdoorTemperature => self.outdoor_temperature,
+            SensorId::SessionKwh => self.session_kwh,
+        }
+    }
+
     #[must_use]
     pub fn unknown(now: Instant) -> Self {
         Self {
@@ -228,6 +259,28 @@ impl KnobProvenance {
     }
 }
 
+/// PR-ha-discovery-expand: per-sensor + per-bookkeeping last-published
+/// snapshot, used by `SensorBroadcastCore` to skip republishing
+/// identical values every tick. Without this, ~28 retained MQTT
+/// publishes/s would hit FlashMQ's republish ceiling and saturate the
+/// rumqttc request queue.
+///
+/// Equality semantics:
+/// - Sensors compare both `value` (with bit-exact `f64::to_bits` to
+///   the encoded WIRE BODY (PR-ha-discovery-D03/D04). This collapses two
+///   cases that bit-equality misses: numeric formatter rounding (e.g.
+///   `42.0001` and `42.0002` both render as `"42"`) and the
+///   `(Fresh, None)` vs `(Stale, None)` pair which both encode to
+///   `"unavailable"`. Invariant: "publish iff the wire body changes".
+/// - Numeric bookkeeping compares bit-exact f64.
+/// - Bool bookkeeping compares directly.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PublishedCache {
+    pub sensors: std::collections::HashMap<SensorId, String>,
+    pub bookkeeping_numeric: std::collections::HashMap<BookkeepingId, u64>,
+    pub bookkeeping_bool: std::collections::HashMap<BookkeepingId, bool>,
+}
+
 /// Top-level world state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
@@ -262,6 +315,11 @@ pub struct World {
     /// by `CoreRegistry::run_all` after each core runs; consumed by
     /// `dashboard::convert::world_to_snapshot`. PR-tass-dag-view.
     pub cores_state: CoresState,
+
+    /// PR-ha-discovery-expand: per-id last-published snapshot driving
+    /// publish-on-change for the `SensorBroadcastCore`. Pure
+    /// observability; no controller reads from this.
+    pub published_cache: PublishedCache,
 }
 
 impl World {
@@ -284,6 +342,7 @@ impl World {
             derived: DerivedState::default(),
             decisions: Decisions::default(),
             cores_state: CoresState::default(),
+            published_cache: PublishedCache::default(),
         }
     }
 }

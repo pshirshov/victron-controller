@@ -6,6 +6,7 @@
 //! `process`. Correspondingly, all `Effect`s are typed; the shell
 //! serialises them back to wire format when executing.
 
+use crate::Freshness;
 use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::{
     ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy,
@@ -561,6 +562,97 @@ pub enum PublishPayload {
     },
     KillSwitch(bool),
     Bookkeeping(BookkeepingKey, BookkeepingValue),
+    /// PR-ha-discovery-expand: scalar sensor publish for HA / dashboard
+    /// consumption. Stale and Unknown freshness are encoded as
+    /// `"unavailable"` on the wire (HA convention) — see
+    /// `mqtt::serialize::encode_publish_payload`. Dedup'd by
+    /// `World::last_published_sensors` so quiet sensors don't republish
+    /// every tick.
+    Sensor {
+        id: SensorId,
+        value: Option<f64>,
+        freshness: crate::tass::Freshness,
+    },
+    /// PR-ha-discovery-expand: numeric bookkeeping publish (always
+    /// meaningful — no Stale handling).
+    BookkeepingNumeric {
+        id: BookkeepingId,
+        value: f64,
+    },
+    /// PR-ha-discovery-expand: boolean bookkeeping publish.
+    BookkeepingBool {
+        id: BookkeepingId,
+        value: bool,
+    },
+}
+
+/// Identifiers for the controller-relevant bookkeeping fields surfaced
+/// on MQTT for HA discovery (PR-ha-discovery-expand).
+///
+/// Distinct from `BookkeepingKey`: that enum identifies the persisted
+/// retained state restored at boot (date-shaped fields included). This
+/// enum identifies the live observability slice published to HA every
+/// tick — only the seven fields the audit deemed worth exposing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BookkeepingId {
+    /// Bool. Mirrors `world.derived.zappi_active`.
+    ZappiActive,
+    /// Bool. `world.bookkeeping.charge_to_full_required`.
+    ChargeToFullRequired,
+    /// Bool. `world.bookkeeping.charge_battery_extended_today`.
+    ChargeBatteryExtendedToday,
+    /// %. `world.bookkeeping.soc_end_of_day_target`.
+    SocEndOfDayTarget,
+    /// %. `world.bookkeeping.effective_export_soc_threshold`.
+    EffectiveExportSocThreshold,
+    /// %. `world.bookkeeping.battery_selected_soc_target`.
+    BatterySelectedSocTarget,
+    // PR-ha-discovery-D01 (resolved): `prev_ess_state` was originally
+    // surfaced here too, but `BookkeepingKey::PrevEssState` already owns
+    // `bookkeeping/prev_ess_state/state` for the persistence path. Two
+    // writers on the same retained topic with different body formats
+    // (canonical "null"/int vs plain f64) would scramble restore. The
+    // ESS state code is also low-value as an HA entity. Skip HA exposure
+    // entirely and let the persistence path remain the sole writer.
+}
+
+impl BookkeepingId {
+    /// Stable `snake_case` topic-tail name. Mirrors the wire taxonomy
+    /// at the top of `crates/shell/src/mqtt/discovery.rs`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ZappiActive => "zappi_active",
+            Self::ChargeToFullRequired => "charge_to_full_required",
+            Self::ChargeBatteryExtendedToday => "charge_battery_extended_today",
+            Self::SocEndOfDayTarget => "soc_end_of_day_target",
+            Self::EffectiveExportSocThreshold => "effective_export_soc_threshold",
+            Self::BatterySelectedSocTarget => "battery_selected_soc_target",
+        }
+    }
+}
+
+/// Encode a sensor's wire body for the HA `state` topic. Single source
+/// of truth for both the publish encoder (shell) and the
+/// SensorBroadcastCore dedup cache (core). When `freshness` is anything
+/// other than `Fresh`, OR `value` is `None` / non-finite, the body is
+/// the literal `"unavailable"` (HA convention). Otherwise the value is
+/// rounded to 3 decimals and formatted via `f64::Display`, which drops
+/// pointless trailing zeros (`42.0` → `"42"`, `42.5` → `"42.5"`).
+///
+/// PR-ha-discovery-D03/D04: dedup on the encoded body avoids
+/// re-publishing identical wire content when raw `f64::to_bits` differs
+/// (sub-millisecond noise that rounds away) or when freshness flips
+/// among states that all encode to `"unavailable"`.
+#[must_use]
+pub fn encode_sensor_body(value: Option<f64>, freshness: Freshness) -> String {
+    match (freshness, value) {
+        (Freshness::Fresh, Some(v)) if v.is_finite() => {
+            let rounded = (v * 1000.0).round() / 1000.0;
+            format!("{rounded}")
+        }
+        _ => "unavailable".to_string(),
+    }
 }
 
 /// Keys for persistent bookkeeping state. Published to retained MQTT so

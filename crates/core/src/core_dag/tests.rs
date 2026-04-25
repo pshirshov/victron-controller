@@ -57,6 +57,7 @@ const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
     CoreId::ZappiMode,
     CoreId::EddiMode,
     CoreId::WeatherSoc,
+    CoreId::SensorBroadcast,
 ];
 
 #[test]
@@ -415,6 +416,150 @@ mod d02_boundary_consistency {
              delta_min under WAIT_TIMEOUT_MIN (zappi_active=true). Got \
              false — the boundary wasn't straddled, so this test is \
              not exercising the regression.",
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
+// PR-ha-discovery-expand — SensorBroadcastCore behaviour.
+// -----------------------------------------------------------------------------
+
+mod sensor_broadcast {
+    use std::time::Instant;
+
+    use chrono::NaiveDate;
+
+    use crate::clock::FixedClock;
+    use crate::core_dag::Core;
+    use crate::core_dag::cores::SensorBroadcastCore;
+    use crate::topology::Topology;
+    use crate::types::{Effect, PublishPayload, SensorId};
+    use crate::world::World;
+
+    // `SensorId::ALL.len()` (20 today) sensor publishes plus 4 numeric
+    // + 3 boolean bookkeeping publishes on the first run with a
+    // fresh-boot world (every cache slot is absent → first-write emits
+    // the value). 20 + 4 + 3 = 27.
+    // 20 sensors + 3 numeric bookkeeping (PrevEssState dropped per
+    // PR-ha-discovery-D01) + 3 bool bookkeeping = 26.
+    const EXPECTED_FIRST_RUN_EFFECTS: usize = 20 + 3 + 3;
+
+    fn fixed_clock() -> FixedClock {
+        let mono = Instant::now();
+        let naive = NaiveDate::from_ymd_opt(2026, 4, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        FixedClock::new(mono, naive)
+    }
+
+    #[test]
+    fn first_run_emits_one_publish_per_published_id() {
+        let clk = fixed_clock();
+        let mut world = World::fresh_boot(clk.monotonic);
+        let topo = Topology::defaults();
+        let mut effects: Vec<Effect> = Vec::new();
+
+        SensorBroadcastCore.run(&mut world, &clk, &topo, &mut effects);
+
+        let publishes = effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(
+                        PublishPayload::Sensor { .. }
+                            | PublishPayload::BookkeepingNumeric { .. }
+                            | PublishPayload::BookkeepingBool { .. },
+                    )
+                )
+            })
+            .count();
+        assert_eq!(
+            publishes, EXPECTED_FIRST_RUN_EFFECTS,
+            "first run should emit one publish per sensor + per published \
+             bookkeeping field; got {publishes}, expected {EXPECTED_FIRST_RUN_EFFECTS}",
+        );
+        // SensorId::ALL coverage check: every sensor must have at least
+        // one Publish(Sensor{id}) for its id.
+        for &id in SensorId::ALL {
+            let hit = effects.iter().any(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(PublishPayload::Sensor { id: i, .. }) if *i == id
+                )
+            });
+            assert!(hit, "missing Publish(Sensor) for {id:?}");
+        }
+    }
+
+    #[test]
+    fn second_run_with_unchanged_world_emits_zero_publishes() {
+        // Dedup contract: a republish is only triggered by a change in
+        // (value, freshness) for sensors or value for bookkeeping.
+        // Two consecutive runs against the same world MUST produce
+        // zero publishes on the second run, otherwise FlashMQ's
+        // republish ceiling triggers under steady-state ticks.
+        let clk = fixed_clock();
+        let mut world = World::fresh_boot(clk.monotonic);
+        let topo = Topology::defaults();
+
+        let mut first: Vec<Effect> = Vec::new();
+        SensorBroadcastCore.run(&mut world, &clk, &topo, &mut first);
+        assert!(!first.is_empty(), "first run should not be empty");
+
+        let mut second: Vec<Effect> = Vec::new();
+        SensorBroadcastCore.run(&mut world, &clk, &topo, &mut second);
+        let publishes = second
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(
+                        PublishPayload::Sensor { .. }
+                            | PublishPayload::BookkeepingNumeric { .. }
+                            | PublishPayload::BookkeepingBool { .. },
+                    )
+                )
+            })
+            .count();
+        assert_eq!(
+            publishes, 0,
+            "second run with unchanged world must emit zero publishes; got {publishes}",
+        );
+    }
+
+    #[test]
+    fn changed_sensor_value_triggers_one_republish() {
+        // A single sensor value change must produce exactly one
+        // Publish(Sensor) — confirms the dedup is per-id, not all-or-
+        // nothing.
+        let clk = fixed_clock();
+        let mut world = World::fresh_boot(clk.monotonic);
+        let topo = Topology::defaults();
+
+        let mut first: Vec<Effect> = Vec::new();
+        SensorBroadcastCore.run(&mut world, &clk, &topo, &mut first);
+
+        // Change a single sensor.
+        world
+            .sensors
+            .battery_soc
+            .on_reading(75.0, clk.monotonic);
+
+        let mut second: Vec<Effect> = Vec::new();
+        SensorBroadcastCore.run(&mut world, &clk, &topo, &mut second);
+        let sensor_publishes: Vec<_> = second
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Publish(PublishPayload::Sensor { id, .. }) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sensor_publishes,
+            vec![SensorId::BatterySoc],
+            "exactly one sensor publish for BatterySoc expected; got {sensor_publishes:?}",
         );
     }
 }

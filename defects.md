@@ -1306,3 +1306,48 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** repo root
 **Description:** PR existed only as uncommitted working-tree changes when reviewed.
 **Fix:** Committed.
+
+---
+
+## PR-ha-discovery-expand — Review round 1 (executor `a61f72925dfe68ee0`, reviewer `af8bfb36d74d8890b`)
+
+### [PR-ha-discovery-D01] State-topic collision: two writers on `bookkeeping/prev_ess_state/state`
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/mqtt/serialize.rs:41` (`PublishPayload::Bookkeeping(BookkeepingKey::PrevEssState, …)`) vs `:60` (the new `PublishPayload::BookkeepingNumeric { id: PrevEssState, … }`)
+**Description:** `bookkeeping_name(BookkeepingKey::PrevEssState) == "prev_ess_state"` AND `BookkeepingId::PrevEssState.name() == "prev_ess_state"`. Both encoded to `bookkeeping/prev_ess_state/state` (retained). Persistence path writes the canonical `null`/int body via `encode_bookkeeping_value`; the new HA-broadcast path writes a plain `f64` (`0.0` when `Option<i32> = None`). Two emitters racing on the same retained topic; last writer wins per tick; `decode_state_message` would silently misparse on restart.
+**Fix:** Drop `BookkeepingId::PrevEssState` from the new HA dispatch entirely. The existing persistence path stays the sole writer of that topic. Rationale: ESS state code is low-value as an HA entity, and unifying body formats across two consumers would require touching the persistence schema. Updated `BookkeepingId` enum, `SensorBroadcastCore` numerics array (4 → 3), and `publish_bookkeeping` discovery loop. `EXPECTED_FIRST_RUN_EFFECTS` test constant: 27 → 26.
+
+### [PR-ha-discovery-D02] `None`-shaped `prev_ess_state` published as numeric `0`
+**Status:** resolved (subsumed by D01 — `prev_ess_state` no longer goes through the new path)
+**Severity:** minor
+**Location:** `crates/core/src/core_dag/cores.rs` (`prev_ess_f = world.bookkeeping.prev_ess_state.unwrap_or(0)`)
+**Description:** Doc claimed publish as `"null"` when None; code published `0.0` indistinguishable from real zero.
+**Fix:** Subsumed — the entire BookkeepingNumeric arm for `PrevEssState` is gone.
+
+### [PR-ha-discovery-D03] Numeric formatter quantises but dedup compares raw bits → noisy republishes
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs::format_sensor_value`; `crates/core/src/core_dag/cores.rs::SensorBroadcastCore::run` (sensor dedup)
+**Description:** `(v * 1000.0).round() / 1000.0` truncates anything finer than 0.001. Dedup cache used raw `f64::to_bits` of the un-rounded value, while the wire body was the rounded rendering. Two distinct raw values that round to the same string (e.g. `42.0001` vs `42.0002`) both republished even though HA received identical bodies — defeated steady-state dedup for noisy sensors.
+**Fix:** Dedup on the encoded WIRE BODY string. New `pub fn encode_sensor_body(value, freshness) -> String` in `crates/core/src/types.rs` is the single source of truth; both `SensorBroadcastCore` (cache key) and the shell-side `serialize.rs` (wire body) call it. The cache stores `HashMap<SensorId, String>`. Invariant: "publish iff the wire body changes".
+
+### [PR-ha-discovery-D04] Fresh+None vs Stale+None both encode `"unavailable"` but bit-dedup republishes on flip
+**Status:** resolved (subsumed by D03 — body-based dedup naturally handles this)
+**Severity:** minor
+**Location:** same as D03
+**Description:** Both `(Fresh, None)` and `(Stale, None)` (and `(Unknown, _)` etc.) encode to `"unavailable"`; old bit-dedup keyed on `(Option<u64>, Freshness)` would flap.
+**Fix:** Subsumed — `encode_sensor_body` cache key collapses all `unavailable`-encoded states to the same string.
+
+### [PR-ha-discovery-D05] `BatteryInstalledCapacity` HA `device_class` cosmetic mismatch
+**Status:** open (deferred — cosmetic; HA tolerates it)
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/discovery.rs::sensor_meta` `BatteryInstalledCapacity` arm
+**Description:** `state_class: measurement` on `device_class: energy_storage` is technically inert in HA's energy dashboard (which expects `total`). Not broken; the entity still renders.
+**Suggested fix:** Drop `device_class` for `BatteryInstalledCapacity` (no perfect HA class) or set `state_class: "total"`. Defer to a hygiene rollup.
+
+### [PR-ha-discovery-D06] Plan claimed 9 new tests; actual count is 8
+**Status:** resolved (note-only — the ninth test was a `BookkeepingNumeric` decimal-formatting case that the agent merged into `_integer_drops_zero`; coverage is equivalent)
+**Severity:** trivia
+**Location:** `crates/shell/src/mqtt/serialize.rs::tests`
+**Fix:** None — coverage is equivalent; plan-vs-implementation count discrepancy noted.

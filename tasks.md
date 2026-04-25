@@ -1004,13 +1004,20 @@ PR-tass-dag-view rides the same bump or its own minor follow-on.
   and would have panicked with `missing field 'session_kwh'` on real
   0.1.0 input. Fixed inline + regression test landed.
 
-- [ ] **PR-ha-discovery-expand** — Extend HA MQTT discovery beyond
-  knobs/phases. New: 21 `sensor` entities (19 D-Bus + outdoor_temp +
-  session_kwh) and 7 `sensor`/`binary_sensor` for controller-relevant
-  bookkeeping. Add `PublishPayload::Sensor` + `BookkeepingSensor`; new
-  `SensorBroadcastCore` (no `depends_on`; runs after derivations).
-  Stale → `"unavailable"` (HA convention). Depends on
-  PR-session-kwh-sensor.
+- [x] **PR-ha-discovery-expand** — Extended HA MQTT discovery beyond
+  knobs/phases. 20 `sensor` (19 D-Bus + outdoor_temp + session_kwh)
+  and 6 `sensor`/`binary_sensor` for controller-relevant bookkeeping
+  (D01: `prev_ess_state` dropped to avoid colliding with the existing
+  persistence path). 26 new discovery configs + 26 state topics; ~10
+  KB extra retained. New `PublishPayload::{Sensor, BookkeepingNumeric,
+  BookkeepingBool}` + `SensorBroadcastCore` (depends on `ZappiActive`
+  + `WeatherSoc`; runs last in topo order). Stale →
+  `"unavailable"` (HA convention) via the shared
+  `encode_sensor_body` helper in core. Dedup on encoded body string
+  (D03/D04: avoids noisy republishes from sub-mW rounding and
+  Fresh↔Stale flicker). Round 1 review: 6 defects (1 major, 1 minor
+  fixed; 2 minor subsumed; 1 nit deferred; 1 trivia). All blockers
+  closed.
 
 - [x] **PR-dashboard-ux** — Frontend-only. Items 2 + 3 + 5 from the
   user list: hover descriptions (70 entries); compact identifier-copy
