@@ -23,7 +23,7 @@ pub use process::process;
 pub use tass::{Actual, Actuated, Freshness, Target, TargetPhase, Timestamped};
 pub use topology::{ControllerParams, HardwareParams, Topology};
 pub use types::{
-    check_staleness_invariant, ActuatedId, ActuatedReadback, BookkeepingId, BookkeepingKey,
+    check_staleness_invariant, ActuatedId, BookkeepingId, BookkeepingKey,
     BookkeepingValue, Command, DbusTarget, DbusValue, Effect, Event, ForecastProvider,
     FreshnessRegime, KnobId, KnobValue, LogLevel, MyenergiAction, PublishPayload, ScheduleField,
     SensorId, SensorReading, TypedReading,

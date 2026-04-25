@@ -564,15 +564,16 @@ mod sensor_broadcast {
     use crate::types::{Effect, PublishPayload, SensorId};
     use crate::world::World;
 
-    // `SensorId::ALL.len()` (32 after PR-actuated-as-sensors PR-AS-A
-    // — 20 original + 14 actuated-mirror sensors) sensor publishes
-    // plus 3 numeric + 3 boolean bookkeeping publishes on the first
-    // run with a fresh-boot world (every cache slot is absent →
-    // first-write emits the value). The 14 new actuated-mirror
-    // sensors emit "unavailable" placeholders since the subscriber
-    // doesn't yet route to them; that's still a publish, dedup'd on
-    // subsequent runs by the body cache.
-    const EXPECTED_FIRST_RUN_EFFECTS: usize = 32 + 3 + 3;
+    // 20 original sensor publishes plus 3 numeric + 3 boolean
+    // bookkeeping publishes on the first run with a fresh-boot world
+    // (every cache slot is absent → first-write emits the value).
+    // PR-AS-C: the 12 actuated-mirror SensorId variants (grid setpoint
+    // actual + current limit actual + 10 schedule leaves) are filtered
+    // out of the broadcast iteration via `id.actuated_id().is_some()` —
+    // their values are surfaced via the dedicated `Actuated` table
+    // (`PublishPayload::ActuatedPhase`), so double-publishing them as
+    // sensors would clutter HA.
+    const EXPECTED_FIRST_RUN_EFFECTS: usize = 20 + 3 + 3;
 
     fn fixed_clock() -> FixedClock {
         let mono = Instant::now();
@@ -610,9 +611,14 @@ mod sensor_broadcast {
             "first run should emit one publish per sensor + per published \
              bookkeeping field; got {publishes}, expected {EXPECTED_FIRST_RUN_EFFECTS}",
         );
-        // SensorId::ALL coverage check: every sensor must have at least
-        // one Publish(Sensor{id}) for its id.
+        // SensorId::ALL coverage check: every non-actuated-mirror
+        // sensor must have at least one Publish(Sensor{id}) for its id.
+        // Actuated-mirror variants are intentionally skipped — see the
+        // EXPECTED_FIRST_RUN_EFFECTS comment above.
         for &id in SensorId::ALL {
+            if id.actuated_id().is_some() {
+                continue;
+            }
             let hit = effects.iter().any(|e| {
                 matches!(
                     e,

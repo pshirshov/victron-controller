@@ -225,6 +225,13 @@ async fn publish_phases(client: &AsyncClient, topic_root: &str) -> Result<usize>
 async fn publish_sensors(client: &AsyncClient, topic_root: &str) -> Result<usize> {
     let mut count = 0;
     for &id in SensorId::ALL {
+        // PR-AS-C: skip actuated-mirror variants — their values are
+        // surfaced via the dedicated `Actuated` HA entities
+        // (`PublishPayload::ActuatedPhase`), so re-publishing them as
+        // plain sensors would clutter discovery.
+        if id.actuated_id().is_some() {
+            continue;
+        }
         let name = sensor_name(id);
         let ha_name = ha_safe(name);
         let meta = sensor_meta(id);
@@ -336,11 +343,11 @@ struct SensorMeta {
     state_class: &'static str,
 }
 
-// `GridSetpointActual` (W) and `BatteryDcPower` (W) etc. share the same
-// SensorMeta body; clippy would have us merge them but the actuated-
-// mirror arm is added separately for documentation purposes — PR-AS-B/C
-// will likely filter these out of HA discovery anyway.
-#[allow(clippy::match_same_arms)]
+/// PR-AS-C: actuated-mirror `SensorId` variants are filtered out by
+/// `publish_sensors` before reaching this function — their HA entity
+/// surface lives under the actuated table (`PublishPayload::
+/// ActuatedPhase`), not the sensor table. Hitting this fallthrough
+/// indicates a missing filter at a caller.
 fn sensor_meta(id: SensorId) -> SensorMeta {
     use SensorId::*;
     match id {
@@ -386,23 +393,9 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             device_class: Some("energy"),
             state_class: "total_increasing",
         },
-        // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
-        // variants are not yet routed by the subscriber and have no HA
-        // entity surface today. Provide unit-less placeholders so the
-        // match remains exhaustive; PR-AS-B/C will revisit (likely
-        // gating these out of HA discovery entirely — the actuated
-        // entity already has its own published surface).
-        GridSetpointActual => SensorMeta {
-            unit: Some("W"),
-            device_class: Some("power"),
-            state_class: "measurement",
-        },
-        InputCurrentLimitActual => SensorMeta {
-            unit: Some("A"),
-            device_class: Some("current"),
-            state_class: "measurement",
-        },
-        Schedule0StartActual
+        GridSetpointActual
+        | InputCurrentLimitActual
+        | Schedule0StartActual
         | Schedule0DurationActual
         | Schedule0SocActual
         | Schedule0DaysActual
@@ -411,11 +404,10 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
         | Schedule1DurationActual
         | Schedule1SocActual
         | Schedule1DaysActual
-        | Schedule1AllowDischargeActual => SensorMeta {
-            unit: None,
-            device_class: None,
-            state_class: "measurement",
-        },
+        | Schedule1AllowDischargeActual => unreachable!(
+            "actuated-mirror SensorId {id:?} reached sensor_meta — caller \
+             must filter via id.actuated_id().is_some()"
+        ),
     }
 }
 

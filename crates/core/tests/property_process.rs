@@ -23,7 +23,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use proptest::prelude::*;
 
 use victron_controller_core::{
-    process, ActuatedReadback, Effect, Event, FixedClock, Freshness, Knobs, Owner, SensorId,
+    process, Effect, Event, FixedClock, Freshness, Knobs, Owner, SensorId,
     SensorReading, TargetPhase, Topology, World,
 };
 use victron_controller_core::myenergi::{ZappiMode, ZappiPlugState, ZappiState, ZappiStatus};
@@ -118,8 +118,12 @@ fn event_strategy(t0: Instant) -> impl Strategy<Value = Event> {
     prop_oneof![
         4 => sensor_strategy(t0).prop_map(Event::Sensor),
         2 => (0u64..600).prop_map(move |d| Event::Tick { at: t0 + Duration::from_secs(d) }),
-        1 => (-5000i32..5000, 0u64..600).prop_map(move |(v, d)| Event::Readback(
-            ActuatedReadback::GridSetpoint { value: v, at: t0 + Duration::from_secs(d) }
+        1 => (-5000i32..5000, 0u64..600).prop_map(move |(v, d)| Event::Sensor(
+            SensorReading {
+                id: SensorId::GridSetpointActual,
+                value: f64::from(v),
+                at: t0 + Duration::from_secs(d),
+            }
         )),
     ]
 }

@@ -661,7 +661,17 @@ impl Core for SensorBroadcastCore {
         //    flicker even though the wire value never changes.
         // The invariant we want is "publish iff the wire body differs",
         // so cache the body itself.
+        // PR-AS-C: skip actuated-mirror sensor variants. Their values
+        // are surfaced via the dedicated `Actuated` table (published
+        // through `PublishPayload::ActuatedPhase`); double-publishing
+        // them as plain sensors would clutter HA. The
+        // `actuated_id().is_some()` predicate is the single source of
+        // truth — any future actuated-mirror SensorId that classifies
+        // itself the same way is filtered automatically.
         for &id in SensorId::ALL {
+            if id.actuated_id().is_some() {
+                continue;
+            }
             let actual = world.sensors.by_id(id);
             let body = encode_sensor_body(actual.value, actual.freshness);
             let prev = world.published_cache.sensors.get(&id);

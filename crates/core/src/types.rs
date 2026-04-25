@@ -375,25 +375,25 @@ impl SensorId {
         }
     }
 
-    /// PR-actuated-as-sensors (PR-AS-A): the actuated entity this
-    /// sensor reading mirrors, if any. Used by the post-update hook in
-    /// `apply_sensor_reading` to drive `confirm_if(...)` on the
-    /// matching `world.<entity>.actual` slot. Returns `None` for plain
+    /// PR-actuated-as-sensors: the actuated entity this sensor
+    /// reading mirrors, if any. Returns `None` for plain (non-mirror)
     /// sensors.
     ///
-    /// Schedule leaf fields return `None` here because their readback
-    /// confirmation requires a complete `ScheduleSpec`; the rollup is
-    /// driven by `Event::ScheduleReadback` via the subscriber-side
-    /// accumulator.
+    /// Used in two places:
+    /// 1. The post-update hook in `apply_sensor_reading` drives
+    ///    `confirm_if(...)` on the matching `world.<entity>.actual`
+    ///    slot for scalar mirrors (`GridSetpoint`/`InputCurrentLimit`).
+    ///    Schedule leaves are handled separately by
+    ///    `Event::ScheduleReadback` (the rolled-up accumulator emits
+    ///    a complete `ScheduleSpec`); the post-hook short-circuits
+    ///    them via `debug_assert!`.
+    /// 2. PR-AS-C: `SensorBroadcastCore` filters out actuated-mirror
+    ///    variants from the sensor-publish iteration via
+    ///    `actuated_id().is_some()` — their values are surfaced via
+    ///    the dedicated `Actuated` table instead.
     ///
     /// Explicit per-variant match (no `_ =>` arm) so a future
     /// `SensorId` addition forces classification.
-    // Schedule leaf fields and plain (non-actuated-mirror) sensors
-    // both return `None` here; clippy's `match_same_arms` would have
-    // us collapse them, but the explicit arms are load-bearing —
-    // they document the *reason* for the `None` (per-leaf vs plain
-    // sensor) and force a future addition to pick a side.
-    #[allow(clippy::match_same_arms)]
     #[must_use]
     pub const fn actuated_id(self) -> Option<ActuatedId> {
         match self {
@@ -403,12 +403,12 @@ impl SensorId {
             | Self::Schedule0DurationActual
             | Self::Schedule0SocActual
             | Self::Schedule0DaysActual
-            | Self::Schedule0AllowDischargeActual
-            | Self::Schedule1StartActual
+            | Self::Schedule0AllowDischargeActual => Some(ActuatedId::Schedule0),
+            Self::Schedule1StartActual
             | Self::Schedule1DurationActual
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
-            | Self::Schedule1AllowDischargeActual => None,
+            | Self::Schedule1AllowDischargeActual => Some(ActuatedId::Schedule1),
             Self::BatterySoc
             | Self::BatterySoh
             | Self::BatteryInstalledCapacity
@@ -485,39 +485,6 @@ pub enum ActuatedId {
     EddiMode,
     Schedule0,
     Schedule1,
-}
-
-impl ActuatedId {
-    /// Per-actuator Fresh→Stale threshold for the *readback* side.
-    ///
-    /// Readbacks change only when someone writes the underlying path,
-    /// so the staleness window is measured in minutes to hours rather
-    /// than seconds (sensor regime). Values are authoritative per
-    /// `docs/drafts/20260424-1959-victron-dbus-cadence-matrix.md`.
-    ///
-    /// **Not defined** for `ZappiMode`/`EddiMode`: those readbacks come
-    /// from the myenergi poller (not D-Bus) and share their freshness
-    /// window with the typed sensors on the same source. The single
-    /// source of truth is `ControllerParams::freshness_myenergi` — see
-    /// `apply_tick` in `process.rs`. Calling this on those variants
-    /// panics, to surface an accidental duplicate-threshold at compile
-    /// time of a caller rather than silently diverge.
-    #[must_use]
-    pub const fn freshness_threshold(self) -> std::time::Duration {
-        use std::time::Duration;
-        match self {
-            // CurrentLimit readback: reseed 60 s (vebus), staleness 600 s.
-            Self::InputCurrentLimit => Duration::from_secs(600),
-            // Grid setpoint & schedules: reseed 300 s (settings), staleness 900 s.
-            Self::GridSetpoint | Self::Schedule0 | Self::Schedule1 => {
-                Duration::from_secs(900)
-            }
-            Self::ZappiMode | Self::EddiMode => panic!(
-                "ActuatedId::{{Zappi,Eddi}}Mode freshness is driven by \
-                 ControllerParams::freshness_myenergi, not this method"
-            ),
-        }
-    }
 }
 
 /// Knob identifiers — one per user-controllable setting in [`crate::knobs::Knobs`].
@@ -772,18 +739,6 @@ pub enum TypedReading {
     },
 }
 
-/// Readback of an actuated entity (from D-Bus after a write lands, or from
-/// myenergi on its next poll).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ActuatedReadback {
-    GridSetpoint { value: i32, at: Instant },
-    InputCurrentLimit { value: f64, at: Instant },
-    ZappiMode { mode: ZappiMode, at: Instant },
-    EddiMode { mode: EddiMode, at: Instant },
-    Schedule0 { value: ScheduleSpec, at: Instant },
-    Schedule1 { value: ScheduleSpec, at: Instant },
-}
-
 /// Commands originating from dashboard / HA / explicit user action.
 ///
 /// The `Bookkeeping` variant is used only during the MQTT bootstrap
@@ -802,7 +757,6 @@ pub enum Command {
 pub enum Event {
     Sensor(SensorReading),
     TypedSensor(TypedReading),
-    Readback(ActuatedReadback),
     /// PR-actuated-as-sensors (PR-AS-A): rolled-up schedule readback.
     /// The 5 leaf D-Bus fields (`Start`/`Duration`/`Soc`/`Day`/
     /// `AllowDischarge`) per slot land as `Event::Sensor` per leaf;
@@ -1166,12 +1120,12 @@ mod tests {
                 | SensorId::Schedule0DurationActual
                 | SensorId::Schedule0SocActual
                 | SensorId::Schedule0DaysActual
-                | SensorId::Schedule0AllowDischargeActual
-                | SensorId::Schedule1StartActual
+                | SensorId::Schedule0AllowDischargeActual => Some(ActuatedId::Schedule0),
+                SensorId::Schedule1StartActual
                 | SensorId::Schedule1DurationActual
                 | SensorId::Schedule1SocActual
                 | SensorId::Schedule1DaysActual
-                | SensorId::Schedule1AllowDischargeActual => None,
+                | SensorId::Schedule1AllowDischargeActual => Some(ActuatedId::Schedule1),
                 SensorId::BatterySoc
                 | SensorId::BatterySoh
                 | SensorId::BatteryInstalledCapacity

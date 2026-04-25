@@ -51,7 +51,7 @@ use crate::myenergi::EddiMode;
 use crate::owner::Owner;
 use crate::topology::{ControllerParams, Topology};
 use crate::types::{
-    ActuatedId, ActuatedReadback, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
+    ActuatedId, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
     DbusValue, Decision, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel,
     MyenergiAction, PublishPayload, ScheduleField, SensorId, SensorReading, TimerId,
     TimerStatus, TypedReading,
@@ -94,7 +94,6 @@ fn apply_event(
     match event {
         Event::Sensor(reading) => apply_sensor_reading(*reading, world, topology, effects),
         Event::TypedSensor(reading) => apply_typed_reading(*reading, world),
-        Event::Readback(readback) => apply_readback(*readback, world, topology, effects),
         Event::ScheduleReadback { index, value, at } => {
             apply_schedule_readback(*index, *value, *at, world, effects);
         }
@@ -241,12 +240,15 @@ fn apply_sensor_reading(
             }
         }
         Some(other) => {
+            // Schedule leaves return `Some(Schedule0/1)` so the broadcast
+            // filter (`actuated_id().is_some()`) catches every actuated
+            // mirror; per-leaf confirmation isn't possible (a complete
+            // `ScheduleSpec` is required) — the rollup arrives via
+            // `Event::ScheduleReadback`. ZappiMode/EddiMode have no
+            // matching `*Actual` sensor and never reach this branch.
             debug_assert!(matches!(
                 other,
-                ActuatedId::ZappiMode
-                    | ActuatedId::EddiMode
-                    | ActuatedId::Schedule0
-                    | ActuatedId::Schedule1
+                ActuatedId::Schedule0 | ActuatedId::Schedule1,
             ));
         }
     }
@@ -298,79 +300,6 @@ fn apply_typed_reading(r: TypedReading, world: &mut World) {
                 ForecastProvider::OpenMeteo => {
                     world.typed_sensors.forecast_open_meteo = Some(snap);
                 }
-            }
-        }
-    }
-}
-
-fn apply_readback(
-    r: ActuatedReadback,
-    world: &mut World,
-    topology: &Topology,
-    effects: &mut Vec<Effect>,
-) {
-    let params = topology.controller_params;
-    match r {
-        ActuatedReadback::GridSetpoint { value, at } => {
-            world.grid_setpoint.on_reading(value, at);
-            let tol = params.setpoint_confirm_tolerance_w;
-            if world
-                .grid_setpoint
-                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
-            {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::GridSetpoint,
-                    phase: world.grid_setpoint.target.phase,
-                }));
-            }
-        }
-        ActuatedReadback::InputCurrentLimit { value, at } => {
-            world.input_current_limit.on_reading(value, at);
-            let tol = params.current_limit_confirm_tolerance_a;
-            if world
-                .input_current_limit
-                .confirm_if(|t, a| (*t - *a).abs() <= tol, at)
-            {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::InputCurrentLimit,
-                    phase: world.input_current_limit.target.phase,
-                }));
-            }
-        }
-        ActuatedReadback::ZappiMode { mode, at } => {
-            world.zappi_mode.on_reading(mode, at);
-            if world.zappi_mode.confirm_if(|t, a| t == a, at) {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::ZappiMode,
-                    phase: world.zappi_mode.target.phase,
-                }));
-            }
-        }
-        ActuatedReadback::EddiMode { mode, at } => {
-            world.eddi_mode.on_reading(mode, at);
-            if world.eddi_mode.confirm_if(|t, a| t == a, at) {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::EddiMode,
-                    phase: world.eddi_mode.target.phase,
-                }));
-            }
-        }
-        ActuatedReadback::Schedule0 { value, at } => {
-            world.schedule_0.on_reading(value, at);
-            if world.schedule_0.confirm_if(|t, a| t == a, at) {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::Schedule0,
-                    phase: world.schedule_0.target.phase,
-                }));
-            }
-        }
-        ActuatedReadback::Schedule1 { value, at } => {
-            world.schedule_1.on_reading(value, at);
-            if world.schedule_1.confirm_if(|t, a| t == a, at) {
-                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
-                    id: ActuatedId::Schedule1,
-                    phase: world.schedule_1.target.phase,
-                }));
             }
         }
     }
@@ -666,7 +595,7 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
 }
 
 fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topology) {
-    use crate::types::{ActuatedId, SensorId};
+    use crate::types::SensorId;
     let p = topology.controller_params;
     let myenergi = p.freshness_myenergi;
 
@@ -707,9 +636,12 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
 
-    // Actuated readback freshness decays on its own cadence — readbacks
-    // only change when somebody writes, so windows here are much wider
-    // than sensor windows. See `ActuatedId::freshness_threshold`.
+    // PR-AS-C: actuated readback freshness decays on the same threshold
+    // table as the mirroring sensor — single source of truth via the
+    // `SensorId` whose `actuated_id()` maps to the entity. Schedule
+    // entities are mirrored by 5 leaf SensorIds each that all share the
+    // same threshold; pick the `Start` leaf as the canonical
+    // representative.
     //
     // Exception: the zappi/eddi mode readbacks come from the myenergi
     // poller (not D-Bus) and share a single freshness window with the
@@ -718,18 +650,18 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     // of truth drifting apart.
     world
         .grid_setpoint
-        .tick(at, ActuatedId::GridSetpoint.freshness_threshold());
+        .tick(at, SensorId::GridSetpointActual.freshness_threshold());
     world
         .input_current_limit
-        .tick(at, ActuatedId::InputCurrentLimit.freshness_threshold());
+        .tick(at, SensorId::InputCurrentLimitActual.freshness_threshold());
     world.zappi_mode.tick(at, myenergi);
     world.eddi_mode.tick(at, myenergi);
     world
         .schedule_0
-        .tick(at, ActuatedId::Schedule0.freshness_threshold());
+        .tick(at, SensorId::Schedule0StartActual.freshness_threshold());
     world
         .schedule_1
-        .tick(at, ActuatedId::Schedule1.freshness_threshold());
+        .tick(at, SensorId::Schedule1StartActual.freshness_threshold());
 
     // A-15: midnight reset of the per-day weather_soc flag. If the date
     // the flag was stamped for isn't today, clear it. Intentionally
@@ -2450,37 +2382,6 @@ mod tests {
     }
 
     #[test]
-    fn setpoint_readback_event_drives_confirmation_automatically() {
-        let c = clock_at(12, 0);
-        let mut world = World::fresh_boot(c.monotonic);
-        seed_required_sensors(&mut world, c.monotonic);
-
-        // Tick to propose + command.
-        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
-        let target = world.grid_setpoint.target.value.unwrap();
-        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
-
-        // Readback within tolerance → Confirmed with a PublishPhase effect.
-        let effects = process(
-            &Event::Readback(ActuatedReadback::GridSetpoint {
-                value: target + 12, // within ±50 tolerance
-                at: c.monotonic,
-            }),
-            &mut world,
-            &c,
-            &Topology::defaults(),
-        );
-        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Confirmed);
-        assert!(effects.iter().any(|e| matches!(
-            e,
-            Effect::Publish(PublishPayload::ActuatedPhase {
-                id: ActuatedId::GridSetpoint,
-                phase: TargetPhase::Confirmed
-            })
-        )));
-    }
-
-    #[test]
     fn setpoint_readback_out_of_tolerance_stays_commanded() {
         let c = clock_at(12, 0);
         let mut world = World::fresh_boot(c.monotonic);
@@ -2489,8 +2390,9 @@ mod tests {
         let target = world.grid_setpoint.target.value.unwrap();
 
         let _ = process(
-            &Event::Readback(ActuatedReadback::GridSetpoint {
-                value: target + 200, // outside ±50
+            &Event::Sensor(SensorReading {
+                id: SensorId::GridSetpointActual,
+                value: f64::from(target + 200), // outside ±50 tolerance
                 at: c.monotonic,
             }),
             &mut world,
@@ -2633,30 +2535,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn zappi_mode_readback_drives_confirmation_on_exact_match() {
-        // Dial up conditions that cause the Zappi controller to propose a
-        // target: Boost window with charge_car_boost enabled → Fast.
-        let c = FixedClock::at(naive(3, 0));
-        let mut world = World::fresh_boot(c.monotonic);
-        seed_required_sensors(&mut world, c.monotonic);
-        world.knobs.charge_car_boost = true;
-
-        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
-        assert_eq!(world.zappi_mode.target.value, Some(ZappiMode::Fast));
-        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Commanded);
-
-        let _ = process(
-            &Event::Readback(ActuatedReadback::ZappiMode {
-                mode: ZappiMode::Fast,
-                at: c.monotonic,
-            }),
-            &mut world,
-            &c,
-            &Topology::defaults(),
-        );
-        assert_eq!(world.zappi_mode.target.phase, TargetPhase::Confirmed);
-    }
+    // PR-AS-C: the ex-`zappi_mode_readback_drives_confirmation_on_exact_match`
+    // test was deleted. It exercised the deleted `apply_readback::ZappiMode`
+    // arm; production never constructed `Event::Readback(ActuatedReadback::
+    // ZappiMode)`, and the production `apply_typed_reading::Zappi` arm
+    // updates only `world.typed_sensors.zappi_state` — there is no
+    // production path that confirms `world.zappi_mode.target.phase`.
+    // Migrating the test to `Event::TypedSensor(TypedReading::Zappi{...})`
+    // would assert behaviour that does not exist; the gap (no confirm-side
+    // for ZappiMode/EddiMode) is pre-existing and outside this PR's scope.
 
     // ------------------------------------------------------------------
     // Knob command (PR-gamma-hold-redesign — γ-hold removed)

@@ -406,22 +406,28 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         SensorId::EssState => "inverter.ess.state",
         SensorId::OutdoorTemperature => "weather.temperature.outdoor",
         SensorId::SessionKwh => "evcharger.session.energy",
-        // PR-actuated-as-sensors (PR-AS-A): not surfaced on the wire
-        // today (subscriber doesn't emit them yet). Names follow the
-        // actuated wire taxonomy so PR-AS-B/C can decide whether to
-        // publish or filter without renaming.
-        SensorId::GridSetpointActual => "grid.setpoint.actual",
-        SensorId::InputCurrentLimitActual => "inverter.input.current-limit.actual",
-        SensorId::Schedule0StartActual => "schedule.0.start.actual",
-        SensorId::Schedule0DurationActual => "schedule.0.duration.actual",
-        SensorId::Schedule0SocActual => "schedule.0.soc.actual",
-        SensorId::Schedule0DaysActual => "schedule.0.days.actual",
-        SensorId::Schedule0AllowDischargeActual => "schedule.0.allow-discharge.actual",
-        SensorId::Schedule1StartActual => "schedule.1.start.actual",
-        SensorId::Schedule1DurationActual => "schedule.1.duration.actual",
-        SensorId::Schedule1SocActual => "schedule.1.soc.actual",
-        SensorId::Schedule1DaysActual => "schedule.1.days.actual",
-        SensorId::Schedule1AllowDischargeActual => "schedule.1.allow-discharge.actual",
+        // PR-AS-C: actuated-mirror SensorId variants do not have a
+        // sensor wire surface — they are surfaced via the actuated
+        // entity table (`PublishPayload::ActuatedPhase`). Both call
+        // sites (`encode_publish_payload` for `PublishPayload::Sensor`,
+        // and `discovery::publish_sensors`) are unreachable for these
+        // variants because `SensorBroadcastCore` filters them out
+        // before any `Publish(Sensor{...})` is produced.
+        SensorId::GridSetpointActual
+        | SensorId::InputCurrentLimitActual
+        | SensorId::Schedule0StartActual
+        | SensorId::Schedule0DurationActual
+        | SensorId::Schedule0SocActual
+        | SensorId::Schedule0DaysActual
+        | SensorId::Schedule0AllowDischargeActual
+        | SensorId::Schedule1StartActual
+        | SensorId::Schedule1DurationActual
+        | SensorId::Schedule1SocActual
+        | SensorId::Schedule1DaysActual
+        | SensorId::Schedule1AllowDischargeActual => unreachable!(
+            "actuated-mirror SensorId {id:?} reached sensor_name — caller \
+             must filter via id.actuated_id().is_some()"
+        ),
     }
 }
 
