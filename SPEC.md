@@ -98,7 +98,7 @@ Inputs: `battery_soc`; globals `charge_battery_extended`, `charge_car_extended`,
 
 ### 3.4. Weather SoC Target tab
 
-Fires at 01:55. Reads `weather_forecast_daily[0].temperature` and `solcast_today.attributes.estimate`, plus the five `weathersoc_*` thresholds. Outputs five decisions:
+**Fires every tick** (PR-weather-soc-dynamic, 2026-04-25). The legacy Node-RED flow used a `cron 55 01 * * *` schedule; the Rust port initially mirrored that, but the planner is cheap and forecast providers refresh throughout the day (Solcast 5 min, Open-Meteo / Forecast.Solar 30 min). Pinning the planner to 01:55 meant a forecast revision at 13:00 didn't reach `export_soc_threshold` until the following 01:55 — by which point the day had already passed. Re-evaluating every tick lets the controller track the day as it unfolds. Idempotent dedup happens inside `apply_knob`: same-value re-proposals return `false` and never publish, so retained MQTT isn't spammed. γ-hold + owner priority continue to honour dashboard / HA overrides via `accept_knob_command`. Reads `outdoor_temperature` and the fused per-day forecast totals, plus the five `weathersoc_*` thresholds. Outputs five decisions:
 
 - `export_threshold` ∈ {35, 50, 67, 80, 100}
 - `discharge_target` ∈ {20, 30}

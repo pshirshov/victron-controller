@@ -24,7 +24,6 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use chrono::Timelike;
 
 use crate::Clock;
 use crate::core_dag::CoreRegistry;
@@ -251,11 +250,17 @@ fn apply_command(
                 });
                 return;
             }
-            apply_knob(id, value, world, effects);
+            let changed = apply_knob(id, value, world, effects);
             if owner == Owner::Dashboard {
                 world.knob_provenance.last_dashboard_write.insert(id, at);
             }
-            effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
+            // PR-weather-soc-dynamic: skip the retained-MQTT publish on
+            // no-op writes. Otherwise the dynamic planner (and any
+            // other every-tick caller) would spam the broker with
+            // redundant retains.
+            if changed {
+                effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
+            }
         }
         Command::KillSwitch(enabled) => {
             let prev = world.knobs.writes_enabled;
@@ -353,56 +358,62 @@ fn accept_knob_command(owner: Owner, id: KnobId, at: Instant, world: &World) -> 
 }
 
 #[allow(clippy::too_many_lines)]
-fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec<Effect>) {
+/// Apply a `(KnobId, KnobValue)` to `world.knobs`. Returns `true` when
+/// the value actually changed; callers gate their `Effect::Publish` on
+/// the return so we never spam retained MQTT with no-op writes — this
+/// is what makes `propose_knob` safe to invoke every tick (the dynamic
+/// weather_soc evaluation per PR-weather-soc-dynamic).
+fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec<Effect>) -> bool {
+    use std::mem::replace;
     let k = &mut world.knobs;
     match (id, value) {
-        (KnobId::ForceDisableExport, KnobValue::Bool(v)) => k.force_disable_export = v,
-        (KnobId::ExportSocThreshold, KnobValue::Float(v)) => k.export_soc_threshold = v,
-        (KnobId::DischargeSocTarget, KnobValue::Float(v)) => k.discharge_soc_target = v,
-        (KnobId::BatterySocTarget, KnobValue::Float(v)) => k.battery_soc_target = v,
+        (KnobId::ForceDisableExport, KnobValue::Bool(v)) => replace(&mut k.force_disable_export, v) != v,
+        (KnobId::ExportSocThreshold, KnobValue::Float(v)) => replace(&mut k.export_soc_threshold, v) != v,
+        (KnobId::DischargeSocTarget, KnobValue::Float(v)) => replace(&mut k.discharge_soc_target, v) != v,
+        (KnobId::BatterySocTarget, KnobValue::Float(v)) => replace(&mut k.battery_soc_target, v) != v,
         (KnobId::FullChargeDischargeSocTarget, KnobValue::Float(v)) => {
-            k.full_charge_discharge_soc_target = v;
+            replace(&mut k.full_charge_discharge_soc_target, v) != v
         }
         (KnobId::FullChargeExportSocThreshold, KnobValue::Float(v)) => {
-            k.full_charge_export_soc_threshold = v;
+            replace(&mut k.full_charge_export_soc_threshold, v) != v
         }
-        (KnobId::DischargeTime, KnobValue::DischargeTime(v)) => k.discharge_time = v,
-        (KnobId::DebugFullCharge, KnobValue::DebugFullCharge(v)) => k.debug_full_charge = v,
+        (KnobId::DischargeTime, KnobValue::DischargeTime(v)) => replace(&mut k.discharge_time, v) != v,
+        (KnobId::DebugFullCharge, KnobValue::DebugFullCharge(v)) => replace(&mut k.debug_full_charge, v) != v,
         (KnobId::PessimismMultiplierModifier, KnobValue::Float(v)) => {
-            k.pessimism_multiplier_modifier = v;
+            replace(&mut k.pessimism_multiplier_modifier, v) != v
         }
-        (KnobId::DisableNightGridDischarge, KnobValue::Bool(v)) => k.disable_night_grid_discharge = v,
-        (KnobId::ChargeCarBoost, KnobValue::Bool(v)) => k.charge_car_boost = v,
-        (KnobId::ChargeCarExtended, KnobValue::Bool(v)) => k.charge_car_extended = v,
-        (KnobId::ZappiCurrentTarget, KnobValue::Float(v)) => k.zappi_current_target = v,
-        (KnobId::ZappiLimit, KnobValue::Float(v)) => k.zappi_limit = v,
-        (KnobId::ZappiEmergencyMargin, KnobValue::Float(v)) => k.zappi_emergency_margin = v,
-        (KnobId::GridExportLimitW, KnobValue::Uint32(v)) => k.grid_export_limit_w = v,
-        (KnobId::GridImportLimitW, KnobValue::Uint32(v)) => k.grid_import_limit_w = v,
-        (KnobId::AllowBatteryToCar, KnobValue::Bool(v)) => k.allow_battery_to_car = v,
-        (KnobId::EddiEnableSoc, KnobValue::Float(v)) => k.eddi_enable_soc = v,
-        (KnobId::EddiDisableSoc, KnobValue::Float(v)) => k.eddi_disable_soc = v,
-        (KnobId::EddiDwellS, KnobValue::Uint32(v)) => k.eddi_dwell_s = v,
+        (KnobId::DisableNightGridDischarge, KnobValue::Bool(v)) => replace(&mut k.disable_night_grid_discharge, v) != v,
+        (KnobId::ChargeCarBoost, KnobValue::Bool(v)) => replace(&mut k.charge_car_boost, v) != v,
+        (KnobId::ChargeCarExtended, KnobValue::Bool(v)) => replace(&mut k.charge_car_extended, v) != v,
+        (KnobId::ZappiCurrentTarget, KnobValue::Float(v)) => replace(&mut k.zappi_current_target, v) != v,
+        (KnobId::ZappiLimit, KnobValue::Float(v)) => replace(&mut k.zappi_limit, v) != v,
+        (KnobId::ZappiEmergencyMargin, KnobValue::Float(v)) => replace(&mut k.zappi_emergency_margin, v) != v,
+        (KnobId::GridExportLimitW, KnobValue::Uint32(v)) => replace(&mut k.grid_export_limit_w, v) != v,
+        (KnobId::GridImportLimitW, KnobValue::Uint32(v)) => replace(&mut k.grid_import_limit_w, v) != v,
+        (KnobId::AllowBatteryToCar, KnobValue::Bool(v)) => replace(&mut k.allow_battery_to_car, v) != v,
+        (KnobId::EddiEnableSoc, KnobValue::Float(v)) => replace(&mut k.eddi_enable_soc, v) != v,
+        (KnobId::EddiDisableSoc, KnobValue::Float(v)) => replace(&mut k.eddi_disable_soc, v) != v,
+        (KnobId::EddiDwellS, KnobValue::Uint32(v)) => replace(&mut k.eddi_dwell_s, v) != v,
         (KnobId::WeathersocWinterTemperatureThreshold, KnobValue::Float(v)) => {
-            k.weathersoc_winter_temperature_threshold = v;
+            replace(&mut k.weathersoc_winter_temperature_threshold, v) != v
         }
         (KnobId::WeathersocLowEnergyThreshold, KnobValue::Float(v)) => {
-            k.weathersoc_low_energy_threshold = v;
+            replace(&mut k.weathersoc_low_energy_threshold, v) != v
         }
         (KnobId::WeathersocOkEnergyThreshold, KnobValue::Float(v)) => {
-            k.weathersoc_ok_energy_threshold = v;
+            replace(&mut k.weathersoc_ok_energy_threshold, v) != v
         }
         (KnobId::WeathersocHighEnergyThreshold, KnobValue::Float(v)) => {
-            k.weathersoc_high_energy_threshold = v;
+            replace(&mut k.weathersoc_high_energy_threshold, v) != v
         }
         (KnobId::WeathersocTooMuchEnergyThreshold, KnobValue::Float(v)) => {
-            k.weathersoc_too_much_energy_threshold = v;
+            replace(&mut k.weathersoc_too_much_energy_threshold, v) != v
         }
         (KnobId::ForecastDisagreementStrategy, KnobValue::ForecastDisagreementStrategy(v)) => {
-            k.forecast_disagreement_strategy = v;
+            replace(&mut k.forecast_disagreement_strategy, v) != v
         }
         (KnobId::ChargeBatteryExtendedMode, KnobValue::ChargeBatteryExtendedMode(v)) => {
-            k.charge_battery_extended_mode = v;
+            replace(&mut k.charge_battery_extended_mode, v) != v
         }
         _ => {
             effects.push(Effect::Log {
@@ -412,6 +423,7 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
                     "apply_knob: KnobId/KnobValue type mismatch — silently dropped (schema drift?) id={id:?} value={value:?}"
                 ),
             });
+            false
         }
     }
 }
@@ -1402,12 +1414,18 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
 
 // --- Weather-SoC --------------------------------------------------------------
 
-/// Weather-SoC runs only at the 01:55 cron moment. Because this pure core
-/// sees no wall clock directly, we trigger when the naive time is in the
-/// window 01:55:00–01:55:59. Outside that window (the common case) we
-/// still publish a Decision explaining why it didn't evaluate — the
-/// last real decision otherwise stays stuck at `None` all day and the
-/// dashboard looks broken.
+/// PR-weather-soc-dynamic: weather_soc now evaluates EVERY tick, not
+/// just at the 01:55 cron moment. As forecasts refresh through the
+/// day (Solcast 5 min, Open-Meteo 30 min, Forecast.Solar 30 min) the
+/// planner re-derives `export_soc_threshold` etc. and pushes any
+/// change through `propose_knob`. Idempotent dedup happens inside
+/// `apply_knob` (returns `bool`); same-value re-fires no-op without
+/// a Publish, so the broker isn't spammed.
+///
+/// The previous 01:55 cron (and the A-21 once-per-day guard that paired
+/// with it) are gone — the dedup-on-change path makes the every-tick
+/// shape both correct and quiet. γ-hold + owner priority continue to
+/// honour dashboard / HA overrides via `accept_knob_command`.
 pub(crate) fn run_weather_soc(
     world: &mut World,
     clock: &dyn Clock,
@@ -1415,35 +1433,7 @@ pub(crate) fn run_weather_soc(
     effects: &mut Vec<Effect>,
 ) {
     let now = clock.naive();
-    if !(now.hour() == 1 && now.minute() == 55) {
-        // Only overwrite with a "didn't run" decision if weather_soc
-        // has never produced a real one; once it has, leave the last
-        // real decision visible until tomorrow's 01:55.
-        if world.decisions.weather_soc.is_none() {
-            world.decisions.weather_soc = Some(
-                Decision::new(format!(
-                    "Not scheduled to run (fires only at 01:55 local; current {:02}:{:02})",
-                    now.hour(),
-                    now.minute()
-                ))
-                .with_factor("now_hhmm", format!("{:02}:{:02}", now.hour(), now.minute()))
-                .with_factor("scheduled_at", "01:55".to_string()),
-            );
-        }
-        return;
-    }
-
-    // A-21: the 01:55 check is true for every tick in the 60-second
-    // window 01:55:00–01:55:59. Without a once-per-day guard, every
-    // tick in that window re-fires the knob proposals (~60 retained
-    // MQTT publishes per knob per day). Short-circuit here once we've
-    // already run today.
     let today = now.date();
-    if world.bookkeeping.last_weather_soc_run_date == Some(today) {
-        // Already ran today; keep the last real decision visible,
-        // don't re-propose.
-        return;
-    }
 
     // Use today's temp if fresh; else skip (with explanation).
     if !world.sensors.outdoor_temperature.is_usable() {
@@ -1619,8 +1609,10 @@ fn propose_knob(
         });
         return;
     }
-    apply_knob(id, value, world, effects);
-    effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
+    let changed = apply_knob(id, value, world, effects);
+    if changed {
+        effects.push(Effect::Publish(PublishPayload::Knob { id, value }));
+    }
 }
 
 // =============================================================================
@@ -3190,61 +3182,57 @@ mod tests {
     }
 
     #[test]
-    fn weather_soc_runs_once_per_day() {
-        // A-21: the 01:55:00–01:55:59 window has ~60 ticks. Without the
-        // per-day guard, each tick would re-emit four Publish(Knob)
-        // effects (one per planner knob). With the guard: exactly one
-        // tick in that minute actually fires; the rest short-circuit.
-        // The following day at 01:55 fires again.
-        let c0 = clock_at_hms(1, 55, 0);
+    fn weather_soc_publishes_only_on_change() {
+        // PR-weather-soc-dynamic: planner runs EVERY tick, not just at
+        // 01:55. Same-value proposals dedup inside apply_knob (returns
+        // bool); no Publish for no-op writes. A genuine forecast
+        // change mid-day flows through and only the affected knob(s)
+        // republish — no broker spam.
+        let c0 = clock_at_hms(12, 0, 0);
         let mut world = World::fresh_boot(c0.monotonic);
         seed_weather_soc_inputs(&mut world, c0.monotonic);
 
-        // First tick at 01:55:00 — knobs must propose.
+        // First tick: weather_soc-derived knobs differ from safe_defaults
+        // → 4 publishes (export_soc_threshold, discharge_soc_target,
+        // battery_soc_target, disable_night_grid_discharge).
         let e1 = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
         assert_eq!(
             knob_publish_count(&e1),
             4,
-            "first 01:55 tick must publish all four planner knobs, got: {e1:#?}"
-        );
-        assert_eq!(
-            world.bookkeeping.last_weather_soc_run_date,
-            Some(c0.naive.date()),
-            "run-date must be stamped on successful run"
+            "first tick must publish all four planner knobs, got: {e1:#?}"
         );
 
-        // Second tick at 01:55:30 — already ran today, no knob publishes.
-        let c1 = clock_on(c0.naive.date(), 1, 55, 30);
+        // Second tick same forecast: dedup → 0 publishes.
+        let c1 = clock_on(c0.naive.date(), 12, 0, 30);
         let e2 = process(&Event::Tick { at: c1.monotonic }, &mut world, &c1, &Topology::defaults());
         assert_eq!(
             knob_publish_count(&e2), 0,
-            "second tick in same 01:55 minute must not re-publish knobs: {e2:#?}"
+            "same-forecast tick must dedup, got: {e2:#?}"
         );
 
-        // Third tick at 01:56:00 — outside the window anyway, still no knob publishes.
-        let c2 = clock_on(c0.naive.date(), 1, 56, 0);
+        // Forecast revises (today_kwh 25 → 5 — flips from "moderate" to
+        // "low energy", crossing the new low-energy rung). Next tick
+        // republishes whatever changed.
+        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh: 5.0,
+            tomorrow_kwh: 25.0,
+            fetched_at: c1.monotonic,
+        });
+        let c2 = clock_on(c0.naive.date(), 12, 1, 0);
         let e3 = process(&Event::Tick { at: c2.monotonic }, &mut world, &c2, &Topology::defaults());
-        assert_eq!(
-            knob_publish_count(&e3), 0,
-            "post-01:55 tick must not publish knobs: {e3:#?}"
+        assert!(
+            knob_publish_count(&e3) > 0,
+            "forecast change must republish at least one planner knob: {e3:#?}"
         );
 
-        // Next day 01:55:00 — planner fires again. `apply_tick`'s
-        // midnight rollover doesn't itself touch
-        // `last_weather_soc_run_date`; the new date simply doesn't match
-        // yesterday's, so the guard lets us through.
-        let tomorrow = c0.naive.date().succ_opt().unwrap();
-        let c3 = clock_on(tomorrow, 1, 55, 0);
-        // Re-seed forecast freshness against the new clock — forecasts
-        // are kept-Some; run_weather_soc treats them all as fresh.
-        seed_weather_soc_inputs(&mut world, c3.monotonic);
+        // Third tick post-change: dedup again — no further publishes
+        // until the forecast moves once more.
+        let c3 = clock_on(c0.naive.date(), 12, 1, 30);
         let e4 = process(&Event::Tick { at: c3.monotonic }, &mut world, &c3, &Topology::defaults());
         assert_eq!(
-            knob_publish_count(&e4),
-            4,
-            "next-day 01:55 tick must publish all four planner knobs again: {e4:#?}"
+            knob_publish_count(&e4), 0,
+            "post-change steady-state must dedup, got: {e4:#?}"
         );
-        assert_eq!(world.bookkeeping.last_weather_soc_run_date, Some(tomorrow));
     }
 
     #[test]
