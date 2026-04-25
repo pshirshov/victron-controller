@@ -59,6 +59,30 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     cmdVariant: "SetChargeBatteryExtendedMode",
     options: ["Auto", "Forced", "Disabled"],
   },
+  // PR-gamma-hold-redesign mode knobs (4): Weather selects the
+  // weathersoc-derived bookkeeping value; Forced uses the matching
+  // *.forced-value knob instead. cmdVariant is `SetMode`; the Rust
+  // backend dispatches via `knob_name` field on the command.
+  "battery.soc.threshold.export.mode": {
+    kind: "enum",
+    cmdVariant: "SetMode",
+    options: ["Weather", "Forced"],
+  },
+  "battery.soc.target.discharge.mode": {
+    kind: "enum",
+    cmdVariant: "SetMode",
+    options: ["Weather", "Forced"],
+  },
+  "battery.soc.target.charge.mode": {
+    kind: "enum",
+    cmdVariant: "SetMode",
+    options: ["Weather", "Forced"],
+  },
+  "grid.night.discharge.disable.mode": {
+    kind: "enum",
+    cmdVariant: "SetMode",
+    options: ["Weather", "Forced"],
+  },
 };
 
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it
@@ -122,7 +146,15 @@ function installHandlers() {
       currentSend({ SetUintKnob: { knob_name: name, value: v } });
     } else if (spec.kind === "enum") {
       const sel = td.querySelector("select") as HTMLSelectElement;
-      currentSend({ [spec.cmdVariant]: { value: sel.value } });
+      // SetMode is the only generic enum command — one variant covers
+      // all four mode knobs, disambiguated by knob_name. The other enum
+      // commands (SetDischargeTime / SetDebugFullCharge / etc.) are
+      // dedicated per-knob variants whose wire shape is `{value}` only.
+      if (spec.cmdVariant === "SetMode") {
+        currentSend({ SetMode: { knob_name: name, value: sel.value } });
+      } else {
+        currentSend({ [spec.cmdVariant]: { value: sel.value } });
+      }
     }
   });
 }

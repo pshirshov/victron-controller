@@ -415,5 +415,29 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             "select",
             json!({"options": ["auto", "forced", "disabled"]}),
         ),
+        // PR-gamma-hold-redesign: 4 source-selector knobs that pick
+        // between weather_soc-derived bookkeeping ("weather") and the
+        // user's forced override ("forced"). Lowercase wire values
+        // match the parse arm in `serialize.rs::parse_knob_value`.
+        (
+            KnobId::ExportSocThresholdMode,
+            "select",
+            json!({"options": ["weather", "forced"]}),
+        ),
+        (
+            KnobId::DischargeSocTargetMode,
+            "select",
+            json!({"options": ["weather", "forced"]}),
+        ),
+        (
+            KnobId::BatterySocTargetMode,
+            "select",
+            json!({"options": ["weather", "forced"]}),
+        ),
+        (
+            KnobId::DisableNightGridDischargeMode,
+            "select",
+            json!({"options": ["weather", "forced"]}),
+        ),
     ]
 }
