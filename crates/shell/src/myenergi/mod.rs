@@ -31,7 +31,7 @@ use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
 use victron_controller_core::myenergi::{EddiMode, ZappiMode, ZappiPlugState, ZappiStatus};
-use victron_controller_core::types::{Event, MyenergiAction, TypedReading};
+use victron_controller_core::types::{Event, MyenergiAction, SensorId, SensorReading, TypedReading};
 
 use crate::config::MyenergiConfig;
 
@@ -377,9 +377,26 @@ impl Poller {
                 Some(tuple) => {
                     let stamp = self.stamp_zappi_change(tuple, now);
                     if let Some(obs) = parse_zappi(&body, stamp) {
+                        let session_kwh = obs.state.session_kwh;
                         if tx
                             .send(Event::TypedSensor(TypedReading::Zappi {
                                 state: obs.state,
+                                at: now,
+                            }))
+                            .await
+                            .is_err()
+                        {
+                            return outcome;
+                        }
+                        // Surface the cumulative session kWh as a
+                        // first-class scalar sensor so the dashboard's
+                        // sensor row picks it up — same pattern as
+                        // other myenergi-derived signals. See
+                        // PR-session-kwh-sensor / A-13/A-14.
+                        if tx
+                            .send(Event::Sensor(SensorReading {
+                                id: SensorId::SessionKwh,
+                                value: session_kwh,
                                 at: now,
                             }))
                             .await

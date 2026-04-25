@@ -8,10 +8,10 @@ import {WsPong, WsPong_UEBACodec} from './WsPong'
 export type WsServerMessage = Hello | Pong | Snapshot | Log | Ack
 
 export const WsServerMessage = {
-    BaboonDomainVersion: '0.1.0',
+    BaboonDomainVersion: '0.2.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#WsServerMessage',
-    BaboonSameInVersions: ["0.1.0"],
+    BaboonSameInVersions: ["0.2.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#WsServerMessage',
     binCodec(): WsServerMessage_UEBACodec {
         return WsServerMessage_UEBACodec.instance
@@ -61,7 +61,7 @@ export class Hello implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Hello.BaboonDomainVersion
     }
@@ -73,7 +73,7 @@ export class Hello implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Hello.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Hello.BaboonSameInVersions
     }
@@ -133,7 +133,7 @@ export class Hello_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Hello_UEBACodec.BaboonDomainVersion
     }
@@ -185,7 +185,7 @@ export class Pong implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Pong.BaboonDomainVersion
     }
@@ -197,7 +197,7 @@ export class Pong implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Pong.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Pong.BaboonSameInVersions
     }
@@ -253,7 +253,7 @@ export class Pong_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Pong_UEBACodec.BaboonDomainVersion
     }
@@ -305,7 +305,7 @@ export class Snapshot implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Snapshot.BaboonDomainVersion
     }
@@ -317,7 +317,7 @@ export class Snapshot implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Snapshot.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0"]
     public baboonSameInVersions() {
         return Snapshot.BaboonSameInVersions
     }
@@ -373,7 +373,7 @@ export class Snapshot_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Snapshot_UEBACodec.BaboonDomainVersion
     }
@@ -425,7 +425,7 @@ export class Log implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Log.BaboonDomainVersion
     }
@@ -437,7 +437,7 @@ export class Log implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Log.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Log.BaboonSameInVersions
     }
@@ -493,7 +493,7 @@ export class Log_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Log_UEBACodec.BaboonDomainVersion
     }
@@ -545,7 +545,7 @@ export class Ack implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Ack.BaboonDomainVersion
     }
@@ -557,7 +557,7 @@ export class Ack implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Ack.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Ack.BaboonSameInVersions
     }
@@ -613,7 +613,7 @@ export class Ack_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Ack_UEBACodec.BaboonDomainVersion
     }
@@ -681,7 +681,7 @@ export class WsServerMessage_UEBACodec {
         }
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return WsServerMessage_UEBACodec.BaboonDomainVersion
     }

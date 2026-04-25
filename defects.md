@@ -1288,3 +1288,21 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/shell/src/runtime.rs::Runtime::new`
 **Description:** `Runtime::new` is exercised only by `main`, so the panic path is not hit in CI. The unit test in `crates/core/src/types.rs` is the actual gate.
 **Fix:** None — by design. Per-variant unit test (`freshness_threshold_invariant_holds_for_every_sensor`) covers every `SensorId` variant via explicit match, which is the actual CI gate. The runtime assertion is belt-and-braces against runtime constant edits that bypass the unit test.
+
+---
+
+## PR-session-kwh-sensor — Review round 1 (executor `ad706f4f4af6b6ef3`, reviewer `a6a54a67f57a6886d`)
+
+### [PR-session-kwh-D01] WorldSnapshot 0.1.0 → 0.2.0 stub bypassed the manual sensors converter
+**Status:** resolved
+**Severity:** major (latent — would crash any back-compat client speaking 0.1.0)
+**Location:** `crates/dashboard-model/src/victron_controller/dashboard/from_0_1_0_world_snapshot.rs:7`; `web/src/model/victron_controller/dashboard/from_0_1_0_world-snapshot.ts:9`
+**Description:** The auto-generated WorldSnapshot stub bridged the `sensors` field via `serde_json::from_value(serde_json::to_value(&from.sensors).unwrap()).unwrap()` (Rust) / `JSON.parse(JSON.stringify(from.sensors))` (TS). The serialised 0.1.0 `Sensors` has no `session_kwh`; 0.2.0 `Sensors` derives `serde::Deserialize` with no `#[serde(default)]`. Reproduced by forced example: `panic: missing field 'session_kwh'`. The TS stub mis-constructs `dashboard_WorldSnapshot` with `session_kwh === undefined`. The hand-written `convert__sensors__from__0_1_0` (which does the right thing — initialises `session_kwh` to `Unknown`) was dead code on this path.
+**Fix:** Both stubs now bridge `sensors` through the manual converter: Rust `crate::victron_controller::dashboard::from_0_1_0_sensors::convert__sensors__from__0_1_0(&from.sensors)`; TS `convert__sensors__from__0_1_0(from.sensors)` with the corresponding import. Added regression test `sensors_0_1_0_converter_initialises_session_kwh_unknown` in the dashboard-model crate; round-trips a fully-populated 0.1.0 Sensors and asserts `session_kwh.freshness == Unknown` while preserving `battery_soc`. (The test exercises the sensor converter directly rather than the WorldSnapshot stub because the v0.1.0 `Forecasts`/`Decisions` etc. don't derive `Default`; the WorldSnapshot stub's bridge is one line and verifiable by inspection.)
+
+### [PR-session-kwh-D02] Working tree, not committed
+**Status:** resolved
+**Severity:** nit (informational)
+**Location:** repo root
+**Description:** PR existed only as uncommitted working-tree changes when reviewed.
+**Fix:** Committed.

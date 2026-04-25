@@ -31,6 +31,10 @@ pub struct Sensors {
     pub evcharger_ac_current: Actual<f64>,
     pub ess_state: Actual<f64>,
     pub outdoor_temperature: Actual<f64>,
+    /// Cumulative energy delivered to the EV in the current Zappi
+    /// session (kWh). Surfaced via the dashboard `Sensors` row;
+    /// driven by the myenergi cloud poller. See PR-session-kwh-sensor.
+    pub session_kwh: Actual<f64>,
 }
 
 impl Sensors {
@@ -56,6 +60,7 @@ impl Sensors {
             evcharger_ac_current: Actual::unknown(now),
             ess_state: Actual::unknown(now),
             outdoor_temperature: Actual::unknown(now),
+            session_kwh: Actual::unknown(now),
         }
     }
 }

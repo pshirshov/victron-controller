@@ -271,6 +271,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             evcharger_ac_current: actual_f64(&s.evcharger_ac_current),
             ess_state: actual_f64(&s.ess_state),
             outdoor_temperature: actual_f64(&s.outdoor_temperature),
+            session_kwh: actual_f64(&s.session_kwh),
         },
         sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
@@ -510,6 +511,17 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
             cadence_ms: om_cadence_ms,
             staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
+        },
+    );
+    // Zappi session kWh — sourced from the myenergi cloud `che` field
+    // on the same poll cadence as the typed Zappi state. PR-session-kwh-sensor.
+    m.insert(
+        "session_kwh".into(),
+        ModelSensorMeta {
+            origin: "myenergi".to_string(),
+            identifier: "zappi/che".to_string(),
+            cadence_ms: 300_000,
+            staleness_ms: staleness_ms(SensorId::SessionKwh),
         },
     );
     m

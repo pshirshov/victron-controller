@@ -8,7 +8,7 @@
 // missing keys simply render with no tooltip.
 
 export const entityDescriptions: Record<string, string> = {
-  // --- Sensors (19 — see crates/dashboard-model/.../sensors.rs) ---
+  // --- Sensors (20 — see crates/dashboard-model/.../sensors.rs) ---
   battery_soc: "Pylontech battery state of charge (%).",
   battery_soh: "Pylontech battery state of health (%). Reseed-driven; rarely changes.",
   battery_installed_capacity:
@@ -37,6 +37,8 @@ export const entityDescriptions: Record<string, string> = {
     "Victron ESS state machine code (Keep batteries charged / Optimised w/ or w/o BatteryLife / external control). Reseed-driven from Settings.",
   outdoor_temperature:
     "Outdoor temperature (°C) sourced from Open-Meteo current weather. Reseed-driven (~30 min).",
+  session_kwh:
+    "Cumulative energy delivered to the EV in the current Zappi session (kWh). Sourced from myenergi 'che' field; resets when the session ends.",
 
   // --- Actuated entities ---
   grid_setpoint:

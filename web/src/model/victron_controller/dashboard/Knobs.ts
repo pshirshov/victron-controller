@@ -258,7 +258,7 @@ export class Knobs implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Knobs.BaboonDomainVersion
     }
@@ -270,7 +270,7 @@ export class Knobs implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Knobs.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Knobs.BaboonSameInVersions
     }
@@ -427,7 +427,7 @@ export class Knobs_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Knobs_UEBACodec.BaboonDomainVersion
     }

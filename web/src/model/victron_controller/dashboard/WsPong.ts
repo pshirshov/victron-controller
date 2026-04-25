@@ -46,7 +46,7 @@ export class WsPong implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return WsPong.BaboonDomainVersion
     }
@@ -58,7 +58,7 @@ export class WsPong implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return WsPong.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return WsPong.BaboonSameInVersions
     }
@@ -117,7 +117,7 @@ export class WsPong_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return WsPong_UEBACodec.BaboonDomainVersion
     }

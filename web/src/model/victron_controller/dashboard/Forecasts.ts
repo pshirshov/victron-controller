@@ -47,7 +47,7 @@ export class Forecasts implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Forecasts.BaboonDomainVersion
     }
@@ -59,7 +59,7 @@ export class Forecasts implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Forecasts.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Forecasts.BaboonSameInVersions
     }
@@ -160,7 +160,7 @@ export class Forecasts_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return Forecasts_UEBACodec.BaboonDomainVersion
     }

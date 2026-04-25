@@ -92,14 +92,20 @@ pub fn __opt_f64_total_cmp(a: &Option<f64>, b: &Option<f64>) -> std::cmp::Orderi
 }
 RS
 
-# Targeted rewrites: known field names that are Option<f64>.
+# Targeted rewrites: known field names that are Option<f64>. Apply to
+# every version's generated file (latest at the unsuffixed path; older
+# versions live under v0_X_Y/ subdirs).
 # If new opt[f64] fields are added, extend this list.
-sed -i \
-  -e 's|self\.value\.total_cmp(&other\.value)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.value, \&other.value)|' \
-  "$RS_OUT/src/victron_controller/dashboard/actual_f64.rs"
-sed -i \
-  -e 's|self\.target_value\.total_cmp(&other\.target_value)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.target_value, \&other.target_value)|' \
-  "$RS_OUT/src/victron_controller/dashboard/actuated_f64.rs"
+find "$RS_OUT/src" -path '*/dashboard*/actual_f64.rs' -print0 | while IFS= read -r -d '' f; do
+  sed -i \
+    -e 's|self\.value\.total_cmp(&other\.value)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.value, \&other.value)|' \
+    "$f"
+done
+find "$RS_OUT/src" -path '*/dashboard*/actuated_f64.rs' -print0 | while IFS= read -r -d '' f; do
+  sed -i \
+    -e 's|self\.target_value\.total_cmp(&other\.target_value)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.target_value, \&other.target_value)|' \
+    "$f"
+done
 
 # --- TypeScript -----------------------------------------------------------
 baboon \

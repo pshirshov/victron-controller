@@ -128,6 +128,7 @@ fn apply_sensor_reading(r: SensorReading, world: &mut World) {
         SensorId::EvchargerAcCurrent => world.sensors.evcharger_ac_current.on_reading(v, at),
         SensorId::EssState => world.sensors.ess_state.on_reading(v, at),
         SensorId::OutdoorTemperature => world.sensors.outdoor_temperature.on_reading(v, at),
+        SensorId::SessionKwh => world.sensors.session_kwh.on_reading(v, at),
     }
 }
 
@@ -452,6 +453,8 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     ss.ess_state.tick(at, SensorId::EssState.freshness_threshold());
     ss.outdoor_temperature
         .tick(at, SensorId::OutdoorTemperature.freshness_threshold());
+    ss.session_kwh
+        .tick(at, SensorId::SessionKwh.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);

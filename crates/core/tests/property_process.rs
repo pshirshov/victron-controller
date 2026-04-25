@@ -98,6 +98,7 @@ fn sensor_strategy(t0: Instant) -> impl Strategy<Value = SensorReading> {
         SensorId::EvchargerAcCurrent,
         SensorId::EssState,
         SensorId::OutdoorTemperature,
+        SensorId::SessionKwh,
     ];
 
     (

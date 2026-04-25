@@ -994,11 +994,15 @@ PR-tass-dag-view rides the same bump or its own minor follow-on.
   staleness 15 s → bumped to 120 s). User-flagged as correctness-tier;
   landed first. 0 review defects after round 1.
 
-- [ ] **PR-session-kwh-sensor** — Add `Sensors.session_kwh: ActualF64`
+- [x] **PR-session-kwh-sensor** — Add `Sensors.session_kwh: ActualF64`
   (sourced from myenergi `che` field via `ZappiState`). Add
-  `SensorId::SessionKwh` with cadence 300 s / staleness 600 s.
-  Wire-format bump 0.1.0 → 0.2.0 (additive). Blocks
-  PR-ha-discovery-expand.
+  `SensorId::SessionKwh` (ReseedDriven, external-polled, cadence 300 s
+  / staleness 600 s; staleness invariant holds). Wire-format bump
+  0.1.0 → 0.2.0 (additive); manual converter for `Sensors` between
+  versions. Round 1 review caught D01 (major latent) — the
+  WorldSnapshot back-compat stub was bypassing the manual converter
+  and would have panicked with `missing field 'session_kwh'` on real
+  0.1.0 input. Fixed inline + regression test landed.
 
 - [ ] **PR-ha-discovery-expand** — Extend HA MQTT discovery beyond
   knobs/phases. New: 21 `sensor` entities (19 D-Bus + outdoor_temp +

@@ -38,7 +38,7 @@ export class DecisionFactor implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return DecisionFactor.BaboonDomainVersion
     }
@@ -50,7 +50,7 @@ export class DecisionFactor implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return DecisionFactor.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return DecisionFactor.BaboonSameInVersions
     }
@@ -111,7 +111,7 @@ export class DecisionFactor_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.1.0'
+    public static readonly BaboonDomainVersion = '0.2.0'
     public baboonDomainVersion() {
         return DecisionFactor_UEBACodec.BaboonDomainVersion
     }

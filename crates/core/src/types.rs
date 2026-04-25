@@ -77,6 +77,11 @@ pub enum SensorId {
     EvchargerAcCurrent,
     EssState,
     OutdoorTemperature,
+    /// Cumulative energy delivered to the EV in the current Zappi
+    /// session (kWh). Sourced from the myenergi cloud poll's `che`
+    /// field; resets when a session ends. Reseed-driven (cadence
+    /// 300 s, owned by the myenergi poller, not the D-Bus subscriber).
+    SessionKwh,
 }
 
 impl SensorId {
@@ -122,6 +127,10 @@ impl SensorId {
             // Outdoor temperature comes from Open-Meteo (30 min cadence);
             // give a 10 min grace window on top.
             Self::OutdoorTemperature => Duration::from_secs(40 * 60),
+            // Zappi session kWh comes from the myenergi cloud poll
+            // (default 300 s); 600 s = 2 × cadence per the reseed-driven
+            // staleness rule.
+            Self::SessionKwh => Duration::from_secs(600),
         }
     }
 }
@@ -171,6 +180,7 @@ impl SensorId {
         SensorId::EvchargerAcCurrent,
         SensorId::EssState,
         SensorId::OutdoorTemperature,
+        SensorId::SessionKwh,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -206,10 +216,15 @@ impl SensorId {
             // Slow-signalled — emits on change but gaps can be minutes.
             Self::BatterySoc => FreshnessRegime::SlowSignalled,
             // Reseed-driven — value moves on minutes-to-hours timescales.
+            // `SessionKwh` is sourced from the myenergi cloud poll, not
+            // the D-Bus subscriber; the regime is the same — reseed IS
+            // the freshness source — but the cadence comes from a
+            // separate constant (see `reseed_cadence`).
             Self::BatterySoh
             | Self::BatteryInstalledCapacity
             | Self::EssState
-            | Self::OutdoorTemperature => FreshnessRegime::ReseedDriven,
+            | Self::OutdoorTemperature
+            | Self::SessionKwh => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -220,6 +235,12 @@ impl SensorId {
     /// plus the Open-Meteo poll cadence for `OutdoorTemperature`. Hard-
     /// coded here so the core crate doesn't pull a dependency on the
     /// shell crate just to validate its own invariants.
+    // The arms below intentionally pair semantically distinct
+    // cadences (D-Bus settings reseed vs myenergi cloud poll) that
+    // happen to share a numeric value today. Keep them separate so a
+    // future change to either source doesn't accidentally rewrite the
+    // other.
+    #[allow(clippy::match_same_arms)]
     #[must_use]
     pub const fn reseed_cadence(self) -> std::time::Duration {
         use std::time::Duration;
@@ -246,6 +267,12 @@ impl SensorId {
             Self::EssState => Duration::from_secs(300),
             // Open-Meteo poll cadence (30 min).
             Self::OutdoorTemperature => Duration::from_secs(30 * 60),
+            // myenergi default poll cadence (5 min). Owned by
+            // `crates/shell/src/myenergi/mod.rs`'s Poller, not the
+            // D-Bus subscriber; the constant is duplicated here only
+            // so the core can validate its own staleness invariant
+            // without taking a shell-crate dependency.
+            Self::SessionKwh => Duration::from_secs(300),
         }
     }
 }
@@ -263,7 +290,10 @@ pub const FAST_REGIME_STALENESS_FLOOR: std::time::Duration =
 /// `docs/drafts/20260425-0130-m-ux-1-plan.md` § "PR-staleness-floor".
 #[must_use]
 const fn is_external_polled(id: SensorId) -> bool {
-    matches!(id, SensorId::OutdoorTemperature)
+    matches!(
+        id,
+        SensorId::OutdoorTemperature | SensorId::SessionKwh
+    )
 }
 
 /// Verify the per-sensor staleness invariant for one sensor. Returns
@@ -589,6 +619,10 @@ mod tests {
         const SEED_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
         const SEED_INTERVAL_SETTINGS: Duration = Duration::from_secs(300);
         const OPEN_METEO_CADENCE: Duration = Duration::from_secs(30 * 60);
+        // myenergi default poll cadence — owned by the Poller in
+        // `crates/shell/src/myenergi/mod.rs`. Mirrored here for the
+        // same reason as `OPEN_METEO_CADENCE`.
+        const MYENERGI_CADENCE: Duration = Duration::from_secs(300);
 
         for &id in SensorId::ALL {
             // Categorise via an explicit match — adding a variant later
@@ -627,6 +661,9 @@ mod tests {
                 SensorId::OutdoorTemperature => {
                     (FreshnessRegime::ReseedDriven, OPEN_METEO_CADENCE)
                 }
+                SensorId::SessionKwh => {
+                    (FreshnessRegime::ReseedDriven, MYENERGI_CADENCE)
+                }
             };
 
             // Cross-check: the local categorisation matches the impl-side
@@ -652,10 +689,13 @@ mod tests {
                     );
                 }
                 FreshnessRegime::SlowSignalled | FreshnessRegime::ReseedDriven => {
-                    // External-polled sensors (Open-Meteo today, future
-                    // myenergi `SessionKwh`) use a grace-window model
-                    // — see `is_external_polled` doc.
-                    let required = if matches!(id, SensorId::OutdoorTemperature) {
+                    // External-polled sensors (Open-Meteo and the
+                    // myenergi-sourced `SessionKwh`) use a grace-window
+                    // model — see `is_external_polled` doc.
+                    let required = if matches!(
+                        id,
+                        SensorId::OutdoorTemperature | SensorId::SessionKwh,
+                    ) {
                         cadence + Duration::from_secs(1)
                     } else {
                         2 * cadence
