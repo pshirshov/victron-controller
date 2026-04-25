@@ -41,8 +41,8 @@ following PRs:
   A-01, A-02).
 - [x] **PR-02** — Grid-voltage ÷ 0 guard with upper+lower EN 50160 band
   (resolves A-03).
-- [ ] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (resolves
-  A-04, A-24).
+- [x] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (resolves
+  A-04, A-24). Shipped in commit `aab6c28`.
 - [x] **PR-URGENT-14** — Dedup retained-knob bootstrap apply by topic.
   Resolves A-71. Field confirmed 5 retained topics × 57 redeliveries =
   287 applies; fix uses `HashSet<String>` to keep first-seen per topic
@@ -68,26 +68,24 @@ following PRs:
 - [x] **PR-06** — MQTT retained-knob range + NaN/Inf validation + A-49
   DischargeTime HH:MM:SS + `apply_knob` catch-all warn (resolves A-08,
   A-61, A-49). Parallel table drift (PR-06-D01) deferred.
-- [ ] **PR-07** — `GetNameOwner` re-resolution on `NameOwnerChanged`
-  (resolves A-11).
-- [ ] **PR-08** — `SchedulePartial` accumulator clearing (resolves A-12,
-  related A-57).
+- [x] **PR-07** — `GetNameOwner` re-resolution on `NameOwnerChanged`
+  (resolves A-11). Shipped in commit `88d5412`.
+- [x] **PR-08** — `SchedulePartial` accumulator clearing (resolves A-12).
+  Shipped in commit `0cf4a18`.
 - [x] **PR-09a** — Minimal setpoint clamp: `grid_import_limit_w` knob
   (default 10 W), symmetric `.clamp(-export_cap, +import_cap)`, pre/post-
   clamp Decision factors. Resolves the explicit user ask for a
   configurable [-5000, +10] W window.
-- [ ] **PR-09b** — `grid_export_limit_w` hardening follow-up to PR-09a:
-  reject `grid_export_limit_w > SAFE_MAX` at ingest, fix the
-  export-cap=0 idle-promotion edge case, deadband i64 overflow
-  (A-31), dashboard `u32 → i32` truncation (A-34/A-35). Requires
-  PR-06's `KnobRange` table; Wave 5. Covers remainder of A-09, A-10.
-- [ ] **PR-10** — `force_disable_export` in current_limit: delete the field
-  (A-19); revisit clamping semantics in a follow-up PR if the user
-  decides it's needed.
-- [ ] **PR-11** — Weather-SoC routed through `accept_knob_command`; γ-hold
-  honoured; once-per-day guard (resolves A-20, A-21).
-- [ ] **PR-12** — myenergi HTTP body-level error parsing (resolves A-22,
-  related A-23, A-24).
+- [x] **PR-09b** — `grid_export_limit_w` hardening (A-09, A-10, A-34,
+  A-35). Shipped in commit `6c8c9c8`. Deadband i64 widening (A-31)
+  shipped separately in `PR-setpoint-deadband-i64` (commit `9eb899f`).
+- [x] **PR-10** — `force_disable_export` deleted from `current_limit`
+  (A-19). Shipped in commit `b9e39b6`.
+- [x] **PR-11** — Weather-SoC γ-hold honoured + once-per-day guard
+  (A-20, A-21). Shipped in commit `3d9c987`. A-36 (eddi observer-mode
+  dwell honesty) shipped in `PR-eddi-dwell` (commit `b6dd179`).
+- [x] **PR-12** — myenergi HTTP body-level error parsing (A-22, A-23).
+  Shipped in commit `a25bc15`.
 
 Remaining audit items (A-13 Zappi auto-stop wiring; A-14 kWh/% unit fix;
 A-16 forecast freshness filter; A-17/A-18 Hoymiles solar export + 500 W
@@ -229,7 +227,7 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   dashboard sees phase transitions honestly. A-06 remains fixed via
   PR-05's KillSwitch edge-reset. 4 review rounds; 14 defects filed
   (1 resolved-deferred, 13 resolved in-PR).
-- [ ] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (A-04, A-24).
+- [x] **PR-03** — Zappi `time_in_state` monotonic-Instant fix (A-04, A-24). Shipped in commit `aab6c28`.
 - [x] **PR-07** — Subscribes to `org.freedesktop.DBus.NameOwnerChanged`
   on the same zbus connection. On each signal, if the well-known name
   is one we route, update `owner_to_service` map (remove old unique
@@ -240,15 +238,26 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   ignored-non-watched, first-appearance-empty-old-owner. Rule scoped
   with `sender("org.freedesktop.DBus")` so only broker-emitted
   signals match. Resolves A-11.
-- [ ] **PR-08** — `SchedulePartial` accumulator clearing (A-12, A-57).
-- [ ] **PR-09b** — `grid_export_limit_w` hardening follow-up to PR-09a
-  (remainder of A-09, A-10, A-31, A-34/A-35).
-- [ ] **PR-10** — `force_disable_export`: delete the unused field (A-19).
-- [ ] **PR-11** — weather-SoC routed through `accept_knob_command` +
-  γ-hold + once-per-day (A-20, A-21, A-36).
-- [ ] **PR-12** — myenergi HTTP body-level error parsing (A-22, A-23).
-- [ ] **PR-MISC** — minor/nit hygiene rollup (A-38, A-42, A-43, A-50,
-  A-53-A-68 as appropriate).
+- [x] **PR-08** — `SchedulePartial` accumulator clearing (A-12). Shipped in commit `0cf4a18`.
+- [x] **PR-09b** — `grid_export_limit_w` hardening follow-up to PR-09a
+  (A-09, A-10, A-34, A-35). Shipped in commit `6c8c9c8`. Deadband i64
+  widening landed separately as `PR-setpoint-deadband-i64` (A-31, commit
+  `9eb899f`).
+- [x] **PR-10** — `force_disable_export`: delete the unused field (A-19).
+  Shipped in commit `b9e39b6`.
+- [x] **PR-11** — weather-SoC γ-hold + once-per-day (A-20, A-21).
+  Shipped in commit `3d9c987`. A-36 (eddi_last_transition_at honesty)
+  shipped separately in `PR-eddi-dwell` (commit `b6dd179`).
+- [x] **PR-12** — myenergi HTTP body-level error parsing (A-22, A-23).
+  Shipped in commit `a25bc15`.
+- [x] **PR-MISC** — minor/nit hygiene rollup. Drained across
+  `PR-HYGIENE-1..11` plus targeted PRs (`PR-forecast-freshness`,
+  `PR-solcast-schema`, `PR-mqtt-uuid`, `PR-myenergi-backoff`,
+  `PR-forecast-backoff`, `PR-open-meteo-efficiency`,
+  `PR-dashboard-trysend`, `PR-gamma-hold-per-knob`,
+  `PR-weather-soc-range`, `PR-solar-export-hoymiles`,
+  `PR-sched-decisions`, `PR-UX-1`, etc.). See `git log` and
+  `Drain remaining defect ledger` commit `a494602`.
 - [x] **PR-writer-reconnect** — D-Bus writer reconnect + bounded
   `SetValue` + lazy infallible constructor (A-56). Mirrors
   PR-URGENT-20 subscriber pattern. Plan:

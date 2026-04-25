@@ -887,7 +887,7 @@ defects section follows below with review-round findings.)
 ## PR-SCHED0 — schedule_0 observed disabled post-df3ae4d
 
 ### [PR-SCHED0-D01] `schedule_0` appears disabled on the dashboard / inverter despite `evaluate_schedules` unconditionally emitting `days=DAYS_ENABLED`
-**Status:** under fix
+**Status:** resolved
 **Severity:** major (user-visible regression)
 **Location:** `crates/core/src/process.rs:858-888` (`maybe_propose_schedule` observer-mode early-return); `crates/core/src/controllers/schedules.rs:125-131` (core logic — not the bug site); `crates/shell/src/dashboard/convert.rs:215-235`; `web/src/render.ts:209-226`.
 **Description:** User reports on field deployment of `df3ae4d`: "schedule 0 is now disabled too, but it must be always enabled (low-rate tariff)."
