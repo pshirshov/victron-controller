@@ -80,6 +80,17 @@ tr:hover td { background: rgba(0, 0, 0, 0.02); }
 .freshness-Unknown,
 .freshness-Deprecated { color: var(--bad); }
 
+/* Stop column-width jitter as the freshness label flips between
+ * "Fresh (3 s ago)" and "Deprecated (12 s ago)" — pin the cell to a
+ * width that fits the longest combo and keep it on one line. */
+td.freshness-Fresh,
+td.freshness-Stale,
+td.freshness-Unknown,
+td.freshness-Deprecated {
+  min-width: 12em;
+  white-space: nowrap;
+}
+
 .phase-Unset     { color: var(--muted); }
 .phase-Pending   { color: var(--warn); }
 .phase-Commanded { color: var(--accent); }
