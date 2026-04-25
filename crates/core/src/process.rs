@@ -93,7 +93,7 @@ fn apply_event(
 ) {
     match event {
         Event::Sensor(reading) => apply_sensor_reading(*reading, world, topology, effects),
-        Event::TypedSensor(reading) => apply_typed_reading(*reading, world),
+        Event::TypedSensor(reading) => apply_typed_reading(*reading, world, effects),
         Event::ScheduleReadback { index, value, at } => {
             apply_schedule_readback(*index, *value, *at, world, effects);
         }
@@ -315,10 +315,35 @@ fn apply_schedule_readback(
     }
 }
 
-fn apply_typed_reading(r: TypedReading, world: &mut World) {
+fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Effect>) {
     match r {
-        TypedReading::Zappi { state, at } => world.typed_sensors.zappi_state.on_reading(state, at),
-        TypedReading::Eddi { mode, at } => world.typed_sensors.eddi_mode.on_reading(mode, at),
+        TypedReading::Zappi { state, at } => {
+            world.typed_sensors.zappi_state.on_reading(state, at);
+            // Mirror onto the actuated side so confirm_if can promote
+            // Pending/Commanded → Confirmed when the device's reported
+            // mode matches the controller's target. Without this hook
+            // the actuated phase has no upgrade path on a typed-sensor
+            // ingestion path (M-AS unified the D-Bus sensors but
+            // myenergi typed sensors live on a sibling pipeline).
+            world.zappi_mode.on_reading(state.zappi_mode, at);
+            if world.zappi_mode.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::ZappiMode,
+                    phase: world.zappi_mode.target.phase,
+                }));
+            }
+        }
+        TypedReading::Eddi { mode, at } => {
+            world.typed_sensors.eddi_mode.on_reading(mode, at);
+            // Same mirror as Zappi above.
+            world.eddi_mode.on_reading(mode, at);
+            if world.eddi_mode.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::EddiMode,
+                    phase: world.eddi_mode.target.phase,
+                }));
+            }
+        }
         TypedReading::Forecast {
             provider,
             today_kwh,
