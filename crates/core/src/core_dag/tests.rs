@@ -10,7 +10,7 @@ use crate::types::Effect;
 use crate::world::World;
 
 use super::cores::production_cores;
-use super::{Core, CoreGraphError, CoreId, CoreRegistry};
+use super::{Core, CoreGraphError, CoreId, CoreRegistry, DepEdge};
 
 // -----------------------------------------------------------------------------
 // Stub cores for negative tests.
@@ -18,14 +18,14 @@ use super::{Core, CoreGraphError, CoreId, CoreRegistry};
 
 struct StubCore {
     id: CoreId,
-    deps: &'static [CoreId],
+    deps: &'static [DepEdge],
 }
 
 impl Core for StubCore {
     fn id(&self) -> CoreId {
         self.id
     }
-    fn depends_on(&self) -> &'static [CoreId] {
+    fn depends_on(&self) -> &'static [DepEdge] {
         self.deps
     }
     fn run(
@@ -38,8 +38,14 @@ impl Core for StubCore {
     }
 }
 
-fn stub(id: CoreId, deps: &'static [CoreId]) -> Box<dyn Core> {
+fn stub(id: CoreId, deps: &'static [DepEdge]) -> Box<dyn Core> {
     Box::new(StubCore { id, deps })
+}
+
+/// Convenience builder for tests that don't care about the field-name
+/// metadata on a `DepEdge`.
+const fn ord(from: CoreId) -> DepEdge {
+    DepEdge { from, fields: &[] }
 }
 
 // -----------------------------------------------------------------------------
@@ -49,14 +55,23 @@ fn stub(id: CoreId, deps: &'static [CoreId]) -> Box<dyn Core> {
 /// Snapshot of the topological order the production registry must
 /// produce. If this changes, the runtime order of `run_*` has
 /// changed — pause and confirm that's intentional.
+///
+/// PR-DAG-C order: ZappiActive → Setpoint → ZappiMode → EddiMode →
+/// WeatherSoc → Schedules → CurrentLimit → SensorBroadcast.
+/// `ZappiMode` / `EddiMode` shifted earlier (they have no real cross-
+/// core reads, so Kahn's `[ZappiMode, EddiMode] both at in-degree 0
+/// after popping ZappiActive` placement is correct). `CurrentLimit`
+/// shifted last among actuators because it now depends on `Schedules`
+/// for `battery_selected_soc_target` (zero-tick latency, was one tick
+/// pre-PR-DAG-C).
 const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
     CoreId::ZappiActive,
     CoreId::Setpoint,
-    CoreId::CurrentLimit,
-    CoreId::Schedules,
     CoreId::ZappiMode,
     CoreId::EddiMode,
     CoreId::WeatherSoc,
+    CoreId::Schedules,
+    CoreId::CurrentLimit,
     CoreId::SensorBroadcast,
 ];
 
@@ -82,9 +97,11 @@ fn topo_order_is_deterministic() {
 #[test]
 fn rejects_cycle() {
     // Setpoint -> CurrentLimit -> Setpoint (2-cycle).
+    const SP_DEPS: &[DepEdge] = &[ord(CoreId::CurrentLimit)];
+    const CL_DEPS: &[DepEdge] = &[ord(CoreId::Setpoint)];
     let cores: Vec<Box<dyn Core>> = vec![
-        stub(CoreId::Setpoint, &[CoreId::CurrentLimit]),
-        stub(CoreId::CurrentLimit, &[CoreId::Setpoint]),
+        stub(CoreId::Setpoint, SP_DEPS),
+        stub(CoreId::CurrentLimit, CL_DEPS),
     ];
     let err = CoreRegistry::build(cores).unwrap_err();
     match err {
@@ -100,7 +117,8 @@ fn rejects_cycle() {
 fn rejects_missing_dependency() {
     // Setpoint declares a dep on ZappiActive, but ZappiActive is NOT
     // in the registry.
-    let cores: Vec<Box<dyn Core>> = vec![stub(CoreId::Setpoint, &[CoreId::ZappiActive])];
+    const DEPS: &[DepEdge] = &[ord(CoreId::ZappiActive)];
+    let cores: Vec<Box<dyn Core>> = vec![stub(CoreId::Setpoint, DEPS)];
     let err = CoreRegistry::build(cores).unwrap_err();
     match err {
         CoreGraphError::MissingDependency { from, missing } => {
@@ -137,8 +155,9 @@ fn rejects_duplicate_core() {
 fn tie_break_follows_coreid_discriminant_order() {
     // Register in reverse discriminant order to prove tie-break is
     // doing the work, not registration order.
+    const EM_DEPS: &[DepEdge] = &[ord(CoreId::ZappiActive), ord(CoreId::WeatherSoc)];
     let cores: Vec<Box<dyn Core>> = vec![
-        stub(CoreId::EddiMode, &[CoreId::ZappiActive, CoreId::WeatherSoc]),
+        stub(CoreId::EddiMode, EM_DEPS),
         stub(CoreId::WeatherSoc, &[]),
         stub(CoreId::ZappiActive, &[]),
     ];
@@ -146,6 +165,115 @@ fn tie_break_follows_coreid_discriminant_order() {
     assert_eq!(
         reg.order(),
         vec![CoreId::ZappiActive, CoreId::WeatherSoc, CoreId::EddiMode],
+    );
+}
+
+// -----------------------------------------------------------------------------
+// PR-DAG-C — semantic-edges + per-edge field surface.
+// -----------------------------------------------------------------------------
+
+/// `CurrentLimit` must run AFTER `Schedules` so it reads the freshly-
+/// written `battery_selected_soc_target` from this tick rather than
+/// last tick. The PR-DAG-A linear chain put CurrentLimit before
+/// Schedules; PR-DAG-C flips it via the new
+/// `CurrentLimit.depends_on += [Schedules]` edge.
+#[test]
+fn current_limit_runs_after_schedules_post_pr_dag_c() {
+    let reg = CoreRegistry::build(production_cores()).expect("valid DAG");
+    let order = reg.order();
+    let cl = order.iter().position(|&c| c == CoreId::CurrentLimit).expect("CL present");
+    let sch = order.iter().position(|&c| c == CoreId::Schedules).expect("Schedules present");
+    assert!(
+        sch < cl,
+        "Schedules must run before CurrentLimit so the latter reads same-tick \
+         battery_selected_soc_target. Order was {order:?}",
+    );
+}
+
+/// `WeatherSoc` must run AFTER `Setpoint` (reads
+/// `bookkeeping.charge_to_full_required` written by Setpoint). The
+/// PR-DAG-A linear chain put WeatherSoc *after* EddiMode and
+/// transitively after Setpoint by accident; PR-DAG-C records the
+/// real edge directly.
+#[test]
+fn weather_soc_runs_after_setpoint_post_pr_dag_c() {
+    let reg = CoreRegistry::build(production_cores()).expect("valid DAG");
+    let order = reg.order();
+    let ws = order.iter().position(|&c| c == CoreId::WeatherSoc).expect("WS present");
+    let sp = order.iter().position(|&c| c == CoreId::Setpoint).expect("Setpoint present");
+    assert!(
+        sp < ws,
+        "Setpoint must run before WeatherSoc so the latter reads same-tick \
+         charge_to_full_required. Order was {order:?}",
+    );
+}
+
+/// User-facing wire-format check: `CoreState.depends_on` strings now
+/// carry the per-edge field names so the dashboard can show *why* an
+/// edge exists, not just that it does.
+#[test]
+fn dashboard_depends_on_strings_carry_field_names() {
+    use crate::clock::FixedClock;
+    use crate::topology::Topology;
+    use crate::types::Effect;
+    use crate::world::World;
+
+    let mono = std::time::Instant::now();
+    let naive = chrono::NaiveDate::from_ymd_opt(2026, 4, 25)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+    let clk = FixedClock::new(mono, naive);
+
+    let mut world = World::fresh_boot(mono);
+    let reg = CoreRegistry::build(production_cores()).expect("valid DAG");
+    let mut effects: Vec<Effect> = Vec::new();
+    reg.run_all(&mut world, &clk, &Topology::defaults(), &mut effects);
+
+    // WeatherSoc → Setpoint via charge_to_full_required.
+    let ws = world
+        .cores_state
+        .cores
+        .iter()
+        .find(|c| c.id == CoreId::WeatherSoc.name())
+        .expect("WeatherSoc state present");
+    assert_eq!(
+        ws.depends_on,
+        vec!["setpoint via bookkeeping.charge_to_full_required".to_string()],
+        "WeatherSoc dashboard string must surface the field that motivates \
+         the edge, not just the producing core name",
+    );
+
+    // CurrentLimit → ZappiActive + Setpoint + Schedules, each with fields.
+    let cl = world
+        .cores_state
+        .cores
+        .iter()
+        .find(|c| c.id == CoreId::CurrentLimit.name())
+        .expect("CurrentLimit state present");
+    assert_eq!(
+        cl.depends_on,
+        vec![
+            "evcharger.active via derived.zappi_active".to_string(),
+            "setpoint via bookkeeping.charge_to_full_required".to_string(),
+            "schedules via bookkeeping.battery_selected_soc_target".to_string(),
+        ],
+        "CurrentLimit must surface the three fields that motivate its edges",
+    );
+
+    // SensorBroadcast keeps fields-empty edges (pure ordering); strings
+    // must omit the " via ..." suffix in that case.
+    let br = world
+        .cores_state
+        .cores
+        .iter()
+        .find(|c| c.id == CoreId::SensorBroadcast.name())
+        .expect("SensorBroadcast state present");
+    assert!(
+        br.depends_on.iter().all(|s| !s.contains(" via ")),
+        "SensorBroadcast deps are ordering-only; the rendered strings \
+         should not have a fake 'via ...' tail. Got: {:?}",
+        br.depends_on,
     );
 }
 

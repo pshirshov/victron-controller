@@ -119,10 +119,10 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   Ships alone first; classification logging + progressive
   degradation (matrix §Rate-limit detection) are follow-ups.
 
-- [~] **PR-DAG** — TASS core DAG orchestrator. Splits into PR-DAG-A
+- [x] **PR-DAG** — TASS core DAG orchestrator. Splits into PR-DAG-A
   (infra — zero behavior change), PR-DAG-B (migrate zappi_active →
   `world.derived.zappi_active` + delete `DerivedView`), PR-DAG-C
-  (remaining `depends_on` edges for cross-core bookkeeping reads).
+  (semantic `depends_on` edges + per-edge field surface).
   Plan: `docs/drafts/20260424-1700-m-audit-2-pr-dag-plan.md`.
   - [x] **PR-DAG-A** — Core trait, CoreRegistry, Kahn's topo sort,
     5+2 tests (build / determinism / cycle / missing / duplicate +
@@ -143,7 +143,23 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
     stale sensors (departs from PR-04's latched-via-bookkeeping);
     SPEC §5.8 updated. 2 review rounds (D01 dismissed as misread plan;
     D02 real — landed 2 regression tests + doc comment).
-  - [ ] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit (recommended; deferrable).
+  - [x] **PR-DAG-C** — Semantic `depends_on` edges per §4 audit. Every
+    `depends_on` returns `&'static [DepEdge]` carrying the producing
+    core PLUS the live `world.<area>.<field>` identifiers that
+    motivate the edge; dashboard renders each edge as
+    `"<core> via <field1>, <field2>"`. Linear-chain placeholder edges
+    deleted: ZappiMode/EddiMode now `&[]`; WeatherSoc rewired to
+    `[Setpoint via charge_to_full_required]`; Schedules and
+    CurrentLimit gain real fields-attributed edges; SensorBroadcast
+    depends on every actuator (was implicit via the chain). Material
+    behaviour change: `CurrentLimit.depends_on += [Schedules]` flips
+    the runtime order so CurrentLimit reads same-tick
+    `battery_selected_soc_target` (was one-tick stale). Topological
+    order: ZappiActive → Setpoint → ZappiMode → EddiMode → WeatherSoc →
+    Schedules → CurrentLimit → SensorBroadcast. 3 new tests
+    (`current_limit_runs_after_schedules_post_pr_dag_c`,
+    `weather_soc_runs_after_setpoint_post_pr_dag_c`,
+    `dashboard_depends_on_strings_carry_field_names`).
 - [x] **PR-URGENT-20** — D-Bus session dies ~20s after startup; two-
   part fix: (1) reduce aggressive 500ms poll → 5s + freshness 2s →
   15s to stop hammering the Venus broker; (2) **graceful reconnect

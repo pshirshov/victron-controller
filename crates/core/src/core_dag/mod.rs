@@ -60,6 +60,23 @@ impl CoreId {
     }
 }
 
+/// A single dependency edge: which producing core is required to run
+/// first, and which world fields actually motivate the edge. Field
+/// names are raw `world.<area>.<field>` identifiers (snake_case), so a
+/// reader can grep them straight back to the live state struct. The
+/// dashboard surfaces them next to the producing core so the operator
+/// can see *why* an edge exists, not just that it does.
+///
+/// `fields` may be `&[]` to record an ordering-only edge (rare; the
+/// PR-DAG-A linear chain effectively used these implicitly). Prefer
+/// listing the actual fields — an empty edge usually means the edge
+/// shouldn't exist at all.
+#[derive(Debug, Clone, Copy)]
+pub struct DepEdge {
+    pub from: CoreId,
+    pub fields: &'static [&'static str],
+}
+
 /// A single unit of orchestrated work. One impl per `run_*` today.
 ///
 /// PR-DAG-B: cross-core derivations live in `World::derived` (see
@@ -68,9 +85,11 @@ impl CoreId {
 pub trait Core: Send + Sync {
     fn id(&self) -> CoreId;
 
-    /// Cores whose execution must precede this one. `CoreRegistry`
-    /// validates that every id here exists in the registry.
-    fn depends_on(&self) -> &'static [CoreId];
+    /// Cores whose execution must precede this one and the specific
+    /// fields that motivate each edge. `CoreRegistry` validates that
+    /// every `from` resolves to a known core; the topological sort
+    /// uses only `from`, while the dashboard surfaces `fields`.
+    fn depends_on(&self) -> &'static [DepEdge];
 
     fn run(
         &self,
@@ -152,11 +171,11 @@ impl CoreRegistry {
 
         // 2. Validate every declared dependency resolves to a known core.
         for c in &cores {
-            for &dep in c.depends_on() {
-                if !id_to_idx.contains_key(&dep) {
+            for edge in c.depends_on() {
+                if !id_to_idx.contains_key(&edge.from) {
                     return Err(CoreGraphError::MissingDependency {
                         from: c.id(),
-                        missing: dep,
+                        missing: edge.from,
                     });
                 }
             }
@@ -167,8 +186,8 @@ impl CoreRegistry {
         let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
         let mut in_degree: Vec<usize> = vec![0; n];
         for (idx, c) in cores.iter().enumerate() {
-            for &dep in c.depends_on() {
-                let dep_idx = id_to_idx[&dep];
+            for edge in c.depends_on() {
+                let dep_idx = id_to_idx[&edge.from];
                 adj[dep_idx].push(idx);
                 in_degree[idx] += 1;
             }
@@ -241,7 +260,17 @@ impl CoreRegistry {
             // honest given current core semantics.
             let entry = crate::world::CoreState {
                 id: core.id().name().to_string(),
-                depends_on: core.depends_on().iter().map(|d| d.name().to_string()).collect(),
+                depends_on: core
+                    .depends_on()
+                    .iter()
+                    .map(|e| {
+                        if e.fields.is_empty() {
+                            e.from.name().to_string()
+                        } else {
+                            format!("{} via {}", e.from.name(), e.fields.join(", "))
+                        }
+                    })
+                    .collect(),
                 last_run_outcome: "success".to_string(),
                 last_payload: core.last_payload(world),
                 last_inputs: core.last_inputs(world),

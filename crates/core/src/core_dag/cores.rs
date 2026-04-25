@@ -4,14 +4,25 @@
 //! PR-DAG-B: `ZappiActiveCore` is a first-class derivation core that
 //! writes `world.derived.zappi_active` at the top of every tick. The
 //! three actuator cores that read it (`Setpoint`, `CurrentLimit`,
-//! `Schedules`) declare `depends_on = [ZappiActive]` so the topological
+//! `Schedules`) declare a `DepEdge` on `ZappiActive` so the topological
 //! sort runs the derivation first.
 //!
-//! The residual `Setpoint → CurrentLimit → Schedules → ZappiMode →
-//! EddiMode → WeatherSoc` chain is still a PR-DAG-A placeholder —
-//! PR-DAG-C replaces each of those edges with a semantic one derived
-//! from the bookkeeping-write/read audit in
-//! `docs/drafts/20260424-1700-m-audit-2-pr-dag-plan.md` §4.
+//! PR-DAG-C: every `depends_on` below is a semantic edge — the `from`
+//! is the producing core, the `fields` are the live `world.<area>.<field>`
+//! identifiers actually read by the consumer. The PR-DAG-A linear chain
+//! placeholder edges (Setpoint → CurrentLimit → Schedules → ZappiMode →
+//! EddiMode → WeatherSoc) are gone. Sources of truth: the
+//! bookkeeping-write/read audit in
+//! `docs/drafts/20260424-1700-m-audit-2-pr-dag-plan.md` §4 and each
+//! controller's `last_inputs`/`last_outputs` impl in this file.
+//!
+//! Notable behavioural change in PR-DAG-C: `CurrentLimit` now declares
+//! a real edge on `Schedules` (via `battery_selected_soc_target`). Pre-
+//! PR-DAG-C, `CurrentLimit` ran *before* `Schedules` in the linear
+//! chain, so it always read yesterday's tick's value — a one-tick
+//! semantic latency. The new edge flips the order to give zero-latency
+//! same-tick reads. Locked by
+//! `current_limit_reads_same_tick_battery_selected_soc_target`.
 
 use crate::Clock;
 use crate::controllers::zappi_active::classify_zappi_active;
@@ -25,7 +36,7 @@ use crate::topology::Topology;
 use crate::types::{BookkeepingId, Effect, ForecastProvider, PublishPayload, SensorId, encode_sensor_body};
 use crate::world::{CoreFactor, World};
 
-use super::{Core, CoreId};
+use super::{Core, CoreId, DepEdge};
 
 /// Pretty-print an `Actual<f64>` with a `Fresh`/`Stale`/`Unknown` suffix
 /// for the popup. Mirrors how the dashboard renders sensor values
@@ -46,7 +57,7 @@ impl Core for ZappiActiveCore {
     fn id(&self) -> CoreId {
         CoreId::ZappiActive
     }
-    fn depends_on(&self) -> &'static [CoreId] {
+    fn depends_on(&self) -> &'static [DepEdge] {
         &[]
     }
     /// Writes `world.derived.zappi_active` from a single canonical
@@ -118,8 +129,11 @@ impl Core for SetpointCore {
     fn id(&self) -> CoreId {
         CoreId::Setpoint
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::ZappiActive]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        &[DepEdge {
+            from: CoreId::ZappiActive,
+            fields: &["derived.zappi_active"],
+        }]
     }
     fn run(
         &self,
@@ -209,10 +223,25 @@ impl Core for CurrentLimitCore {
     fn id(&self) -> CoreId {
         CoreId::CurrentLimit
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        // Semantic edge on ZappiActive (reads `world.derived.zappi_active`);
-        // the edge on Setpoint is PR-DAG-A placeholder chain preservation.
-        &[CoreId::ZappiActive, CoreId::Setpoint]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        &[
+            DepEdge {
+                from: CoreId::ZappiActive,
+                fields: &["derived.zappi_active"],
+            },
+            DepEdge {
+                from: CoreId::Setpoint,
+                fields: &["bookkeeping.charge_to_full_required"],
+            },
+            // PR-DAG-C: real ordering change. Pre-PR `run_current_limit`
+            // ran before `run_schedules` and read yesterday's
+            // `battery_selected_soc_target`. The new edge flips the order
+            // to give zero-tick latency same-tick reads.
+            DepEdge {
+                from: CoreId::Schedules,
+                fields: &["bookkeeping.battery_selected_soc_target"],
+            },
+        ]
     }
     fn run(
         &self,
@@ -288,10 +317,21 @@ impl Core for SchedulesCore {
     fn id(&self) -> CoreId {
         CoreId::Schedules
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        // Semantic edge on ZappiActive (reads `world.derived.zappi_active`);
-        // the edge on CurrentLimit is PR-DAG-A placeholder chain preservation.
-        &[CoreId::ZappiActive, CoreId::CurrentLimit]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        &[
+            DepEdge {
+                from: CoreId::ZappiActive,
+                fields: &["derived.zappi_active"],
+            },
+            DepEdge {
+                from: CoreId::Setpoint,
+                fields: &["bookkeeping.charge_to_full_required"],
+            },
+            DepEdge {
+                from: CoreId::WeatherSoc,
+                fields: &["bookkeeping.charge_battery_extended_today"],
+            },
+        ]
     }
     fn run(
         &self,
@@ -368,8 +408,11 @@ impl Core for ZappiModeCore {
     fn id(&self) -> CoreId {
         CoreId::ZappiMode
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::Schedules]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        // No real cross-core reads — `evaluate_zappi_mode` consumes
+        // sensors + knobs only. The PR-DAG-A `[Schedules]` edge was
+        // pure linear-chain placeholder.
+        &[]
     }
     fn run(
         &self,
@@ -412,8 +455,11 @@ impl Core for EddiModeCore {
     fn id(&self) -> CoreId {
         CoreId::EddiMode
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::ZappiMode]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        // No real cross-core reads — `evaluate_eddi_mode` consumes
+        // `battery_soc` + the eddi knobs only. The PR-DAG-A
+        // `[ZappiMode]` edge was pure linear-chain placeholder.
+        &[]
     }
     fn run(
         &self,
@@ -459,8 +505,16 @@ impl Core for WeatherSocCore {
     fn id(&self) -> CoreId {
         CoreId::WeatherSoc
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        &[CoreId::EddiMode]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        // `run_weather_soc` reads `bookkeeping.charge_to_full_required`
+        // (written by `Setpoint`) — see `process.rs` cbe-eligibility
+        // arms. The PR-DAG-A `[EddiMode]` edge was pure linear-chain
+        // placeholder; nothing in WeatherSoc actually reads anything
+        // EddiMode produces.
+        &[DepEdge {
+            from: CoreId::Setpoint,
+            fields: &["bookkeeping.charge_to_full_required"],
+        }]
     }
     fn run(
         &self,
@@ -569,12 +623,21 @@ impl Core for SensorBroadcastCore {
     fn id(&self) -> CoreId {
         CoreId::SensorBroadcast
     }
-    fn depends_on(&self) -> &'static [CoreId] {
-        // Depend on the actuator-chain tail so the broadcast picks up
-        // any bookkeeping update controllers wrote during this tick,
-        // and on `ZappiActive` as the spec says (so
-        // `world.derived.zappi_active` is freshly written).
-        &[CoreId::ZappiActive, CoreId::WeatherSoc]
+    fn depends_on(&self) -> &'static [DepEdge] {
+        // Pure ordering edges: the broadcast publishes sensors +
+        // bookkeeping written by every actuator + derivation core, so
+        // it must run after all of them. No specific field per edge —
+        // this is the legitimate empty-fields case that `DepEdge`'s
+        // doc-comment mentions.
+        &[
+            DepEdge { from: CoreId::ZappiActive, fields: &[] },
+            DepEdge { from: CoreId::Setpoint, fields: &[] },
+            DepEdge { from: CoreId::CurrentLimit, fields: &[] },
+            DepEdge { from: CoreId::Schedules, fields: &[] },
+            DepEdge { from: CoreId::ZappiMode, fields: &[] },
+            DepEdge { from: CoreId::EddiMode, fields: &[] },
+            DepEdge { from: CoreId::WeatherSoc, fields: &[] },
+        ]
     }
     fn run(
         &self,
