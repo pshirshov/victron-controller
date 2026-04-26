@@ -542,6 +542,13 @@ footer {
 /* PR-soc-chart-solar: forecast-driven climb (SolarCharge) and fall (Drain). */
 #soc-chart .trace-projection-solarcharge      { stroke: var(--ok);     stroke-width: 1.5px; fill: none; opacity: 0.6; stroke-dasharray: 4 4; }
 #soc-chart .trace-projection-drain            { stroke: var(--bad);    stroke-width: 1.5px; fill: none; opacity: 0.6; stroke-dasharray: 4 4; }
+/* PR-soc-chart-export-policy: branch-tagged segments produced when the
+ * projection consults `compute_battery_balance`. */
+#soc-chart .trace-projection-forcednoexport       { stroke: var(--accent); stroke-width: 1.5px; fill: none; opacity: 0.7; stroke-dasharray: 4 4; }
+#soc-chart .trace-projection-preserveforzappi     { stroke: var(--ok);     stroke-width: 1.5px; fill: none; opacity: 0.7; stroke-dasharray: 4 4; }
+#soc-chart .trace-projection-belowexportthreshold { stroke: var(--ok);     stroke-width: 1.5px; fill: none; opacity: 0.6; stroke-dasharray: 4 4; }
+#soc-chart .trace-projection-eveningdischarge     { stroke: var(--bad);    stroke-width: 1.5px; fill: none; opacity: 0.7; stroke-dasharray: 4 4; }
+#soc-chart .trace-projection-batteryfull          { stroke: var(--muted);  stroke-width: 1.5px; fill: none; opacity: 0.4; }
 
 #soc-chart .target-line-discharge { stroke: var(--bad); stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
 #soc-chart .target-line-charge    { stroke: var(--ok);  stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }

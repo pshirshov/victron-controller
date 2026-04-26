@@ -9,6 +9,11 @@ pub enum SocProjectionKind {
     Clamped,
     SolarCharge,
     Drain,
+    ForcedNoExport,
+    PreserveForZappi,
+    BelowExportThreshold,
+    EveningDischarge,
+    BatteryFull,
 }
 
 impl SocProjectionKind {
@@ -21,6 +26,11 @@ impl SocProjectionKind {
             "Clamped" => Ok(SocProjectionKind::Clamped),
             "SolarCharge" => Ok(SocProjectionKind::SolarCharge),
             "Drain" => Ok(SocProjectionKind::Drain),
+            "ForcedNoExport" => Ok(SocProjectionKind::ForcedNoExport),
+            "PreserveForZappi" => Ok(SocProjectionKind::PreserveForZappi),
+            "BelowExportThreshold" => Ok(SocProjectionKind::BelowExportThreshold),
+            "EveningDischarge" => Ok(SocProjectionKind::EveningDischarge),
+            "BatteryFull" => Ok(SocProjectionKind::BatteryFull),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -34,6 +44,11 @@ impl SocProjectionKind {
             SocProjectionKind::Clamped,
             SocProjectionKind::SolarCharge,
             SocProjectionKind::Drain,
+            SocProjectionKind::ForcedNoExport,
+            SocProjectionKind::PreserveForZappi,
+            SocProjectionKind::BelowExportThreshold,
+            SocProjectionKind::EveningDischarge,
+            SocProjectionKind::BatteryFull,
         ]
     }
 }
@@ -48,6 +63,11 @@ impl std::fmt::Display for SocProjectionKind {
             SocProjectionKind::Clamped => write!(f, "Clamped"),
             SocProjectionKind::SolarCharge => write!(f, "SolarCharge"),
             SocProjectionKind::Drain => write!(f, "Drain"),
+            SocProjectionKind::ForcedNoExport => write!(f, "ForcedNoExport"),
+            SocProjectionKind::PreserveForZappi => write!(f, "PreserveForZappi"),
+            SocProjectionKind::BelowExportThreshold => write!(f, "BelowExportThreshold"),
+            SocProjectionKind::EveningDischarge => write!(f, "EveningDischarge"),
+            SocProjectionKind::BatteryFull => write!(f, "BatteryFull"),
         }
     }
 }
@@ -75,6 +95,11 @@ impl crate::baboon_runtime::BaboonBinEncode for SocProjectionKind {
             SocProjectionKind::Clamped => crate::baboon_runtime::bin_tools::write_byte(writer, 4)?,
             SocProjectionKind::SolarCharge => crate::baboon_runtime::bin_tools::write_byte(writer, 5)?,
             SocProjectionKind::Drain => crate::baboon_runtime::bin_tools::write_byte(writer, 6)?,
+            SocProjectionKind::ForcedNoExport => crate::baboon_runtime::bin_tools::write_byte(writer, 7)?,
+            SocProjectionKind::PreserveForZappi => crate::baboon_runtime::bin_tools::write_byte(writer, 8)?,
+            SocProjectionKind::BelowExportThreshold => crate::baboon_runtime::bin_tools::write_byte(writer, 9)?,
+            SocProjectionKind::EveningDischarge => crate::baboon_runtime::bin_tools::write_byte(writer, 10)?,
+            SocProjectionKind::BatteryFull => crate::baboon_runtime::bin_tools::write_byte(writer, 11)?,
         }
         Ok(())
     }
@@ -91,6 +116,11 @@ impl crate::baboon_runtime::BaboonBinDecode for SocProjectionKind {
             4 => Ok(SocProjectionKind::Clamped),
             5 => Ok(SocProjectionKind::SolarCharge),
             6 => Ok(SocProjectionKind::Drain),
+            7 => Ok(SocProjectionKind::ForcedNoExport),
+            8 => Ok(SocProjectionKind::PreserveForZappi),
+            9 => Ok(SocProjectionKind::BelowExportThreshold),
+            10 => Ok(SocProjectionKind::EveningDischarge),
+            11 => Ok(SocProjectionKind::BatteryFull),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

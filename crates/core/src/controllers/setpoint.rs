@@ -136,6 +136,305 @@ pub struct SetpointBookkeeping {
 // threaded into the controller from `Topology::hardware`.
 
 // -----------------------------------------------------------------------------
+// PR-soc-chart-export-policy: shared battery-balance helper
+// -----------------------------------------------------------------------------
+
+/// Hypothetical world overrides used by [`compute_battery_balance`]. The
+/// live setpoint controller passes the current values; the SoC-chart
+/// projection passes per-hour hypotheticals (projected SoC, forecast
+/// solar, hour-boundary clock) so the projection consults the same
+/// branch tree as the live controller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BalanceHypothetical {
+    /// SoC % to use instead of `input.battery_soc`. Pass live SoC for
+    /// the live tick.
+    pub battery_soc: f64,
+    /// MPPT solar power (W) to use instead of
+    /// `input.mppt_power_0 + input.mppt_power_1`. Pass current sum for
+    /// the live tick.
+    pub mppt_power_total_w: f64,
+    /// Wall-clock `now` (NaiveDateTime). Pass live clock for the live
+    /// tick; for projection pass the hour boundary's local-clock time.
+    pub now: NaiveDateTime,
+}
+
+/// Which branch of the export policy fired. 1:1 with the branch tree of
+/// [`evaluate_setpoint`] (and therefore with `BatteryBalanceBranch` →
+/// `SocProjectionKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryBalanceBranch {
+    /// `force_disable_export` — all surplus to battery.
+    ForcedNoExport,
+    /// `zappi_active && !allow_battery_to_car` early-morning carve-out.
+    PreserveForZappi,
+    /// `battery_soc < export_soc_threshold` — only solar surplus exports.
+    BelowExportThreshold,
+    /// `battery_soc >= export_soc_threshold` discharge window — battery
+    /// actively pulled to export.
+    EveningDischarge,
+    /// Battery at 100 % — no further charge possible.
+    BatteryFull,
+    /// Anything else / fallback (preserve battery, idle windows).
+    Idle,
+}
+
+/// What the setpoint controller decided about battery flow at a given
+/// instant. Positive `net_battery_w` = battery charging (current
+/// flowing into battery); negative = battery discharging.
+///
+/// Used by the live controller (which converts to a grid setpoint) AND
+/// the SoC-chart projection (which integrates it across the horizon to
+/// extrapolate SoC). The live and projection paths share the branch
+/// tree so the projection cannot disagree with the live controller
+/// about what the live controller will do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BatteryBalance {
+    pub net_battery_w: f64,
+    pub branch: BatteryBalanceBranch,
+}
+
+/// Pure compute of net battery power. Mirrors the branching of
+/// [`evaluate_setpoint`] exactly (single source of truth — drift-guard
+/// tests in `convert_soc_chart` keep them aligned). The projection
+/// passes hypothetical (soc, solar_w, now) to extrapolate forward; the
+/// live tick passes the current values.
+///
+/// Returns the *modelled* battery power (W) the controller's branch
+/// would produce given the inputs, plus a tag identifying which branch
+/// fired. The setpoint-target derivation (the part that produces a
+/// *grid* setpoint number) stays in [`evaluate_setpoint`].
+#[must_use]
+#[allow(clippy::float_cmp)]
+pub fn compute_battery_balance(
+    input: &SetpointInput,
+    hw: &HardwareParams,
+    h: BalanceHypothetical,
+) -> BatteryBalance {
+    let g = &input.globals;
+    let baseload_w = hw.baseload_consumption_w;
+    let nominal_voltage_v = hw.battery_nominal_voltage_v;
+
+    let battery_soc = h.battery_soc;
+    let mppt_power = h.mppt_power_total_w;
+    let now = h.now;
+
+    let consumption = input.power_consumption;
+
+    // Mirror the full-charge promotion of export_soc_threshold so the
+    // branch tree below sees the same effective threshold as the live
+    // controller's daytime branches.
+    let charge_to_full_required = match g.debug_full_charge {
+        DebugFullCharge::Forbid => false,
+        DebugFullCharge::Force => true,
+        DebugFullCharge::Auto => g.next_full_charge.is_some_and(|nfc| nfc <= now),
+    };
+    let export_soc_threshold = if charge_to_full_required {
+        g.full_charge_export_soc_threshold
+    } else {
+        g.export_soc_threshold
+    };
+    let soc_end_of_day_target = if charge_to_full_required {
+        g.full_charge_discharge_soc_target.max(g.discharge_soc_target)
+    } else {
+        g.discharge_soc_target
+    };
+
+    // Battery-full short-circuit: the live controller doesn't carve this
+    // out as a separate branch (its post-clamp arithmetic happens to land
+    // at idle for SoC=100), but for projection purposes we surface it
+    // explicitly so the chart shows a flat trace at the ceiling.
+    if battery_soc >= 99.99 {
+        return BatteryBalance {
+            net_battery_w: 0.0,
+            branch: BatteryBalanceBranch::BatteryFull,
+        };
+    }
+
+    let hour = now.hour();
+    let minute = now.minute();
+
+    // PV that physically flows into the battery DC bus. MPPTs feed the
+    // battery directly; Soltaro feeds the AC bus. Hoymiles is on the EV
+    // branch and not modelled here (it never charges the house battery).
+    let solar_to_battery_capable_w = mppt_power.max(0.0);
+    // House drain that the battery must cover when idle/below-threshold:
+    // baseline + any surplus consumption above baseline. Caller controls
+    // whether `power_consumption` already includes baseline (live tick)
+    // or only Zappi/loads (projection — baseline added explicitly here).
+    let baseline_drain_w = baseload_w.max(consumption);
+
+    // 1. force_disable_export.
+    if g.force_disable_export {
+        // Idle setpoint pinned, so all available solar that can charge
+        // the battery does, minus baseline drain.
+        return BatteryBalance {
+            net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+            branch: BatteryBalanceBranch::ForcedNoExport,
+        };
+    }
+
+    // 2. zappi_active && !allow_battery_to_car.
+    if g.zappi_active && !g.allow_battery_to_car {
+        // Early-morning carve-out: setpoint pinned to idle (minus
+        // soltaro_export); battery preserved.
+        // Daytime: setpoint = -solar_export so MPPT surplus exports
+        // and battery is held flat.
+        return BatteryBalance {
+            // Held near zero (carve-out preserves the battery; whatever
+            // tiny drift exists isn't worth modelling on the chart).
+            net_battery_w: 0.0,
+            branch: BatteryBalanceBranch::PreserveForZappi,
+        };
+    }
+
+    // 3. 23:55-00:00 protection window — idle, battery follows surplus.
+    if hour == 23 && minute >= 55 {
+        return BatteryBalance {
+            net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+            branch: BatteryBalanceBranch::Idle,
+        };
+    }
+
+    // 4. Evening discharge window — `!(2..17).contains(&hour)` excluding
+    // the 23:55 sliver above.
+    if !(2..17).contains(&hour) {
+        // Build the same `hours_remaining` the live controller would.
+        let early_discharge = g.discharge_time == DischargeTime::At2300;
+        let mut discharge_end_time = now;
+        if early_discharge {
+            if hour < 2 {
+                discharge_end_time -= TimeDelta::days(1);
+            }
+            discharge_end_time = match discharge_end_time.date().and_hms_opt(23, 0, 0) {
+                Some(t) => t,
+                None => {
+                    return BatteryBalance {
+                        net_battery_w: 0.0,
+                        branch: BatteryBalanceBranch::Idle,
+                    };
+                }
+            };
+        } else {
+            if hour > 2 {
+                discharge_end_time += TimeDelta::days(1);
+            }
+            discharge_end_time = match discharge_end_time.date().and_hms_opt(2, 0, 0) {
+                Some(t) => t,
+                None => {
+                    return BatteryBalance {
+                        net_battery_w: 0.0,
+                        branch: BatteryBalanceBranch::Idle,
+                    };
+                }
+            };
+        }
+        let hour_before = discharge_end_time - TimeDelta::hours(1);
+        #[allow(clippy::cast_precision_loss)]
+        let millis_remaining_1hour = (hour_before - now).num_milliseconds() as f64;
+        #[allow(clippy::cast_precision_loss)]
+        let millis_remaining_end = (discharge_end_time - now).num_milliseconds() as f64;
+        let millis_remaining = if millis_remaining_1hour <= 0.0 {
+            millis_remaining_end
+        } else {
+            millis_remaining_1hour
+        };
+
+        if millis_remaining <= 0.0 {
+            // Past discharge end — idle, battery follows residual surplus.
+            return BatteryBalance {
+                net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+                branch: BatteryBalanceBranch::Idle,
+            };
+        }
+
+        let hours_remaining = millis_remaining / (1000.0 * 60.0 * 60.0);
+        let pessimism_multiplier = 1.8_f64.min(
+            g.pessimism_multiplier_modifier
+                * (((hours_remaining / 10.0 + 1.0) * 80.0).round() / 80.0),
+        );
+
+        let battery_capacity_ah = input.capacity;
+        let total_capacity_wh =
+            battery_capacity_ah * (input.soh / 100.0) * nominal_voltage_v;
+        let current_capacity = total_capacity_wh * (battery_soc / 100.0);
+        let end_of_day_target = total_capacity_wh * (soc_end_of_day_target / 100.0);
+        let current_target = end_of_day_target + 3000.0;
+        let to_be_consumed = 0.0_f64.max(consumption * hours_remaining * pessimism_multiplier);
+        let exportable_capacity =
+            0.0_f64.max(current_capacity - to_be_consumed - current_target);
+
+        let remaining_baseload_consumption = baseload_w * hours_remaining;
+        let baseload_to_be_consumed =
+            0.0_f64.max(remaining_baseload_consumption * pessimism_multiplier);
+        let preserve_battery = export_soc_threshold == 100.0
+            || current_capacity - end_of_day_target < baseload_to_be_consumed;
+
+        if preserve_battery {
+            // Setpoint pinned at idle — all surplus stays in battery.
+            return BatteryBalance {
+                net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+                branch: BatteryBalanceBranch::Idle,
+            };
+        }
+
+        if battery_soc >= export_soc_threshold {
+            // Active discharge window: battery_export = exportable / hours.
+            let battery_export = exportable_capacity / hours_remaining;
+            return BatteryBalance {
+                // Battery is being drained at battery_export plus
+                // covering the baseline (consumption is fed from the
+                // battery while we export).
+                net_battery_w: -battery_export - baseline_drain_w,
+                branch: BatteryBalanceBranch::EveningDischarge,
+            };
+        }
+
+        // Below threshold — only solar surplus may export, battery sees
+        // its own surplus.
+        return BatteryBalance {
+            net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+            branch: BatteryBalanceBranch::BelowExportThreshold,
+        };
+    }
+
+    // 5. Daytime PV-multiplier window (8..17).
+    if (8..17).contains(&hour) {
+        if export_soc_threshold == 100.0 {
+            // Threshold pinned to 100 → idle, battery absorbs surplus.
+            return BatteryBalance {
+                net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+                branch: BatteryBalanceBranch::Idle,
+            };
+        }
+        if battery_soc < export_soc_threshold {
+            // Below threshold — setpoint is idle, all PV charges battery.
+            return BatteryBalance {
+                net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+                branch: BatteryBalanceBranch::BelowExportThreshold,
+            };
+        }
+        // At/above threshold — daytime PV-multiplier export window.
+        // The export rate depends on the multiplier (≥ 1 → battery is
+        // actively drained on top of solar export). For projection
+        // purposes treat as the same "actively exporting" branch as the
+        // evening-discharge case.
+        // Conservative model: steady-state intent is to hold battery
+        // flat while exporting solar surplus; pessimism multiplier and
+        // exact export rate aren't surfaced here.
+        return BatteryBalance {
+            net_battery_w: 0.0,
+            branch: BatteryBalanceBranch::EveningDischarge,
+        };
+    }
+
+    // 6. Boost / extended-night windows (2..8) — idle.
+    BatteryBalance {
+        net_battery_w: solar_to_battery_capable_w - baseline_drain_w,
+        branch: BatteryBalanceBranch::Idle,
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Main controller
 // -----------------------------------------------------------------------------
 
@@ -1379,5 +1678,132 @@ mod tests {
         let d = get_next_charge_date_to_sunday_5pm(now, 1, true);
         assert_eq!(d.weekday().num_days_from_sunday(), 0);
         assert_eq!(d.hour(), 17);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-soc-chart-export-policy: compute_battery_balance unit tests
+    // ------------------------------------------------------------------
+
+    fn now_at(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(h, min, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn balance_force_disable_export_returns_charging() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                force_disable_export: true,
+                ..base_input().globals
+            },
+            mppt_power_0: 2000.0,
+            mppt_power_1: 1500.0,
+            power_consumption: 1500.0, // matches baseload
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 60.0,
+            mppt_power_total_w: 3500.0,
+            now: now_at(2026, 1, 15, 12, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::ForcedNoExport);
+        // 3500 W mppt - max(1500 baseload, 1500 consumption) = 2000
+        assert!((b.net_battery_w - 2000.0).abs() < 1e-9, "got {}", b.net_battery_w);
+    }
+
+    #[test]
+    fn balance_below_export_threshold_returns_solar_only() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 70.0,
+                ..base_input().globals
+            },
+            mppt_power_0: 5000.0,
+            mppt_power_1: 0.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 60.0, // below 70 threshold
+            mppt_power_total_w: 5000.0,
+            now: now_at(2026, 1, 15, 12, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::BelowExportThreshold);
+        // 5000 - 1500 = 3500
+        assert!((b.net_battery_w - 3500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn balance_evening_discharge_returns_negative() {
+        // Big battery so the preserve_battery clamp doesn't fire — this
+        // test pins the discharge-window arithmetic specifically.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 70.0,
+                discharge_soc_target: 25.0,
+                discharge_time: DischargeTime::At0200,
+                ..base_input().globals
+            },
+            battery_soc: 90.0,
+            soh: 100.0,
+            capacity: 800.0, // 800 Ah * 48 V = 38.4 kWh
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 90.0,
+            mppt_power_total_w: 0.0,
+            now: now_at(2026, 1, 15, 22, 0), // late evening, ~4 h remaining
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::EveningDischarge);
+        assert!(b.net_battery_w < 0.0, "expected discharge, got {}", b.net_battery_w);
+    }
+
+    #[test]
+    fn balance_battery_full_returns_zero() {
+        let input = SetpointInput {
+            mppt_power_0: 1000.0,
+            mppt_power_1: 0.0,
+            power_consumption: 800.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 100.0,
+            mppt_power_total_w: 1000.0,
+            now: now_at(2026, 1, 15, 12, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::BatteryFull);
+        assert_eq!(b.net_battery_w, 0.0);
+    }
+
+    #[test]
+    fn balance_zappi_carveout_preserves_battery() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                ..base_input().globals
+            },
+            mppt_power_0: 3000.0,
+            mppt_power_1: 0.0,
+            power_consumption: 5000.0, // includes Zappi
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 80.0,
+            mppt_power_total_w: 3000.0,
+            now: now_at(2026, 1, 15, 14, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::PreserveForZappi);
+        assert_eq!(b.net_battery_w, 0.0);
     }
 }

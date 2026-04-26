@@ -28,7 +28,13 @@ type SegmentKind =
   | "Clamped"
   // PR-soc-chart-solar.
   | "SolarCharge"
-  | "Drain";
+  | "Drain"
+  // PR-soc-chart-export-policy.
+  | "ForcedNoExport"
+  | "PreserveForZappi"
+  | "BelowExportThreshold"
+  | "EveningDischarge"
+  | "BatteryFull";
 
 type ProjectionSegment = {
   start_epoch_ms: number;
@@ -92,6 +98,12 @@ const VALID_KINDS: ReadonlySet<string> = new Set([
   // PR-soc-chart-solar.
   "SolarCharge",
   "Drain",
+  // PR-soc-chart-export-policy.
+  "ForcedNoExport",
+  "PreserveForZappi",
+  "BelowExportThreshold",
+  "EveningDischarge",
+  "BatteryFull",
 ]);
 
 function asNum(v: unknown): number | null {
@@ -244,6 +256,12 @@ const KIND_SUFFIX: Record<SegmentKind, string> = {
   // PR-soc-chart-solar.
   SolarCharge: "solar charge",
   Drain: "drain",
+  // PR-soc-chart-export-policy.
+  ForcedNoExport: "no-export, charging",
+  PreserveForZappi: "preserve battery (Zappi)",
+  BelowExportThreshold: "PV charge (below export threshold)",
+  EveningDischarge: "evening discharge",
+  BatteryFull: "battery full",
 };
 
 const KIND_CSS: Record<SegmentKind, string> = {
@@ -255,6 +273,12 @@ const KIND_CSS: Record<SegmentKind, string> = {
   // PR-soc-chart-solar.
   SolarCharge: "trace-projection-solarcharge",
   Drain: "trace-projection-drain",
+  // PR-soc-chart-export-policy.
+  ForcedNoExport: "trace-projection-forcednoexport",
+  PreserveForZappi: "trace-projection-preserveforzappi",
+  BelowExportThreshold: "trace-projection-belowexportthreshold",
+  EveningDischarge: "trace-projection-eveningdischarge",
+  BatteryFull: "trace-projection-batteryfull",
 };
 
 function escAttr(s: string): string {

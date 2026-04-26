@@ -34,6 +34,16 @@ enum SocProjectionKind {
   Clamped
   SolarCharge
   Drain
+  // PR-soc-chart-export-policy. Branches reflecting the setpoint
+  // controller's export policy. The projection consults
+  // `compute_battery_balance` for each Natural-class hour-segment and
+  // emits the matching variant so the chart shows what the controller
+  // will actually do (preserve battery vs export to grid).
+  ForcedNoExport
+  PreserveForZappi
+  BelowExportThreshold
+  EveningDischarge
+  BatteryFull
 }
 
 // PR-soc-chart-segments: one piecewise-linear segment of the projection.

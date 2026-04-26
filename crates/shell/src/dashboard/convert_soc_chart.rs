@@ -15,6 +15,10 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc}
 
 use victron_controller_core::controllers::forecast_fusion::fused_hourly_kwh;
 use victron_controller_core::controllers::schedules::{DAYS_ENABLED, ScheduleSpec};
+use victron_controller_core::controllers::setpoint::{
+    BalanceHypothetical, BatteryBalanceBranch, SetpointInput, SetpointInputGlobals,
+    compute_battery_balance,
+};
 use victron_controller_core::tass::{Actual, Actuated, Freshness};
 use victron_controller_core::topology::{ControllerParams, HardwareParams};
 use victron_controller_core::types::ForecastProvider;
@@ -106,6 +110,12 @@ pub fn compute_soc_chart(
         is_fresh_forecast,
     );
 
+    // PR-soc-chart-export-policy: build a base `SetpointInput` template
+    // mirroring the live tick. The projection per-hour overrides
+    // `battery_soc`, `mppt_power_*`, and `now` via `BalanceHypothetical`;
+    // every other field tracks the current world state.
+    let setpoint_template = build_setpoint_template_for_projection(world, hardware);
+
     let projection = compute_projection(&ProjectionInputs {
         now_ms,
         now_soc,
@@ -119,6 +129,8 @@ pub fn compute_soc_chart(
         hourly_kwh: &hourly_kwh,
         baseload_w: hardware.baseload_consumption_w,
         zappi_power_w,
+        setpoint_template,
+        hardware,
     });
 
     let history_wire: Vec<ModelSocSample> = history
@@ -189,6 +201,15 @@ struct ProjectionInputs<'a> {
     baseload_w: f64,
     /// PR-soc-chart-solar: held-flat Zappi consumption (W).
     zappi_power_w: f64,
+    /// PR-soc-chart-export-policy: live setpoint controller input
+    /// (knobs, globals) used as the baseline for per-hour
+    /// `compute_battery_balance` calls. The hour-loop overrides
+    /// `battery_soc`, `mppt_power_*`, and `now` via `BalanceHypothetical`
+    /// before each call.
+    setpoint_template: SetpointInput,
+    /// PR-soc-chart-export-policy: hardware params for
+    /// `compute_battery_balance`.
+    hardware: HardwareParams,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +227,69 @@ struct Window {
 enum WindowKind {
     Schedule,
     FullCharge,
+}
+
+/// PR-soc-chart-export-policy: build a `SetpointInput` mirroring the
+/// live tick. The projection per-hour overrides `battery_soc`,
+/// `mppt_power_*`, and `now` via `BalanceHypothetical`; every other
+/// field tracks the current world. We deliberately mirror
+/// `process::build_setpoint_input` shape (it is `pub(crate)` and lives
+/// in core) so the projection can never see a different knob layout
+/// than the live controller.
+fn build_setpoint_template_for_projection(
+    world: &World,
+    hardware: HardwareParams,
+) -> SetpointInput {
+    let _ = hardware; // capacity is read from sensors, not hardware.
+    let k = &world.knobs;
+    let bk = &world.bookkeeping;
+
+    // Effective values: prefer the bookkeeping snapshot of the
+    // controller's last derivation. When weather_soc-mode is in play,
+    // `effective_export_soc_threshold` already reflects the current
+    // policy. The projection accepts a sub-tick lag here — the chart is
+    // a forecast, not a control signal.
+    let export_soc_threshold = bk.effective_export_soc_threshold;
+    let discharge_soc_target = bk.soc_end_of_day_target;
+
+    SetpointInput {
+        globals: SetpointInputGlobals {
+            force_disable_export: k.force_disable_export,
+            export_soc_threshold,
+            discharge_soc_target,
+            full_charge_export_soc_threshold: k.full_charge_export_soc_threshold,
+            full_charge_discharge_soc_target: k.full_charge_discharge_soc_target,
+            zappi_active: world.derived.zappi_active,
+            allow_battery_to_car: k.allow_battery_to_car,
+            discharge_time: k.discharge_time,
+            debug_full_charge: k.debug_full_charge,
+            pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
+            next_full_charge: bk.next_full_charge,
+            inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
+        },
+        // Use the live consumption when known so the
+        // `preserve_battery` evening-discharge clamp uses a realistic
+        // load. Default to baseload when missing.
+        power_consumption: world
+            .sensors
+            .power_consumption
+            .value
+            .unwrap_or(hardware.baseload_consumption_w),
+        // The compute_battery_balance helper overrides battery_soc via
+        // BalanceHypothetical, so the value here doesn't matter; mirror
+        // live for safety.
+        battery_soc: world.sensors.battery_soc.value.unwrap_or(50.0),
+        soh: world.sensors.battery_soh.value.unwrap_or(100.0),
+        mppt_power_0: world.sensors.mppt_power_0.value.unwrap_or(0.0),
+        mppt_power_1: world.sensors.mppt_power_1.value.unwrap_or(0.0),
+        soltaro_power: world.sensors.soltaro_power.value.unwrap_or(0.0),
+        evcharger_ac_power: world.sensors.evcharger_ac_power.value.unwrap_or(0.0),
+        capacity: world
+            .sensors
+            .battery_installed_capacity
+            .value
+            .unwrap_or(0.0),
+    }
 }
 
 fn compute_projection(inputs: &ProjectionInputs<'_>) -> ModelSocProjection {
@@ -303,23 +387,44 @@ fn compute_projection(inputs: &ProjectionInputs<'_>) -> ModelSocProjection {
         // (start_ms == a) still picks the in-window kind.
         let midpoint = a.saturating_add((b - a) / 2);
         let active_window = active_window_at(&windows, midpoint);
-        // PR-soc-chart-solar: outside any scheduled window, derive net
-        // from the hourly forecast (solar - baseload - zappi). Inside a
-        // window the existing schedule slope wins. When no hourly
-        // forecast is available, fall back to the instantaneous
-        // battery_dc_power slope (matches pre-PR behaviour).
-        let natural_net_w = if active_window.is_some() || inputs.hourly_kwh.is_empty() {
-            net_power_w
-        } else {
-            let solar_w = solar_w_at(midpoint, local_midnight_ms, inputs.hourly_kwh);
-            solar_w - inputs.baseload_w - inputs.zappi_power_w
-        };
+        // PR-soc-chart-export-policy: outside any scheduled window, ask
+        // the setpoint controller (via `compute_battery_balance`) what
+        // the battery will do given the hypothetical (projected SoC,
+        // forecast solar at this hour, hour-boundary clock). Inside a
+        // window the existing schedule slope wins.
+        //
+        // When no hourly forecast is available, fall back to the
+        // instantaneous battery_dc_power slope — without a solar
+        // hypothesis we can't ask the helper anything useful.
+        let (natural_net_w, branch_tag): (f64, Option<BatteryBalanceBranch>) =
+            if active_window.is_some() || inputs.hourly_kwh.is_empty() {
+                (net_power_w, None)
+            } else {
+                let solar_w = solar_w_at(midpoint, local_midnight_ms, inputs.hourly_kwh);
+                let now_naive = epoch_ms_to_local_naive(midpoint, inputs.timezone_iana);
+                // Project consumption as baseline + zappi (held flat).
+                let mut input = inputs.setpoint_template;
+                input.power_consumption = inputs.baseload_w + inputs.zappi_power_w;
+                input.mppt_power_0 = solar_w / 2.0;
+                input.mppt_power_1 = solar_w / 2.0;
+                let bal = compute_battery_balance(
+                    &input,
+                    &inputs.hardware,
+                    BalanceHypothetical {
+                        battery_soc: soc,
+                        mppt_power_total_w: solar_w,
+                        now: now_naive,
+                    },
+                );
+                (bal.net_battery_w, Some(bal.branch))
+            };
         let (slope_w, kind, ceiling, floor) = classify_segment(
             active_window,
             natural_net_w,
             inputs.charge_rate_w,
             soc,
             !inputs.hourly_kwh.is_empty(),
+            branch_tag,
         );
 
         let dur_h = (b - a) as f64 / (HOUR_MS as f64);
@@ -410,22 +515,24 @@ fn active_window_at(windows: &[Window], epoch_ms: i64) -> Option<Window> {
 /// Floor is always `SOC_DEPLETION_FLOOR_PCT`. Ceiling depends on the
 /// active window's spec.
 ///
-/// PR-soc-chart-solar: outside any scheduled window we now classify by
-/// the *sign* of `natural_net_power_w` (solar - baseload - zappi when
-/// hourly forecast is available; battery_dc_power snapshot otherwise):
-/// - `> +SOC_IDLE_POWER_W`  → SolarCharge (or Natural in the fallback path)
-/// - `< -SOC_IDLE_POWER_W`  → Drain      (or Natural in the fallback path)
-/// - `|net| <= threshold`   → Idle
+/// PR-soc-chart-export-policy: outside any scheduled window we now
+/// consult `compute_battery_balance` (passed in as `branch_tag` plus
+/// the resulting `natural_net_power_w`) and map the branch tag 1:1 to
+/// the wire kind. The PR-soc-chart-solar `SolarCharge`/`Drain`
+/// classification is no longer produced by the projection (the variants
+/// stay around for retained-payload back-compat).
 ///
-/// `have_hourly_forecast` distinguishes the two cases so the operator
-/// can tell from the segment kind whether the projection is forecast-
-/// driven or a flat extrapolation of the current battery snapshot.
+/// `have_hourly_forecast` distinguishes the forecast-driven path from
+/// the no-forecast fallback (where `branch_tag == None` and we emit
+/// `Natural` so the operator can tell the projection is a flat
+/// extrapolation, not a forecast-driven curve).
 fn classify_segment(
     active: Option<Window>,
     natural_net_power_w: f64,
     charge_rate_w: Option<f64>,
     soc: f64,
     have_hourly_forecast: bool,
+    branch_tag: Option<BatteryBalanceBranch>,
 ) -> (f64, ModelKind, f64, f64) {
     let floor = SOC_DEPLETION_FLOOR_PCT;
     if let Some(win) = active {
@@ -440,22 +547,54 @@ fn classify_segment(
             WindowKind::FullCharge => ModelKind::FullChargePush,
             WindowKind::Schedule => ModelKind::ScheduledCharge,
         };
-        match charge_rate_w {
+        return match charge_rate_w {
             Some(w) => (w, kind, win.soc_ceiling, floor),
             None => (natural_net_power_w, kind, win.soc_ceiling, floor),
+        };
+    }
+
+    if let Some(tag) = branch_tag {
+        // Forecast-driven path: map the helper's branch tag 1:1.
+        let kind = match tag {
+            BatteryBalanceBranch::ForcedNoExport => ModelKind::ForcedNoExport,
+            BatteryBalanceBranch::PreserveForZappi => ModelKind::PreserveForZappi,
+            BatteryBalanceBranch::BelowExportThreshold => ModelKind::BelowExportThreshold,
+            BatteryBalanceBranch::EveningDischarge => ModelKind::EveningDischarge,
+            BatteryBalanceBranch::BatteryFull => ModelKind::BatteryFull,
+            BatteryBalanceBranch::Idle => ModelKind::Idle,
+        };
+        // Sub-threshold magnitude → flatten to Idle so the chart shows a
+        // visibly horizontal trace (avoids drawing 1 px slopes from
+        // numerical noise).
+        if natural_net_power_w.abs() < SOC_IDLE_POWER_W {
+            return (0.0, ModelKind::Idle, SOC_FULL_PCT, floor);
         }
-    } else if natural_net_power_w.abs() < SOC_IDLE_POWER_W {
-        // Outside any window, sub-threshold net → Idle.
+        return (natural_net_power_w, kind, SOC_FULL_PCT, floor);
+    }
+
+    // No forecast available. Use the legacy classifier (battery_dc_power
+    // snapshot held flat).
+    if natural_net_power_w.abs() < SOC_IDLE_POWER_W {
         (0.0, ModelKind::Idle, SOC_FULL_PCT, floor)
     } else if !have_hourly_forecast {
-        // No hourly forecast — fall back to the historical "Natural"
-        // kind so the operator can tell the projection is a flat
-        // extrapolation, not a forecast-driven curve.
         (natural_net_power_w, ModelKind::Natural, SOC_FULL_PCT, floor)
     } else if natural_net_power_w > 0.0 {
         (natural_net_power_w, ModelKind::SolarCharge, SOC_FULL_PCT, floor)
     } else {
         (natural_net_power_w, ModelKind::Drain, SOC_FULL_PCT, floor)
+    }
+}
+
+/// PR-soc-chart-export-policy: convert `epoch_ms` to a local-clock
+/// `NaiveDateTime` in the configured display TZ. The helper drops TZ
+/// info because `compute_battery_balance` operates on local-clock hours
+/// (matching the live setpoint controller's `clock.naive()` shape).
+fn epoch_ms_to_local_naive(epoch_ms: i64, timezone_iana: &str) -> NaiveDateTime {
+    let utc = Utc.timestamp_millis_opt(epoch_ms).single();
+    let tz = chrono_tz::Tz::from_str(timezone_iana).unwrap_or(chrono_tz::UTC);
+    match utc {
+        Some(dt) => dt.with_timezone(&tz).naive_local(),
+        None => NaiveDateTime::default(),
     }
 }
 
@@ -856,9 +995,15 @@ mod tests {
 
     #[test]
     fn solar_curve_drives_morning_climb() {
+        // PR-soc-chart-export-policy: kinds now reflect the controller's
+        // export policy. Below the export threshold (soc < 80 by
+        // default) the daytime branch is `BelowExportThreshold` which
+        // routes all solar surplus to the battery. After sunset the
+        // evening branch fires; its tag depends on SoC vs threshold and
+        // the preserve_battery clamp — we just assert that SoC actually
+        // moves through the day.
+        //
         // 14 kWh capacity (200 Ah × 70 V), baseline 1200 W, soc 50.
-        // Solar profile peaks midday → SoC must climb during noon and
-        // fall in the evening.
         let mut hw = HardwareParams::defaults();
         hw.battery_nominal_voltage_v = 70.0; // 200 Ah * 70 V = 14000 Wh
         hw.baseload_consumption_w = 1200.0;
@@ -875,40 +1020,26 @@ mod tests {
         let segs = &chart.projection.segments;
         assert!(!segs.is_empty(), "expected segments");
 
-        // Find a SolarCharge segment in the noon window (hour 11..14).
-        let mut found_solar_charge = false;
+        // A `BelowExportThreshold` segment must appear midday (the
+        // controller routes all surplus to battery while SoC < 80).
+        let mut found_below = false;
         for s in segs {
-            if matches!(s.kind, ModelKind::SolarCharge) {
+            if matches!(s.kind, ModelKind::BelowExportThreshold) {
                 let mid = (s.start_epoch_ms + s.end_epoch_ms) / 2;
                 let hour = (mid - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
                 if (10..=14).contains(&hour) {
-                    found_solar_charge = true;
+                    found_below = true;
                     break;
                 }
             }
         }
         assert!(
-            found_solar_charge,
-            "expected a SolarCharge segment around noon, got {segs:?}"
+            found_below,
+            "expected a BelowExportThreshold segment around noon, got {segs:?}"
         );
 
-        // Find a Drain segment after sunset (hour 18..24) when solar = 0.
-        let mut found_drain = false;
-        for s in segs {
-            if matches!(s.kind, ModelKind::Drain) {
-                let mid = (s.start_epoch_ms + s.end_epoch_ms) / 2;
-                let hour = (mid - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
-                if (18..24).contains(&hour) {
-                    found_drain = true;
-                    break;
-                }
-            }
-        }
-        assert!(found_drain, "expected a Drain segment after sunset, got {segs:?}");
-
-        // SoC must climb above the starting 50% at some point during the
-        // day. (We can't predict an exact peak without re-implementing
-        // the integrator, but it should rise meaningfully.)
+        // SoC must climb above the starting 50% at some point during
+        // the day.
         let max_soc = segs
             .iter()
             .map(|s| s.end_soc_pct.max(s.start_soc_pct))
@@ -970,9 +1101,15 @@ mod tests {
         let segs = &chart.projection.segments;
 
         let has_sched = segs.iter().any(|s| s.kind == ModelKind::ScheduledCharge);
-        let has_solar = segs.iter().any(|s| s.kind == ModelKind::SolarCharge);
+        // PR-soc-chart-export-policy: daytime non-schedule hours below
+        // the 80% threshold produce `BelowExportThreshold` (controller
+        // routes solar surplus into the battery), not the legacy
+        // `SolarCharge`.
+        let has_branch = segs
+            .iter()
+            .any(|s| s.kind == ModelKind::BelowExportThreshold);
         assert!(has_sched, "expected ScheduledCharge in {segs:?}");
-        assert!(has_solar, "expected SolarCharge in {segs:?}");
+        assert!(has_branch, "expected BelowExportThreshold in {segs:?}");
 
         // Check that the ScheduledCharge segment(s) live inside
         // [02:00, 05:00] UTC.
@@ -989,6 +1126,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "PR-soc-chart-export-policy: replaced by compute_battery_balance unit tests in setpoint.rs; first-hour classification depends on the export-policy branch tree, not a simple net-power threshold"]
     fn solar_threshold_classifies_kinds() {
         // Use a 1-h hourly profile and check the classification for the
         // first hour by inspecting the produced segments.
@@ -1026,5 +1164,166 @@ mod tests {
         let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
         let first = &chart.projection.segments[0];
         assert_eq!(first.kind, ModelKind::Idle);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-soc-chart-export-policy
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn projection_evening_discharge_drops_soc() {
+        // High SoC, evening hour, no schedule window → expect at least
+        // one EveningDischarge segment that drops SoC.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 800.0;
+        let prof = [0.0_f64; 24];
+        // Start at UTC 19:00 — evening discharge window.
+        const EVENING_NOW_MS: i64 = 1_777_420_800_000 + 19 * HOUR_MS;
+        let mut w = world_with_inputs(95.0, 0.0, 100.0, 800.0); // big battery
+        w.timezone = "Etc/UTC".to_string();
+        // Make sure the bookkeeping export threshold (template input) is
+        // 70 so SoC=95 > threshold and the discharge branch fires.
+        w.bookkeeping.effective_export_soc_threshold = 70.0;
+        w.bookkeeping.soc_end_of_day_target = 25.0;
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), EVENING_NOW_MS);
+        let segs = &chart.projection.segments;
+        let has_disc = segs
+            .iter()
+            .any(|s| s.kind == ModelKind::EveningDischarge);
+        assert!(
+            has_disc,
+            "expected an EveningDischarge segment, got {segs:?}"
+        );
+        let dropped = segs
+            .iter()
+            .any(|s| s.kind == ModelKind::EveningDischarge && s.end_soc_pct < s.start_soc_pct);
+        assert!(dropped, "expected discharge to drop SoC, got {segs:?}");
+    }
+
+    #[test]
+    fn projection_below_threshold_charges_only_from_solar_surplus() {
+        // SoC just below threshold, midday solar 5 kW, baseline 1.2 kW
+        // → expect BelowExportThreshold segment whose slope reflects
+        // (5000 - max(1200, baseload+zappi)) / capacity.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 1200.0;
+        let mut prof = [0.0_f64; 24];
+        prof[12] = 5.0; // 5 kWh at hour 12 → 5000 W
+        const NOON_NOW_MS: i64 = 1_777_420_800_000 + 12 * HOUR_MS;
+        let mut w = world_with_inputs(65.0, 0.0, 100.0, 200.0); // 10 kWh
+        w.timezone = "Etc/UTC".to_string();
+        w.bookkeeping.effective_export_soc_threshold = 70.0;
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), NOON_NOW_MS);
+        let segs = &chart.projection.segments;
+        let first = &segs[0];
+        assert_eq!(first.kind, ModelKind::BelowExportThreshold);
+        // Drift-guard against the helper: the projection's first hour
+        // must use the same net_battery_w as compute_battery_balance.
+        let template = build_setpoint_template_for_projection(&w, hw);
+        let mut input = template;
+        input.power_consumption = hw.baseload_consumption_w; // zappi = 0
+        input.mppt_power_0 = 5000.0 / 2.0;
+        input.mppt_power_1 = 5000.0 / 2.0;
+        let bal = compute_battery_balance(
+            &input,
+            &hw,
+            BalanceHypothetical {
+                battery_soc: 65.0,
+                mppt_power_total_w: 5000.0,
+                now: epoch_ms_to_local_naive(
+                    NOON_NOW_MS + (first.end_epoch_ms - first.start_epoch_ms) / 2,
+                    "Etc/UTC",
+                ),
+            },
+        );
+        // Expected: 5000 - 1200 = 3800 W.
+        assert!(
+            (bal.net_battery_w - 3800.0).abs() < 1e-6,
+            "expected 3800 W net, got {}",
+            bal.net_battery_w
+        );
+        assert_eq!(bal.branch, BatteryBalanceBranch::BelowExportThreshold);
+    }
+
+    #[test]
+    fn projection_battery_full_clamps() {
+        // SoC = 100 → BatteryFull segment; SoC stays at 100.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 800.0;
+        let mut prof = [0.0_f64; 24];
+        prof[12] = 5.0;
+        const NOON_NOW_MS: i64 = 1_777_420_800_000 + 12 * HOUR_MS;
+        let mut w = world_with_inputs(100.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), NOON_NOW_MS);
+        let segs = &chart.projection.segments;
+        let first = &segs[0];
+        // Branch fires for hour 12 with SoC=100 → BatteryFull. The
+        // projection currently routes BatteryFull through the same
+        // emission path as other branch tags; |net|=0 collapses to Idle
+        // for visual smoothness. Either is acceptable as long as SoC
+        // doesn't go above 100.
+        assert!(
+            matches!(first.kind, ModelKind::BatteryFull | ModelKind::Idle),
+            "expected BatteryFull/Idle at SoC=100, got {:?}",
+            first.kind
+        );
+        assert!((first.start_soc_pct - 100.0).abs() < 1e-6);
+        assert!(first.end_soc_pct <= 100.0 + 1e-6);
+    }
+
+    #[test]
+    fn drift_guard_projection_matches_helper() {
+        // Load-bearing regression check: build identical worlds and
+        // compute the projection's per-hour `compute_battery_balance`
+        // call versus a direct call. They must agree exactly.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 1200.0;
+        let mut prof = [0.0_f64; 24];
+        prof[12] = 4.0;
+        let mut w = world_with_inputs(60.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        w.bookkeeping.effective_export_soc_threshold = 70.0;
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+
+        // Direct call.
+        const NOON_NOW_MS: i64 = 1_777_420_800_000 + 12 * HOUR_MS;
+        let template = build_setpoint_template_for_projection(&w, hw);
+        let mut input = template;
+        input.power_consumption = hw.baseload_consumption_w;
+        input.mppt_power_0 = 4000.0 / 2.0;
+        input.mppt_power_1 = 4000.0 / 2.0;
+        let direct = compute_battery_balance(
+            &input,
+            &hw,
+            BalanceHypothetical {
+                battery_soc: 60.0,
+                mppt_power_total_w: 4000.0,
+                now: epoch_ms_to_local_naive(
+                    NOON_NOW_MS + 30 * 60 * 1000,
+                    "Etc/UTC",
+                ),
+            },
+        );
+
+        // Projection call: first hour starts at NOON_NOW_MS.
+        let chart = compute_soc_chart(&w, &[], hw, cp(), NOON_NOW_MS);
+        let first = &chart.projection.segments[0];
+        // Slope reconstruction: chart used capacity = 200*1.0*50 = 10000 Wh.
+        let dur_h = (first.end_epoch_ms - first.start_epoch_ms) as f64 / HOUR_MS as f64;
+        let observed_slope_pct_per_hour =
+            (first.end_soc_pct - first.start_soc_pct) / dur_h;
+        let expected_slope_pct_per_hour = direct.net_battery_w / 10_000.0 * 100.0;
+        assert!(
+            (observed_slope_pct_per_hour - expected_slope_pct_per_hour).abs() < 1e-6,
+            "drift: projection slope {observed_slope_pct_per_hour} vs helper {expected_slope_pct_per_hour}"
+        );
     }
 }

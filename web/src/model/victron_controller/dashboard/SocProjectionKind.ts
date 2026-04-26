@@ -8,7 +8,12 @@ export enum SocProjectionKind {
     FullChargePush = "FullChargePush",
     Clamped = "Clamped",
     SolarCharge = "SolarCharge",
-    Drain = "Drain"
+    Drain = "Drain",
+    ForcedNoExport = "ForcedNoExport",
+    PreserveForZappi = "PreserveForZappi",
+    BelowExportThreshold = "BelowExportThreshold",
+    EveningDischarge = "EveningDischarge",
+    BatteryFull = "BatteryFull"
 }
 
 export const SocProjectionKind_values: ReadonlyArray<SocProjectionKind> = [
@@ -18,7 +23,12 @@ export const SocProjectionKind_values: ReadonlyArray<SocProjectionKind> = [
     SocProjectionKind.FullChargePush,
     SocProjectionKind.Clamped,
     SocProjectionKind.SolarCharge,
-    SocProjectionKind.Drain
+    SocProjectionKind.Drain,
+    SocProjectionKind.ForcedNoExport,
+    SocProjectionKind.PreserveForZappi,
+    SocProjectionKind.BelowExportThreshold,
+    SocProjectionKind.EveningDischarge,
+    SocProjectionKind.BatteryFull
 ] as const;
 
 export function SocProjectionKind_parse(s: string): SocProjectionKind {
@@ -43,6 +53,11 @@ export class SocProjectionKind_UEBACodec {
                 case "Clamped": BinTools.writeByte(writer, 4); break;
                 case "SolarCharge": BinTools.writeByte(writer, 5); break;
                 case "Drain": BinTools.writeByte(writer, 6); break;
+                case "ForcedNoExport": BinTools.writeByte(writer, 7); break;
+                case "PreserveForZappi": BinTools.writeByte(writer, 8); break;
+                case "BelowExportThreshold": BinTools.writeByte(writer, 9); break;
+                case "EveningDischarge": BinTools.writeByte(writer, 10); break;
+                case "BatteryFull": BinTools.writeByte(writer, 11); break;
             default: throw new Error("Unknown enum variant: " + value);
         }
     }
@@ -61,6 +76,11 @@ export class SocProjectionKind_UEBACodec {
                 case 4: return "Clamped" as SocProjectionKind;
                 case 5: return "SolarCharge" as SocProjectionKind;
                 case 6: return "Drain" as SocProjectionKind;
+                case 7: return "ForcedNoExport" as SocProjectionKind;
+                case 8: return "PreserveForZappi" as SocProjectionKind;
+                case 9: return "BelowExportThreshold" as SocProjectionKind;
+                case 10: return "EveningDischarge" as SocProjectionKind;
+                case 11: return "BatteryFull" as SocProjectionKind;
             default: throw new Error("Unknown enum variant tag: " + tag);
         }
     }
