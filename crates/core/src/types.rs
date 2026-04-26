@@ -402,16 +402,15 @@ impl SensorId {
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
             | Self::Schedule1AllowDischargeActual => Duration::from_secs(60),
-            // PR-ev-soc-sensor: saic-python-mqtt-gateway typically polls
-            // the SAIC API every 60 min when the car is plugged in, slower
-            // when sleeping. Treated as external-polled below so the
-            // staleness invariant uses the grace-window model (cadence +
-            // slack) — the 12 h staleness window comfortably outlives the
-            // 60 min cadence.
-            //
-            // PR-auto-extended-charge: same gateway, same 60 min cadence
-            // for the configured target SoC.
-            Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(60 * 60),
+            // PR-ev-soc-sensor / PR-auto-extended-charge: 10 min cadence.
+            // Reading from MQTT is cheap (no API call on our side; the
+            // gateway publishes when it polls). Earlier this was 60 min
+            // — operator preference is a tighter "expected freshness"
+            // signal so the dashboard shows Stale promptly when the
+            // gateway stops publishing. The 12 h staleness threshold
+            // (below) stays generous because real gateway gaps (car
+            // asleep) span hours.
+            Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(10 * 60),
         }
     }
 
@@ -1110,9 +1109,10 @@ mod tests {
                 | SensorId::Schedule1SocActual
                 | SensorId::Schedule1DaysActual
                 | SensorId::Schedule1AllowDischargeActual => Duration::from_secs(60),
-                // PR-ev-soc-sensor / PR-auto-extended-charge: shared
-                // gateway poll cadence ~60 min.
-                SensorId::EvSoc | SensorId::EvChargeTarget => Duration::from_secs(60 * 60),
+                // PR-ev-soc-sensor / PR-auto-extended-charge: tightened
+                // to 10 min — MQTT receive is cheap and we want a
+                // prompt Stale signal when the gateway stops publishing.
+                SensorId::EvSoc | SensorId::EvChargeTarget => Duration::from_secs(10 * 60),
             };
             assert_eq!(
                 id.reseed_cadence(),
