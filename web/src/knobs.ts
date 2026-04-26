@@ -36,7 +36,7 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "debug.full-charge.mode": { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "Auto"], default: "Auto" },
   "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05, default: 1 },
   "grid.night.discharge.disable.forced-value": { kind: "bool", default: false },
-  "evcharger.boost.enable": { kind: "bool", default: false },
+  "evcharger.boost.enable": { kind: "bool", default: true },
   "evcharger.extended.enable": { kind: "bool", default: false },
   "evcharger.current.target": { kind: "float", min: 6, max: 32, step: 0.5, default: 9.5 },
   // A-14: kWh (per-session EV charge ceiling), not %. Default 65 kWh

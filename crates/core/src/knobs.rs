@@ -169,7 +169,14 @@ impl Knobs {
             debug_full_charge: DebugFullCharge::Auto,
             pessimism_multiplier_modifier: 1.0,
             disable_night_grid_discharge: false,
-            charge_car_boost: false,
+            // Default true: during the cheap-tariff Boost window
+            // (02:00–05:00) we want the Zappi to draw `Fast` unless the
+            // operator explicitly disables it. The user-facing dashboard
+            // / HA toggle stays as the override.
+            charge_car_boost: true,
+            // Default false: extended-charge during 05:00–08:00 is driven
+            // externally (HA automation owns the flag) so the Rust default
+            // is the conservative "off".
             charge_car_extended: false,
             zappi_current_target: 9.5,
             // A-14: kWh, not %. 65 kWh covers a Tesla Model 3 LR full
