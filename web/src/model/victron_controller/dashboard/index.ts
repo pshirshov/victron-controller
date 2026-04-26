@@ -30,6 +30,8 @@ export * from './Knobs';
 export * from './Mode';
 export * from './Owner';
 export * from './ScheduleSpec';
+export * from './ScheduledAction';
+export * from './ScheduledActions';
 export * from './SensorMeta';
 export * from './Sensors';
 export * from './SocChart';

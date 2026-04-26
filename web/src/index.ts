@@ -11,6 +11,7 @@ import {
   renderDecisions,
   renderEntityModal,
   renderForecasts,
+  renderSchedule,
   renderSensors,
   renderTimers,
   type EntityType,
@@ -69,6 +70,8 @@ function applySnapshot(snap: WorldSnapshot): void {
   renderBookkeeping(snap);
   renderForecasts(snap);
   renderKnobs(snap, sendCommand);
+  // PR-schedule-section: forward-looking controller actions table.
+  renderSchedule(snap);
   // PR-soc-chart: paint the in-memory SoC history + linear projection.
   renderSocChart(snap);
 

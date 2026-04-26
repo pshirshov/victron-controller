@@ -364,6 +364,12 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             meta.controller_params,
             now_epoch,
         ),
+        // PR-schedule-section: forward-looking controller actions sorted
+        // by next_fire ascending. Pure compute; reads only world state +
+        // `now_epoch`.
+        scheduled_actions: crate::dashboard::convert_schedule::compute_scheduled_actions(
+            world, now_epoch,
+        ),
     }
 }
 

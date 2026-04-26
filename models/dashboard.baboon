@@ -195,6 +195,33 @@ data Timers {
   entries: lst[Timer]
 }
 
+// PR-schedule-section (additive within 0.2.0). Forward-looking
+// controller actions surfaced on the dashboard's Schedule section.
+// Distinct from `Timers` (operational telemetry like D-Bus poll
+// cadence): these are user-facing "what will the controller do, and
+// when?" entries — eddi tariff edges, ESS schedule windows,
+// next_full_charge, and the daily 01:55 weather_soc re-evaluation.
+data ScheduledAction {
+  // Short user-visible label, e.g. "Eddi → Normal", "Schedule 0:
+  // 02:00–05:00 soc=80%".
+  label: str
+  // Provenance tag, e.g. "eddi.tariff", "schedule.0", "schedule.1",
+  // "next_full_charge", "weather_soc". Lets the frontend group /
+  // colour entries and is the operator-facing "where does this come
+  // from?" identifier.
+  source: str
+  // Wall-clock epoch_ms when the action next fires (the local
+  // wall-clock instant — the same TZ approach the SoC chart uses).
+  next_fire_epoch_ms: i64
+  // Period in ms when the action repeats (86_400_000 = daily). None
+  // for one-shots (e.g. next_full_charge).
+  period_ms: opt[i64]
+}
+
+data ScheduledActions {
+  entries: lst[ScheduledAction]
+}
+
 // PR-gamma-hold-redesign: 0.2.0 redefinition of `Knobs`. Identical to
 // 0.1.0 plus four new `*_mode` selectors (one per weather_soc-driven
 // output). The existing four numeric/bool knobs keep their meaning as
@@ -342,4 +369,7 @@ root data WorldSnapshot {
   timezone: str
   // 0.2.0 addition (PR-soc-chart).
   soc_chart: SocChart
+  // 0.2.0 addition (PR-schedule-section). Forward-looking controller
+  // actions sorted by next_fire_epoch_ms ascending.
+  scheduled_actions: ScheduledActions
 }

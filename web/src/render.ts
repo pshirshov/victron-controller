@@ -98,6 +98,33 @@ function fmtEpoch(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+// Future-tense sibling of fmtEpoch — used by the Schedule section.
+// Returns "now" / "in 12m" / "in 4h 23m" / "in 2d 3h" depending on how
+// far ahead `ms` sits. Past timestamps clamp to "now" (a snapshot
+// arriving slightly after a scheduled fire shouldn't say "−2 s").
+function fmtFuture(ms: number): string {
+  if (!ms) return "—";
+  const dtSec = (ms - Date.now()) / 1000;
+  if (dtSec <= 30) return "now";
+  if (dtSec < 60) return `in ${dtSec.toFixed(0)}s`;
+  const m = Math.round(dtSec / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  if (h < 24) return mm === 0 ? `in ${h}h` : `in ${h}h ${mm}m`;
+  const d = Math.floor(h / 24);
+  const hh = h % 24;
+  return hh === 0 ? `in ${d}d` : `in ${d}d ${hh}h`;
+}
+
+// Wall-clock for the next-fire epoch — used in the Schedule section
+// alongside fmtFuture, so the operator sees both "in 4h" and the actual
+// HH:MM the action will land.
+function fmtClock(ms: number): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function esc(s: string): string {
   return s.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as Record<string, string>)[ch]!);
 }
@@ -489,6 +516,41 @@ export function renderTimers(snap: WorldSnapshot) {
       ],
     };
   });
+  updateKeyedRows(tbody, rows);
+}
+
+// PR-schedule-section: render the forward-looking controller-action
+// table. Backend already sorts by next_fire_epoch_ms ascending, so the
+// frontend renders entries in arrival order — `When` is the column the
+// section is sorted on, not `Source`/`Action`.
+type ScheduledActionRow = {
+  label: string;
+  source: string;
+  next_fire_epoch_ms: number;
+  period_ms: number | null;
+};
+
+export function renderSchedule(snap: WorldSnapshot): void {
+  const tbody = document.querySelector("#schedule-table tbody") as HTMLElement | null;
+  if (!tbody) return;
+  const sa = (snap as unknown as { scheduled_actions?: { entries?: ScheduledActionRow[] } }).scheduled_actions;
+  const entries = sa?.entries ?? [];
+  const rows: KeyedRow[] = entries.map((e, idx) => ({
+    // Composite key — multiple eddi.tariff entries (one per edge) need
+    // distinct keys so updateKeyedRows doesn't collapse them. Source
+    // alone isn't unique.
+    key: `${e.source}-${idx}`,
+    cells: [
+      {
+        cls: "mono",
+        html:
+          `${esc(fmtFuture(e.next_fire_epoch_ms))} ` +
+          `<span class="dim">(${esc(fmtClock(e.next_fire_epoch_ms))})</span>`,
+      },
+      { html: esc(e.source) },
+      { html: esc(e.label) },
+    ],
+  }));
   updateKeyedRows(tbody, rows);
 }
 
