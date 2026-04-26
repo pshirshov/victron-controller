@@ -178,9 +178,11 @@ pub async fn connect(
         soc_history,
         ev_soc_discovery_topic: ev.soc_topic.clone(),
         ev_soc_state_topic: None,
+        ev_soc_value_field: None,
         ev_soc_last_parse_warn: None,
         ev_charge_target_discovery_topic: ev.charge_target_topic.clone(),
         ev_charge_target_state_topic: None,
+        ev_charge_target_value_field: None,
         ev_charge_target_last_parse_warn: None,
     };
     Ok(Some((publisher, subscriber)))
@@ -190,20 +192,84 @@ pub async fn connect(
 // PR-ev-soc-sensor — parsers shared with unit tests
 // -----------------------------------------------------------------------------
 
-/// Parse an HA-discovery config JSON body and extract the `state_topic`
-/// field. Returns `None` when the payload is not valid JSON, isn't an
-/// object, or is missing a string-typed `state_topic`. Lives at module
-/// scope so the unit tests can exercise it without standing up an MQTT
-/// client.
-#[must_use]
-pub fn parse_discovery_state_topic(payload: &[u8]) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    v.get("state_topic")?.as_str().map(str::to_string)
+/// HA-discovery extract: state_topic + optional value_template field.
+/// Some publishers (saic-python-mqtt-gateway for the SoC entity, but
+/// not for `target_soc` which is plain numeric) emit JSON state bodies
+/// and rely on a Jinja-style template at the discovery level to pluck
+/// the value out. We don't run a full Jinja interpreter — we only
+/// recognise the common shape `{{ value_json.<field> }}` (and HA's
+/// short-form abbreviations `stat_t` / `val_tpl`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvDiscovery {
+    pub state_topic: String,
+    /// JSON pointer-ish field name extracted from a
+    /// `{{ value_json.<field> }}` template. None when no template, or
+    /// when the template wasn't a recognisable shape.
+    pub value_field: Option<String>,
 }
 
-/// Parse an EV SoC state-topic body. The publisher (saic-python-mqtt-
-/// gateway) sends a plain decimal like `"42.5"`. Rejects:
+#[must_use]
+pub fn parse_discovery(payload: &[u8]) -> Option<EvDiscovery> {
+    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let obj = v.as_object()?;
+    let state_topic = obj
+        .get("state_topic")
+        .or_else(|| obj.get("stat_t"))
+        .and_then(|s| s.as_str())?
+        .to_string();
+    let value_field = obj
+        .get("value_template")
+        .or_else(|| obj.get("val_tpl"))
+        .and_then(|s| s.as_str())
+        .and_then(parse_value_template_field);
+    Some(EvDiscovery { state_topic, value_field })
+}
+
+/// Backwards-compat alias used by tests + a few callers that don't
+/// care about the template field.
+#[must_use]
+pub fn parse_discovery_state_topic(payload: &[u8]) -> Option<String> {
+    parse_discovery(payload).map(|d| d.state_topic)
+}
+
+/// Match `{{ value_json.<field> }}` (and a tolerant tail). Returns the
+/// `<field>` name. Bracket forms (`value_json["x"]`) are also accepted.
+fn parse_value_template_field(template: &str) -> Option<String> {
+    // Trim whitespace and the {{ }} delimiters.
+    let t = template.trim();
+    let inner = t.strip_prefix("{{")?.strip_suffix("}}")?.trim();
+    // Match leading "value_json".
+    let rest = inner.strip_prefix("value_json")?.trim_start();
+    // Either ".field" or "['field']" / "[\"field\"]".
+    if let Some(after_dot) = rest.strip_prefix('.') {
+        let field: String = after_dot
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if field.is_empty() { None } else { Some(field) }
+    } else if let Some(after_brk) = rest.strip_prefix('[') {
+        let after_brk = after_brk.trim_start();
+        let after_brk = after_brk.strip_prefix('\'').or_else(|| after_brk.strip_prefix('"'))?;
+        let field: String = after_brk
+            .chars()
+            .take_while(|c| *c != '\'' && *c != '"')
+            .collect();
+        if field.is_empty() { None } else { Some(field) }
+    } else {
+        None
+    }
+}
+
+/// Parse an EV SoC state-topic body. Accepts:
+///   * plain decimal like `"42.5"`
+///   * JSON object with the named `value_field` (extracted from the
+///     discovery's `value_template`) — e.g. body `{"value": 42.5,
+///     "timestamp": ...}` with `value_field = Some("value")` →
+///     `Some(42.5)`.
+///   * JSON object falling back to a `value` or `state` key when no
+///     template was provided — covers the common HA convention.
 ///
+/// Rejects:
 ///   * non-UTF-8 bodies,
 ///   * unparseable / non-finite floats,
 ///   * values outside the inclusive `[0.0, 100.0]` percentage range.
@@ -211,15 +277,30 @@ pub fn parse_discovery_state_topic(payload: &[u8]) -> Option<String> {
 /// Returns `Some(value)` only on a clean, in-range reading.
 #[must_use]
 pub fn parse_ev_soc_state_value(payload: &[u8]) -> Option<f64> {
+    parse_ev_soc_state_value_with_field(payload, None)
+}
+
+#[must_use]
+pub fn parse_ev_soc_state_value_with_field(
+    payload: &[u8],
+    value_field: Option<&str>,
+) -> Option<f64> {
     let s = std::str::from_utf8(payload).ok()?.trim();
-    let v: f64 = s.parse().ok()?;
-    if !v.is_finite() {
-        return None;
+    // Plain-number first: cheapest, covers the target_soc case.
+    if let Ok(v) = s.parse::<f64>() {
+        if v.is_finite() && (0.0..=100.0).contains(&v) {
+            return Some(v);
+        }
     }
-    if !(0.0..=100.0).contains(&v) {
-        return None;
+    // JSON fallback. Try the templated field, else common defaults.
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let try_key = |k: &str| -> Option<f64> {
+        v.get(k).and_then(|x| x.as_f64()).filter(|n| n.is_finite() && (0.0..=100.0).contains(n))
+    };
+    if let Some(f) = value_field {
+        return try_key(f);
     }
-    Some(v)
+    try_key("value").or_else(|| try_key("state"))
 }
 
 /// PR-timers-section: wall-clock epoch-ms helper used for the one-shot
@@ -284,6 +365,11 @@ pub struct Subscriber {
     /// loop locals) so re-issuing subscriptions after a connection drop
     /// can refer to it.
     ev_soc_state_topic: Option<String>,
+    /// PR-ev-soc-template-fix: optional value_template field name
+    /// extracted from the discovery payload. When `Some(field)`, the
+    /// state body is parsed as JSON and the value at `field` is used
+    /// (covers saic-python-mqtt-gateway's JSON SoC body shape).
+    ev_soc_value_field: Option<String>,
     /// PR-ev-soc-sensor: monotonic timestamp of the last
     /// `debug!`-logged value-parse failure on the EV SoC state topic.
     /// Used to rate-limit the noisy "garbage body" warnings to one
@@ -296,6 +382,9 @@ pub struct Subscriber {
     /// PR-auto-extended-charge: state_topic resolved from the most
     /// recent charge-target discovery payload.
     ev_charge_target_state_topic: Option<String>,
+    /// Mirrors `ev_soc_value_field` — value_template field for the
+    /// charge_target entity, when present.
+    ev_charge_target_value_field: Option<String>,
     /// PR-auto-extended-charge: rate-limit handle, mirrors
     /// `ev_soc_last_parse_warn`.
     ev_charge_target_last_parse_warn: Option<Instant>,
@@ -314,6 +403,7 @@ impl std::fmt::Debug for Subscriber {
             .field("soc_history", &"<SocHistoryStore>")
             .field("ev_soc_discovery_topic", &self.ev_soc_discovery_topic)
             .field("ev_soc_state_topic", &self.ev_soc_state_topic)
+            .field("ev_soc_value_field", &self.ev_soc_value_field)
             .field("ev_soc_last_parse_warn", &self.ev_soc_last_parse_warn)
             .field(
                 "ev_charge_target_discovery_topic",
@@ -322,6 +412,10 @@ impl std::fmt::Debug for Subscriber {
             .field(
                 "ev_charge_target_state_topic",
                 &self.ev_charge_target_state_topic,
+            )
+            .field(
+                "ev_charge_target_value_field",
+                &self.ev_charge_target_value_field,
             )
             .field(
                 "ev_charge_target_last_parse_warn",
@@ -617,8 +711,9 @@ impl Subscriber {
                         .as_deref()
                         .is_some_and(|t| t == publish.topic)
                     {
-                        match parse_discovery_state_topic(&publish.payload) {
-                            Some(new_state_topic) => {
+                        match parse_discovery(&publish.payload) {
+                            Some(disco) => {
+                                let new_state_topic = disco.state_topic;
                                 let prev = self.ev_soc_state_topic.clone();
                                 if prev.as_deref() != Some(new_state_topic.as_str()) {
                                     if let Some(old) = prev.as_deref() {
@@ -632,17 +727,20 @@ impl Subscriber {
                                         info!(
                                             old_topic = %old,
                                             new_topic = %new_state_topic,
+                                            value_field = ?disco.value_field,
                                             "ev_soc: state_topic changed; re-subscribing",
                                         );
                                     } else {
                                         info!(
                                             new_topic = %new_state_topic,
+                                            value_field = ?disco.value_field,
                                             "ev_soc: state_topic resolved from discovery",
                                         );
                                     }
                                     self.ev_soc_state_topic = Some(new_state_topic.clone());
                                     self.subscribe_ev_soc_state(&new_state_topic).await;
                                 }
+                                self.ev_soc_value_field = disco.value_field;
                             }
                             None => {
                                 warn!(
@@ -659,7 +757,10 @@ impl Subscriber {
                         .as_deref()
                         .is_some_and(|t| t == publish.topic)
                     {
-                        match parse_ev_soc_state_value(&publish.payload) {
+                        match parse_ev_soc_state_value_with_field(
+                            &publish.payload,
+                            self.ev_soc_value_field.as_deref(),
+                        ) {
                             Some(v) => {
                                 let event = Event::Sensor(SensorReading {
                                     id: SensorId::EvSoc,
@@ -695,9 +796,22 @@ impl Subscriber {
                                         now.duration_since(t) >= Duration::from_secs(60)
                                     });
                                 if should_warn {
-                                    debug!(
+                                    let body_preview = match std::str::from_utf8(&publish.payload) {
+                                        Ok(s) => {
+                                            let s = s.trim();
+                                            if s.len() > 80 {
+                                                format!("{}…", &s[..80])
+                                            } else {
+                                                s.to_string()
+                                            }
+                                        }
+                                        Err(_) => "<non-utf8>".to_string(),
+                                    };
+                                    warn!(
                                         topic = %publish.topic,
                                         body_len = publish.payload.len(),
+                                        value_field = ?self.ev_soc_value_field,
+                                        body_preview = %body_preview,
                                         "ev_soc: state body unparseable / out of range; \
                                          dropped (rate-limited 60s)"
                                     );
@@ -714,8 +828,9 @@ impl Subscriber {
                         .as_deref()
                         .is_some_and(|t| t == publish.topic)
                     {
-                        match parse_discovery_state_topic(&publish.payload) {
-                            Some(new_state_topic) => {
+                        match parse_discovery(&publish.payload) {
+                            Some(disco) => {
+                                let new_state_topic = disco.state_topic;
                                 let prev = self.ev_charge_target_state_topic.clone();
                                 if prev.as_deref() != Some(new_state_topic.as_str()) {
                                     if let Some(old) = prev.as_deref() {
@@ -729,11 +844,13 @@ impl Subscriber {
                                         info!(
                                             old_topic = %old,
                                             new_topic = %new_state_topic,
+                                            value_field = ?disco.value_field,
                                             "ev_charge_target: state_topic changed; re-subscribing",
                                         );
                                     } else {
                                         info!(
                                             new_topic = %new_state_topic,
+                                            value_field = ?disco.value_field,
                                             "ev_charge_target: state_topic resolved from discovery",
                                         );
                                     }
@@ -741,6 +858,7 @@ impl Subscriber {
                                         Some(new_state_topic.clone());
                                     self.subscribe_ev_charge_target_state(&new_state_topic).await;
                                 }
+                                self.ev_charge_target_value_field = disco.value_field;
                             }
                             None => {
                                 warn!(
@@ -757,7 +875,10 @@ impl Subscriber {
                         .as_deref()
                         .is_some_and(|t| t == publish.topic)
                     {
-                        match parse_ev_soc_state_value(&publish.payload) {
+                        match parse_ev_soc_state_value_with_field(
+                            &publish.payload,
+                            self.ev_charge_target_value_field.as_deref(),
+                        ) {
                             Some(v) => {
                                 let event = Event::Sensor(SensorReading {
                                     id: SensorId::EvChargeTarget,
@@ -789,9 +910,22 @@ impl Subscriber {
                                         now.duration_since(t) >= Duration::from_secs(60)
                                     });
                                 if should_warn {
-                                    debug!(
+                                    let body_preview = match std::str::from_utf8(&publish.payload) {
+                                        Ok(s) => {
+                                            let s = s.trim();
+                                            if s.len() > 80 {
+                                                format!("{}…", &s[..80])
+                                            } else {
+                                                s.to_string()
+                                            }
+                                        }
+                                        Err(_) => "<non-utf8>".to_string(),
+                                    };
+                                    warn!(
                                         topic = %publish.topic,
                                         body_len = publish.payload.len(),
+                                        value_field = ?self.ev_charge_target_value_field,
+                                        body_preview = %body_preview,
                                         "ev_charge_target: state body unparseable / out of range; \
                                          dropped (rate-limited 60s)"
                                     );
@@ -909,7 +1043,10 @@ impl Subscriber {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_discovery_state_topic, parse_ev_soc_state_value};
+    use super::{
+        parse_discovery, parse_discovery_state_topic, parse_ev_soc_state_value,
+        parse_ev_soc_state_value_with_field,
+    };
 
     // ------------------------------------------------------------------
     // PR-ev-soc-sensor: discovery JSON → state_topic
@@ -981,5 +1118,78 @@ mod tests {
         assert!(parse_ev_soc_state_value(b"42.5%").is_none());
         // Non-UTF-8 bytes
         assert!(parse_ev_soc_state_value(&[0xff, 0xfe]).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ev-soc-template-fix: HA value_template + JSON-body fallback.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_discovery_extracts_value_template_field() {
+        let body = br#"{
+            "state_topic": "saic/.../soc",
+            "value_template": "{{ value_json.value }}"
+        }"#;
+        let d = parse_discovery(body).expect("ok");
+        assert_eq!(d.state_topic, "saic/.../soc");
+        assert_eq!(d.value_field.as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn parse_discovery_accepts_short_form_keys() {
+        // HA's MQTT-discovery abbreviation list lets publishers use
+        // `stat_t` / `val_tpl` instead of the long forms.
+        let body = br#"{ "stat_t": "x/y/z", "val_tpl": "{{ value_json.soc }}" }"#;
+        let d = parse_discovery(body).expect("ok");
+        assert_eq!(d.state_topic, "x/y/z");
+        assert_eq!(d.value_field.as_deref(), Some("soc"));
+    }
+
+    #[test]
+    fn parse_discovery_handles_bracket_template_form() {
+        let body = br#"{
+            "state_topic": "x/y",
+            "value_template": "{{ value_json['some_field'] }}"
+        }"#;
+        let d = parse_discovery(body).expect("ok");
+        assert_eq!(d.value_field.as_deref(), Some("some_field"));
+    }
+
+    #[test]
+    fn parse_discovery_no_template_returns_none_field() {
+        let body = br#"{ "state_topic": "x/y" }"#;
+        let d = parse_discovery(body).expect("ok");
+        assert!(d.value_field.is_none());
+    }
+
+    #[test]
+    fn parse_state_value_accepts_json_with_named_field() {
+        let body = br#"{"value": 42.5, "timestamp": "2026-04-26T12:00:00Z"}"#;
+        let v = parse_ev_soc_state_value_with_field(body, Some("value"));
+        assert_eq!(v, Some(42.5));
+    }
+
+    #[test]
+    fn parse_state_value_falls_back_to_json_value_or_state_when_no_template() {
+        let body = br#"{"state": 88.0}"#;
+        assert_eq!(parse_ev_soc_state_value(body), Some(88.0));
+        let body = br#"{"value": 12.3}"#;
+        assert_eq!(parse_ev_soc_state_value(body), Some(12.3));
+    }
+
+    #[test]
+    fn parse_state_value_rejects_json_with_out_of_range_field() {
+        let body = br#"{"value": 150.0}"#;
+        assert!(parse_ev_soc_state_value_with_field(body, Some("value")).is_none());
+    }
+
+    #[test]
+    fn parse_state_value_still_accepts_plain_number_when_template_present() {
+        // Defensive: a publisher might emit plain numbers even when
+        // the discovery declared a template. Plain number wins first
+        // because it's the fast path; the field-named JSON branch is
+        // only the fallback.
+        let v = parse_ev_soc_state_value_with_field(b"50.0", Some("value"));
+        assert_eq!(v, Some(50.0));
     }
 }
