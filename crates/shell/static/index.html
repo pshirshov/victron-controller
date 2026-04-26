@@ -180,6 +180,27 @@
         </table>
       </div>
     </section>
+
+    <!-- PR-pinned-registers: per-register drift-enforcement table.
+         Hidden when no [[dbus_pinned_registers]] are configured. -->
+    <section id="pinned-registers-section" hidden>
+      <h2>Pinned D-Bus registers</h2>
+      <div class="table-wrap">
+        <table id="pinned-registers-table">
+          <thead>
+            <tr>
+              <th>Register (path)</th>
+              <th>Target (current)</th>
+              <th>Status</th>
+              <th>Drifts</th>
+              <th>Last drift</th>
+              <th>Last check</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
   </div>
 
   <footer>

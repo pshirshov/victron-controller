@@ -4,6 +4,7 @@ use crate::victron_controller::dashboard::cores_state::CoresState;
 use crate::victron_controller::dashboard::decisions::Decisions;
 use crate::victron_controller::dashboard::forecasts::Forecasts;
 use crate::victron_controller::dashboard::knobs::Knobs;
+use crate::victron_controller::dashboard::pinned_register::PinnedRegister;
 use crate::victron_controller::dashboard::scheduled_actions::ScheduledActions;
 use crate::victron_controller::dashboard::sensor_meta::SensorMeta;
 use crate::victron_controller::dashboard::sensors::Sensors;
@@ -28,13 +29,14 @@ pub struct WorldSnapshot {
     pub timezone: String,
     pub soc_chart: SocChart,
     pub scheduled_actions: ScheduledActions,
+    pub pinned_registers: Vec<PinnedRegister>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        12
+        13
     }
 }
 
@@ -146,6 +148,17 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.pinned_registers.len() as i32)?;
+            for item in (value.pinned_registers).iter() {
+                item.encode_ueba(ctx, &mut buffer)?;
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -167,6 +180,10 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             value.timezone.encode_ueba(ctx, writer)?;
             value.soc_chart.encode_ueba(ctx, writer)?;
             value.scheduled_actions.encode_ueba(ctx, writer)?;
+            crate::baboon_runtime::bin_tools::write_i32(writer, value.pinned_registers.len() as i32)?;
+            for item in (value.pinned_registers).iter() {
+                item.encode_ueba(ctx, writer)?;
+            }
         }
         Ok(())
     }
@@ -199,6 +216,10 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
         let timezone = crate::baboon_runtime::bin_tools::read_string(reader)?;
         let soc_chart = SocChart::decode_ueba(ctx, reader)?;
         let scheduled_actions = ScheduledActions::decode_ueba(ctx, reader)?;
+        let pinned_registers = {
+            let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
+            (0..count).map(|_| Ok(PinnedRegister::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
+        };
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -214,6 +235,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             timezone,
             soc_chart,
             scheduled_actions,
+            pinned_registers,
         })
     }
 }

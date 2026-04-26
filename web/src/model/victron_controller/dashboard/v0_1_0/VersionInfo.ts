@@ -58,7 +58,7 @@ export class VersionInfo implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return VersionInfo.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return VersionInfo.BaboonSameInVersions
     }
@@ -67,7 +67,7 @@ export class VersionInfo implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class VersionInfo_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: VersionInfo, writer: BaboonBinWriter): unknown {
         if (this !== VersionInfo_UEBACodec.lazyInstance.value) {

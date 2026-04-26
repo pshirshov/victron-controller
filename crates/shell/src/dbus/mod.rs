@@ -11,6 +11,7 @@
 //!   and pushes them back to the system bus as `com.victronenergy.BusItem.SetValue`
 //!   calls.
 
+pub mod pinned;
 pub mod subscriber;
 pub mod writer;
 

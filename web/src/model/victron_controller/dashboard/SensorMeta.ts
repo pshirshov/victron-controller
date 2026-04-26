@@ -54,7 +54,7 @@ export class SensorMeta implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SensorMeta.BaboonDomainVersion
     }
@@ -66,7 +66,7 @@ export class SensorMeta implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SensorMeta.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SensorMeta.BaboonSameInVersions
     }
@@ -135,7 +135,7 @@ export class SensorMeta_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SensorMeta_UEBACodec.BaboonDomainVersion
     }

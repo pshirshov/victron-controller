@@ -63,7 +63,7 @@ export class SocProjectionSegment implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocProjectionSegment.BaboonDomainVersion
     }
@@ -75,7 +75,7 @@ export class SocProjectionSegment implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SocProjectionSegment.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SocProjectionSegment.BaboonSameInVersions
     }
@@ -136,7 +136,7 @@ export class SocProjectionSegment_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocProjectionSegment_UEBACodec.BaboonDomainVersion
     }

@@ -122,7 +122,7 @@ export class WorldSnapshot implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class WorldSnapshot_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: WorldSnapshot, writer: BaboonBinWriter): unknown {
         if (this !== WorldSnapshot_UEBACodec.lazyInstance.value) {

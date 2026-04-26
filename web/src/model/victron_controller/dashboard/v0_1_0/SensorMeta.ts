@@ -66,7 +66,7 @@ export class SensorMeta implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SensorMeta.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SensorMeta.BaboonSameInVersions
     }
@@ -75,7 +75,7 @@ export class SensorMeta implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SensorMeta_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SensorMeta, writer: BaboonBinWriter): unknown {
         if (this !== SensorMeta_UEBACodec.lazyInstance.value) {

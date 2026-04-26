@@ -76,7 +76,7 @@ export class SetBoolKnob implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetBoolKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetBoolKnob.BaboonSameInVersions
     }
@@ -90,7 +90,7 @@ export class SetBoolKnob implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetBoolKnob_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetBoolKnob, writer: BaboonBinWriter): unknown {
         if (this !== SetBoolKnob_UEBACodec.lazyInstance.value) {
@@ -209,7 +209,7 @@ export class SetFloatKnob implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetFloatKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetFloatKnob.BaboonSameInVersions
     }
@@ -223,7 +223,7 @@ export class SetFloatKnob implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetFloatKnob_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetFloatKnob, writer: BaboonBinWriter): unknown {
         if (this !== SetFloatKnob_UEBACodec.lazyInstance.value) {
@@ -342,7 +342,7 @@ export class SetUintKnob implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetUintKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetUintKnob.BaboonSameInVersions
     }
@@ -356,7 +356,7 @@ export class SetUintKnob implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetUintKnob_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetUintKnob, writer: BaboonBinWriter): unknown {
         if (this !== SetUintKnob_UEBACodec.lazyInstance.value) {
@@ -467,7 +467,7 @@ export class SetDischargeTime implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetDischargeTime.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetDischargeTime.BaboonSameInVersions
     }
@@ -481,7 +481,7 @@ export class SetDischargeTime implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetDischargeTime_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetDischargeTime, writer: BaboonBinWriter): unknown {
         if (this !== SetDischargeTime_UEBACodec.lazyInstance.value) {
@@ -582,7 +582,7 @@ export class SetDebugFullCharge implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetDebugFullCharge.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetDebugFullCharge.BaboonSameInVersions
     }
@@ -596,7 +596,7 @@ export class SetDebugFullCharge implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetDebugFullCharge_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetDebugFullCharge, writer: BaboonBinWriter): unknown {
         if (this !== SetDebugFullCharge_UEBACodec.lazyInstance.value) {
@@ -697,7 +697,7 @@ export class SetForecastDisagreementStrategy implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetForecastDisagreementStrategy.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetForecastDisagreementStrategy.BaboonSameInVersions
     }
@@ -711,7 +711,7 @@ export class SetForecastDisagreementStrategy implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetForecastDisagreementStrategy_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetForecastDisagreementStrategy, writer: BaboonBinWriter): unknown {
         if (this !== SetForecastDisagreementStrategy_UEBACodec.lazyInstance.value) {
@@ -812,7 +812,7 @@ export class SetChargeBatteryExtendedMode implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetChargeBatteryExtendedMode.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetChargeBatteryExtendedMode.BaboonSameInVersions
     }
@@ -826,7 +826,7 @@ export class SetChargeBatteryExtendedMode implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetChargeBatteryExtendedMode_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetChargeBatteryExtendedMode, writer: BaboonBinWriter): unknown {
         if (this !== SetChargeBatteryExtendedMode_UEBACodec.lazyInstance.value) {
@@ -927,7 +927,7 @@ export class SetKillSwitch implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SetKillSwitch.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetKillSwitch.BaboonSameInVersions
     }
@@ -941,7 +941,7 @@ export class SetKillSwitch implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SetKillSwitch_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SetKillSwitch, writer: BaboonBinWriter): unknown {
         if (this !== SetKillSwitch_UEBACodec.lazyInstance.value) {
@@ -1002,7 +1002,7 @@ export class SetKillSwitch_UEBACodec {
 }
 
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Command_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Command, writer: BaboonBinWriter): unknown {
         if (this !== Command_UEBACodec.lazyInstance.value) {

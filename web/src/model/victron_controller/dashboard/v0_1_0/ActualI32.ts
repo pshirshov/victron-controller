@@ -59,7 +59,7 @@ export class ActualI32 implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return ActualI32.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ActualI32.BaboonSameInVersions
     }
@@ -68,7 +68,7 @@ export class ActualI32 implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ActualI32_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ActualI32, writer: BaboonBinWriter): unknown {
         if (this !== ActualI32_UEBACodec.lazyInstance.value) {

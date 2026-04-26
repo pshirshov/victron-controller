@@ -47,7 +47,7 @@ export class ActualF64 implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ActualF64.BaboonDomainVersion
     }
@@ -59,7 +59,7 @@ export class ActualF64 implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return ActualF64.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ActualF64.BaboonSameInVersions
     }
@@ -128,7 +128,7 @@ export class ActualF64_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ActualF64_UEBACodec.BaboonDomainVersion
     }

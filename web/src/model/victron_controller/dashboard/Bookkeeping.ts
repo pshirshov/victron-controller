@@ -150,7 +150,7 @@ export class Bookkeeping implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Bookkeeping.BaboonDomainVersion
     }
@@ -162,7 +162,7 @@ export class Bookkeeping implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Bookkeeping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Bookkeeping.BaboonSameInVersions
     }
@@ -347,7 +347,7 @@ export class Bookkeeping_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Bookkeeping_UEBACodec.BaboonDomainVersion
     }

@@ -38,7 +38,7 @@ export class CoreFactor implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return CoreFactor.BaboonDomainVersion
     }
@@ -50,7 +50,7 @@ export class CoreFactor implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return CoreFactor.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return CoreFactor.BaboonSameInVersions
     }
@@ -111,7 +111,7 @@ export class CoreFactor_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return CoreFactor_UEBACodec.BaboonDomainVersion
     }

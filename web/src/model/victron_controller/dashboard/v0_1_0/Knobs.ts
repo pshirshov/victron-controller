@@ -279,7 +279,7 @@ export class Knobs implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Knobs_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Knobs, writer: BaboonBinWriter): unknown {
         if (this !== Knobs_UEBACodec.lazyInstance.value) {

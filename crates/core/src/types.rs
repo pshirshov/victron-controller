@@ -524,6 +524,127 @@ pub fn check_staleness_invariant(id: SensorId) -> Result<(), String> {
     Ok(())
 }
 
+// =============================================================================
+// PR-pinned-registers — typed value + per-register state
+// =============================================================================
+
+/// Typed value for a pinned-register comparison. Mirrors
+/// `shell::config::PinnedValue` exactly; duplicated here so the core
+/// crate stays free of a shell dependency. The shell-side validated
+/// value is converted into this shape once at startup when seeding
+/// `world.pinned_registers`, and again when emitting
+/// `Event::PinnedRegisterReading`s and `Effect::WriteDbusPinned`s.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PinnedValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+impl PinnedValue {
+    /// Tolerant equality used to decide whether the bus-observed value
+    /// matches the configured target.
+    ///
+    /// - Floats: equal iff both finite and within
+    ///   `max(1e-6, 1e-6 * max(|a|, |b|))`. NaN never equals anything.
+    /// - Bool ↔ Int(0/1): Victron's settings service returns ints over
+    ///   D-Bus where the user wrote a Python boolean; treat 0/1 as
+    ///   equivalent to `false`/`true`.
+    /// - Otherwise: same-variant strict equality.
+    #[must_use]
+    pub fn approx_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Float(a), Self::Float(b)) => float_close(*a, *b),
+            (Self::String(a), Self::String(b)) => a == b,
+            // Bool ↔ Int(0/1) — Victron returns int over the wire.
+            (Self::Bool(b), Self::Int(n)) | (Self::Int(n), Self::Bool(b)) => {
+                (*b && *n == 1) || (!*b && *n == 0)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[must_use]
+fn float_close(a: f64, b: f64) -> bool {
+    if !a.is_finite() || !b.is_finite() {
+        return false;
+    }
+    let scale = a.abs().max(b.abs()).max(1.0);
+    (a - b).abs() <= 1e-6 * scale
+}
+
+impl std::fmt::Display for PinnedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Int(n) => write!(f, "{n}"),
+            Self::Float(x) => write!(f, "{x}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+        }
+    }
+}
+
+/// Confirmation status for a pinned register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinnedStatus {
+    /// No reading has landed since boot.
+    Unknown,
+    /// Most recent reading matched the configured target.
+    Confirmed,
+    /// Most recent reading drifted from the target. After a corrective
+    /// `WriteDbus` lands, the next reseed will flip this back to
+    /// `Confirmed` if the write succeeded.
+    Drifted,
+}
+
+impl PinnedStatus {
+    /// Lowercase wire name for the dashboard table.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Confirmed => "confirmed",
+            Self::Drifted => "drifted",
+        }
+    }
+}
+
+/// Per-pinned-register state held in `World::pinned_registers`. One
+/// entry per row in `[[dbus_pinned_registers]]`. Keyed by the joined
+/// `service:dbus_path` so the shell-side reader can look an entry up
+/// in O(log n) without re-splitting the path on every reading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinnedRegisterEntity {
+    pub path: std::sync::Arc<str>,
+    pub target: PinnedValue,
+    pub actual: Option<PinnedValue>,
+    pub last_check: Option<chrono::NaiveDateTime>,
+    pub drift_count: u32,
+    pub last_drift_at: Option<chrono::NaiveDateTime>,
+    pub status: PinnedStatus,
+}
+
+impl PinnedRegisterEntity {
+    /// Build a fresh entity from a `(path, target)` pair seeded by the
+    /// shell at startup. All counters start at zero / `None`.
+    #[must_use]
+    pub fn new(path: std::sync::Arc<str>, target: PinnedValue) -> Self {
+        Self {
+            path,
+            target,
+            actual: None,
+            last_check: None,
+            drift_count: 0,
+            last_drift_at: None,
+            status: PinnedStatus::Unknown,
+        }
+    }
+}
+
 /// Actuated-entity identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActuatedId {
@@ -869,6 +990,19 @@ pub enum Event {
         value: String,
         at: Instant,
     },
+    /// PR-pinned-registers: a fresh reading of a pinned D-Bus register
+    /// from the shell-side hourly reader. `path` is the joined
+    /// `service:dbus_path` (matches the configured key); `value` is the
+    /// typed bus reading the shell extracted from `Get`. `at` is the
+    /// wall-clock timestamp the dashboard surfaces. Drives the
+    /// `world.pinned_registers` entry's `actual` / `last_check` /
+    /// `drift_count` / `last_drift_at` and (on drift) emits an
+    /// `Effect::WriteDbusPinned`.
+    PinnedRegisterReading {
+        path: String,
+        value: PinnedValue,
+        at: chrono::NaiveDateTime,
+    },
 }
 
 // =============================================================================
@@ -1033,6 +1167,18 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     WriteDbus { target: DbusTarget, value: DbusValue },
+    /// PR-pinned-registers: drift-correction write produced by
+    /// `run_pinned_registers`. Carries the raw `(service, path, value)`
+    /// triplet rather than a `DbusTarget` enum variant — the set of
+    /// pinned paths is config-driven and not part of the closed
+    /// actuator catalogue. The shell-side dispatch routes through the
+    /// same `Writer` and therefore the same `[dbus] writes_enabled`
+    /// chokepoint as the regular `WriteDbus`.
+    WriteDbusPinned {
+        service: String,
+        path: String,
+        value: PinnedValue,
+    },
     CallMyenergi(MyenergiAction),
     Publish(PublishPayload),
     Log {

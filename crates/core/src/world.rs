@@ -7,7 +7,9 @@ use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
-use crate::types::{BookkeepingId, Decision, ForecastProvider, SensorId, TimerId, TimerStatus};
+use crate::types::{
+    BookkeepingId, Decision, ForecastProvider, PinnedRegisterEntity, SensorId, TimerId, TimerStatus,
+};
 
 /// All scalar sensor readings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -449,6 +451,13 @@ pub struct World {
     /// uses it to mark the synthetic `system.timezone` row Stale once
     /// the freshness window lapses.
     pub timezone_updated_at: Option<Instant>,
+
+    /// PR-pinned-registers: per-register drift state. Keyed by the
+    /// joined `service:dbus_path` so the shell-side reader can match
+    /// readings back to entries without re-splitting the path. Entries
+    /// are seeded once at startup from `[[dbus_pinned_registers]]`;
+    /// `run_pinned_registers` is a no-op when the map is empty.
+    pub pinned_registers: std::collections::BTreeMap<std::sync::Arc<str>, PinnedRegisterEntity>,
 }
 
 impl World {
@@ -476,6 +485,7 @@ impl World {
             // `/Settings/System/TimeZone` reading lands.
             timezone: "Etc/UTC".to_string(),
             timezone_updated_at: None,
+            pinned_registers: std::collections::BTreeMap::new(),
         }
     }
 }

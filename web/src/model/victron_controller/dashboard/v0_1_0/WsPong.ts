@@ -58,7 +58,7 @@ export class WsPong implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return WsPong.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return WsPong.BaboonSameInVersions
     }
@@ -67,7 +67,7 @@ export class WsPong implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class WsPong_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: WsPong, writer: BaboonBinWriter): unknown {
         if (this !== WsPong_UEBACodec.lazyInstance.value) {

@@ -6,10 +6,10 @@ import {WsPing, WsPing_UEBACodec} from './WsPing'
 export type WsClientMessage = Ping | SendCommand
 
 export const WsClientMessage = {
-    BaboonDomainVersion: '0.2.0',
+    BaboonDomainVersion: '0.3.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#WsClientMessage',
-    BaboonSameInVersions: ["0.2.0"],
+    BaboonSameInVersions: ["0.2.0", "0.3.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#WsClientMessage',
     binCodec(): WsClientMessage_UEBACodec {
         return WsClientMessage_UEBACodec.instance
@@ -48,7 +48,7 @@ export class Ping implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Ping.BaboonDomainVersion
     }
@@ -60,7 +60,7 @@ export class Ping implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Ping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Ping.BaboonSameInVersions
     }
@@ -116,7 +116,7 @@ export class Ping_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Ping_UEBACodec.BaboonDomainVersion
     }
@@ -168,7 +168,7 @@ export class SendCommand implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SendCommand.BaboonDomainVersion
     }
@@ -180,7 +180,7 @@ export class SendCommand implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SendCommand.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SendCommand.BaboonSameInVersions
     }
@@ -236,7 +236,7 @@ export class SendCommand_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SendCommand_UEBACodec.BaboonDomainVersion
     }
@@ -289,7 +289,7 @@ export class WsClientMessage_UEBACodec {
         }
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return WsClientMessage_UEBACodec.BaboonDomainVersion
     }

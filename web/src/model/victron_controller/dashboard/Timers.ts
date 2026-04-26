@@ -31,7 +31,7 @@ export class Timers implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Timers.BaboonDomainVersion
     }
@@ -43,7 +43,7 @@ export class Timers implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Timers.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Timers.BaboonSameInVersions
     }
@@ -100,7 +100,7 @@ export class Timers_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Timers_UEBACodec.BaboonDomainVersion
     }

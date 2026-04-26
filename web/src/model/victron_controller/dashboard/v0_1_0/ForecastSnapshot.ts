@@ -67,7 +67,7 @@ export class ForecastSnapshot implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ForecastSnapshot_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ForecastSnapshot, writer: BaboonBinWriter): unknown {
         if (this !== ForecastSnapshot_UEBACodec.lazyInstance.value) {

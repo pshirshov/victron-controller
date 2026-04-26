@@ -77,7 +77,7 @@ export class ActuatedF64 implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return ActuatedF64.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ActuatedF64.BaboonSameInVersions
     }
@@ -86,7 +86,7 @@ export class ActuatedF64 implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ActuatedF64_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ActuatedF64, writer: BaboonBinWriter): unknown {
         if (this !== ActuatedF64_UEBACodec.lazyInstance.value) {

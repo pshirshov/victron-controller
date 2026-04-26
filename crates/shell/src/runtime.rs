@@ -112,6 +112,13 @@ impl Runtime {
             Effect::WriteDbus { target, value } => {
                 self.writer.write(target, value).await;
             }
+            Effect::WriteDbusPinned { service, path, value } => {
+                // PR-pinned-registers: drift-correction write. Goes
+                // through the same chokepoint as the regular `write`,
+                // so the `[dbus] writes_enabled` dry-run gate fires here
+                // too.
+                self.writer.write_pinned(&service, &path, value).await;
+            }
             Effect::CallMyenergi(action) => {
                 // Spawn so a slow HTTP call (myenergi cloud) doesn't
                 // block the event loop. A-60: wrap the spawned work in

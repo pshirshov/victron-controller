@@ -74,7 +74,7 @@ export class Actuated implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Actuated.BaboonDomainVersion
     }
@@ -86,7 +86,7 @@ export class Actuated implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Actuated.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Actuated.BaboonSameInVersions
     }
@@ -187,7 +187,7 @@ export class Actuated_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Actuated_UEBACodec.BaboonDomainVersion
     }

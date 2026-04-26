@@ -1,12 +1,13 @@
 // @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
+import {PinnedRegister, PinnedRegister_UEBACodec} from './PinnedRegister'
+import {Sensors, Sensors_UEBACodec} from './Sensors'
 import {Knobs, Knobs_UEBACodec} from './Knobs'
 import {Bookkeeping, Bookkeeping_UEBACodec} from './Bookkeeping'
 import {Timers, Timers_UEBACodec} from './Timers'
 import {SocChart, SocChart_UEBACodec} from './SocChart'
 import {SensorMeta, SensorMeta_UEBACodec} from './SensorMeta'
 import {Actuated, Actuated_UEBACodec} from './Actuated'
-import {Sensors, Sensors_UEBACodec} from './Sensors'
 import {CoresState, CoresState_UEBACodec} from './CoresState'
 import {Forecasts, Forecasts_UEBACodec} from './Forecasts'
 import {ScheduledActions, ScheduledActions_UEBACodec} from './ScheduledActions'
@@ -27,8 +28,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _timezone: string;
     private readonly _soc_chart: SocChart;
     private readonly _scheduled_actions: ScheduledActions;
+    private readonly _pinned_registers: Array<PinnedRegister>;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, timezone: string, soc_chart: SocChart, scheduled_actions: ScheduledActions) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, timezone: string, soc_chart: SocChart, scheduled_actions: ScheduledActions, pinned_registers: Array<PinnedRegister>) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -43,6 +45,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._timezone = timezone
         this._soc_chart = soc_chart
         this._scheduled_actions = scheduled_actions
+        this._pinned_registers = pinned_registers
     }
 
     public get captured_at_epoch_ms(): bigint {
@@ -87,6 +90,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get scheduled_actions(): ScheduledActions {
         return this._scheduled_actions;
     }
+    public get pinned_registers(): Array<PinnedRegister> {
+        return this._pinned_registers;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -103,11 +109,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             timers: this._timers,
             timezone: this._timezone,
             soc_chart: this._soc_chart,
-            scheduled_actions: this._scheduled_actions
+            scheduled_actions: this._scheduled_actions,
+            pinned_registers: this._pinned_registers
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; timezone?: string; soc_chart?: SocChart; scheduled_actions?: ScheduledActions}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; timezone?: string; soc_chart?: SocChart; scheduled_actions?: ScheduledActions; pinned_registers?: Array<PinnedRegister>}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -122,11 +129,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'timers' in overrides ? overrides.timers! : this._timers,
             'timezone' in overrides ? overrides.timezone! : this._timezone,
             'soc_chart' in overrides ? overrides.soc_chart! : this._soc_chart,
-            'scheduled_actions' in overrides ? overrides.scheduled_actions! : this._scheduled_actions
+            'scheduled_actions' in overrides ? overrides.scheduled_actions! : this._scheduled_actions,
+            'pinned_registers' in overrides ? overrides.pinned_registers! : this._pinned_registers
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; timezone: string; soc_chart: SocChart; scheduled_actions: ScheduledActions}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; timezone: string; soc_chart: SocChart; scheduled_actions: ScheduledActions; pinned_registers: Array<PinnedRegister>}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -141,11 +149,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.timers,
             obj.timezone,
             obj.soc_chart,
-            obj.scheduled_actions
+            obj.scheduled_actions,
+            obj.pinned_registers
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return WorldSnapshot.BaboonDomainVersion
     }
@@ -157,7 +166,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return WorldSnapshot.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return WorldSnapshot.BaboonSameInVersions
     }
@@ -268,6 +277,16 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeI32(buffer, Array.from(value.pinned_registers).length);
+            for (const item of value.pinned_registers) {
+                PinnedRegister_UEBACodec.instance.encode(ctx, item, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -292,6 +311,10 @@ export class WorldSnapshot_UEBACodec {
             BinTools.writeString(writer, value.timezone);
             SocChart_UEBACodec.instance.encode(ctx, value.soc_chart, writer);
             ScheduledActions_UEBACodec.instance.encode(ctx, value.scheduled_actions, writer);
+            BinTools.writeI32(writer, Array.from(value.pinned_registers).length);
+            for (const item of value.pinned_registers) {
+                PinnedRegister_UEBACodec.instance.encode(ctx, item, writer);
+            }
         }
     }
     
@@ -303,7 +326,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 12; i++) {
+            for (let i = 0; i < 13; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -322,6 +345,7 @@ export class WorldSnapshot_UEBACodec {
         const timezone = BinTools.readString(reader);
         const soc_chart = SocChart_UEBACodec.instance.decode(ctx, reader);
         const scheduled_actions = ScheduledActions_UEBACodec.instance.decode(ctx, reader);
+        const pinned_registers = Array.from({ length: BinTools.readI32(reader) }, () => PinnedRegister_UEBACodec.instance.decode(ctx, reader));
         return new WorldSnapshot(
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -337,10 +361,11 @@ export class WorldSnapshot_UEBACodec {
             timezone,
             soc_chart,
             scheduled_actions,
+            pinned_registers,
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return WorldSnapshot_UEBACodec.BaboonDomainVersion
     }

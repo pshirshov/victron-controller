@@ -197,3 +197,34 @@ battery_nominal_voltage_v    = 48.0      # Pylontech 48V stack.
 grid_nominal_voltage_v       = 230.0
 grid_min_sensible_voltage_v  = 207.0     # EN 50160 -10%.
 grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
+
+# PR-pinned-registers: list of (path, type, value) triplets the shell
+# re-asserts on a 1 h cadence. Each entry is read once an hour; if the
+# bus value differs from the configured constant, an Effect::WriteDbus
+# is emitted to put it back. Drift counters + timestamps surface on
+# the dashboard's Detail tab. Corrective writes go through the same
+# `[dbus] writes_enabled` chokepoint as every other actuating effect.
+# Empty by default — opt-in feature.
+#
+# `path` joins the well-known service name and the D-Bus object path
+# with a single `:` separator. `type` is one of "bool" | "int" |
+# "float" | "string"; `value` must be type-compatible (an integer
+# literal is accepted for type = "float" as a convenience).
+#
+# Example registers that the legacy NR flow used to enforce; uncomment
+# and adjust to taste:
+#
+# [[dbus_pinned_registers]]
+# path  = "com.victronenergy.vebus.ttyS3:/Devices/0/Settings/PowerAssistEnabled"
+# type  = "bool"
+# value = true
+#
+# [[dbus_pinned_registers]]
+# path  = "com.victronenergy.settings:/Settings/CGwacs/MaxFeedInPower"
+# type  = "float"
+# value = 5000.0
+#
+# [[dbus_pinned_registers]]
+# path  = "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode"
+# type  = "int"
+# value = 1

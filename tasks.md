@@ -1137,3 +1137,33 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   explicit per-actuated `apply_tick` decay calls. Migrate the three
   remaining tests in `process.rs` and the proptest. ZappiMode test
   moves to the production `Event::TypedSensor` path.
+
+---
+
+## Milestone M-PINNED — PR breakdown
+
+- [x] **PR-pinned-registers** — Persistent enforcement of selected
+  Victron D-Bus settings that reset on firmware updates. New
+  `[[dbus_pinned_registers]]` config section (path / type / value
+  triplets). Shell-side `dbus::pinned` module reads each register
+  hourly via `com.victronenergy.BusItem.GetValue` and emits
+  `Event::PinnedRegisterReading`. Core-side `apply_pinned_register_reading`
+  compares to the configured target with float-tolerant /
+  bool↔int(0,1) coercion semantics, increments per-register
+  `drift_count`, stamps `last_drift_at` / `last_check`, and emits
+  `Effect::WriteDbusPinned` on drift. The new effect goes through
+  the same `Writer::dispatch_set_value` chokepoint as the actuator
+  `WriteDbus`, so the `[dbus] writes_enabled = false` observer mode
+  blocks it (three-layer safety chain preserved). Wire format
+  bumped 0.2.0 → 0.3.0 — additive `PinnedRegister` data type plus
+  `pinned_registers: lst[PinnedRegister]` on `WorldSnapshot`. New
+  Detail-tab section "Pinned D-Bus registers" with status pill
+  (red/orange for drifted, green for confirmed, grey for unknown);
+  hidden when no entries are configured. SPEC §7.2 documents the
+  feature; `config.example.toml` carries a commented-out reference
+  set. 6 config-validation tests + 5 pinned-reader tests + 6
+  apply-event tests cover the surface. All four verification
+  commands green: `cargo test --all` (453 passed), `cargo clippy
+  --all-targets -- -D warnings`, `cargo build --target
+  armv7-unknown-linux-gnueabihf --release`, `bash
+  scripts/build-web.sh`.

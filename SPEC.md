@@ -462,6 +462,10 @@ The values listed above are **runtime knobs** — operators flip them via dashbo
 
 The `[hardware] grid_export_knob_max_w` and `grid_import_knob_max_w` values cap the runtime `grid_export_limit_w` / `grid_import_limit_w` knobs respectively — both at the in-process clamp (`process::run_setpoint`) and at the MQTT/HA validation boundary (`mqtt::serialize::knob_range` + `mqtt::discovery::number_knob`). Defaults are `6000` (export) / `13000` (import); these replaced the previous single 10 000 W ceiling that applied symmetrically.
 
+### 7.2. Pinned D-Bus registers (PR-pinned-registers)
+
+A third class of config is *firmware-survival re-assertions*. Some Victron settings the controller relies on (PowerAssist enables, Hub4 mode, MaxFeedInPower, …) get reset on firmware updates. The user lists `(path, type, value)` triplets under `[[dbus_pinned_registers]]` in `config.toml`; the shell reads each register once an hour, compares against the configured constant, and writes the constant back on drift. Drift counts and last-drift / last-check timestamps surface on the dashboard's Detail tab. The corrective writes go through the same `[dbus] writes_enabled` chokepoint as every other actuating effect — observer mode (`writes_enabled = false`) blocks them. Default is empty; the feature is opt-in.
+
 ---
 
 ## 8. Testing strategy

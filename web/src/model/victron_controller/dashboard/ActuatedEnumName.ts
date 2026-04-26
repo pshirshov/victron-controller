@@ -81,7 +81,7 @@ export class ActuatedEnumName implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ActuatedEnumName.BaboonDomainVersion
     }
@@ -93,7 +93,7 @@ export class ActuatedEnumName implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return ActuatedEnumName.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ActuatedEnumName.BaboonSameInVersions
     }
@@ -194,7 +194,7 @@ export class ActuatedEnumName_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ActuatedEnumName_UEBACodec.BaboonDomainVersion
     }

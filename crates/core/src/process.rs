@@ -53,8 +53,8 @@ use crate::topology::{ControllerParams, Topology};
 use crate::types::{
     ActuatedId, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
     DbusValue, Decision, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel,
-    MyenergiAction, PublishPayload, ScheduleField, SensorId, SensorReading, TimerId,
-    TimerStatus, TypedReading,
+    MyenergiAction, PinnedStatus, PinnedValue, PublishPayload, ScheduleField, SensorId,
+    SensorReading, TimerId, TimerStatus, TypedReading,
 };
 use crate::world::TimerEntry;
 use crate::world::{ForecastSnapshot, World};
@@ -118,6 +118,9 @@ fn apply_event(
         ),
         Event::Timezone { value, at } => {
             apply_timezone(value, *at, world, topology, effects);
+        }
+        Event::PinnedRegisterReading { path, value, at } => {
+            apply_pinned_register_reading(path, value, *at, world, effects);
         }
     }
 }
@@ -190,6 +193,92 @@ fn apply_timer_state(
             entry.period = std::time::Duration::from_millis(dur_ms);
         }
     }
+}
+
+/// PR-pinned-registers: handle a fresh reading of a pinned register.
+///
+/// 1. Look up the configured entity by the joined `service:dbus_path`.
+///    Unknown paths are dropped with a Warn log — the only way to see
+///    one is a config drift between the shell's seeded set and a write
+///    arriving via a stale `Event` (shouldn't happen in practice, but
+///    fail visibly rather than silently).
+/// 2. Stamp `actual = Some(value)`, `last_check = Some(at)`.
+/// 3. Compare `value` against `target` using `PinnedValue::approx_eq`
+///    (float tolerance + bool/int coercion).
+/// 4. On match: status becomes `Confirmed`. `drift_count` is intentionally
+///    NOT reset — the operator-facing "how many times has this drifted
+///    since boot" counter only ever increases.
+/// 5. On mismatch: status becomes `Drifted`, `drift_count += 1`,
+///    `last_drift_at = Some(at)`. Emit a corrective `Effect::WriteDbusPinned`
+///    plus a `Decision`-equivalent `Effect::Log(Info)` summarising the
+///    register / old / new triplet (the honesty invariant — every
+///    actuating effect must explain itself).
+fn apply_pinned_register_reading(
+    path: &str,
+    value: &PinnedValue,
+    at: chrono::NaiveDateTime,
+    world: &mut World,
+    effects: &mut Vec<Effect>,
+) {
+    // BTreeMap-key lookup via &str: build an Arc<str> on the fly. The
+    // lookup is on a hot-ish path (one per pinned register per hour
+    // per process) so the cost is irrelevant.
+    let key: std::sync::Arc<str> = std::sync::Arc::from(path);
+    let Some(entity) = world.pinned_registers.get_mut(&key) else {
+        effects.push(Effect::Log {
+            level: LogLevel::Warn,
+            source: "pinned_registers",
+            message: format!(
+                "reading for unconfigured pinned register {path:?}; dropped"
+            ),
+        });
+        return;
+    };
+    entity.actual = Some(value.clone());
+    entity.last_check = Some(at);
+    if entity.target.approx_eq(value) {
+        entity.status = PinnedStatus::Confirmed;
+        return;
+    }
+    entity.status = PinnedStatus::Drifted;
+    entity.drift_count = entity.drift_count.saturating_add(1);
+    entity.last_drift_at = Some(at);
+
+    // Split path back into (service, dbus_path) for the write effect.
+    // The shell-side validator guarantees the colon shape; defensive
+    // fallback emits a log + skips the write rather than panicking if
+    // somehow a malformed key snuck in.
+    let Some((service, dbus_path)) = path.split_once(':') else {
+        effects.push(Effect::Log {
+            level: LogLevel::Error,
+            source: "pinned_registers",
+            message: format!(
+                "pinned register {path:?} has no service:path separator; \
+                 cannot emit corrective write"
+            ),
+        });
+        return;
+    };
+
+    let target_str = format!("{}", entity.target);
+    let actual_str = format!("{value}");
+    effects.push(Effect::WriteDbusPinned {
+        service: service.to_string(),
+        path: dbus_path.to_string(),
+        value: entity.target.clone(),
+    });
+    // Honesty invariant: every actuating effect must explain (a) which
+    // register, (b) old value, (c) new value. We use Effect::Log
+    // because the per-register table on the dashboard already shows
+    // status / drift_count / last_drift, and the pinned-register
+    // controller has no slot in `world.decisions`.
+    effects.push(Effect::Log {
+        level: LogLevel::Info,
+        source: "pinned_registers",
+        message: format!(
+            "pinned_register_restored: {path} actual={actual_str} -> target={target_str}"
+        ),
+    });
 }
 
 fn apply_sensor_reading(
@@ -3998,5 +4087,258 @@ mod tests {
             !world.bookkeeping.auto_extended_today,
             "high SoC + no high target on day 2 must flip the latch off",
         );
+    }
+
+    // PR-pinned-registers ----------------------------------------------------
+
+    fn seed_pinned_register(
+        world: &mut World,
+        path: &str,
+        target: PinnedValue,
+    ) -> std::sync::Arc<str> {
+        let key: std::sync::Arc<str> = std::sync::Arc::from(path);
+        world.pinned_registers.insert(
+            std::sync::Arc::clone(&key),
+            crate::types::PinnedRegisterEntity::new(std::sync::Arc::clone(&key), target),
+        );
+        key
+    }
+
+    #[test]
+    fn pinned_register_match_marks_confirmed_no_write() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let key = seed_pinned_register(
+            &mut world,
+            "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode",
+            PinnedValue::Int(1),
+        );
+
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Int(1),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Confirmed);
+        assert_eq!(entity.drift_count, 0);
+        assert_eq!(entity.actual, Some(PinnedValue::Int(1)));
+        assert!(entity.last_check.is_some());
+        // No corrective write on a match.
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::WriteDbusPinned { .. })),
+            "match path must not emit WriteDbusPinned; got {effects:#?}",
+        );
+    }
+
+    #[test]
+    fn pinned_register_drift_emits_corrective_write_and_increments_counter() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let key = seed_pinned_register(
+            &mut world,
+            "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode",
+            PinnedValue::Int(1),
+        );
+
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Int(0), // drifted
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Drifted);
+        assert_eq!(entity.drift_count, 1);
+        assert_eq!(entity.actual, Some(PinnedValue::Int(0)));
+        assert_eq!(entity.last_drift_at, Some(c.naive()));
+        // Exactly one corrective write, addressed to the right service+path
+        // with the configured target value.
+        let writes: Vec<_> = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::WriteDbusPinned { service, path, value } => {
+                    Some((service.as_str(), path.as_str(), value.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(writes.len(), 1, "expected one WriteDbusPinned; got {effects:#?}");
+        assert_eq!(writes[0].0, "com.victronenergy.settings");
+        assert_eq!(writes[0].1, "/Settings/CGwacs/Hub4Mode");
+        assert_eq!(writes[0].2, PinnedValue::Int(1));
+        // Honesty invariant: a Log effect explains old/new.
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(
+                    e,
+                    Effect::Log { source: "pinned_registers", message, .. }
+                        if message.contains("pinned_register_restored") && message.contains('0') && message.contains('1')
+                )),
+            "missing pinned_register_restored Log: {effects:#?}",
+        );
+    }
+
+    #[test]
+    fn pinned_register_bool_int_coercion_match() {
+        // Victron returns Int(1) over the wire even when the user wrote
+        // a Python boolean. The match must succeed.
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let key = seed_pinned_register(
+            &mut world,
+            "com.victronenergy.vebus.ttyS3:/Devices/0/Settings/PowerAssistEnabled",
+            PinnedValue::Bool(true),
+        );
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Int(1),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Confirmed);
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::WriteDbusPinned { .. })),
+            "bool/int(1) coercion must not emit a write",
+        );
+    }
+
+    #[test]
+    fn pinned_register_float_tolerance() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let key = seed_pinned_register(
+            &mut world,
+            "com.victronenergy.settings:/Settings/CGwacs/MaxFeedInPower",
+            PinnedValue::Float(5000.0),
+        );
+        // Within tolerance.
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Float(5_000.000_001),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Confirmed);
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::WriteDbusPinned { .. })),
+        );
+        // Far outside tolerance — drift.
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Float(100.0),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Drifted);
+        assert_eq!(entity.drift_count, 1);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::WriteDbusPinned { .. })),
+        );
+    }
+
+    #[test]
+    fn pinned_register_unknown_path_warns_and_drops() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // No seed: world.pinned_registers is empty.
+        let effects = process(
+            &Event::PinnedRegisterReading {
+                path: "com.victronenergy.settings:/Settings/Foo".to_string(),
+                value: PinnedValue::Int(1),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(world.pinned_registers.is_empty());
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::WriteDbusPinned { .. })),
+            "unknown path must not emit a corrective write",
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(
+                    e,
+                    Effect::Log { level: LogLevel::Warn, source: "pinned_registers", .. }
+                )),
+            "unknown path must produce a Warn log: {effects:#?}",
+        );
+    }
+
+    #[test]
+    fn pinned_register_drift_count_does_not_reset_on_reconfirm() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let key = seed_pinned_register(
+            &mut world,
+            "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode",
+            PinnedValue::Int(1),
+        );
+        // Drift once.
+        let _ = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Int(0),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        // Then a fresh confirmation. drift_count must stay at 1 — the
+        // operator-facing counter is monotonic.
+        let _ = process(
+            &Event::PinnedRegisterReading {
+                path: key.as_ref().to_string(),
+                value: PinnedValue::Int(1),
+                at: c.naive(),
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        let entity = world.pinned_registers.get(&key).unwrap();
+        assert_eq!(entity.status, PinnedStatus::Confirmed);
+        assert_eq!(entity.drift_count, 1);
     }
 }

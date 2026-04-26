@@ -37,7 +37,7 @@ export function Owner_parse(s: string): Owner {
     return found;
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Owner_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Owner, writer: BaboonBinWriter): unknown {
         if (this !== Owner_UEBACodec.lazyInstance.value) {

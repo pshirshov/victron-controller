@@ -73,7 +73,7 @@ export class Hello implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Hello.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Hello.BaboonSameInVersions
     }
@@ -87,7 +87,7 @@ export class Hello implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Hello_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Hello, writer: BaboonBinWriter): unknown {
         if (this !== Hello_UEBACodec.lazyInstance.value) {
@@ -198,7 +198,7 @@ export class Pong implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Pong.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Pong.BaboonSameInVersions
     }
@@ -212,7 +212,7 @@ export class Pong implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Pong_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Pong, writer: BaboonBinWriter): unknown {
         if (this !== Pong_UEBACodec.lazyInstance.value) {
@@ -333,7 +333,7 @@ export class Snapshot implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Snapshot_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Snapshot, writer: BaboonBinWriter): unknown {
         if (this !== Snapshot_UEBACodec.lazyInstance.value) {
@@ -440,7 +440,7 @@ export class Log implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Log.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Log.BaboonSameInVersions
     }
@@ -454,7 +454,7 @@ export class Log implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Log_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Log, writer: BaboonBinWriter): unknown {
         if (this !== Log_UEBACodec.lazyInstance.value) {
@@ -561,7 +561,7 @@ export class Ack implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Ack.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Ack.BaboonSameInVersions
     }
@@ -575,7 +575,7 @@ export class Ack implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Ack_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Ack, writer: BaboonBinWriter): unknown {
         if (this !== Ack_UEBACodec.lazyInstance.value) {
@@ -642,7 +642,7 @@ export class Ack_UEBACodec {
 }
 
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class WsServerMessage_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: WsServerMessage, writer: BaboonBinWriter): unknown {
         if (this !== WsServerMessage_UEBACodec.lazyInstance.value) {

@@ -210,7 +210,44 @@ async fn main() -> Result<()> {
         soc_history: Arc::clone(&soc_history),
         hardware: topology.hardware,
     };
-    let world = Arc::new(Mutex::new(World::fresh_boot(Instant::now())));
+    let mut world_seed = World::fresh_boot(Instant::now());
+    // PR-pinned-registers: seed `world.pinned_registers` from
+    // `[[dbus_pinned_registers]]` so the dashboard surfaces every
+    // configured row from boot, even before the first hourly read
+    // pass lands. Validation already happened in `config::load`.
+    for entry in &cfg.dbus_pinned_registers {
+        let key: Arc<str> = Arc::from(entry.path.as_str());
+        let target = victron_controller_shell::config::PinnedValue::from_validated(
+            entry.value_type,
+            &entry.value,
+        )
+        .expect("pinned-register value validated at config load");
+        let target_core = match target {
+            victron_controller_shell::config::PinnedValue::Bool(b) => {
+                victron_controller_core::types::PinnedValue::Bool(b)
+            }
+            victron_controller_shell::config::PinnedValue::Int(n) => {
+                victron_controller_core::types::PinnedValue::Int(n)
+            }
+            victron_controller_shell::config::PinnedValue::Float(f) => {
+                victron_controller_core::types::PinnedValue::Float(f)
+            }
+            victron_controller_shell::config::PinnedValue::String(s) => {
+                victron_controller_core::types::PinnedValue::String(s)
+            }
+        };
+        world_seed.pinned_registers.insert(
+            Arc::clone(&key),
+            victron_controller_core::types::PinnedRegisterEntity::new(key, target_core),
+        );
+    }
+    if !cfg.dbus_pinned_registers.is_empty() {
+        info!(
+            count = cfg.dbus_pinned_registers.len(),
+            "pinned-register set seeded into world"
+        );
+    }
+    let world = Arc::new(Mutex::new(world_seed));
     let snapshot_stream = SnapshotBroadcast::new(64);
 
     // PR-ha-knob-sync: clone the MQTT client handle BEFORE handing the
@@ -339,6 +376,21 @@ async fn main() -> Result<()> {
     let myenergi_task = tokio::spawn(async move {
         if let Err(e) = myenergi_poller.run(tx_for_my).await {
             error!(error = %e, "myenergi poller terminated with error");
+        }
+    });
+
+    // PR-pinned-registers: hourly re-reader for the configured pinned
+    // D-Bus registers. Idle when `[[dbus_pinned_registers]]` is empty.
+    let tx_for_pinned = tx.clone();
+    let pinned_registers_for_task = cfg.dbus_pinned_registers.clone();
+    let pinned_task = tokio::spawn(async move {
+        if let Err(e) = victron_controller_shell::dbus::pinned::run(
+            pinned_registers_for_task,
+            tx_for_pinned,
+        )
+        .await
+        {
+            error!(error = %e, "pinned-register reader terminated with error");
         }
     });
 
@@ -565,6 +617,11 @@ async fn main() -> Result<()> {
         }
         _ = myenergi_task => {
             info!("myenergi task ended");
+        }
+        _ = pinned_task => {
+            // PR-pinned-registers: `run` only returns on a closed
+            // event channel, so this branch ~= clean shutdown.
+            info!("pinned-register reader ended");
         }
         () = mqtt_sub_fut => {
             info!("mqtt subscriber ended");

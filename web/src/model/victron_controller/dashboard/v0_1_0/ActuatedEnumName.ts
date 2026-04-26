@@ -93,7 +93,7 @@ export class ActuatedEnumName implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return ActuatedEnumName.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ActuatedEnumName.BaboonSameInVersions
     }
@@ -102,7 +102,7 @@ export class ActuatedEnumName implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ActuatedEnumName_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ActuatedEnumName, writer: BaboonBinWriter): unknown {
         if (this !== ActuatedEnumName_UEBACodec.lazyInstance.value) {

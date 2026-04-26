@@ -31,7 +31,7 @@ export class ScheduledActions implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ScheduledActions.BaboonDomainVersion
     }
@@ -43,7 +43,7 @@ export class ScheduledActions implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return ScheduledActions.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ScheduledActions.BaboonSameInVersions
     }
@@ -100,7 +100,7 @@ export class ScheduledActions_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ScheduledActions_UEBACodec.BaboonDomainVersion
     }

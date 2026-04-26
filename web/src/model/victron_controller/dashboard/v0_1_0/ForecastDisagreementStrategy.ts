@@ -23,7 +23,7 @@ export function ForecastDisagreementStrategy_parse(s: string): ForecastDisagreem
     return found;
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ForecastDisagreementStrategy_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ForecastDisagreementStrategy, writer: BaboonBinWriter): unknown {
         if (this !== ForecastDisagreementStrategy_UEBACodec.lazyInstance.value) {

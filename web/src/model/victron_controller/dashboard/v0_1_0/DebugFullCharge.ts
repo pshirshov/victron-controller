@@ -21,7 +21,7 @@ export function DebugFullCharge_parse(s: string): DebugFullCharge {
     return found;
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class DebugFullCharge_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: DebugFullCharge, writer: BaboonBinWriter): unknown {
         if (this !== DebugFullCharge_UEBACodec.lazyInstance.value) {

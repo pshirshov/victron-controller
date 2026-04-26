@@ -74,7 +74,7 @@ export class ScheduleSpec implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return ScheduleSpec.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return ScheduleSpec.BaboonSameInVersions
     }
@@ -83,7 +83,7 @@ export class ScheduleSpec implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ScheduleSpec_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ScheduleSpec, writer: BaboonBinWriter): unknown {
         if (this !== ScheduleSpec_UEBACodec.lazyInstance.value) {

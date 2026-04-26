@@ -51,7 +51,7 @@ export class Decision implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Decision.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Decision.BaboonSameInVersions
     }
@@ -60,7 +60,7 @@ export class Decision implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Decision_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Decision, writer: BaboonBinWriter): unknown {
         if (this !== Decision_UEBACodec.lazyInstance.value) {

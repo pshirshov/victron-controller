@@ -21,7 +21,7 @@ export function ChargeBatteryExtendedMode_parse(s: string): ChargeBatteryExtende
     return found;
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class ChargeBatteryExtendedMode_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: ChargeBatteryExtendedMode, writer: BaboonBinWriter): unknown {
         if (this !== ChargeBatteryExtendedMode_UEBACodec.lazyInstance.value) {

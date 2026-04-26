@@ -4,10 +4,10 @@ import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, Ba
 export type BookkeepingValue = NaiveDateTime | Cleared
 
 export const BookkeepingValue = {
-    BaboonDomainVersion: '0.2.0',
+    BaboonDomainVersion: '0.3.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#BookkeepingValue',
-    BaboonSameInVersions: ["0.2.0"],
+    BaboonSameInVersions: ["0.2.0", "0.3.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#BookkeepingValue',
     binCodec(): BookkeepingValue_UEBACodec {
         return BookkeepingValue_UEBACodec.instance
@@ -46,7 +46,7 @@ export class NaiveDateTime implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return NaiveDateTime.BaboonDomainVersion
     }
@@ -58,7 +58,7 @@ export class NaiveDateTime implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return NaiveDateTime.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return NaiveDateTime.BaboonSameInVersions
     }
@@ -114,7 +114,7 @@ export class NaiveDateTime_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return NaiveDateTime_UEBACodec.BaboonDomainVersion
     }
@@ -164,7 +164,7 @@ export class Cleared implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Cleared.BaboonDomainVersion
     }
@@ -176,7 +176,7 @@ export class Cleared implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Cleared.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Cleared.BaboonSameInVersions
     }
@@ -225,7 +225,7 @@ export class Cleared_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Cleared_UEBACodec.BaboonDomainVersion
     }
@@ -278,7 +278,7 @@ export class BookkeepingValue_UEBACodec {
         }
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return BookkeepingValue_UEBACodec.BaboonDomainVersion
     }

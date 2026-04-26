@@ -12,10 +12,10 @@ import {BookkeepingValue, BookkeepingValue_UEBACodec} from './BookkeepingValue'
 export type Command = SetBoolKnob | SetFloatKnob | SetUintKnob | SetDischargeTime | SetDebugFullCharge | SetForecastDisagreementStrategy | SetChargeBatteryExtendedMode | SetExtendedChargeMode | SetMode | SetKillSwitch | SetBookkeeping
 
 export const Command = {
-    BaboonDomainVersion: '0.2.0',
+    BaboonDomainVersion: '0.3.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#Command',
-    BaboonSameInVersions: ["0.2.0"],
+    BaboonSameInVersions: ["0.2.0", "0.3.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#Command',
     binCodec(): Command_UEBACodec {
         return Command_UEBACodec.instance
@@ -71,7 +71,7 @@ export class SetBoolKnob implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetBoolKnob.BaboonDomainVersion
     }
@@ -83,7 +83,7 @@ export class SetBoolKnob implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetBoolKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetBoolKnob.BaboonSameInVersions
     }
@@ -143,7 +143,7 @@ export class SetBoolKnob_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetBoolKnob_UEBACodec.BaboonDomainVersion
     }
@@ -203,7 +203,7 @@ export class SetFloatKnob implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetFloatKnob.BaboonDomainVersion
     }
@@ -215,7 +215,7 @@ export class SetFloatKnob implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetFloatKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetFloatKnob.BaboonSameInVersions
     }
@@ -275,7 +275,7 @@ export class SetFloatKnob_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetFloatKnob_UEBACodec.BaboonDomainVersion
     }
@@ -335,7 +335,7 @@ export class SetUintKnob implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetUintKnob.BaboonDomainVersion
     }
@@ -347,7 +347,7 @@ export class SetUintKnob implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetUintKnob.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetUintKnob.BaboonSameInVersions
     }
@@ -407,7 +407,7 @@ export class SetUintKnob_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetUintKnob_UEBACodec.BaboonDomainVersion
     }
@@ -459,7 +459,7 @@ export class SetDischargeTime implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetDischargeTime.BaboonDomainVersion
     }
@@ -471,7 +471,7 @@ export class SetDischargeTime implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetDischargeTime.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetDischargeTime.BaboonSameInVersions
     }
@@ -521,7 +521,7 @@ export class SetDischargeTime_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetDischargeTime_UEBACodec.BaboonDomainVersion
     }
@@ -573,7 +573,7 @@ export class SetDebugFullCharge implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetDebugFullCharge.BaboonDomainVersion
     }
@@ -585,7 +585,7 @@ export class SetDebugFullCharge implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetDebugFullCharge.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetDebugFullCharge.BaboonSameInVersions
     }
@@ -635,7 +635,7 @@ export class SetDebugFullCharge_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetDebugFullCharge_UEBACodec.BaboonDomainVersion
     }
@@ -687,7 +687,7 @@ export class SetForecastDisagreementStrategy implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetForecastDisagreementStrategy.BaboonDomainVersion
     }
@@ -699,7 +699,7 @@ export class SetForecastDisagreementStrategy implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetForecastDisagreementStrategy.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetForecastDisagreementStrategy.BaboonSameInVersions
     }
@@ -749,7 +749,7 @@ export class SetForecastDisagreementStrategy_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetForecastDisagreementStrategy_UEBACodec.BaboonDomainVersion
     }
@@ -801,7 +801,7 @@ export class SetChargeBatteryExtendedMode implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetChargeBatteryExtendedMode.BaboonDomainVersion
     }
@@ -813,7 +813,7 @@ export class SetChargeBatteryExtendedMode implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetChargeBatteryExtendedMode.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetChargeBatteryExtendedMode.BaboonSameInVersions
     }
@@ -863,7 +863,7 @@ export class SetChargeBatteryExtendedMode_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetChargeBatteryExtendedMode_UEBACodec.BaboonDomainVersion
     }
@@ -915,7 +915,7 @@ export class SetExtendedChargeMode implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetExtendedChargeMode.BaboonDomainVersion
     }
@@ -927,7 +927,7 @@ export class SetExtendedChargeMode implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetExtendedChargeMode.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetExtendedChargeMode.BaboonSameInVersions
     }
@@ -977,7 +977,7 @@ export class SetExtendedChargeMode_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetExtendedChargeMode_UEBACodec.BaboonDomainVersion
     }
@@ -1037,7 +1037,7 @@ export class SetMode implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetMode.BaboonDomainVersion
     }
@@ -1049,7 +1049,7 @@ export class SetMode implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetMode.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetMode.BaboonSameInVersions
     }
@@ -1109,7 +1109,7 @@ export class SetMode_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetMode_UEBACodec.BaboonDomainVersion
     }
@@ -1161,7 +1161,7 @@ export class SetKillSwitch implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetKillSwitch.BaboonDomainVersion
     }
@@ -1173,7 +1173,7 @@ export class SetKillSwitch implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetKillSwitch.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetKillSwitch.BaboonSameInVersions
     }
@@ -1223,7 +1223,7 @@ export class SetKillSwitch_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetKillSwitch_UEBACodec.BaboonDomainVersion
     }
@@ -1283,7 +1283,7 @@ export class SetBookkeeping implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetBookkeeping.BaboonDomainVersion
     }
@@ -1295,7 +1295,7 @@ export class SetBookkeeping implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetBookkeeping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SetBookkeeping.BaboonSameInVersions
     }
@@ -1355,7 +1355,7 @@ export class SetBookkeeping_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SetBookkeeping_UEBACodec.BaboonDomainVersion
     }
@@ -1453,7 +1453,7 @@ export class Command_UEBACodec {
         }
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return Command_UEBACodec.BaboonDomainVersion
     }

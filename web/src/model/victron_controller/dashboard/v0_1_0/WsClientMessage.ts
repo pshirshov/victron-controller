@@ -60,7 +60,7 @@ export class Ping implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Ping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return Ping.BaboonSameInVersions
     }
@@ -74,7 +74,7 @@ export class Ping implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class Ping_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: Ping, writer: BaboonBinWriter): unknown {
         if (this !== Ping_UEBACodec.lazyInstance.value) {
@@ -195,7 +195,7 @@ export class SendCommand implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class SendCommand_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: SendCommand, writer: BaboonBinWriter): unknown {
         if (this !== SendCommand_UEBACodec.lazyInstance.value) {
@@ -262,7 +262,7 @@ export class SendCommand_UEBACodec {
 }
 
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class WsClientMessage_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: WsClientMessage, writer: BaboonBinWriter): unknown {
         if (this !== WsClientMessage_UEBACodec.lazyInstance.value) {

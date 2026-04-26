@@ -72,7 +72,7 @@ export class SocChart implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocChart.BaboonDomainVersion
     }
@@ -84,7 +84,7 @@ export class SocChart implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SocChart.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SocChart.BaboonSameInVersions
     }
@@ -215,7 +215,7 @@ export class SocChart_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocChart_UEBACodec.BaboonDomainVersion
     }

@@ -369,6 +369,25 @@ export function renderActuated(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
+// Snapshot field names that round-trip through retained MQTT and seed
+// at boot — the `BookkeepingKey` variants in `crates/core/src/types.rs`
+// (`NextFullCharge`, `AboveSocDate`, `PrevEssState`). Everything else
+// in `world.bookkeeping` is recomputed every tick from sensors / knobs
+// / forecast and is effectively a derivation surfaced through the
+// bookkeeping struct rather than persistent state.
+const BK_PERSISTED_FIELDS: ReadonlySet<string> = new Set([
+  "next_full_charge_iso",
+  "above_soc_date_iso",
+  "prev_ess_state",
+]);
+
+function bkPersistenceTag(name: string): string {
+  if (BK_PERSISTED_FIELDS.has(name)) {
+    return '<span class="bk-tag bk-tag-persisted" title="Persisted to retained MQTT; restored at boot">persisted</span>';
+  }
+  return '<span class="bk-tag bk-tag-derived" title="Recomputed every tick from world state; not restored at boot">derived</span>';
+}
+
 export function renderBookkeeping(snap: WorldSnapshot) {
   const tbody = document.querySelector("#bk-table tbody") as HTMLElement;
   const entries = Object.entries(snap.bookkeeping)
@@ -393,10 +412,11 @@ export function renderBookkeeping(snap: WorldSnapshot) {
         `<button class="edit-btn icon" data-edit-bk="next_full_charge" title="Edit next full charge">&#9998;</button>`;
       disp = `${disp} ${editBtn}`;
     }
+    const nameCell = `${entityLink(name, "bookkeeping")} ${bkPersistenceTag(name)}`;
     return {
       key: name,
       cells: [
-        { cls: "mono", html: entityLink(name, "bookkeeping") },
+        { cls: "mono", html: nameCell },
         { html: disp },
       ],
     };
@@ -551,6 +571,72 @@ export function renderSchedule(snap: WorldSnapshot): void {
       { html: esc(e.label) },
     ],
   }));
+  updateKeyedRows(tbody, rows);
+}
+
+// PR-pinned-registers: render the per-register table on the Detail
+// tab. Hidden when no `[[dbus_pinned_registers]]` are configured (the
+// section's <h2> is left in the DOM but the table renders zero rows).
+type PinnedRegisterRow = {
+  path: string;
+  target_value_str: string;
+  current_value_str: string | null | undefined;
+  status: string;
+  drift_count: number;
+  last_drift_iso: string | null | undefined;
+  last_check_iso: string | null | undefined;
+};
+
+export function renderPinnedRegisters(snap: WorldSnapshot): void {
+  const section = document.getElementById("pinned-registers-section");
+  const tbody = document.querySelector(
+    "#pinned-registers-table tbody",
+  ) as HTMLElement | null;
+  if (!section || !tbody) return;
+  const list =
+    ((snap as unknown) as { pinned_registers?: PinnedRegisterRow[] })
+      .pinned_registers ?? [];
+  if (list.length === 0) {
+    section.setAttribute("hidden", "");
+    tbody.replaceChildren();
+    return;
+  }
+  section.removeAttribute("hidden");
+  // Sort by path ascending (the backend already does this; resort
+  // defensively so the dashboard is deterministic regardless of
+  // future wire-format reordering).
+  const sorted = list.slice().sort((a, b) => a.path.localeCompare(b.path));
+  const rows: KeyedRow[] = sorted.map((e) => {
+    const statusCls = (() => {
+      switch (e.status) {
+        case "drifted":
+          return "pinned-status pinned-status-drifted";
+        case "confirmed":
+          return "pinned-status pinned-status-confirmed";
+        default:
+          return "pinned-status pinned-status-unknown";
+      }
+    })();
+    const current = e.current_value_str ?? "—";
+    const lastDrift = e.last_drift_iso ?? "—";
+    const lastCheck = e.last_check_iso ?? "—";
+    return {
+      key: e.path,
+      cells: [
+        { cls: "mono pinned-path", html: esc(e.path) },
+        {
+          cls: "mono",
+          html: `${esc(e.target_value_str)} <span class="dim">(saw ${esc(current)})</span>`,
+        },
+        {
+          html: `<span class="${statusCls}">${esc(e.status)}</span>`,
+        },
+        { cls: "mono", html: String(e.drift_count) },
+        { cls: "dim", html: esc(lastDrift) },
+        { cls: "dim", html: esc(lastCheck) },
+      ],
+    };
+  });
   updateKeyedRows(tbody, rows);
 }
 

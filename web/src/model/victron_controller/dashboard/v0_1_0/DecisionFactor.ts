@@ -50,7 +50,7 @@ export class DecisionFactor implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return DecisionFactor.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return DecisionFactor.BaboonSameInVersions
     }
@@ -59,7 +59,7 @@ export class DecisionFactor implements BaboonGenerated {
     }
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class DecisionFactor_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: DecisionFactor, writer: BaboonBinWriter): unknown {
         if (this !== DecisionFactor_UEBACodec.lazyInstance.value) {

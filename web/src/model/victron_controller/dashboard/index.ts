@@ -30,6 +30,7 @@ export * from './Freshness';
 export * from './Knobs';
 export * from './Mode';
 export * from './Owner';
+export * from './PinnedRegister';
 export * from './ScheduleSpec';
 export * from './ScheduledAction';
 export * from './ScheduledActions';

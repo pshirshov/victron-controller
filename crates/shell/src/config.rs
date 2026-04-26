@@ -37,6 +37,15 @@ pub struct Config {
     /// optional — the bridge stays dormant for whichever is None.
     #[serde(default)]
     pub ev: EvConfig,
+    /// PR-pinned-registers: list of (path, type, value) triplets the
+    /// shell re-asserts on a 1 h cadence. Any register listed here is
+    /// read once an hour; if the bus value differs from the configured
+    /// constant, an `Effect::WriteDbus` is emitted to put it back.
+    /// Drift counters and last-drift / last-check timestamps are
+    /// surfaced on the dashboard. Empty by default — opt-in feature.
+    /// Goes through the existing `[dbus] writes_enabled` chokepoint.
+    #[serde(default)]
+    pub dbus_pinned_registers: Vec<DbusPinnedRegister>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -433,6 +442,165 @@ pub struct EvConfig {
     pub charge_target_topic: Option<String>,
 }
 
+/// PR-pinned-registers: one (path, type, value) triplet the shell will
+/// re-assert hourly. `path` joins the well-known service name and the
+/// D-Bus object path with a single `:` separator, e.g.
+/// `"com.victronenergy.vebus.ttyS3:/Devices/0/Settings/PowerAssistEnabled"`.
+///
+/// Validated in `config::load`: malformed paths and value/type
+/// mismatches fail loud at startup rather than silently dropping a
+/// pinned entry the operator believes is enforced.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DbusPinnedRegister {
+    pub path: String,
+    /// Wire type: `"bool"` | `"int"` | `"float"` | `"string"`.
+    #[serde(rename = "type")]
+    pub value_type: PinnedType,
+    pub value: toml::Value,
+}
+
+/// Wire-type of a pinned register, matching the TOML `type =` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PinnedType {
+    Bool,
+    Int,
+    Float,
+    String,
+}
+
+impl PinnedType {
+    /// `snake_case` for log / dashboard messages.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::String => "string",
+        }
+    }
+}
+
+/// Validated typed value for a pinned register. Constructed via
+/// `PinnedValue::from_validated` once `config::load` has cross-checked
+/// the type and the literal; the controller side then never has to
+/// re-validate.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PinnedValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+impl PinnedValue {
+    /// Build a `PinnedValue` from a (validated) `(PinnedType, toml::Value)`
+    /// pair. Rejects type mismatches, NaN/Inf floats, and (for the
+    /// Int/Float coercion case) integers that don't fit `i64`.
+    pub fn from_validated(value_type: PinnedType, value: &toml::Value) -> Result<Self> {
+        match (value_type, value) {
+            (PinnedType::Bool, toml::Value::Boolean(b)) => Ok(Self::Bool(*b)),
+            (PinnedType::Int, toml::Value::Integer(n)) => Ok(Self::Int(*n)),
+            (PinnedType::Float, toml::Value::Float(f)) => {
+                if f.is_finite() {
+                    Ok(Self::Float(*f))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "pinned-register float value is not finite: {f}"
+                    ))
+                }
+            }
+            // Operator convenience: a `value = 5000` literal in TOML
+            // parses as Integer; accept that for a `type = "float"`
+            // entry rather than forcing them to type `5000.0`.
+            (PinnedType::Float, toml::Value::Integer(n)) => {
+                #[allow(clippy::cast_precision_loss)]
+                Ok(Self::Float(*n as f64))
+            }
+            (PinnedType::String, toml::Value::String(s)) => Ok(Self::String(s.clone())),
+            (t, v) => Err(anyhow::anyhow!(
+                "pinned-register value {v:?} is not compatible with type \"{}\"",
+                t.name()
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for PinnedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Int(n) => write!(f, "{n}"),
+            Self::Float(x) => write!(f, "{x}"),
+            // Quote strings so the dashboard distinguishes the literal
+            // string `"true"` from the boolean `true`.
+            Self::String(s) => write!(f, "\"{s}\""),
+        }
+    }
+}
+
+impl DbusPinnedRegister {
+    /// Split the joined `service:path` into its two halves. Caller has
+    /// already validated the format via `validate`, so the returned
+    /// references are non-empty and the service is `com.victronenergy.*`.
+    #[must_use]
+    pub fn split_path(&self) -> (&str, &str) {
+        // `validate` guarantees exactly one `:` separator with non-empty
+        // sides. Defensive split: if a future code path constructs an
+        // unvalidated entry, return empty halves so the consumer fails
+        // visibly rather than panicking.
+        match self.path.split_once(':') {
+            Some((svc, path)) => (svc, path),
+            None => ("", ""),
+        }
+    }
+
+    /// Validate `path` shape + `(value_type, value)` compatibility.
+    /// Called once at startup from `config::load`.
+    fn validate(&self) -> Result<()> {
+        let (svc, path) = self
+            .path
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!(
+                "[dbus_pinned_registers] path {:?} is missing the ':' separator \
+                 between the service well-known name and the D-Bus path",
+                self.path
+            ))?;
+        if svc.is_empty() {
+            return Err(anyhow::anyhow!(
+                "[dbus_pinned_registers] path {:?}: empty service name",
+                self.path
+            ));
+        }
+        if !svc.starts_with("com.victronenergy.") {
+            return Err(anyhow::anyhow!(
+                "[dbus_pinned_registers] path {:?}: service {:?} must start with \
+                 \"com.victronenergy.\"",
+                self.path,
+                svc
+            ));
+        }
+        if path.is_empty() {
+            return Err(anyhow::anyhow!(
+                "[dbus_pinned_registers] path {:?}: empty D-Bus path",
+                self.path
+            ));
+        }
+        if !path.starts_with('/') {
+            return Err(anyhow::anyhow!(
+                "[dbus_pinned_registers] path {:?}: D-Bus path {:?} must start with '/'",
+                self.path,
+                path
+            ));
+        }
+        // Cross-check value/type at startup; reject NaN/Inf for float.
+        let _ = PinnedValue::from_validated(self.value_type, &self.value)
+            .map_err(|e| anyhow::anyhow!("[dbus_pinned_registers] {}: {e}", self.path))?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuningConfig {
     /// Heartbeat for freshness decay + periodic controller re-evaluation.
@@ -679,6 +847,12 @@ pub fn load(path: &Path) -> Result<Config> {
     // fast instead of silently poisoning the today/tomorrow buckets on
     // the first fetch.
     cfg.forecast.parse_timezone()?;
+    // PR-pinned-registers: validate every pinned-register entry up
+    // front. Catches malformed paths and type/value mismatches before
+    // the shell ever tries to write to the bus.
+    for entry in &cfg.dbus_pinned_registers {
+        entry.validate()?;
+    }
     Ok(cfg)
 }
 
@@ -694,6 +868,7 @@ impl Default for Config {
             outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
             hardware: HardwareConfig::default(),
             ev: EvConfig::default(),
+            dbus_pinned_registers: Vec::new(),
         }
     }
 }
@@ -814,6 +989,153 @@ mod tests {
         );
         assert!((c.outdoor_temperature_local.min_celsius - -20.0).abs() < f64::EPSILON);
         assert!((c.outdoor_temperature_local.max_celsius - 50.0).abs() < f64::EPSILON);
+    }
+
+    // PR-pinned-registers ----------------------------------------------------
+
+    #[test]
+    fn dbus_pinned_registers_parses_full_set() {
+        let t = r#"
+            [[dbus_pinned_registers]]
+            path  = "com.victronenergy.vebus.ttyS3:/Devices/0/Settings/PowerAssistEnabled"
+            type  = "bool"
+            value = true
+
+            [[dbus_pinned_registers]]
+            path  = "com.victronenergy.settings:/Settings/CGwacs/MaxFeedInPower"
+            type  = "float"
+            value = 5000.0
+
+            [[dbus_pinned_registers]]
+            path  = "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode"
+            type  = "int"
+            value = 1
+
+            [[dbus_pinned_registers]]
+            path  = "com.victronenergy.settings:/Settings/Foo/Bar"
+            type  = "string"
+            value = "hello"
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        assert_eq!(c.dbus_pinned_registers.len(), 4);
+        for entry in &c.dbus_pinned_registers {
+            entry.validate().unwrap_or_else(|e| panic!("{e}"));
+        }
+        // Spot-check a split + value coercion.
+        let r0 = &c.dbus_pinned_registers[0];
+        let (svc, p) = r0.split_path();
+        assert_eq!(svc, "com.victronenergy.vebus.ttyS3");
+        assert_eq!(p, "/Devices/0/Settings/PowerAssistEnabled");
+        assert_eq!(
+            PinnedValue::from_validated(r0.value_type, &r0.value).unwrap(),
+            PinnedValue::Bool(true),
+        );
+    }
+
+    #[test]
+    fn dbus_pinned_registers_accepts_integer_for_float_type() {
+        // Operator convenience: `value = 5000` (Integer) for a
+        // `type = "float"` entry coerces to f64 5000.0.
+        let r = DbusPinnedRegister {
+            path: "com.victronenergy.settings:/Settings/X".to_string(),
+            value_type: PinnedType::Float,
+            value: toml::Value::Integer(5000),
+        };
+        r.validate().unwrap();
+        assert_eq!(
+            PinnedValue::from_validated(r.value_type, &r.value).unwrap(),
+            PinnedValue::Float(5000.0),
+        );
+    }
+
+    #[test]
+    fn dbus_pinned_registers_rejects_type_mismatch() {
+        let r = DbusPinnedRegister {
+            path: "com.victronenergy.settings:/Settings/X".to_string(),
+            value_type: PinnedType::Bool,
+            value: toml::Value::Integer(1),
+        };
+        let err = r.validate().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not compatible") && msg.contains("\"bool\""),
+            "expected type-mismatch error mentioning bool, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dbus_pinned_registers_rejects_malformed_path_no_colon() {
+        let r = DbusPinnedRegister {
+            path: "com.victronenergy.settings".to_string(), // no colon
+            value_type: PinnedType::Int,
+            value: toml::Value::Integer(0),
+        };
+        let err = r.validate().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(':'), "error must mention the missing separator: {msg}");
+    }
+
+    #[test]
+    fn dbus_pinned_registers_rejects_non_victron_service() {
+        let r = DbusPinnedRegister {
+            path: "org.freedesktop.DBus:/Settings/X".to_string(),
+            value_type: PinnedType::Int,
+            value: toml::Value::Integer(0),
+        };
+        let err = r.validate().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("com.victronenergy."), "{msg}");
+    }
+
+    #[test]
+    fn dbus_pinned_registers_rejects_empty_path_or_service() {
+        let r1 = DbusPinnedRegister {
+            path: ":/Settings/X".to_string(),
+            value_type: PinnedType::Int,
+            value: toml::Value::Integer(0),
+        };
+        assert!(r1.validate().is_err());
+        let r2 = DbusPinnedRegister {
+            path: "com.victronenergy.settings:".to_string(),
+            value_type: PinnedType::Int,
+            value: toml::Value::Integer(0),
+        };
+        assert!(r2.validate().is_err());
+        let r3 = DbusPinnedRegister {
+            path: "com.victronenergy.settings:Settings/X".to_string(), // no leading /
+            value_type: PinnedType::Int,
+            value: toml::Value::Integer(0),
+        };
+        assert!(r3.validate().is_err());
+    }
+
+    #[test]
+    fn dbus_pinned_registers_rejects_nan_inf_float() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let r = DbusPinnedRegister {
+                path: "com.victronenergy.settings:/Settings/X".to_string(),
+                value_type: PinnedType::Float,
+                value: toml::Value::Float(bad),
+            };
+            let err = r.validate().unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("not finite"),
+                "expected 'not finite' error for {bad}, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_value_display_uses_lossy_form() {
+        assert_eq!(format!("{}", PinnedValue::Bool(true)), "true");
+        assert_eq!(format!("{}", PinnedValue::Int(5000)), "5000");
+        assert_eq!(format!("{}", PinnedValue::Float(5000.0)), "5000");
+        assert_eq!(format!("{}", PinnedValue::Float(5000.5)), "5000.5");
+        assert_eq!(
+            format!("{}", PinnedValue::String("foo".to_string())),
+            "\"foo\""
+        );
     }
 
     #[test]

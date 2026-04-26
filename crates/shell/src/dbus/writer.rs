@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 use zbus::zvariant::Value;
 use zbus::{Connection, Proxy};
 
-use victron_controller_core::types::{DbusTarget, DbusValue, ScheduleField};
+use victron_controller_core::types::{DbusTarget, DbusValue, PinnedValue, ScheduleField};
 
 use crate::config::DbusServices;
 
@@ -111,8 +111,51 @@ impl Writer {
                 return;
             }
         };
+        let value_for_log = format!("{value:?}");
+        let zv: Value<'static> = match value {
+            DbusValue::Int(i) => Value::I32(i),
+            DbusValue::Float(f) => Value::F64(f),
+        };
+        self.dispatch_set_value(&svc, &path, zv, &value_for_log).await;
+    }
+
+    /// PR-pinned-registers: drift-correction write produced by
+    /// `apply_pinned_register_reading`. Carries the raw `(service, path,
+    /// value)` triplet rather than going through `resolve(DbusTarget)`,
+    /// because the set of pinned paths is config-driven and not part of
+    /// the closed actuator catalogue. Honours the same `dry_run` /
+    /// connect / backoff / reseed-kick chokepoint as the regular `write`.
+    pub async fn write_pinned(&self, service: &str, path: &str, value: PinnedValue) {
+        let value_for_log = format!("{value:?}");
+        let zv: Value<'static> = match &value {
+            PinnedValue::Bool(b) => Value::Bool(*b),
+            // Victron's settings service stores ints as i32 over the
+            // wire even when the operator wrote a Python boolean. Cast
+            // saturating: configured values comfortably fit i32 in
+            // practice (mode flags, watt setpoints up to ~10k).
+            PinnedValue::Int(n) => Value::I32(i32::try_from(*n).unwrap_or(
+                if *n > 0 { i32::MAX } else { i32::MIN },
+            )),
+            PinnedValue::Float(f) => Value::F64(*f),
+            PinnedValue::String(s) => Value::Str(s.clone().into()),
+        };
+        self.dispatch_set_value(service, path, zv, &value_for_log).await;
+    }
+
+    /// Shared connect / SetValue / mark-healthy-or-failed / reseed-kick
+    /// chokepoint. Both `write` (typed actuators) and `write_pinned`
+    /// (config-driven re-assertions) funnel through here so the
+    /// `dbus.writes_enabled` dry-run gate, the reconnect backoff, and
+    /// the post-write reseed are applied uniformly.
+    async fn dispatch_set_value(
+        &self,
+        svc: &str,
+        path: &str,
+        zvalue: Value<'_>,
+        value_for_log: &str,
+    ) {
         if self.dry_run {
-            debug!(%svc, %path, ?value, "DRY-RUN WriteDbus (dbus.writes_enabled=false)");
+            debug!(%svc, %path, value = %value_for_log, "DRY-RUN WriteDbus (dbus.writes_enabled=false)");
             return;
         }
 
@@ -122,22 +165,22 @@ impl Writer {
 
         let result = tokio::time::timeout(
             SET_VALUE_TIMEOUT,
-            set_value(&conn, &svc, &path, value),
+            set_value_raw(&conn, svc, path, zvalue),
         )
         .await;
 
         match result {
             Ok(Ok(())) => {
                 self.mark_healthy().await;
-                debug!(%svc, %path, ?value, "WriteDbus ok");
+                debug!(%svc, %path, value = %value_for_log, "WriteDbus ok");
                 if let Some(trigger) = &self.reseed_trigger {
-                    trigger.kick(&svc);
+                    trigger.kick(svc);
                 }
             }
             Ok(Err(e)) => {
                 let should_log = self.mark_failed().await;
                 if should_log {
-                    error!(%svc, %path, ?value, error = %e, "WriteDbus failed");
+                    error!(%svc, %path, value = %value_for_log, error = %e, "WriteDbus failed");
                 }
             }
             Err(_elapsed) => {
@@ -146,7 +189,7 @@ impl Writer {
                     error!(
                         %svc,
                         %path,
-                        ?value,
+                        value = %value_for_log,
                         timeout_ms = SET_VALUE_TIMEOUT.as_millis() as u64,
                         "WriteDbus failed"
                     );
@@ -322,22 +365,18 @@ impl Writer {
     }
 }
 
-async fn set_value(
+async fn set_value_raw(
     conn: &Connection,
     service: &str,
     path: &str,
-    value: DbusValue,
+    value: Value<'_>,
 ) -> Result<()> {
     let proxy = Proxy::new(conn, service, path, "com.victronenergy.BusItem")
         .await
         .context("building SetValue proxy")?;
-    let v: Value<'_> = match value {
-        DbusValue::Int(i) => Value::I32(i),
-        DbusValue::Float(f) => Value::F64(f),
-    };
     // SetValue returns an i32 status code; 0 = success.
     let status: i32 = proxy
-        .call("SetValue", &(v,))
+        .call("SetValue", &(value,))
         .await
         .context("SetValue call")?;
     if status == 0 {

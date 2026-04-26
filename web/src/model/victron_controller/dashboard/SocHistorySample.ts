@@ -38,7 +38,7 @@ export class SocHistorySample implements BaboonGeneratedLatest {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocHistorySample.BaboonDomainVersion
     }
@@ -50,7 +50,7 @@ export class SocHistorySample implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SocHistorySample.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
     public baboonSameInVersions() {
         return SocHistorySample.BaboonSameInVersions
     }
@@ -99,7 +99,7 @@ export class SocHistorySample_UEBACodec {
         );
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return SocHistorySample_UEBACodec.BaboonDomainVersion
     }

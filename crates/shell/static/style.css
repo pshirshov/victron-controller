@@ -127,6 +127,27 @@ td.phase-Confirmed {
 }
 .factor b { color: var(--fg); font-weight: 600; }
 
+/* Bookkeeping persistence tag (PR-bk-persistence-tag). A dotted-style
+ * pill next to each bookkeeping entity name signalling whether the
+ * field round-trips through retained MQTT (persisted; restored at
+ * boot) or is recomputed every tick (derived). Source of truth:
+ * `BookkeepingKey` in `crates/core/src/types.rs`; mirrored in
+ * `BK_PERSISTED_FIELDS` in `web/src/render.ts`. */
+.bk-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-left: 4px;
+  vertical-align: 1px;
+  border: 1px solid var(--border);
+}
+.bk-tag-persisted { color: var(--accent); border-color: var(--accent); }
+.bk-tag-derived   { color: var(--muted); }
+
 .copy-btn {
   background: transparent;
   color: var(--muted);
@@ -626,6 +647,24 @@ footer {
   min-width: max-content;
 }
 
+/* PR-pinned-registers: status pill on the per-register table.
+ * Mirrors the `.bk-tag` pill shape; colour codes match the rest of
+ * the dashboard (--ok green for confirmed, --bad red for drifted,
+ * --muted grey for unknown). */
+.pinned-status {
+  display: inline-block;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+}
+.pinned-status-confirmed { color: var(--ok); border-color: var(--ok); }
+.pinned-status-drifted   { color: var(--bad); border-color: var(--bad); }
+.pinned-status-unknown   { color: var(--muted); }
+
 /* Mobile: each row collapses into a self-contained card. Headers
  * become per-cell labels via `tbody td:nth-of-type(N)::before`,
  * keyed per table id so we don't need a `data-label` attribute on
@@ -747,4 +786,11 @@ footer {
   #schedule-table tbody tr td:nth-of-type(1)::before { content: "When"; }
   #schedule-table tbody tr td:nth-of-type(2)::before { content: "Source"; }
   #schedule-table tbody tr td:nth-of-type(3)::before { content: "Action"; }
+
+  #pinned-registers-table tbody tr td:nth-of-type(1)::before { content: "Register"; }
+  #pinned-registers-table tbody tr td:nth-of-type(2)::before { content: "Target"; }
+  #pinned-registers-table tbody tr td:nth-of-type(3)::before { content: "Status"; }
+  #pinned-registers-table tbody tr td:nth-of-type(4)::before { content: "Drifts"; }
+  #pinned-registers-table tbody tr td:nth-of-type(5)::before { content: "Last drift"; }
+  #pinned-registers-table tbody tr td:nth-of-type(6)::before { content: "Last check"; }
 }

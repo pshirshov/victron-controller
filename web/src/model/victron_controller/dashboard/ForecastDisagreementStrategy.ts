@@ -53,7 +53,7 @@ export class ForecastDisagreementStrategy_UEBACodec {
         }
     }
 
-    public static readonly BaboonDomainVersion = '0.2.0'
+    public static readonly BaboonDomainVersion = '0.3.0'
     public baboonDomainVersion() {
         return ForecastDisagreementStrategy_UEBACodec.BaboonDomainVersion
     }

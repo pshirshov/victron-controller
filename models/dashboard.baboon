@@ -1,374 +1,36 @@
 model victron_controller.dashboard
-version "0.2.0"
+version "0.3.0"
 
-import "0.1.0" { * } without { Sensors WorldSnapshot Knobs Bookkeeping Command ForecastSnapshot }
+// PR-pinned-registers (0.3.0): persistent enforcement of selected
+// Victron D-Bus settings. Wire-format change is additive — a new
+// `PinnedRegister` data type plus a `pinned_registers: lst[PinnedRegister]`
+// field on `WorldSnapshot`. Every other 0.2.0 type is inherited
+// untouched.
+import "0.2.0" { * } without { WorldSnapshot }
 
-// PR-soc-chart additions (additive within 0.2.0). Three traces fed by
-// the shell's in-memory `SocHistoryStore` plus a per-tick projection
-// computed by `compute_soc_chart`. See `dashboard/soc_history.rs`.
-data SocHistorySample {
-  epoch_ms: i64
-  soc_pct: f64
-}
-
-// PR-soc-chart-segments: classification of a single projection segment.
-//
-//   * Natural          — fallback used when no hourly forecast is
-//                         available; battery_dc_power-derived slope held
-//                         flat.
-//   * Idle             — |net_power| below threshold; flat segment.
-//   * ScheduledCharge  — inside an enabled (days==7) schedule window.
-//   * FullChargePush   — inside a 1 h window starting at
-//                         bookkeeping.next_full_charge.
-//   * Clamped          — SoC sits at 10% or 100%; no further movement
-//                         until conditions change.
-//   * SolarCharge      — PR-soc-chart-solar: outside any schedule window,
-//                         hourly forecast says solar > baseload+zappi.
-//   * Drain            — PR-soc-chart-solar: outside any schedule window,
-//                         load exceeds solar so SoC falls.
-enum SocProjectionKind {
-  Natural
-  Idle
-  ScheduledCharge
-  FullChargePush
-  Clamped
-  SolarCharge
-  Drain
-  // PR-soc-chart-export-policy. Branches reflecting the setpoint
-  // controller's export policy. The projection consults
-  // `compute_battery_balance` for each Natural-class hour-segment and
-  // emits the matching variant so the chart shows what the controller
-  // will actually do (preserve battery vs export to grid).
-  ForcedNoExport
-  PreserveForZappi
-  BelowExportThreshold
-  EveningDischarge
-  BatteryFull
-}
-
-// PR-soc-chart-segments: one piecewise-linear segment of the projection.
-data SocProjectionSegment {
-  start_epoch_ms: i64
-  end_epoch_ms: i64
-  start_soc_pct: f64
-  end_soc_pct: f64
-  kind: SocProjectionKind
-}
-
-data SocProjection {
-  // PR-soc-chart-segments: piecewise-linear projection split at schedule
-  // window edges, SoC clamps, and the next-full-charge timestamp.
-  // Empty when the projection inputs are unusable (e.g. SoC stale).
-  segments: lst[SocProjectionSegment]
-  // Diagnostic fields so the operator can sanity-check the inputs.
-  net_power_w: opt[f64]
-  capacity_wh: opt[f64]
-  // Charging rate used inside ScheduledCharge / FullChargePush
-  // segments. None when not derivable.
-  charge_rate_w: opt[f64]
-}
-
-data SocChart {
-  history: lst[SocHistorySample]
-  projection: SocProjection
-  // Current SoC at snapshot time, captured here so the chart's "now"
-  // marker doesn't have to dig through `sensors`.
-  now_epoch_ms: i64
-  now_soc_pct: opt[f64]
-  // PR-soc-chart-segments: discharge target — the SoC floor the
-  // controller is protecting (today: bookkeeping.soc_end_of_day_target).
-  // None when not yet computed.
-  discharge_target_pct: opt[f64]
-  // PR-soc-chart-segments: charge target — the SoC ceiling the
-  // controller will charge to in the next active window
-  // (today: bookkeeping.battery_selected_soc_target).
-  charge_target_pct: opt[f64]
-}
-
-// ---------------------------------------------------------------------------
-// 0.2.0 — additive:
-//   * surface myenergi-sourced Zappi session energy as a first-class
-//     dashboard sensor (PR-session-kwh-sensor).
-//   * surface the TASS core DAG (PR-tass-dag-view).
-//   * PR-gamma-hold-redesign: replace γ-hold + owner priority on the four
-//     weather_soc-driven knobs with explicit `*_mode` knobs. The four
-//     existing knobs become user-only "forced override" values; the four
-//     bookkeeping fields capture weather_soc's per-tick derivations; the
-//     setpoint/schedules controllers dispatch on `*_mode = Weather|Forced`.
-// ---------------------------------------------------------------------------
-
-// PR-gamma-hold-redesign. Per-knob source selector: `Weather` reads the
-// matching `bookkeeping.weather_soc_*` slot (default — preserves prior
-// implicit weather_soc-drives behaviour); `Forced` reads the user-owned
-// knob value directly.
-enum Mode {
-  Weather
-  Forced
-}
-
-// PR-auto-extended-charge. Tri-state mode for the EV-side
-// extended-charge knob (`evcharger.extended`). Replaces the legacy
-// boolean `evcharger.extended.enable`. `Auto` consults the daily
-// 04:30 evaluation; `Forced`/`Disabled` pin the controller behaviour.
-enum ExtendedChargeMode {
-  Auto
-  Forced
-  Disabled
-}
-
-// PR-soc-chart-solar (additive within 0.2.0): per-hour kWh estimates the
-// SoC-chart projection consumes. `hourly_kwh` is length 48 starting at
-// midnight LOCAL today (24 today + 24 tomorrow). Empty when the upstream
-// provider didn't supply hourly data — the chart falls back to the
-// instantaneous battery_dc_power-derived slope in that case.
-data ForecastSnapshot {
-  today_kwh: f64
-  tomorrow_kwh: f64
-  fetched_at_epoch_ms: i64
-  hourly_kwh: lst[f64]
-}
-
-data Sensors {
-  battery_soc: ActualF64
-  battery_soh: ActualF64
-  battery_installed_capacity: ActualF64
-  battery_dc_power: ActualF64
-  mppt_power_0: ActualF64
-  mppt_power_1: ActualF64
-  soltaro_power: ActualF64
-  power_consumption: ActualF64
-  grid_power: ActualF64
-  grid_voltage: ActualF64
-  grid_current: ActualF64
-  consumption_current: ActualF64
-  offgrid_power: ActualF64
-  offgrid_current: ActualF64
-  vebus_input_current: ActualF64
-  evcharger_ac_power: ActualF64
-  evcharger_ac_current: ActualF64
-  ess_state: ActualF64
-  outdoor_temperature: ActualF64
-  // 0.2.0 addition (PR-session-kwh-sensor).
-  session_kwh: ActualF64
-  // 0.2.0 addition (PR-ev-soc-sensor).
-  ev_soc: ActualF64
-  // 0.2.0 addition (PR-auto-extended-charge): EV configured charge target.
-  ev_charge_target: ActualF64
-}
-
-// 0.2.0 addition (PR-tass-dag-view). Per-core observability snapshot
-// produced by `CoreRegistry::run_all` after each tick.
-//
-// PR-core-io-popups (additive within 0.2.0): each core also surfaces
-// the live values it read (`last_inputs`) and the values it wrote
-// (`last_outputs`) on the most recent tick, so the dashboard can show
-// real values for cores like ZappiActiveCore / SensorBroadcastCore
-// that don't produce a Decision.
-//
-// `CoreFactor` mirrors the shape of `DecisionFactor` but is a distinct
-// wire type — keeping them decoupled means a future change to the
-// Decision-factor wire shape (units, structured values, …) can't ripple
-// into core-IO popups.
-data CoreFactor {
-  name: str
-  value: str
-}
-
-data CoreState {
-  id: str
-  depends_on: lst[str]
-  last_run_outcome: str
-  last_payload: opt[str]
-  // PR-core-io-popups.
-  last_inputs: lst[CoreFactor]
-  last_outputs: lst[CoreFactor]
-}
-
-data CoresState {
-  cores: lst[CoreState]
-  topo_order: lst[str]
-}
-
-// 0.2.0 addition (PR-timers-section). One entry per timer-driven action
-// the shell is responsible for. `period_ms` is the expected cadence;
-// `last_fire_epoch_ms` / `next_fire_epoch_ms` are wall-clock estimates
-// (epoch ms) of when the timer last/next fires. `status` is a free-form
-// snake_case label (idle / running / failed_last_run / retry_backoff).
-data Timer {
-  id: str
-  description: str
-  period_ms: i64
-  last_fire_epoch_ms: opt[i64]
-  next_fire_epoch_ms: opt[i64]
+// One row per configured (path, type, value) triplet. The shell reads
+// each register on a 1 h cadence, compares the reading against the
+// configured constant, and writes the constant back on drift. Counters
+// + last-drift / last-check timestamps surface here so the dashboard
+// can show enforcement health.
+data PinnedRegister {
+  // Joined "service:dbus_path", e.g.
+  // "com.victronenergy.vebus.ttyS3:/Devices/0/Settings/PowerAssistEnabled".
+  // Same key the config file uses.
+  path: str
+  // Stringified target value. Matches `Display` of the configured
+  // typed value: "true" / "false" for bool; integer literals for int;
+  // f64 `Display` for float (drops trailing zeros); the raw string for
+  // string-typed entries.
+  target_value_str: str
+  // Stringified last-observed value. None until the first reading
+  // lands on the bus.
+  current_value_str: opt[str]
+  // "unknown" | "confirmed" | "drifted".
   status: str
-}
-
-data Timers {
-  entries: lst[Timer]
-}
-
-// PR-schedule-section (additive within 0.2.0). Forward-looking
-// controller actions surfaced on the dashboard's Schedule section.
-// Distinct from `Timers` (operational telemetry like D-Bus poll
-// cadence): these are user-facing "what will the controller do, and
-// when?" entries — eddi tariff edges, ESS schedule windows,
-// next_full_charge, and the daily 01:55 weather_soc re-evaluation.
-data ScheduledAction {
-  // Short user-visible label, e.g. "Eddi → Normal", "Schedule 0:
-  // 02:00–05:00 soc=80%".
-  label: str
-  // Provenance tag, e.g. "eddi.tariff", "schedule.0", "schedule.1",
-  // "next_full_charge", "weather_soc". Lets the frontend group /
-  // colour entries and is the operator-facing "where does this come
-  // from?" identifier.
-  source: str
-  // Wall-clock epoch_ms when the action next fires (the local
-  // wall-clock instant — the same TZ approach the SoC chart uses).
-  next_fire_epoch_ms: i64
-  // Period in ms when the action repeats (86_400_000 = daily). None
-  // for one-shots (e.g. next_full_charge).
-  period_ms: opt[i64]
-}
-
-data ScheduledActions {
-  entries: lst[ScheduledAction]
-}
-
-// PR-gamma-hold-redesign: 0.2.0 redefinition of `Knobs`. Identical to
-// 0.1.0 plus four new `*_mode` selectors (one per weather_soc-driven
-// output). The existing four numeric/bool knobs keep their meaning as
-// "forced override values" — read by the controllers when the matching
-// `*_mode` is `Forced`.
-data Knobs {
-  force_disable_export: bit
-  export_soc_threshold: f64
-  discharge_soc_target: f64
-  battery_soc_target: f64
-  full_charge_discharge_soc_target: f64
-  full_charge_export_soc_threshold: f64
-  discharge_time: DischargeTime
-  debug_full_charge: DebugFullCharge
-  pessimism_multiplier_modifier: f64
-  disable_night_grid_discharge: bit
-  charge_car_boost: bit
-  // PR-auto-extended-charge: tri-state mode replaces the legacy bool
-  // `charge_car_extended` knob.
-  charge_car_extended_mode: ExtendedChargeMode
-  zappi_current_target: f64
-  zappi_limit: f64
-  zappi_emergency_margin: f64
-  grid_export_limit_w: i32
-  grid_import_limit_w: i32
-  allow_battery_to_car: bit
-  eddi_enable_soc: f64
-  eddi_disable_soc: f64
-  eddi_dwell_s: i32
-  weathersoc_winter_temperature_threshold: f64
-  weathersoc_low_energy_threshold: f64
-  weathersoc_ok_energy_threshold: f64
-  weathersoc_high_energy_threshold: f64
-  weathersoc_too_much_energy_threshold: f64
-  writes_enabled: bit
-  forecast_disagreement_strategy: ForecastDisagreementStrategy
-  charge_battery_extended_mode: ChargeBatteryExtendedMode
-  // PR-gamma-hold-redesign — four mode selectors.
-  export_soc_threshold_mode: Mode
-  discharge_soc_target_mode: Mode
-  battery_soc_target_mode: Mode
-  disable_night_grid_discharge_mode: Mode
-  // PR-inverter-safe-discharge-knob — gates the legacy 4020 W safety margin
-  // applied to `max_discharge` in the setpoint controller. Default false
-  // (margin OFF — inverter discharges at full `inverter_max_discharge_w`).
-  inverter_safe_discharge_enable: bit
-}
-
-// PR-gamma-hold-redesign: 0.2.0 redefinition of `Bookkeeping`. Adds four
-// `weather_soc_*` slots — the planner writes its derivations here every
-// tick instead of clobbering the user-owned knobs.
-data Bookkeeping {
-  next_full_charge_iso: opt[str]
-  above_soc_date_iso: opt[str]
-  prev_ess_state: opt[i32]
-  zappi_active: bit
-  charge_to_full_required: bit
-  soc_end_of_day_target: f64
-  effective_export_soc_threshold: f64
-  battery_selected_soc_target: f64
-  charge_battery_extended_today: bit
-  charge_battery_extended_today_date_iso: opt[str]
-  // PR-gamma-hold-redesign — weather_soc per-tick derivations.
-  weather_soc_export_soc_threshold: f64
-  weather_soc_discharge_soc_target: f64
-  weather_soc_battery_soc_target: f64
-  weather_soc_disable_night_grid_discharge: bit
-  // PR-auto-extended-charge — daily 04:30 EV-extended-charge latch.
-  auto_extended_today: bit
-  auto_extended_today_date_iso: opt[str]
-}
-
-// PR-gamma-hold-redesign: extend Command with a Mode setter so the
-// dashboard can flip `*_mode` knobs without inventing a new bool/enum
-// variant for each.
-//
-// PR-bookkeeping-edit: dashboard-driven edit of selected bookkeeping
-// fields (today: `next_full_charge`). The core's `apply_set_bookkeeping`
-// handler holds the allowlist of accepted (key, value-shape) pairs.
-enum BookkeepingKey {
-  NextFullCharge
-  AboveSocDate
-  PrevEssState
-}
-
-adt BookkeepingValue {
-  data NaiveDateTime {
-    iso: str
-  }
-  data Cleared {}
-}
-
-root adt Command {
-  data SetBoolKnob {
-    knob_name: str
-    value: bit
-  }
-  data SetFloatKnob {
-    knob_name: str
-    value: f64
-  }
-  data SetUintKnob {
-    knob_name: str
-    value: i32
-  }
-  data SetDischargeTime {
-    value: DischargeTime
-  }
-  data SetDebugFullCharge {
-    value: DebugFullCharge
-  }
-  data SetForecastDisagreementStrategy {
-    value: ForecastDisagreementStrategy
-  }
-  data SetChargeBatteryExtendedMode {
-    value: ChargeBatteryExtendedMode
-  }
-  // PR-auto-extended-charge — set the EV-side extended-charge mode
-  // (`evcharger.extended`). Mirrors `SetChargeBatteryExtendedMode`.
-  data SetExtendedChargeMode {
-    value: ExtendedChargeMode
-  }
-  // PR-gamma-hold-redesign — set one of the four `*_mode` knobs.
-  data SetMode {
-    knob_name: str
-    value: Mode
-  }
-  data SetKillSwitch {
-    value: bit
-  }
-  // PR-bookkeeping-edit — user-driven shift of a bookkeeping field.
-  data SetBookkeeping {
-    key: BookkeepingKey
-    value: BookkeepingValue
-  }
+  drift_count: i32
+  last_drift_iso: opt[str]
+  last_check_iso: opt[str]
 }
 
 root data WorldSnapshot {
@@ -381,17 +43,12 @@ root data WorldSnapshot {
   bookkeeping: Bookkeeping
   forecasts: Forecasts
   decisions: Decisions
-  // 0.2.0 addition (PR-tass-dag-view).
   cores_state: CoresState
-  // 0.2.0 addition (PR-timers-section).
   timers: Timers
-  // 0.2.0 addition (PR-tz-from-victron). IANA name (e.g. "Europe/London").
-  // Defaults to "Etc/UTC" until the first D-Bus reseed lands the real
-  // value from `/Settings/System/TimeZone` on com.victronenergy.settings.
   timezone: str
-  // 0.2.0 addition (PR-soc-chart).
   soc_chart: SocChart
-  // 0.2.0 addition (PR-schedule-section). Forward-looking controller
-  // actions sorted by next_fire_epoch_ms ascending.
   scheduled_actions: ScheduledActions
+  // 0.3.0 addition (PR-pinned-registers). Sorted by `path` ascending
+  // so the dashboard renders deterministically.
+  pinned_registers: lst[PinnedRegister]
 }

@@ -23,7 +23,7 @@ export function TargetPhase_parse(s: string): TargetPhase {
     return found;
 }
 
-/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.2.0 */
+/** @deprecated Version 0.1.0 is deprecated, you should migrate to 0.3.0 */
 export class TargetPhase_UEBACodec {
     public encode(ctx: BaboonCodecContext, value: TargetPhase, writer: BaboonBinWriter): unknown {
         if (this !== TargetPhase_UEBACodec.lazyInstance.value) {

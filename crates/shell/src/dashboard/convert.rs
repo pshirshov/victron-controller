@@ -101,6 +101,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::sensors::
 use victron_controller_dashboard_model::victron_controller::dashboard::target_phase::TargetPhase as ModelTargetPhase;
 use victron_controller_dashboard_model::victron_controller::dashboard::timer::Timer as ModelTimer;
 use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
+use victron_controller_dashboard_model::victron_controller::dashboard::pinned_register::PinnedRegister as ModelPinnedRegister;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 
 // --- enums ----------------------------------------------------------------
@@ -279,6 +280,37 @@ fn actuated_schedule(a: &Actuated<ScheduleSpec>) -> ModelActuatedSchedule {
     }
 }
 
+/// PR-pinned-registers: project the per-register state on
+/// `world.pinned_registers` into the wire `PinnedRegister` shape.
+/// Sorted by `path` ascending for a deterministic dashboard render —
+/// the `BTreeMap` already iterates in sorted order so we only have to
+/// `.collect`.
+fn pinned_registers_to_model(
+    world: &World,
+) -> Vec<ModelPinnedRegister> {
+    use victron_controller_core::types::PinnedStatus;
+    world
+        .pinned_registers
+        .values()
+        .map(|e| ModelPinnedRegister {
+            path: e.path.as_ref().to_string(),
+            target_value_str: format!("{}", e.target),
+            current_value_str: e.actual.as_ref().map(|v| format!("{v}")),
+            status: match e.status {
+                PinnedStatus::Unknown => "unknown",
+                PinnedStatus::Confirmed => "confirmed",
+                PinnedStatus::Drifted => "drifted",
+            }
+            .to_string(),
+            // The wire field is `i32`; drift counts comfortably stay
+            // under that ceiling (one increment per hour at most).
+            drift_count: i32::try_from(e.drift_count).unwrap_or(i32::MAX),
+            last_drift_iso: e.last_drift_at.map(|d| d.to_string()),
+            last_check_iso: e.last_check.map(|d| d.to_string()),
+        })
+        .collect()
+}
+
 // --- top-level mapping ----------------------------------------------------
 
 #[must_use]
@@ -390,6 +422,8 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         scheduled_actions: crate::dashboard::convert_schedule::compute_scheduled_actions(
             world, now_epoch,
         ),
+        // PR-pinned-registers: per-register drift state.
+        pinned_registers: pinned_registers_to_model(world),
     }
 }
 
