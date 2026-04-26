@@ -46,6 +46,8 @@ use victron_controller_core::types::{
 };
 
 use crate::config::{MqttConfig, OutdoorTemperatureLocalConfig};
+use crate::dashboard::SocHistoryStore;
+use std::sync::Arc;
 
 /// How long the bootstrap phase waits for retained `/state` messages
 /// before switching to the normal subscription pattern.
@@ -89,10 +91,15 @@ impl Publisher {
 ///
 /// `outdoor_temp` (optional) wires a Matter MQTT bridge feeding
 /// `SensorId::OutdoorTemperature` — see PR-matter-outdoor-temp.
+///
+/// `soc_history` is the in-memory ring that gets seeded from the
+/// retained `<topic_root>/state/soc_history` payload during bootstrap
+/// (PR-soc-history-persist).
 #[allow(clippy::unused_async)]
 pub async fn connect(
     config: &MqttConfig,
     outdoor_temp: &OutdoorTemperatureLocalConfig,
+    soc_history: Arc<SocHistoryStore>,
 ) -> Result<Option<(Publisher, Subscriber)>> {
     if config.host.is_empty() {
         info!("mqtt disabled (no host configured)");
@@ -159,6 +166,7 @@ pub async fn connect(
         matter_outdoor_topic: outdoor_temp.mqtt_topic.clone(),
         matter_outdoor_min_c: outdoor_temp.min_celsius,
         matter_outdoor_max_c: outdoor_temp.max_celsius,
+        soc_history,
     };
     Ok(Some((publisher, subscriber)))
 }
@@ -207,6 +215,12 @@ pub struct Subscriber {
     matter_outdoor_topic: Option<String>,
     matter_outdoor_min_c: f64,
     matter_outdoor_max_c: f64,
+    /// PR-soc-history-persist: in-memory ring that gets restored from
+    /// the retained `<topic_root>/state/soc_history` payload observed
+    /// during the bootstrap window. Periodic re-publishes after
+    /// bootstrap are ignored — we already have those samples in the
+    /// deque locally.
+    soc_history: Arc<SocHistoryStore>,
 }
 
 impl std::fmt::Debug for Subscriber {
@@ -219,6 +233,7 @@ impl std::fmt::Debug for Subscriber {
             .field("matter_outdoor_topic", &self.matter_outdoor_topic)
             .field("matter_outdoor_min_c", &self.matter_outdoor_min_c)
             .field("matter_outdoor_max_c", &self.matter_outdoor_max_c)
+            .field("soc_history", &"<SocHistoryStore>")
             .finish()
     }
 }
@@ -238,10 +253,12 @@ impl Subscriber {
     /// broker restart) we re-subscribe from scratch rather than
     /// relying on rumqttc to replay subscriptions.
     pub async fn run(mut self, tx: mpsc::Sender<Event>) -> Result<()> {
+        let soc_history_topic = format!("{}/state/soc_history", self.topic_root);
         let state_topics = [
             format!("{}/knob/+/state", self.topic_root),
             format!("{}/writes_enabled/state", self.topic_root),
             format!("{}/bookkeeping/+/state", self.topic_root),
+            soc_history_topic.clone(),
         ];
         let set_topics = [
             format!("{}/knob/+/set", self.topic_root),
@@ -292,6 +309,37 @@ impl Subscriber {
                     // so first-observed wins; subsequent copies are wasteful.
                     if !applied_topics.insert(p.topic.clone()) {
                         duplicate_count += 1;
+                        continue;
+                    }
+                    // PR-soc-history-persist: the retained SoC-history
+                    // payload is restored directly into the in-memory
+                    // store; it does not flow through the runtime as
+                    // an Event::Command.
+                    if p.topic == soc_history_topic {
+                        match std::str::from_utf8(&p.payload) {
+                            Ok(s) => {
+                                let now_ms = epoch_ms_now();
+                                match self.soc_history.restore_from_wire(s, now_ms) {
+                                    Some(n) => {
+                                        info!(
+                                            accepted = n,
+                                            "soc_history restored from retained mqtt"
+                                        );
+                                        applied += 1;
+                                    }
+                                    None => {
+                                        // restore_from_wire already
+                                        // logged a warn; nothing to do.
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "soc_history retained payload is not valid utf-8; dropped",
+                                );
+                            }
+                        }
                         continue;
                     }
                     if let Some(event) = serialize::decode_state_message(

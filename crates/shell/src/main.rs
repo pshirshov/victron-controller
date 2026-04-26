@@ -161,9 +161,21 @@ async fn main() -> Result<()> {
     let myenergi_writer = MyenergiWriter::new(myenergi_client.clone(), !cfg.myenergi.writes_enabled);
     let myenergi_poller = MyenergiPoller::new(myenergi_client, cfg.myenergi.poll_period);
 
+    // PR-soc-history-persist: build the SoC-history store BEFORE
+    // mqtt::connect so it can be threaded into the Subscriber for
+    // bootstrap restore. The same Arc is later handed to MetaContext
+    // and the periodic sampler.
+    let soc_history = SocHistoryStore::new();
+
     // MQTT (optional; skipped when host is empty).
     let (mqtt_publisher, mqtt_subscriber) =
-        match mqtt::connect(&cfg.mqtt, &cfg.outdoor_temperature_local).await? {
+        match mqtt::connect(
+            &cfg.mqtt,
+            &cfg.outdoor_temperature_local,
+            Arc::clone(&soc_history),
+        )
+        .await?
+        {
         Some((p, s)) => {
             info!("publishing HA discovery config");
             if let Err(e) = publish_ha_discovery(&p.client_handle(), &cfg.mqtt.topic_root).await {
@@ -187,7 +199,6 @@ async fn main() -> Result<()> {
     };
 
     let topology = Topology::with_hardware(cfg.hardware.into());
-    let soc_history = SocHistoryStore::new();
     let meta = victron_controller_shell::dashboard::convert::MetaContext {
         services: services.clone(),
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,
@@ -210,6 +221,50 @@ async fn main() -> Result<()> {
     let initial_knob_publish_client = mqtt_publisher.as_ref().map(|p| p.client_handle());
     let initial_knob_publish_world = world.clone();
     let initial_knob_publish_topic = cfg.mqtt.topic_root.clone();
+
+    // PR-soc-history-persist: drain serialized wire payloads from the
+    // SoC-history store onto a single retained MQTT topic. The store
+    // pushes new payloads on every record(); this task publishes them
+    // with a 1 s timeout to avoid wedging on a stuck broker (mirrors
+    // the log_layer publish timeout pattern).
+    if let Some(p) = mqtt_publisher.as_ref() {
+        let client = p.client_handle();
+        let topic = format!("{}/state/soc_history", cfg.mqtt.topic_root);
+        // Buffer of 8: at 1 publish per 15 min steady-state we'd never
+        // queue more than one; 8 only matters during bootstrap-restore
+        // immediately followed by record(). Drop-on-full is acceptable
+        // — the next record republishes the full ring.
+        let (history_publish_tx, mut history_publish_rx) = mpsc::channel::<String>(8);
+        soc_history.set_publisher(history_publish_tx);
+        tokio::spawn(async move {
+            while let Some(payload) = history_publish_rx.recv().await {
+                match tokio::time::timeout(
+                    Duration::from_secs(1),
+                    client.publish(
+                        &topic,
+                        rumqttc::QoS::AtMostOnce,
+                        true,
+                        payload.into_bytes(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    // Don't use tracing! here — a self-feeding loop via
+                    // MqttLogLayer could wedge under broker stalls. Same
+                    // pattern as log_layer.rs.
+                    Ok(Err(e)) => {
+                        eprintln!("mqtt soc_history publish failed on {topic}: {e}");
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "mqtt soc_history publish stuck >1s on {topic}; dropping payload"
+                        );
+                    }
+                }
+            }
+        });
+    }
 
     let runtime = Runtime::new(
         world.clone(),
