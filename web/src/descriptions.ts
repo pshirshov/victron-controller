@@ -108,8 +108,8 @@ export const entityDescriptions: Record<string, string> = {
   // --- Knobs (Zappi / EV) ---
   "evcharger.boost.enable":
     "Boost mode for EV charging — overrides solar-only logic to prioritise getting the car charged.",
-  "evcharger.extended.enable":
-    "Extended charging mode for the EV (longer/looser thresholds).",
+  "evcharger.extended.mode":
+    "Extended-charge mode for the EV (NightExtended 05:00–08:00 window). Auto = daily 04:30 evaluation enables when ev_soc<40 OR ev_charge_target>80; Forced = always on; Disabled = always off.",
   "evcharger.current.target":
     "Target Zappi charge current (A) under controller-driven modes.",
   "evcharger.session.limit":

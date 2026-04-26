@@ -11,7 +11,8 @@ use serde_json::json;
 use tracing::warn;
 
 use victron_controller_core::knobs::{
-    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Mode,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ExtendedChargeMode,
+    ForecastDisagreementStrategy, Mode,
 };
 #[cfg(test)]
 use victron_controller_core::tass::Freshness;
@@ -295,7 +296,9 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::PessimismMultiplierModifier => "forecast.pessimism.modifier",
         KnobId::DisableNightGridDischarge => "grid.night.discharge.disable.forced-value",
         KnobId::ChargeCarBoost => "evcharger.boost.enable",
-        KnobId::ChargeCarExtended => "evcharger.extended.enable",
+        // PR-auto-extended-charge: tri-state mode replaces the legacy
+        // bool topic `evcharger.extended.enable`.
+        KnobId::ChargeCarExtendedMode => "evcharger.extended.mode",
         KnobId::ZappiCurrentTarget => "evcharger.current.target",
         KnobId::ZappiLimit => "evcharger.session.limit",
         KnobId::ZappiEmergencyMargin => "evcharger.current.margin",
@@ -334,7 +337,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "forecast.pessimism.modifier" => KnobId::PessimismMultiplierModifier,
         "grid.night.discharge.disable.forced-value" => KnobId::DisableNightGridDischarge,
         "evcharger.boost.enable" => KnobId::ChargeCarBoost,
-        "evcharger.extended.enable" => KnobId::ChargeCarExtended,
+        // PR-auto-extended-charge.
+        "evcharger.extended.mode" => KnobId::ChargeCarExtendedMode,
         "evcharger.current.target" => KnobId::ZappiCurrentTarget,
         "evcharger.session.limit" => KnobId::ZappiLimit,
         "evcharger.current.margin" => KnobId::ZappiEmergencyMargin,
@@ -408,6 +412,8 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         SensorId::SessionKwh => "evcharger.session.energy",
         // PR-ev-soc-sensor.
         SensorId::EvSoc => "ev.soc",
+        // PR-auto-extended-charge.
+        SensorId::EvChargeTarget => "ev.charge.target",
         // PR-AS-C: actuated-mirror SensorId variants do not have a
         // sensor wire surface — they are surfaced via the actuated
         // entity table (`PublishPayload::ActuatedPhase`). Both call
@@ -459,6 +465,12 @@ fn encode_knob_value(v: KnobValue) -> String {
             ChargeBatteryExtendedMode::Auto => "auto".to_string(),
             ChargeBatteryExtendedMode::Forced => "forced".to_string(),
             ChargeBatteryExtendedMode::Disabled => "disabled".to_string(),
+        },
+        // PR-auto-extended-charge.
+        KnobValue::ExtendedChargeMode(m) => match m {
+            ExtendedChargeMode::Auto => "auto".to_string(),
+            ExtendedChargeMode::Forced => "forced".to_string(),
+            ExtendedChargeMode::Disabled => "disabled".to_string(),
         },
         // PR-gamma-hold-redesign.
         KnobValue::Mode(m) => match m {
@@ -532,7 +544,8 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
         | KnobId::ChargeCarBoost
-        | KnobId::ChargeCarExtended
+        // PR-auto-extended-charge — enum, no range.
+        | KnobId::ChargeCarExtendedMode
         | KnobId::AllowBatteryToCar
         | KnobId::DischargeTime
         | KnobId::DebugFullCharge
@@ -608,7 +621,6 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
         | KnobId::ChargeCarBoost
-        | KnobId::ChargeCarExtended
         | KnobId::AllowBatteryToCar
         | KnobId::InverterSafeDischargeEnable => parse_bool(body).map(KnobValue::Bool),
         KnobId::ExportSocThreshold
@@ -672,6 +684,16 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
                 ChargeBatteryExtendedMode::Disabled,
             )),
             _ => None,
+        },
+        // PR-auto-extended-charge.
+        KnobId::ChargeCarExtendedMode => match body {
+            "auto" => Some(KnobValue::ExtendedChargeMode(ExtendedChargeMode::Auto)),
+            "forced" => Some(KnobValue::ExtendedChargeMode(ExtendedChargeMode::Forced)),
+            "disabled" => Some(KnobValue::ExtendedChargeMode(ExtendedChargeMode::Disabled)),
+            _ => {
+                warn!("unknown ExtendedChargeMode value: {body}");
+                None
+            }
         },
         // PR-gamma-hold-redesign.
         KnobId::ExportSocThresholdMode

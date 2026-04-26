@@ -1,6 +1,7 @@
 use crate::victron_controller::dashboard::charge_battery_extended_mode::ChargeBatteryExtendedMode;
 use crate::victron_controller::dashboard::debug_full_charge::DebugFullCharge;
 use crate::victron_controller::dashboard::discharge_time::DischargeTime;
+use crate::victron_controller::dashboard::extended_charge_mode::ExtendedChargeMode;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
 use crate::victron_controller::dashboard::mode::Mode;
 
@@ -17,7 +18,7 @@ pub struct Knobs {
     pub pessimism_multiplier_modifier: f64,
     pub disable_night_grid_discharge: bool,
     pub charge_car_boost: bool,
-    pub charge_car_extended: bool,
+    pub charge_car_extended_mode: ExtendedChargeMode,
     pub zappi_current_target: f64,
     pub zappi_limit: f64,
     pub zappi_emergency_margin: f64,
@@ -102,7 +103,7 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
-        match self.charge_car_extended.cmp(&other.charge_car_extended) {
+        match self.charge_car_extended_mode.cmp(&other.charge_car_extended_mode) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
@@ -221,7 +222,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.pessimism_multiplier_modifier.encode_ueba(ctx, &mut buffer)?;
             value.disable_night_grid_discharge.encode_ueba(ctx, &mut buffer)?;
             value.charge_car_boost.encode_ueba(ctx, &mut buffer)?;
-            value.charge_car_extended.encode_ueba(ctx, &mut buffer)?;
+            value.charge_car_extended_mode.encode_ueba(ctx, &mut buffer)?;
             value.zappi_current_target.encode_ueba(ctx, &mut buffer)?;
             value.zappi_limit.encode_ueba(ctx, &mut buffer)?;
             value.zappi_emergency_margin.encode_ueba(ctx, &mut buffer)?;
@@ -258,7 +259,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.pessimism_multiplier_modifier.encode_ueba(ctx, writer)?;
             value.disable_night_grid_discharge.encode_ueba(ctx, writer)?;
             value.charge_car_boost.encode_ueba(ctx, writer)?;
-            value.charge_car_extended.encode_ueba(ctx, writer)?;
+            value.charge_car_extended_mode.encode_ueba(ctx, writer)?;
             value.zappi_current_target.encode_ueba(ctx, writer)?;
             value.zappi_limit.encode_ueba(ctx, writer)?;
             value.zappi_emergency_margin.encode_ueba(ctx, writer)?;
@@ -303,7 +304,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let pessimism_multiplier_modifier = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let disable_night_grid_discharge = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let charge_car_boost = crate::baboon_runtime::bin_tools::read_bool(reader)?;
-        let charge_car_extended = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let charge_car_extended_mode = ExtendedChargeMode::decode_ueba(ctx, reader)?;
         let zappi_current_target = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let zappi_limit = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let zappi_emergency_margin = crate::baboon_runtime::bin_tools::read_f64(reader)?;
@@ -338,7 +339,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             pessimism_multiplier_modifier,
             disable_night_grid_discharge,
             charge_car_boost,
-            charge_car_extended,
+            charge_car_extended_mode,
             zappi_current_target,
             zappi_limit,
             zappi_emergency_margin,

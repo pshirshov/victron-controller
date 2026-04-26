@@ -432,6 +432,17 @@ impl Core for ZappiModeCore {
                 vec![
                     factor("charge_car_boost", format!("{}", g.charge_car_boost)),
                     factor("charge_car_extended", format!("{}", g.charge_car_extended)),
+                    // PR-auto-extended-charge: surface the mode + the
+                    // bookkeeping latch the `Auto` arm consults so the
+                    // popup explains the effective bool above.
+                    factor(
+                        "charge_car_extended_mode",
+                        format!("{:?}", world.knobs.charge_car_extended_mode),
+                    ),
+                    factor(
+                        "auto_extended_today",
+                        format!("{}", world.bookkeeping.auto_extended_today),
+                    ),
                     factor("zappi_limit_kwh", format!("{:.2}", g.zappi_limit_kwh)),
                     factor("current_mode", format!("{:?}", i.current_mode)),
                     factor("session_kwh", format!("{:.2}", i.session_kwh)),

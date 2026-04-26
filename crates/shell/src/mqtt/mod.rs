@@ -53,7 +53,7 @@ use victron_controller_core::types::{
     TimerStatus,
 };
 
-use crate::config::{EvSocConfig, MqttConfig, OutdoorTemperatureLocalConfig};
+use crate::config::{EvConfig, MqttConfig, OutdoorTemperatureLocalConfig};
 use crate::dashboard::SocHistoryStore;
 use std::sync::Arc;
 
@@ -107,7 +107,7 @@ impl Publisher {
 pub async fn connect(
     config: &MqttConfig,
     outdoor_temp: &OutdoorTemperatureLocalConfig,
-    ev_soc: &EvSocConfig,
+    ev: &EvConfig,
     soc_history: Arc<SocHistoryStore>,
 ) -> Result<Option<(Publisher, Subscriber)>> {
     if config.host.is_empty() {
@@ -176,9 +176,12 @@ pub async fn connect(
         matter_outdoor_min_c: outdoor_temp.min_celsius,
         matter_outdoor_max_c: outdoor_temp.max_celsius,
         soc_history,
-        ev_soc_discovery_topic: ev_soc.discovery_topic.clone(),
+        ev_soc_discovery_topic: ev.soc_topic.clone(),
         ev_soc_state_topic: None,
         ev_soc_last_parse_warn: None,
+        ev_charge_target_discovery_topic: ev.charge_target_topic.clone(),
+        ev_charge_target_state_topic: None,
+        ev_charge_target_last_parse_warn: None,
     };
     Ok(Some((publisher, subscriber)))
 }
@@ -286,6 +289,16 @@ pub struct Subscriber {
     /// Used to rate-limit the noisy "garbage body" warnings to one
     /// emission per 60 s, mirroring the matter-outdoor-temp pattern.
     ev_soc_last_parse_warn: Option<Instant>,
+    /// PR-auto-extended-charge: HA-discovery config topic for the EV's
+    /// configured charge-target SoC. Same gateway as
+    /// `ev_soc_discovery_topic`. `None` ⇒ dormant.
+    ev_charge_target_discovery_topic: Option<String>,
+    /// PR-auto-extended-charge: state_topic resolved from the most
+    /// recent charge-target discovery payload.
+    ev_charge_target_state_topic: Option<String>,
+    /// PR-auto-extended-charge: rate-limit handle, mirrors
+    /// `ev_soc_last_parse_warn`.
+    ev_charge_target_last_parse_warn: Option<Instant>,
 }
 
 impl std::fmt::Debug for Subscriber {
@@ -302,6 +315,18 @@ impl std::fmt::Debug for Subscriber {
             .field("ev_soc_discovery_topic", &self.ev_soc_discovery_topic)
             .field("ev_soc_state_topic", &self.ev_soc_state_topic)
             .field("ev_soc_last_parse_warn", &self.ev_soc_last_parse_warn)
+            .field(
+                "ev_charge_target_discovery_topic",
+                &self.ev_charge_target_discovery_topic,
+            )
+            .field(
+                "ev_charge_target_state_topic",
+                &self.ev_charge_target_state_topic,
+            )
+            .field(
+                "ev_charge_target_last_parse_warn",
+                &self.ev_charge_target_last_parse_warn,
+            )
             .finish()
     }
 }
@@ -482,6 +507,12 @@ impl Subscriber {
             // re-delivers retained values.
             self.subscribe_ev_soc_state(&state_topic).await;
         }
+        // PR-auto-extended-charge: same two-stage pattern for the
+        // charge-target topic.
+        self.subscribe_ev_charge_target_discovery().await;
+        if let Some(state_topic) = self.ev_charge_target_state_topic.clone() {
+            self.subscribe_ev_charge_target_state(&state_topic).await;
+        }
 
         // PR-matter-outdoor-temp: rate-limit the out-of-range warn to
         // once per 60 s. Genuine sensor failures stay visible without
@@ -505,6 +536,10 @@ impl Subscriber {
                     if let Some(t) = self.ev_soc_state_topic.clone() {
                         self.subscribe_ev_soc_state(&t).await;
                     }
+                    self.subscribe_ev_charge_target_discovery().await;
+                    if let Some(t) = self.ev_charge_target_state_topic.clone() {
+                        self.subscribe_ev_charge_target_state(&t).await;
+                    }
                     continue;
                 }
             };
@@ -518,6 +553,10 @@ impl Subscriber {
                     self.subscribe_ev_soc_discovery().await;
                     if let Some(t) = self.ev_soc_state_topic.clone() {
                         self.subscribe_ev_soc_state(&t).await;
+                    }
+                    self.subscribe_ev_charge_target_discovery().await;
+                    if let Some(t) = self.ev_charge_target_state_topic.clone() {
+                        self.subscribe_ev_charge_target_state(&t).await;
                     }
                 }
                 MqttEvent::Incoming(Packet::Publish(publish)) => {
@@ -668,6 +707,100 @@ impl Subscriber {
                         }
                         continue;
                     }
+                    // PR-auto-extended-charge: same two-stage discovery
+                    // + state dispatch for the charge-target topic.
+                    if self
+                        .ev_charge_target_discovery_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        match parse_discovery_state_topic(&publish.payload) {
+                            Some(new_state_topic) => {
+                                let prev = self.ev_charge_target_state_topic.clone();
+                                if prev.as_deref() != Some(new_state_topic.as_str()) {
+                                    if let Some(old) = prev.as_deref() {
+                                        if let Err(e) = self.client.unsubscribe(old).await {
+                                            warn!(
+                                                error = %e,
+                                                old_topic = %old,
+                                                "ev_charge_target: unsubscribe old state_topic failed"
+                                            );
+                                        }
+                                        info!(
+                                            old_topic = %old,
+                                            new_topic = %new_state_topic,
+                                            "ev_charge_target: state_topic changed; re-subscribing",
+                                        );
+                                    } else {
+                                        info!(
+                                            new_topic = %new_state_topic,
+                                            "ev_charge_target: state_topic resolved from discovery",
+                                        );
+                                    }
+                                    self.ev_charge_target_state_topic =
+                                        Some(new_state_topic.clone());
+                                    self.subscribe_ev_charge_target_state(&new_state_topic).await;
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    topic = %publish.topic,
+                                    "ev_charge_target: discovery payload missing string \
+                                     `state_topic`; no state subscription"
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    if self
+                        .ev_charge_target_state_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        match parse_ev_soc_state_value(&publish.payload) {
+                            Some(v) => {
+                                let event = Event::Sensor(SensorReading {
+                                    id: SensorId::EvChargeTarget,
+                                    value: v,
+                                    at: Instant::now(),
+                                });
+                                if let Err(e) = tx.try_send(event) {
+                                    use tokio::sync::mpsc::error::TrySendError;
+                                    match e {
+                                        TrySendError::Full(_) => {
+                                            warn!(
+                                                "ev_charge_target: event channel full; dropped reading"
+                                            );
+                                        }
+                                        TrySendError::Closed(_) => {
+                                            info!(
+                                                "runtime receiver closed; mqtt subscriber exiting"
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                let now = Instant::now();
+                                let should_warn = self
+                                    .ev_charge_target_last_parse_warn
+                                    .is_none_or(|t| {
+                                        now.duration_since(t) >= Duration::from_secs(60)
+                                    });
+                                if should_warn {
+                                    debug!(
+                                        topic = %publish.topic,
+                                        body_len = publish.payload.len(),
+                                        "ev_charge_target: state body unparseable / out of range; \
+                                         dropped (rate-limited 60s)"
+                                    );
+                                    self.ev_charge_target_last_parse_warn = Some(now);
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(event) = serialize::decode_knob_set(
                         &self.topic_root,
                         &publish.topic,
@@ -741,6 +874,34 @@ impl Subscriber {
             }
             Err(e) => {
                 warn!(error = %e, %topic, "ev_soc state topic subscribe failed");
+            }
+        }
+    }
+
+    /// PR-auto-extended-charge: subscribe to the publisher's HA-discovery
+    /// config topic for the EV charge-target sensor.
+    async fn subscribe_ev_charge_target_discovery(&self) {
+        let Some(topic) = self.ev_charge_target_discovery_topic.as_deref() else {
+            return;
+        };
+        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+            Ok(()) => {
+                info!(%topic, "ev_charge_target discovery topic subscribed: {topic}");
+            }
+            Err(e) => {
+                warn!(error = %e, %topic, "ev_charge_target discovery topic subscribe failed");
+            }
+        }
+    }
+
+    /// PR-auto-extended-charge: subscribe to a resolved state topic.
+    async fn subscribe_ev_charge_target_state(&self, topic: &str) {
+        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+            Ok(()) => {
+                info!(%topic, "ev_charge_target state topic subscribed: {topic}");
+            }
+            Err(e) => {
+                warn!(error = %e, %topic, "ev_charge_target state topic subscribe failed");
             }
         }
     }

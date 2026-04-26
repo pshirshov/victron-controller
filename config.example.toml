@@ -135,16 +135,25 @@ bind = "0.0.0.0"
 # max_celsius = 50.0
 
 # =============================================================================
-# EV state-of-charge — external MQTT publisher (PR-ev-soc-sensor)
+# EV state-of-charge + charge target — external MQTT publisher
+# (PR-ev-soc-sensor + PR-auto-extended-charge)
 # =============================================================================
 # Optional: subscribe to an external MQTT publisher's HA-discovery
-# config to pull the EV SoC into our sensor table. We subscribe to the
+# configs to pull the EV's reported SoC and the configured charge-target
+# SoC into our sensor table. For each `*_topic` we subscribe to the
 # discovery topic, parse the retained JSON for `state_topic`, then
-# subscribe to that for the actual readings. Leave commented out to
-# disable the bridge entirely.
+# subscribe to that for the actual readings. Each path is
+# independently optional — leave a topic commented out to keep that
+# slot dormant.
 #
-# [ev_soc]
-# discovery_topic = "homeassistant/sensor/example_ev_vin_mg/example_ev_vin_soc/config"
+# `charge_target_topic` is consumed by the daily 04:30 auto-extended-
+# charge evaluation when `evcharger.extended` mode is `Auto`. Without
+# it, only the SoC branch (`ev_soc < 40`) can fire the night extended
+# charge.
+#
+# [ev]
+# soc_topic           = "homeassistant/sensor/example_ev_vin_mg/example_ev_vin_soc/config"
+# charge_target_topic = "homeassistant/number/example_ev_vin_mg/example_ev_vin_target_soc/config"
 
 # =============================================================================
 # Runtime tuning

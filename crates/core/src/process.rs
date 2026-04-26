@@ -225,6 +225,8 @@ fn apply_sensor_reading(
         SensorId::SessionKwh => world.sensors.session_kwh.on_reading(v, at),
         // PR-ev-soc-sensor.
         SensorId::EvSoc => world.sensors.ev_soc.on_reading(v, at),
+        // PR-auto-extended-charge.
+        SensorId::EvChargeTarget => world.sensors.ev_charge_target.on_reading(v, at),
         // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
         // variants don't have dedicated `world.sensors.<field>` slots —
         // their storage of truth is `world.<entity>.actual`, driven by
@@ -542,7 +544,10 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         }
         (KnobId::DisableNightGridDischarge, KnobValue::Bool(v)) => replace(&mut k.disable_night_grid_discharge, v) != v,
         (KnobId::ChargeCarBoost, KnobValue::Bool(v)) => replace(&mut k.charge_car_boost, v) != v,
-        (KnobId::ChargeCarExtended, KnobValue::Bool(v)) => replace(&mut k.charge_car_extended, v) != v,
+        // PR-auto-extended-charge.
+        (KnobId::ChargeCarExtendedMode, KnobValue::ExtendedChargeMode(v)) => {
+            replace(&mut k.charge_car_extended_mode, v) != v
+        }
         (KnobId::ZappiCurrentTarget, KnobValue::Float(v)) => replace(&mut k.zappi_current_target, v) != v,
         (KnobId::ZappiLimit, KnobValue::Float(v)) => replace(&mut k.zappi_limit, v) != v,
         (KnobId::ZappiEmergencyMargin, KnobValue::Float(v)) => replace(&mut k.zappi_emergency_margin, v) != v,
@@ -639,7 +644,11 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
             value: V::Bool(k.disable_night_grid_discharge),
         },
         PublishPayload::Knob { id: I::ChargeCarBoost, value: V::Bool(k.charge_car_boost) },
-        PublishPayload::Knob { id: I::ChargeCarExtended, value: V::Bool(k.charge_car_extended) },
+        // PR-auto-extended-charge.
+        PublishPayload::Knob {
+            id: I::ChargeCarExtendedMode,
+            value: V::ExtendedChargeMode(k.charge_car_extended_mode),
+        },
         PublishPayload::Knob { id: I::ZappiCurrentTarget, value: V::Float(k.zappi_current_target) },
         PublishPayload::Knob { id: I::ZappiLimit, value: V::Float(k.zappi_limit) },
         PublishPayload::Knob { id: I::ZappiEmergencyMargin, value: V::Float(k.zappi_emergency_margin) },
@@ -742,6 +751,9 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
         .tick(at, SensorId::SessionKwh.freshness_threshold());
     // PR-ev-soc-sensor.
     ss.ev_soc.tick(at, SensorId::EvSoc.freshness_threshold());
+    // PR-auto-extended-charge.
+    ss.ev_charge_target
+        .tick(at, SensorId::EvChargeTarget.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
@@ -783,6 +795,11 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     if world.bookkeeping.charge_battery_extended_today_date != Some(today) {
         world.bookkeeping.charge_battery_extended_today = false;
     }
+
+    // PR-auto-extended-charge: per-tick check for the daily 04:30
+    // boundary. The function short-circuits in `Forced`/`Disabled` mode
+    // and is idempotent within the same local date once the latch flips.
+    maybe_evaluate_auto_extended(world, clock);
 }
 
 // =============================================================================
@@ -854,6 +871,74 @@ pub(crate) fn effective_disable_night_grid_discharge(world: &World) -> bool {
         Mode::Forced => world.knobs.disable_night_grid_discharge,
         Mode::Weather => world.bookkeeping.weather_soc_disable_night_grid_discharge,
     }
+}
+
+/// PR-auto-extended-charge: resolve the effective EV-extended-charge
+/// flag controllers feed to their `charge_car_extended` global. Combines
+/// the user-set tri-state mode knob with the auto-evaluation result
+/// in `bookkeeping.auto_extended_today`:
+///
+///   * `Forced`   → always `true`.
+///   * `Disabled` → always `false`.
+///   * `Auto`     → consults bookkeeping (the 04:30 evaluator's verdict
+///     for the current local date).
+#[must_use]
+pub fn effective_charge_car_extended(world: &World) -> bool {
+    use crate::knobs::ExtendedChargeMode;
+    match world.knobs.charge_car_extended_mode {
+        ExtendedChargeMode::Forced => true,
+        ExtendedChargeMode::Disabled => false,
+        ExtendedChargeMode::Auto => world.bookkeeping.auto_extended_today,
+    }
+}
+
+/// PR-auto-extended-charge: at the daily 04:30 boundary, when
+/// `charge_car_extended_mode = Auto`, decide whether to enable extended
+/// charge for the upcoming NightExtended (05:00–08:00) window. The
+/// decision is persisted in `bookkeeping.auto_extended_today` and
+/// consulted by `effective_charge_car_extended` until the next
+/// evaluation overwrites it. The latch is per local date.
+///
+/// Conditions for enable: `ev_soc < 40` OR `ev_charge_target > 80`.
+/// Stale/Unknown `ev_soc` → defensively disable (don't pull cheap-rate
+/// grid power without knowing the car's state). Stale/Unknown
+/// `ev_charge_target` is treated as "no signal", i.e. only the SoC
+/// branch can fire.
+///
+/// Per-tick safe: idempotent within the same date once the latch flips.
+pub(crate) fn maybe_evaluate_auto_extended(world: &mut World, clock: &dyn Clock) {
+    use crate::knobs::ExtendedChargeMode;
+    use crate::tass::Freshness;
+    use chrono::Timelike;
+    if !matches!(
+        world.knobs.charge_car_extended_mode,
+        ExtendedChargeMode::Auto
+    ) {
+        return;
+    }
+    let now = clock.naive();
+    let today = now.date();
+    if world.bookkeeping.auto_extended_today_date == Some(today) {
+        return; // already evaluated today
+    }
+    // Pre-04:30 — wait until the 04:30 boundary fires.
+    if now.hour() < 4 || (now.hour() == 4 && now.minute() < 30) {
+        return;
+    }
+    let ev_soc = &world.sensors.ev_soc;
+    let ev_target = &world.sensors.ev_charge_target;
+    let auto_extended = match (ev_soc.freshness, ev_soc.value) {
+        (Freshness::Fresh, Some(soc)) => {
+            let target_says_yes = matches!(ev_target.freshness, Freshness::Fresh)
+                && ev_target.value.is_some_and(|t| t > 80.0);
+            soc < 40.0 || target_says_yes
+        }
+        // Stale / Unknown / Deprecated `ev_soc` → defensively disable.
+        // Don't pull cheap-rate grid power without a current SoC reading.
+        _ => false,
+    };
+    world.bookkeeping.auto_extended_today = auto_extended;
+    world.bookkeeping.auto_extended_today_date = Some(today);
 }
 
 /// Build the `SetpointInput` from the current world. Returns `None`
@@ -1194,7 +1279,10 @@ pub(crate) fn build_current_limit_input(world: &World) -> Option<CurrentLimitInp
             // `ZappiActiveCore` at the top of the tick) so setpoint and
             // current-limit see the same value within a tick.
             zappi_active: world.derived.zappi_active,
-            extended_charge_required: k.charge_car_extended
+            // PR-auto-extended-charge: dispatch the EV-side flag through
+            // the tri-state effective helper so the current-limit
+            // controller sees the same value as schedules / zappi_mode.
+            extended_charge_required: effective_charge_car_extended(world)
                 || world.bookkeeping.charge_to_full_required,
             // PR-gamma-hold-redesign: dispatch on `*_mode`.
             disable_night_grid_discharge: effective_disable_night_grid_discharge(world),
@@ -1324,13 +1412,13 @@ pub(crate) fn build_schedules_input(world: &World) -> Option<SchedulesInput> {
     if !world.sensors.battery_soc.is_usable() {
         return None;
     }
-    let k = &world.knobs;
     let bk = &world.bookkeeping;
     let cbe = cbe_derivation(world);
     Some(SchedulesInput {
         globals: SchedulesInputGlobals {
             charge_battery_extended: cbe.effective,
-            charge_car_extended: k.charge_car_extended,
+            // PR-auto-extended-charge.
+            charge_car_extended: effective_charge_car_extended(world),
             charge_to_full_required: bk.charge_to_full_required,
             // PR-gamma-hold-redesign: dispatch on `*_mode`.
             disable_night_grid_discharge: effective_disable_night_grid_discharge(world),
@@ -1529,7 +1617,10 @@ pub(crate) fn build_zappi_mode_input(world: &World) -> Option<ZappiModeInput> {
     Some(ZappiModeInput {
         globals: ZappiModeInputGlobals {
             charge_car_boost: k.charge_car_boost,
-            charge_car_extended: k.charge_car_extended,
+            // PR-auto-extended-charge: dispatch through the tri-state
+            // helper so the NightExtended Fast/Off arm follows the
+            // user's mode (or the auto-evaluation in `Auto`).
+            charge_car_extended: effective_charge_car_extended(world),
             zappi_limit_kwh: k.zappi_limit,
         },
         current_mode: zappi_state.zappi_mode,
@@ -2021,13 +2112,15 @@ mod tests {
 
         // Compute the expected specs identically to run_schedules so
         // we can assert full equality (not just a single field).
-        let k = &world.knobs;
         let bk = &world.bookkeeping;
         let input = SchedulesInput {
             globals: SchedulesInputGlobals {
                 charge_battery_extended: bk.charge_to_full_required
                     || bk.charge_battery_extended_today,
-                charge_car_extended: k.charge_car_extended,
+                // PR-auto-extended-charge: mirror the dispatch in
+                // `build_schedules_input` so the test's expected wire
+                // matches what the controller actually consumes.
+                charge_car_extended: super::effective_charge_car_extended(&world),
                 charge_to_full_required: bk.charge_to_full_required,
                 // PR-gamma-hold-redesign: mirror the dispatch in
                 // `build_schedules_input` so the expected wire matches
@@ -3734,5 +3827,176 @@ mod tests {
         assert_eq!(k.discharge_soc_target_mode, crate::knobs::Mode::Weather);
         assert_eq!(k.battery_soc_target_mode, crate::knobs::Mode::Weather);
         assert_eq!(k.disable_night_grid_discharge_mode, crate::knobs::Mode::Weather);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-auto-extended-charge
+    // ------------------------------------------------------------------
+
+    /// PR-auto-extended-charge: dispatch test for the new sensor.
+    #[test]
+    fn apply_sensor_reading_ev_charge_target_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::EvChargeTarget,
+            value: 90.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.ev_charge_target.value, Some(90.0));
+        assert_eq!(world.sensors.ev_charge_target.freshness, Freshness::Fresh);
+    }
+
+    /// PR-auto-extended-charge: truth table for the effective helper.
+    #[test]
+    fn effective_charge_car_extended_truth_table() {
+        use crate::knobs::ExtendedChargeMode;
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        world.knobs.charge_car_extended_mode = ExtendedChargeMode::Forced;
+        assert!(super::effective_charge_car_extended(&world));
+
+        world.knobs.charge_car_extended_mode = ExtendedChargeMode::Disabled;
+        assert!(!super::effective_charge_car_extended(&world));
+
+        world.knobs.charge_car_extended_mode = ExtendedChargeMode::Auto;
+        world.bookkeeping.auto_extended_today = true;
+        assert!(super::effective_charge_car_extended(&world));
+        world.bookkeeping.auto_extended_today = false;
+        assert!(!super::effective_charge_car_extended(&world));
+    }
+
+    /// PR-auto-extended-charge: Forced mode short-circuits — no
+    /// bookkeeping mutation regardless of EV sensor state.
+    #[test]
+    fn maybe_evaluate_auto_extended_skips_in_forced_mode() {
+        use crate::knobs::ExtendedChargeMode;
+        let c = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.knobs.charge_car_extended_mode = ExtendedChargeMode::Forced;
+        // Even with a Fresh low SoC reading, Forced must NOT touch
+        // bookkeeping — the latch fields stay at their defaults.
+        world.sensors.ev_soc.on_reading(20.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert!(!world.bookkeeping.auto_extended_today);
+        assert_eq!(world.bookkeeping.auto_extended_today_date, None);
+    }
+
+    /// PR-auto-extended-charge: pre-04:30 the evaluator does not fire.
+    #[test]
+    fn maybe_evaluate_auto_extended_does_not_fire_pre_0430() {
+        let c = clock_at_hms(4, 29, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.sensors.ev_soc.on_reading(20.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert_eq!(world.bookkeeping.auto_extended_today_date, None);
+        assert!(!world.bookkeeping.auto_extended_today);
+    }
+
+    /// PR-auto-extended-charge: 04:30 with Fresh low SoC enables.
+    #[test]
+    fn maybe_evaluate_auto_extended_fires_at_0430() {
+        let c = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.sensors.ev_soc.on_reading(30.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert!(world.bookkeeping.auto_extended_today);
+        assert_eq!(
+            world.bookkeeping.auto_extended_today_date,
+            Some(c.naive().date()),
+        );
+    }
+
+    /// PR-auto-extended-charge: 04:30 with Fresh high SoC but a high
+    /// configured target (`> 80`) still enables.
+    #[test]
+    fn maybe_evaluate_auto_extended_fires_at_0430_with_high_target() {
+        let c = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.sensors.ev_soc.on_reading(80.0, c.monotonic);
+        world.sensors.ev_charge_target.on_reading(90.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert!(world.bookkeeping.auto_extended_today);
+    }
+
+    /// PR-auto-extended-charge: idempotent within the same local date.
+    /// Two 04:30 ticks with conflicting SoC values must not flip the
+    /// latch a second time.
+    #[test]
+    fn maybe_evaluate_auto_extended_skips_when_already_evaluated_today() {
+        let c = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.sensors.ev_soc.on_reading(30.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert!(world.bookkeeping.auto_extended_today);
+
+        // Same day, later in the morning — change the SoC to a value
+        // that would have flipped the answer; idempotent latch must
+        // suppress re-evaluation.
+        let c2 = clock_at_hms(7, 0, 0);
+        world.sensors.ev_soc.on_reading(95.0, c2.monotonic);
+        world.sensors.ev_charge_target.on_reading(50.0, c2.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c2);
+        assert!(
+            world.bookkeeping.auto_extended_today,
+            "second call same date must not re-evaluate (latch preserved)",
+        );
+    }
+
+    /// PR-auto-extended-charge: stale SoC at 04:30 → defensively
+    /// disable, regardless of value or target.
+    #[test]
+    fn maybe_evaluate_auto_extended_disables_on_stale_soc() {
+        let c = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Force the SoC slot stale: never call on_reading.
+        assert_eq!(world.sensors.ev_soc.freshness, Freshness::Unknown);
+        // Even if the (Fresh) target says 90 — without a current SoC we
+        // must not pull cheap-rate grid.
+        world.sensors.ev_charge_target.on_reading(90.0, c.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c);
+        assert!(!world.bookkeeping.auto_extended_today);
+        assert_eq!(
+            world.bookkeeping.auto_extended_today_date,
+            Some(c.naive().date()),
+        );
+    }
+
+    /// PR-auto-extended-charge: the latch is per-date — a tick the
+    /// next day re-fires the evaluation.
+    #[test]
+    fn maybe_evaluate_auto_extended_re_fires_next_day() {
+        // Day 1 at 04:30: low SoC → enables, latches today's date.
+        let c1 = clock_at_hms(4, 30, 0);
+        let mut world = World::fresh_boot(c1.monotonic);
+        world.sensors.ev_soc.on_reading(20.0, c1.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c1);
+        assert!(world.bookkeeping.auto_extended_today);
+        let day1 = c1.naive().date();
+        assert_eq!(world.bookkeeping.auto_extended_today_date, Some(day1));
+
+        // Day 2 at 04:30: SoC fresh but high, target low → disables.
+        let day2_naive = NaiveDate::from_ymd_opt(2026, 4, 22)
+            .unwrap()
+            .and_hms_opt(4, 30, 0)
+            .unwrap();
+        let c2 = FixedClock::new(
+            c1.monotonic + StdDuration::from_secs(24 * 3600),
+            day2_naive,
+        );
+        // Refresh the SoC reading on day 2 so it's still Fresh
+        world.sensors.ev_soc.on_reading(95.0, c2.monotonic);
+        super::maybe_evaluate_auto_extended(&mut world, &c2);
+        assert_eq!(
+            world.bookkeeping.auto_extended_today_date,
+            Some(c2.naive().date()),
+            "next-day tick must overwrite the latch date",
+        );
+        assert!(
+            !world.bookkeeping.auto_extended_today,
+            "high SoC + no high target on day 2 must flip the latch off",
+        );
     }
 }

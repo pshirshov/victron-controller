@@ -4,11 +4,12 @@ import {DebugFullCharge, DebugFullCharge_UEBACodec} from './DebugFullCharge'
 import {ChargeBatteryExtendedMode, ChargeBatteryExtendedMode_UEBACodec} from './ChargeBatteryExtendedMode'
 import {Mode, Mode_UEBACodec} from './Mode'
 import {BookkeepingKey, BookkeepingKey_UEBACodec} from './BookkeepingKey'
+import {ExtendedChargeMode, ExtendedChargeMode_UEBACodec} from './ExtendedChargeMode'
 import {DischargeTime, DischargeTime_UEBACodec} from './DischargeTime'
 import {ForecastDisagreementStrategy, ForecastDisagreementStrategy_UEBACodec} from './ForecastDisagreementStrategy'
 import {BookkeepingValue, BookkeepingValue_UEBACodec} from './BookkeepingValue'
 
-export type Command = SetBoolKnob | SetFloatKnob | SetUintKnob | SetDischargeTime | SetDebugFullCharge | SetForecastDisagreementStrategy | SetChargeBatteryExtendedMode | SetMode | SetKillSwitch | SetBookkeeping
+export type Command = SetBoolKnob | SetFloatKnob | SetUintKnob | SetDischargeTime | SetDebugFullCharge | SetForecastDisagreementStrategy | SetChargeBatteryExtendedMode | SetExtendedChargeMode | SetMode | SetKillSwitch | SetBookkeeping
 
 export const Command = {
     BaboonDomainVersion: '0.2.0',
@@ -28,6 +29,7 @@ export function isSetDischargeTime(value: Command): value is SetDischargeTime { 
 export function isSetDebugFullCharge(value: Command): value is SetDebugFullCharge { return value instanceof SetDebugFullCharge; }
 export function isSetForecastDisagreementStrategy(value: Command): value is SetForecastDisagreementStrategy { return value instanceof SetForecastDisagreementStrategy; }
 export function isSetChargeBatteryExtendedMode(value: Command): value is SetChargeBatteryExtendedMode { return value instanceof SetChargeBatteryExtendedMode; }
+export function isSetExtendedChargeMode(value: Command): value is SetExtendedChargeMode { return value instanceof SetExtendedChargeMode; }
 export function isSetMode(value: Command): value is SetMode { return value instanceof SetMode; }
 export function isSetKillSwitch(value: Command): value is SetKillSwitch { return value instanceof SetKillSwitch; }
 export function isSetBookkeeping(value: Command): value is SetBookkeeping { return value instanceof SetBookkeeping; }
@@ -884,6 +886,120 @@ export class SetChargeBatteryExtendedMode_UEBACodec {
     }
 }
 
+export class SetExtendedChargeMode implements BaboonGeneratedLatest {
+    private readonly _value: ExtendedChargeMode;
+
+    constructor(value: ExtendedChargeMode) {
+        this._value = value
+    }
+
+    public get value(): ExtendedChargeMode {
+        return this._value;
+    }
+
+    public toJSON(): Record<string, unknown> {
+        return {
+            value: this._value
+        };
+    }
+
+    public with(overrides: {value?: ExtendedChargeMode}): SetExtendedChargeMode {
+        return new SetExtendedChargeMode(
+            'value' in overrides ? overrides.value! : this._value
+        );
+    }
+
+    public static fromPlain(obj: {value: ExtendedChargeMode}): SetExtendedChargeMode {
+        return new SetExtendedChargeMode(
+            obj.value
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return SetExtendedChargeMode.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return SetExtendedChargeMode.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetExtendedChargeMode'
+    public baboonTypeIdentifier() {
+        return SetExtendedChargeMode.BaboonTypeIdentifier
+    }
+    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public baboonSameInVersions() {
+        return SetExtendedChargeMode.BaboonSameInVersions
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetExtendedChargeMode'
+    public baboonAdtTypeIdentifier() {
+        return SetExtendedChargeMode.BaboonAdtTypeIdentifier
+    }
+    
+    public static binCodec(): SetExtendedChargeMode_UEBACodec {
+        return SetExtendedChargeMode_UEBACodec.instance
+    }
+}
+
+export class SetExtendedChargeMode_UEBACodec {
+    public encode(ctx: BaboonCodecContext, value: SetExtendedChargeMode, writer: BaboonBinWriter): unknown {
+        if (this !== SetExtendedChargeMode_UEBACodec.lazyInstance.value) {
+          return SetExtendedChargeMode_UEBACodec.lazyInstance.value.encode(ctx, value, writer)
+        }
+    
+        if (ctx === BaboonCodecContext.Indexed) {
+            BinTools.writeByte(writer, 0x01);
+            const buffer = new BaboonBinWriter();
+            ExtendedChargeMode_UEBACodec.instance.encode(ctx, value.value, buffer);
+            writer.writeAll(buffer.toBytes());
+        } else {
+            BinTools.writeByte(writer, 0x00)
+            ExtendedChargeMode_UEBACodec.instance.encode(ctx, value.value, writer);
+        }
+    }
+    
+    public decode(ctx: BaboonCodecContext, reader: BaboonBinReader): SetExtendedChargeMode {
+        if (this !== SetExtendedChargeMode_UEBACodec .lazyInstance.value) {
+            return SetExtendedChargeMode_UEBACodec.lazyInstance.value.decode(ctx, reader)
+        }
+    
+        const header = BinTools.readByte(reader);
+        const useIndices = header === 0x01;
+        if (useIndices) {
+            for (let i = 0; i < 0; i++) {
+                BinTools.readI32(reader);
+                BinTools.readI32(reader);
+            }
+        }
+        const value = ExtendedChargeMode_UEBACodec.instance.decode(ctx, reader);
+        return new SetExtendedChargeMode(
+            value,
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return SetExtendedChargeMode_UEBACodec.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return SetExtendedChargeMode_UEBACodec.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetExtendedChargeMode'
+    public baboonTypeIdentifier() {
+        return SetExtendedChargeMode_UEBACodec.BaboonTypeIdentifier
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#Command]#SetExtendedChargeMode'
+    public baboonAdtTypeIdentifier() {
+        return SetExtendedChargeMode_UEBACodec.BaboonAdtTypeIdentifier
+    }
+
+    protected static lazyInstance = new Lazy(() => new SetExtendedChargeMode_UEBACodec())
+    public static get instance(): SetExtendedChargeMode_UEBACodec {
+        return SetExtendedChargeMode_UEBACodec.lazyInstance.value
+    }
+}
+
 export class SetMode implements BaboonGeneratedLatest {
     private readonly _knob_name: string;
     private readonly _value: Mode;
@@ -1297,16 +1413,20 @@ export class Command_UEBACodec {
                 BinTools.writeByte(writer, 6);
                 SetChargeBatteryExtendedMode_UEBACodec.instance.encode(ctx, value, writer);
             }
-            if (value instanceof SetMode) {
+            if (value instanceof SetExtendedChargeMode) {
                 BinTools.writeByte(writer, 7);
+                SetExtendedChargeMode_UEBACodec.instance.encode(ctx, value, writer);
+            }
+            if (value instanceof SetMode) {
+                BinTools.writeByte(writer, 8);
                 SetMode_UEBACodec.instance.encode(ctx, value, writer);
             }
             if (value instanceof SetKillSwitch) {
-                BinTools.writeByte(writer, 8);
+                BinTools.writeByte(writer, 9);
                 SetKillSwitch_UEBACodec.instance.encode(ctx, value, writer);
             }
             if (value instanceof SetBookkeeping) {
-                BinTools.writeByte(writer, 9);
+                BinTools.writeByte(writer, 10);
                 SetBookkeeping_UEBACodec.instance.encode(ctx, value, writer);
             }
     }
@@ -1325,9 +1445,10 @@ export class Command_UEBACodec {
                 case 4: return SetDebugFullCharge_UEBACodec.instance.decode(ctx, reader)
                 case 5: return SetForecastDisagreementStrategy_UEBACodec.instance.decode(ctx, reader)
                 case 6: return SetChargeBatteryExtendedMode_UEBACodec.instance.decode(ctx, reader)
-                case 7: return SetMode_UEBACodec.instance.decode(ctx, reader)
-                case 8: return SetKillSwitch_UEBACodec.instance.decode(ctx, reader)
-                case 9: return SetBookkeeping_UEBACodec.instance.decode(ctx, reader)
+                case 7: return SetExtendedChargeMode_UEBACodec.instance.decode(ctx, reader)
+                case 8: return SetMode_UEBACodec.instance.decode(ctx, reader)
+                case 9: return SetKillSwitch_UEBACodec.instance.decode(ctx, reader)
+                case 10: return SetBookkeeping_UEBACodec.instance.decode(ctx, reader)
             default: throw new Error("Unknown ADT branch tag: " + tag);
         }
     }

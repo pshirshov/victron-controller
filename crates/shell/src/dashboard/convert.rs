@@ -17,7 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::knobs::{
-    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Knobs,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ExtendedChargeMode,
+    ForecastDisagreementStrategy, Knobs,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -55,6 +56,9 @@ pub struct MetaContext {
     /// we surface the discovery topic as the operator-visible
     /// identifier instead.
     pub ev_soc_discovery_topic: Option<String>,
+    /// PR-auto-extended-charge: same shape as `ev_soc_discovery_topic`,
+    /// for the EV's configured charge-target sensor.
+    pub ev_charge_target_discovery_topic: Option<String>,
     /// PR-soc-chart: shared in-memory ring of recent SoC samples.
     /// `world_to_snapshot` reads from this synchronously to populate
     /// `soc_chart.history`.
@@ -84,6 +88,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::decisions
 use victron_controller_dashboard_model::victron_controller::dashboard::debug_full_charge::DebugFullCharge as ModelDebugFullCharge;
 use victron_controller_dashboard_model::victron_controller::dashboard::discharge_time::DischargeTime as ModelDischargeTime;
 use victron_controller_dashboard_model::victron_controller::dashboard::charge_battery_extended_mode::ChargeBatteryExtendedMode as ModelCbeMode;
+use victron_controller_dashboard_model::victron_controller::dashboard::extended_charge_mode::ExtendedChargeMode as ModelExtendedChargeMode;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy as ModelForecastStrategy;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecast_snapshot::ForecastSnapshot as ModelForecastSnapshot;
 use victron_controller_dashboard_model::victron_controller::dashboard::forecasts::Forecasts as ModelForecasts;
@@ -165,6 +170,15 @@ fn cbe_mode(m: ChargeBatteryExtendedMode) -> ModelCbeMode {
         ChargeBatteryExtendedMode::Auto => ModelCbeMode::Auto,
         ChargeBatteryExtendedMode::Forced => ModelCbeMode::Forced,
         ChargeBatteryExtendedMode::Disabled => ModelCbeMode::Disabled,
+    }
+}
+
+/// PR-auto-extended-charge.
+fn extended_charge_mode(m: ExtendedChargeMode) -> ModelExtendedChargeMode {
+    match m {
+        ExtendedChargeMode::Auto => ModelExtendedChargeMode::Auto,
+        ExtendedChargeMode::Forced => ModelExtendedChargeMode::Forced,
+        ExtendedChargeMode::Disabled => ModelExtendedChargeMode::Disabled,
     }
 }
 
@@ -304,6 +318,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             outdoor_temperature: actual_f64(&s.outdoor_temperature),
             session_kwh: actual_f64(&s.session_kwh),
             ev_soc: actual_f64(&s.ev_soc),
+            ev_charge_target: actual_f64(&s.ev_charge_target),
         },
         sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
@@ -342,6 +357,11 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             weather_soc_discharge_soc_target: b.weather_soc_discharge_soc_target,
             weather_soc_battery_soc_target: b.weather_soc_battery_soc_target,
             weather_soc_disable_night_grid_discharge: b.weather_soc_disable_night_grid_discharge,
+            // PR-auto-extended-charge.
+            auto_extended_today: b.auto_extended_today,
+            auto_extended_today_date_iso: b
+                .auto_extended_today_date
+                .map(|d| d.to_string()),
         },
         forecasts: ModelForecasts {
             solcast: f.forecast_solcast.as_ref().map(forecast_snapshot),
@@ -621,6 +641,22 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             },
         );
     }
+    // PR-auto-extended-charge: same provenance shape as ev_soc.
+    if let Some(topic) = &ctx.ev_charge_target_discovery_topic {
+        m.insert(
+            "ev_charge_target".into(),
+            ModelSensorMeta {
+                origin: "ext-mqtt".to_string(),
+                identifier: topic.clone(),
+                cadence_ms: SensorId::EvChargeTarget
+                    .reseed_cadence()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(i64::MAX),
+                staleness_ms: staleness_ms(SensorId::EvChargeTarget),
+            },
+        );
+    }
     m
 }
 
@@ -663,7 +699,8 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
         disable_night_grid_discharge: k.disable_night_grid_discharge,
         charge_car_boost: k.charge_car_boost,
-        charge_car_extended: k.charge_car_extended,
+        // PR-auto-extended-charge.
+        charge_car_extended_mode: extended_charge_mode(k.charge_car_extended_mode),
         zappi_current_target: k.zappi_current_target,
         zappi_limit: k.zappi_limit,
         zappi_emergency_margin: k.zappi_emergency_margin,
@@ -799,6 +836,15 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
                 ModelCbeMode::Disabled => ChargeBatteryExtendedMode::Disabled,
             }),
         },
+        // PR-auto-extended-charge.
+        C::SetExtendedChargeMode(c) => Command::Knob {
+            id: KnobId::ChargeCarExtendedMode,
+            value: KnobValue::ExtendedChargeMode(match c.value {
+                ModelExtendedChargeMode::Auto => ExtendedChargeMode::Auto,
+                ModelExtendedChargeMode::Forced => ExtendedChargeMode::Forced,
+                ModelExtendedChargeMode::Disabled => ExtendedChargeMode::Disabled,
+            }),
+        },
         C::SetMode(c) => {
             let id = knob_id_from_name(&c.knob_name)?;
             let core_mode = match c.value {
@@ -867,7 +913,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "pessimism_multiplier_modifier" => KnobId::PessimismMultiplierModifier,
         "disable_night_grid_discharge" => KnobId::DisableNightGridDischarge,
         "charge_car_boost" => KnobId::ChargeCarBoost,
-        "charge_car_extended" => KnobId::ChargeCarExtended,
+        // PR-auto-extended-charge.
+        "charge_car_extended_mode" => KnobId::ChargeCarExtendedMode,
         "zappi_current_target" => KnobId::ZappiCurrentTarget,
         "zappi_limit" => KnobId::ZappiLimit,
         "zappi_emergency_margin" => KnobId::ZappiEmergencyMargin,

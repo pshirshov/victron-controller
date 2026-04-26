@@ -38,6 +38,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   outdoor_temperature: "weather.temperature.outdoor",
   session_kwh: "evcharger.session.energy",
   ev_soc: "ev.soc",
+  ev_charge_target: "ev.charge.target",
 
   // --- Knobs (33) ---
   force_disable_export: "grid.export.force-disable",
@@ -56,7 +57,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   debug_full_charge: "debug.full-charge.mode",
   pessimism_multiplier_modifier: "forecast.pessimism.modifier",
   charge_car_boost: "evcharger.boost.enable",
-  charge_car_extended: "evcharger.extended.enable",
+  charge_car_extended_mode: "evcharger.extended.mode",
   zappi_current_target: "evcharger.current.target",
   zappi_limit: "evcharger.session.limit",
   zappi_emergency_margin: "evcharger.current.margin",
@@ -90,6 +91,9 @@ const DISPLAY_NAMES: Record<string, string> = {
   weather_soc_discharge_soc_target: "weathersoc.derived.target.discharge",
   weather_soc_battery_soc_target: "weathersoc.derived.target.charge",
   weather_soc_disable_night_grid_discharge: "weathersoc.derived.grid.night.discharge.disable",
+  // PR-auto-extended-charge.
+  auto_extended_today: "evcharger.extended.auto.today",
+  auto_extended_today_date_iso: "evcharger.extended.auto.today.date",
 
   // --- Actuated (6) — `.target` distinguishes from same-named decisions. ---
   grid_setpoint: "grid.setpoint",

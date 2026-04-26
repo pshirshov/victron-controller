@@ -9,7 +9,8 @@
 use crate::Freshness;
 use crate::controllers::schedules::ScheduleSpec;
 use crate::knobs::{
-    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ForecastDisagreementStrategy, Mode,
+    ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ExtendedChargeMode,
+    ForecastDisagreementStrategy, Mode,
 };
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::owner::Owner;
@@ -108,6 +109,10 @@ pub enum SensorId {
     /// discovery `state_topic`; the value is opaque to the controllers
     /// — surfaced on the dashboard sensor table only.
     EvSoc,
+    /// PR-auto-extended-charge: EV configured charge-target percentage
+    /// sourced from the same external publisher as `EvSoc`. Read by the
+    /// 04:30 auto-extended-charge evaluation in `Auto` mode.
+    EvChargeTarget,
 }
 
 impl SensorId {
@@ -180,7 +185,10 @@ impl SensorId {
             // generous Fresh window that still flips Stale if the gateway
             // dies. Marked as external-polled so the staleness invariant
             // uses the grace-window rule (cadence + slack).
-            Self::EvSoc => Duration::from_secs(12 * 3600),
+            //
+            // PR-auto-extended-charge: `EvChargeTarget` shares the same
+            // gateway and the same 60 min cadence; identical 12 h window.
+            Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(12 * 3600),
         }
     }
 }
@@ -249,6 +257,8 @@ impl SensorId {
         SensorId::Schedule1AllowDischargeActual,
         // PR-ev-soc-sensor.
         SensorId::EvSoc,
+        // PR-auto-extended-charge.
+        SensorId::EvChargeTarget,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -316,7 +326,9 @@ impl SensorId {
             // PR-ev-soc-sensor: external MQTT push (saic-python-mqtt-
             // gateway). No organic D-Bus signal; the gateway pushes when
             // the car reports a new SoC.
-            | Self::EvSoc => FreshnessRegime::ReseedDriven,
+            | Self::EvSoc
+            // PR-auto-extended-charge: same gateway as `EvSoc`.
+            | Self::EvChargeTarget => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -396,7 +408,10 @@ impl SensorId {
             // staleness invariant uses the grace-window model (cadence +
             // slack) — the 12 h staleness window comfortably outlives the
             // 60 min cadence.
-            Self::EvSoc => Duration::from_secs(60 * 60),
+            //
+            // PR-auto-extended-charge: same gateway, same 60 min cadence
+            // for the configured target SoC.
+            Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(60 * 60),
         }
     }
 
@@ -455,7 +470,9 @@ impl SensorId {
             | Self::OutdoorTemperature
             | Self::SessionKwh
             // PR-ev-soc-sensor.
-            | Self::EvSoc => None,
+            | Self::EvSoc
+            // PR-auto-extended-charge.
+            | Self::EvChargeTarget => None,
         }
     }
 }
@@ -473,6 +490,8 @@ const fn is_external_polled(id: SensorId) -> bool {
             | SensorId::SessionKwh
             // PR-ev-soc-sensor: external MQTT push, gateway-paced.
             | SensorId::EvSoc
+            // PR-auto-extended-charge: same gateway as `EvSoc`.
+            | SensorId::EvChargeTarget
     )
 }
 
@@ -531,7 +550,9 @@ pub enum KnobId {
     PessimismMultiplierModifier,
     DisableNightGridDischarge,
     ChargeCarBoost,
-    ChargeCarExtended,
+    /// PR-auto-extended-charge: tri-state mode replacing the legacy
+    /// boolean `ChargeCarExtended` knob.
+    ChargeCarExtendedMode,
     ZappiCurrentTarget,
     ZappiLimit,
     ZappiEmergencyMargin,
@@ -740,6 +761,8 @@ pub enum KnobValue {
     DebugFullCharge(DebugFullCharge),
     ForecastDisagreementStrategy(ForecastDisagreementStrategy),
     ChargeBatteryExtendedMode(ChargeBatteryExtendedMode),
+    /// PR-auto-extended-charge: tri-state EV-side extended-charge mode.
+    ExtendedChargeMode(ExtendedChargeMode),
     // PR-gamma-hold-redesign.
     Mode(Mode),
 }
@@ -1087,8 +1110,9 @@ mod tests {
                 | SensorId::Schedule1SocActual
                 | SensorId::Schedule1DaysActual
                 | SensorId::Schedule1AllowDischargeActual => Duration::from_secs(60),
-                // PR-ev-soc-sensor: gateway poll cadence ~60 min.
-                SensorId::EvSoc => Duration::from_secs(60 * 60),
+                // PR-ev-soc-sensor / PR-auto-extended-charge: shared
+                // gateway poll cadence ~60 min.
+                SensorId::EvSoc | SensorId::EvChargeTarget => Duration::from_secs(60 * 60),
             };
             assert_eq!(
                 id.reseed_cadence(),
@@ -1137,7 +1161,9 @@ mod tests {
                 | SensorId::Schedule1DaysActual
                 | SensorId::Schedule1AllowDischargeActual
                 // PR-ev-soc-sensor.
-                | SensorId::EvSoc => FreshnessRegime::ReseedDriven,
+                | SensorId::EvSoc
+                // PR-auto-extended-charge.
+                | SensorId::EvChargeTarget => FreshnessRegime::ReseedDriven,
             };
             assert_eq!(
                 id.regime(),
@@ -1155,7 +1181,9 @@ mod tests {
                 SensorId::OutdoorTemperature
                     | SensorId::SessionKwh
                     // PR-ev-soc-sensor.
-                    | SensorId::EvSoc,
+                    | SensorId::EvSoc
+                    // PR-auto-extended-charge.
+                    | SensorId::EvChargeTarget,
             ) {
                 cadence + Duration::from_secs(1)
             } else {
@@ -1212,7 +1240,9 @@ mod tests {
                 | SensorId::OutdoorTemperature
                 | SensorId::SessionKwh
                 // PR-ev-soc-sensor.
-                | SensorId::EvSoc => None,
+                | SensorId::EvSoc
+                // PR-auto-extended-charge.
+                | SensorId::EvChargeTarget => None,
             };
             assert_eq!(
                 id.actuated_id(),

@@ -40,6 +40,8 @@ pub mod decisions;
 pub use decisions::*;
 pub mod discharge_time;
 pub use discharge_time::*;
+pub mod extended_charge_mode;
+pub use extended_charge_mode::*;
 pub mod forecast_disagreement_strategy;
 pub use forecast_disagreement_strategy::*;
 pub mod forecast_snapshot;

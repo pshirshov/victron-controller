@@ -66,6 +66,23 @@ pub enum ChargeBatteryExtendedMode {
     Disabled,
 }
 
+/// PR-auto-extended-charge: replaces the legacy `charge_car_extended`
+/// boolean. Controls whether the NightExtended (05:00–08:00) Zappi
+/// window pulls cheap-rate grid power into the EV.
+///
+///   * `Auto` — daily 04:30 evaluation: enable for tonight when
+///     `ev_soc < 40` OR `ev_charge_target > 80`. Stale `ev_soc`
+///     defensively disables.
+///   * `Forced` — always `true`, regardless of EV state.
+///   * `Disabled` — always `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExtendedChargeMode {
+    #[default]
+    Auto,
+    Forced,
+    Disabled,
+}
+
 /// User-controlled knobs. One struct, one source of truth.
 ///
 /// Defaults come from [`Knobs::safe_defaults`]; see SPEC §7.
@@ -91,7 +108,11 @@ pub struct Knobs {
 
     // --- Zappi ---
     pub charge_car_boost: bool,
-    pub charge_car_extended: bool,
+    /// PR-auto-extended-charge: tri-state knob replacing the legacy
+    /// `charge_car_extended: bool`. The effective per-tick boolean used
+    /// by controllers comes from `process::effective_charge_car_extended`
+    /// (consults bookkeeping when `Auto`).
+    pub charge_car_extended_mode: ExtendedChargeMode,
     pub zappi_current_target: f64,
     /// Per-session EV charge ceiling in **kWh** (A-14: was `%` in earlier
     /// revisions; now matches the legacy NR semantic). The Zappi-mode
@@ -174,10 +195,12 @@ impl Knobs {
             // operator explicitly disables it. The user-facing dashboard
             // / HA toggle stays as the override.
             charge_car_boost: true,
-            // Default false: extended-charge during 05:00–08:00 is driven
-            // externally (HA automation owns the flag) so the Rust default
-            // is the conservative "off".
-            charge_car_extended: false,
+            // PR-auto-extended-charge: default `Auto`. The 04:30 daily
+            // evaluation enables NightExtended for tonight only when the
+            // EV's reported SoC / target says it actually needs the
+            // cheap-rate window. Operator can flip to `Forced`/`Disabled`
+            // from the dashboard / HA to override.
+            charge_car_extended_mode: ExtendedChargeMode::Auto,
             zappi_current_target: 9.5,
             // A-14: kWh, not %. 65 kWh covers a Tesla Model 3 LR full
             // charge and sits on the `<= 65` gate boundary in the
@@ -274,5 +297,14 @@ mod tests {
     #[test]
     fn default_equals_safe_defaults() {
         assert_eq!(Knobs::default(), Knobs::safe_defaults());
+    }
+
+    /// PR-auto-extended-charge: the cold-start mode is `Auto`. A regression
+    /// that flips this to `Disabled` would silently kill the nightly
+    /// extended-charge cycle for users who never touch the knob.
+    #[test]
+    fn auto_extended_default_mode_is_auto() {
+        let k = Knobs::safe_defaults();
+        assert_eq!(k.charge_car_extended_mode, ExtendedChargeMode::Auto);
     }
 }

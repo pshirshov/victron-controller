@@ -23,13 +23,14 @@ pub struct Sensors {
     pub outdoor_temperature: ActualF64,
     pub session_kwh: ActualF64,
     pub ev_soc: ActualF64,
+    pub ev_charge_target: ActualF64,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Sensors {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        21
+        22
     }
 }
 
@@ -207,6 +208,14 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.ev_charge_target.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -231,6 +240,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
             value.outdoor_temperature.encode_ueba(ctx, writer)?;
             value.session_kwh.encode_ueba(ctx, writer)?;
             value.ev_soc.encode_ueba(ctx, writer)?;
+            value.ev_charge_target.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -263,6 +273,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
         let outdoor_temperature = ActualF64::decode_ueba(ctx, reader)?;
         let session_kwh = ActualF64::decode_ueba(ctx, reader)?;
         let ev_soc = ActualF64::decode_ueba(ctx, reader)?;
+        let ev_charge_target = ActualF64::decode_ueba(ctx, reader)?;
         Ok(Sensors {
             battery_soc,
             battery_soh,
@@ -285,6 +296,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
             outdoor_temperature,
             session_kwh,
             ev_soc,
+            ev_charge_target,
         })
     }
 }

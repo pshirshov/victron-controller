@@ -329,6 +329,34 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 
 ## Completed
 
+- **PR-auto-extended-charge** (2026-04-25) — Replace the boolean
+  `evcharger.extended.enable` knob with a tri-state
+  `evcharger.extended.mode` (`Auto | Forced | Disabled`), default
+  `Auto`. New `core::knobs::ExtendedChargeMode` enum, new
+  `KnobId::ChargeCarExtendedMode` + `KnobValue::ExtendedChargeMode`
+  variants, new `Bookkeeping::auto_extended_today` /
+  `auto_extended_today_date` latch fields. New
+  `process::effective_charge_car_extended` helper threaded through
+  every controller input builder (current_limit, schedules,
+  zappi_mode); `process::maybe_evaluate_auto_extended` runs at the
+  top of every `apply_tick`, idempotent per local date, fires on the
+  first tick at-or-past 04:30 local. Conditions for enable in `Auto`:
+  `ev_soc < 40` OR `ev_charge_target > 80`; Stale/Unknown `ev_soc`
+  defensively disables. New `SensorId::EvChargeTarget` mirrors
+  `EvSoc` (12 h staleness, 60 min cadence, ext-mqtt regime); rename
+  `[ev_soc] discovery_topic` config block to `[ev] soc_topic +
+  charge_target_topic`. MQTT subscriber generalised to two
+  independent two-stage discovery + state subscriptions. Baboon
+  bumped within 0.2.0: `Knobs.charge_car_extended` → `_mode:
+  ExtendedChargeMode`, `Sensors.ev_charge_target: ActualF64`,
+  `Bookkeeping.auto_extended_today + _date_iso`, new
+  `Command::SetExtendedChargeMode`. HA discovery: bool switch →
+  three-option select. Web `KNOB_SPEC` + display-names + descriptions
+  updated. No back-compat for the bool→enum knob; both halves of the
+  baboon model deploy together. Verification: `cargo test --all`
+  green (271 core, 144 shell), `cargo clippy --all-targets -- -D
+  warnings` clean, host + armv7 nix builds clean.
+
 - **PR-writer-reconnect** (2026-04-24) — D-Bus writer reconnect + bounded
   SetValue + lazy infallible constructor (`crates/shell/src/dbus/writer.rs`).
   Resolves **A-56**. Plan:

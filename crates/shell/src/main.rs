@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
         match mqtt::connect(
             &cfg.mqtt,
             &cfg.outdoor_temperature_local,
-            &cfg.ev_soc,
+            &cfg.ev,
             Arc::clone(&soc_history),
         )
         .await?
@@ -205,7 +205,8 @@ async fn main() -> Result<()> {
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,
         controller_params: topology.controller_params,
         matter_outdoor_topic: cfg.outdoor_temperature_local.mqtt_topic.clone(),
-        ev_soc_discovery_topic: cfg.ev_soc.discovery_topic.clone(),
+        ev_soc_discovery_topic: cfg.ev.soc_topic.clone(),
+        ev_charge_target_discovery_topic: cfg.ev.charge_target_topic.clone(),
         soc_history: Arc::clone(&soc_history),
         hardware: topology.hardware,
     };

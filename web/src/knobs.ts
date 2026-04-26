@@ -37,7 +37,13 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05, default: 1 },
   "grid.night.discharge.disable.forced-value": { kind: "bool", default: false },
   "evcharger.boost.enable": { kind: "bool", default: true },
-  "evcharger.extended.enable": { kind: "bool", default: false },
+  // PR-auto-extended-charge: tri-state mode replaces the legacy bool.
+  "evcharger.extended.mode": {
+    kind: "enum",
+    cmdVariant: "SetExtendedChargeMode",
+    options: ["Auto", "Forced", "Disabled"],
+    default: "Auto",
+  },
   "evcharger.current.target": { kind: "float", min: 6, max: 32, step: 0.5, default: 9.5 },
   // A-14: kWh (per-session EV charge ceiling), not %. Default 65 kWh
   // covers a Tesla Model 3 LR full charge and sits on the auto-stop

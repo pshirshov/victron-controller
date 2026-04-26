@@ -30,12 +30,13 @@ pub struct Config {
     /// runtime-tunable — see `core::topology::HardwareParams`.
     #[serde(default)]
     pub hardware: HardwareConfig,
-    /// PR-ev-soc-sensor: optional MQTT bridge for an EV state-of-charge
-    /// sensor published by an external integration (e.g. saic-python-
-    /// mqtt-gateway). Same broker as `[mqtt]`. Disabled when
-    /// `discovery_topic` is None.
+    /// PR-ev-soc-sensor / PR-auto-extended-charge: optional MQTT
+    /// bridge for EV state-of-charge + configured charge-target sensors
+    /// published by an external integration (e.g. saic-python-mqtt-
+    /// gateway). Same broker as `[mqtt]`. Each topic is independently
+    /// optional — the bridge stays dormant for whichever is None.
     #[serde(default)]
-    pub ev_soc: EvSocConfig,
+    pub ev: EvConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -412,18 +413,24 @@ fn default_max_celsius() -> f64 {
     80.0
 }
 
-/// PR-ev-soc-sensor: external MQTT publisher providing the EV
-/// state-of-charge. The configured `discovery_topic` is the
-/// publisher's HA-discovery config topic. The shell subscribes to it
-/// once at startup, parses the retained JSON to extract `state_topic`,
-/// then subscribes to `state_topic` for the actual SoC readings. When
-/// `discovery_topic` is `None`, the entire path stays dormant — no
-/// subscription, no log noise, and `world.sensors.ev_soc` remains
-/// `Unknown`.
+/// PR-ev-soc-sensor / PR-auto-extended-charge: external MQTT
+/// publisher providing the EV state-of-charge and the EV's configured
+/// charge-target SoC. Each field is the publisher's HA-discovery
+/// config topic. For each `Some` topic the shell subscribes to the
+/// discovery topic, parses the retained JSON for `state_topic`, then
+/// subscribes to `state_topic` for the actual readings. When the
+/// field is `None`, that path stays dormant — no subscription, no log
+/// noise, and the corresponding sensor slot remains `Unknown`.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct EvSocConfig {
+pub struct EvConfig {
+    /// HA-discovery config topic for the EV's State of Charge sensor.
     #[serde(default)]
-    pub discovery_topic: Option<String>,
+    pub soc_topic: Option<String>,
+    /// HA-discovery config topic for the EV's configured charge-target
+    /// SoC. Used by the auto-extended-charge logic in the `Auto` mode
+    /// of `evcharger.extended`.
+    #[serde(default)]
+    pub charge_target_topic: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -686,7 +693,7 @@ impl Default for Config {
             tuning: TuningConfig::default(),
             outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
             hardware: HardwareConfig::default(),
-            ev_soc: EvSocConfig::default(),
+            ev: EvConfig::default(),
         }
     }
 }

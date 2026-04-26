@@ -106,6 +106,16 @@ enum Mode {
   Forced
 }
 
+// PR-auto-extended-charge. Tri-state mode for the EV-side
+// extended-charge knob (`evcharger.extended`). Replaces the legacy
+// boolean `evcharger.extended.enable`. `Auto` consults the daily
+// 04:30 evaluation; `Forced`/`Disabled` pin the controller behaviour.
+enum ExtendedChargeMode {
+  Auto
+  Forced
+  Disabled
+}
+
 // PR-soc-chart-solar (additive within 0.2.0): per-hour kWh estimates the
 // SoC-chart projection consumes. `hourly_kwh` is length 48 starting at
 // midnight LOCAL today (24 today + 24 tomorrow). Empty when the upstream
@@ -142,6 +152,8 @@ data Sensors {
   session_kwh: ActualF64
   // 0.2.0 addition (PR-ev-soc-sensor).
   ev_soc: ActualF64
+  // 0.2.0 addition (PR-auto-extended-charge): EV configured charge target.
+  ev_charge_target: ActualF64
 }
 
 // 0.2.0 addition (PR-tass-dag-view). Per-core observability snapshot
@@ -239,7 +251,9 @@ data Knobs {
   pessimism_multiplier_modifier: f64
   disable_night_grid_discharge: bit
   charge_car_boost: bit
-  charge_car_extended: bit
+  // PR-auto-extended-charge: tri-state mode replaces the legacy bool
+  // `charge_car_extended` knob.
+  charge_car_extended_mode: ExtendedChargeMode
   zappi_current_target: f64
   zappi_limit: f64
   zappi_emergency_margin: f64
@@ -287,6 +301,9 @@ data Bookkeeping {
   weather_soc_discharge_soc_target: f64
   weather_soc_battery_soc_target: f64
   weather_soc_disable_night_grid_discharge: bit
+  // PR-auto-extended-charge — daily 04:30 EV-extended-charge latch.
+  auto_extended_today: bit
+  auto_extended_today_date_iso: opt[str]
 }
 
 // PR-gamma-hold-redesign: extend Command with a Mode setter so the
@@ -333,6 +350,11 @@ root adt Command {
   }
   data SetChargeBatteryExtendedMode {
     value: ChargeBatteryExtendedMode
+  }
+  // PR-auto-extended-charge — set the EV-side extended-charge mode
+  // (`evcharger.extended`). Mirrors `SetChargeBatteryExtendedMode`.
+  data SetExtendedChargeMode {
+    value: ExtendedChargeMode
   }
   // PR-gamma-hold-redesign — set one of the four `*_mode` knobs.
   data SetMode {

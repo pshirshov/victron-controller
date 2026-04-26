@@ -355,7 +355,10 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
         // HA shape as `BatterySoc` / `BatterySoh`. Folded into this arm
         // so future tweaks to the battery-percent sensor metadata
         // (precision, icon, …) propagate uniformly.
-        BatterySoc | BatterySoh | EvSoc => SensorMeta {
+        //
+        // PR-auto-extended-charge: `EvChargeTarget` is also a `%`-unit
+        // EV-side battery threshold — same shape.
+        BatterySoc | BatterySoh | EvSoc | EvChargeTarget => SensorMeta {
             unit: Some("%"),
             device_class: Some("battery"),
             state_class: "measurement",
@@ -425,7 +428,13 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         (KnobId::ForceDisableExport, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::DisableNightGridDischarge, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::ChargeCarBoost, "switch", json!({"payload_on": "true", "payload_off": "false"})),
-        (KnobId::ChargeCarExtended, "switch", json!({"payload_on": "true", "payload_off": "false"})),
+        // PR-auto-extended-charge: tri-state select replaces the legacy
+        // bool switch entity for EV extended charge.
+        (
+            KnobId::ChargeCarExtendedMode,
+            "select",
+            json!({"options": ["auto", "forced", "disabled"]}),
+        ),
         (KnobId::AllowBatteryToCar, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         // PR-inverter-safe-discharge-knob.
         (KnobId::InverterSafeDischargeEnable, "switch", json!({"payload_on": "true", "payload_off": "false"})),

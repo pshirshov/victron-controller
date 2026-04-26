@@ -3,6 +3,7 @@ import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, Ba
 import {DebugFullCharge, DebugFullCharge_UEBACodec} from './DebugFullCharge'
 import {ChargeBatteryExtendedMode, ChargeBatteryExtendedMode_UEBACodec} from './ChargeBatteryExtendedMode'
 import {Mode, Mode_UEBACodec} from './Mode'
+import {ExtendedChargeMode, ExtendedChargeMode_UEBACodec} from './ExtendedChargeMode'
 import {DischargeTime, DischargeTime_UEBACodec} from './DischargeTime'
 import {ForecastDisagreementStrategy, ForecastDisagreementStrategy_UEBACodec} from './ForecastDisagreementStrategy'
 
@@ -18,7 +19,7 @@ export class Knobs implements BaboonGeneratedLatest {
     private readonly _pessimism_multiplier_modifier: number;
     private readonly _disable_night_grid_discharge: boolean;
     private readonly _charge_car_boost: boolean;
-    private readonly _charge_car_extended: boolean;
+    private readonly _charge_car_extended_mode: ExtendedChargeMode;
     private readonly _zappi_current_target: number;
     private readonly _zappi_limit: number;
     private readonly _zappi_emergency_margin: number;
@@ -42,7 +43,7 @@ export class Knobs implements BaboonGeneratedLatest {
     private readonly _disable_night_grid_discharge_mode: Mode;
     private readonly _inverter_safe_discharge_enable: boolean;
 
-    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended: boolean, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean) {
+    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended_mode: ExtendedChargeMode, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean) {
         this._force_disable_export = force_disable_export
         this._export_soc_threshold = export_soc_threshold
         this._discharge_soc_target = discharge_soc_target
@@ -54,7 +55,7 @@ export class Knobs implements BaboonGeneratedLatest {
         this._pessimism_multiplier_modifier = pessimism_multiplier_modifier
         this._disable_night_grid_discharge = disable_night_grid_discharge
         this._charge_car_boost = charge_car_boost
-        this._charge_car_extended = charge_car_extended
+        this._charge_car_extended_mode = charge_car_extended_mode
         this._zappi_current_target = zappi_current_target
         this._zappi_limit = zappi_limit
         this._zappi_emergency_margin = zappi_emergency_margin
@@ -112,8 +113,8 @@ export class Knobs implements BaboonGeneratedLatest {
     public get charge_car_boost(): boolean {
         return this._charge_car_boost;
     }
-    public get charge_car_extended(): boolean {
-        return this._charge_car_extended;
+    public get charge_car_extended_mode(): ExtendedChargeMode {
+        return this._charge_car_extended_mode;
     }
     public get zappi_current_target(): number {
         return this._zappi_current_target;
@@ -195,7 +196,7 @@ export class Knobs implements BaboonGeneratedLatest {
             pessimism_multiplier_modifier: this._pessimism_multiplier_modifier,
             disable_night_grid_discharge: this._disable_night_grid_discharge,
             charge_car_boost: this._charge_car_boost,
-            charge_car_extended: this._charge_car_extended,
+            charge_car_extended_mode: this._charge_car_extended_mode,
             zappi_current_target: this._zappi_current_target,
             zappi_limit: this._zappi_limit,
             zappi_emergency_margin: this._zappi_emergency_margin,
@@ -221,7 +222,7 @@ export class Knobs implements BaboonGeneratedLatest {
         };
     }
 
-    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended?: boolean; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean}): Knobs {
+    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended_mode?: ExtendedChargeMode; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean}): Knobs {
         return new Knobs(
             'force_disable_export' in overrides ? overrides.force_disable_export! : this._force_disable_export,
             'export_soc_threshold' in overrides ? overrides.export_soc_threshold! : this._export_soc_threshold,
@@ -234,7 +235,7 @@ export class Knobs implements BaboonGeneratedLatest {
             'pessimism_multiplier_modifier' in overrides ? overrides.pessimism_multiplier_modifier! : this._pessimism_multiplier_modifier,
             'disable_night_grid_discharge' in overrides ? overrides.disable_night_grid_discharge! : this._disable_night_grid_discharge,
             'charge_car_boost' in overrides ? overrides.charge_car_boost! : this._charge_car_boost,
-            'charge_car_extended' in overrides ? overrides.charge_car_extended! : this._charge_car_extended,
+            'charge_car_extended_mode' in overrides ? overrides.charge_car_extended_mode! : this._charge_car_extended_mode,
             'zappi_current_target' in overrides ? overrides.zappi_current_target! : this._zappi_current_target,
             'zappi_limit' in overrides ? overrides.zappi_limit! : this._zappi_limit,
             'zappi_emergency_margin' in overrides ? overrides.zappi_emergency_margin! : this._zappi_emergency_margin,
@@ -260,7 +261,7 @@ export class Knobs implements BaboonGeneratedLatest {
         );
     }
 
-    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended: boolean; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean}): Knobs {
+    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended_mode: ExtendedChargeMode; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean}): Knobs {
         return new Knobs(
             obj.force_disable_export,
             obj.export_soc_threshold,
@@ -273,7 +274,7 @@ export class Knobs implements BaboonGeneratedLatest {
             obj.pessimism_multiplier_modifier,
             obj.disable_night_grid_discharge,
             obj.charge_car_boost,
-            obj.charge_car_extended,
+            obj.charge_car_extended_mode,
             obj.zappi_current_target,
             obj.zappi_limit,
             obj.zappi_emergency_margin,
@@ -340,7 +341,7 @@ export class Knobs_UEBACodec {
             BinTools.writeF64(buffer, value.pessimism_multiplier_modifier);
             BinTools.writeBool(buffer, value.disable_night_grid_discharge);
             BinTools.writeBool(buffer, value.charge_car_boost);
-            BinTools.writeBool(buffer, value.charge_car_extended);
+            ExtendedChargeMode_UEBACodec.instance.encode(ctx, value.charge_car_extended_mode, buffer);
             BinTools.writeF64(buffer, value.zappi_current_target);
             BinTools.writeF64(buffer, value.zappi_limit);
             BinTools.writeF64(buffer, value.zappi_emergency_margin);
@@ -377,7 +378,7 @@ export class Knobs_UEBACodec {
             BinTools.writeF64(writer, value.pessimism_multiplier_modifier);
             BinTools.writeBool(writer, value.disable_night_grid_discharge);
             BinTools.writeBool(writer, value.charge_car_boost);
-            BinTools.writeBool(writer, value.charge_car_extended);
+            ExtendedChargeMode_UEBACodec.instance.encode(ctx, value.charge_car_extended_mode, writer);
             BinTools.writeF64(writer, value.zappi_current_target);
             BinTools.writeF64(writer, value.zappi_limit);
             BinTools.writeF64(writer, value.zappi_emergency_margin);
@@ -427,7 +428,7 @@ export class Knobs_UEBACodec {
         const pessimism_multiplier_modifier = BinTools.readF64(reader);
         const disable_night_grid_discharge = BinTools.readBool(reader);
         const charge_car_boost = BinTools.readBool(reader);
-        const charge_car_extended = BinTools.readBool(reader);
+        const charge_car_extended_mode = ExtendedChargeMode_UEBACodec.instance.decode(ctx, reader);
         const zappi_current_target = BinTools.readF64(reader);
         const zappi_limit = BinTools.readF64(reader);
         const zappi_emergency_margin = BinTools.readF64(reader);
@@ -462,7 +463,7 @@ export class Knobs_UEBACodec {
             pessimism_multiplier_modifier,
             disable_night_grid_discharge,
             charge_car_boost,
-            charge_car_extended,
+            charge_car_extended_mode,
             zappi_current_target,
             zappi_limit,
             zappi_emergency_margin,

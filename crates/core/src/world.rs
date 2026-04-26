@@ -38,9 +38,14 @@ pub struct Sensors {
     /// PR-ev-soc-sensor: EV state-of-charge percentage. Pushed in by
     /// an external MQTT publisher (saic-python-mqtt-gateway today)
     /// after the shell-side subscriber resolves the publisher's HA-
-    /// discovery `state_topic`. Pure observability — no controller
-    /// reads from this slot.
+    /// discovery `state_topic`. Read by the daily 04:30 auto-extended-
+    /// charge evaluation in `process::maybe_evaluate_auto_extended`;
+    /// pure observability for the rest of the controllers.
     pub ev_soc: Actual<f64>,
+    /// PR-auto-extended-charge: EV configured charge-target percentage,
+    /// sourced from the same gateway as `ev_soc`. Read by the 04:30
+    /// auto-extended-charge evaluation; pure observability otherwise.
+    pub ev_charge_target: Actual<f64>,
 }
 
 impl Sensors {
@@ -74,6 +79,8 @@ impl Sensors {
             SensorId::SessionKwh => self.session_kwh,
             // PR-ev-soc-sensor.
             SensorId::EvSoc => self.ev_soc,
+            // PR-auto-extended-charge.
+            SensorId::EvChargeTarget => self.ev_charge_target,
             // PR-actuated-as-sensors: the actuated-mirror sensor
             // variants don't have dedicated storage on `Sensors`. Their
             // storage of truth is `world.<entity>.actual`; the post-
@@ -124,6 +131,7 @@ impl Sensors {
             outdoor_temperature: Actual::unknown(now),
             session_kwh: Actual::unknown(now),
             ev_soc: Actual::unknown(now),
+            ev_charge_target: Actual::unknown(now),
         }
     }
 }
@@ -181,6 +189,11 @@ impl TypedSensors {
 
 /// Cross-cutting bookkeeping. Persisted to retained MQTT when changed.
 #[derive(Debug, Clone, Copy, PartialEq)]
+// PR-auto-extended-charge: now exceeds clippy's 3-bool struct soft cap
+// after adding `auto_extended_today`. Splitting Bookkeeping into a
+// state machine for the sake of one extra bool would be pure
+// gold-plating — every field is independently meaningful.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Bookkeeping {
     pub next_full_charge: Option<NaiveDateTime>,
     pub above_soc_date: Option<NaiveDate>,
@@ -217,6 +230,16 @@ pub struct Bookkeeping {
     pub weather_soc_discharge_soc_target: f64,
     pub weather_soc_battery_soc_target: f64,
     pub weather_soc_disable_night_grid_discharge: bool,
+    /// PR-auto-extended-charge: result of the most recent 04:30
+    /// auto-extended evaluation. Read by
+    /// `process::effective_charge_car_extended` when the user-set mode
+    /// is `Auto`. Mutated only by `process::maybe_evaluate_auto_extended`
+    /// (latched per local date).
+    pub auto_extended_today: bool,
+    /// PR-auto-extended-charge: local date the most recent auto
+    /// evaluation fired for. `None` until the first 04:30 cycle since
+    /// process start.
+    pub auto_extended_today_date: Option<NaiveDate>,
 }
 
 impl Bookkeeping {
@@ -241,6 +264,11 @@ impl Bookkeeping {
             weather_soc_discharge_soc_target: 80.0,
             weather_soc_battery_soc_target: 80.0,
             weather_soc_disable_night_grid_discharge: false,
+            // PR-auto-extended-charge: defensive default. Until the first
+            // 04:30 evaluation fires, `Auto` mode treats the EV as not
+            // needing the cheap-rate window.
+            auto_extended_today: false,
+            auto_extended_today_date: None,
         }
     }
 }

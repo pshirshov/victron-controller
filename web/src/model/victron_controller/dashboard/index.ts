@@ -22,6 +22,7 @@ export * from './Decision';
 export * from './DecisionFactor';
 export * from './Decisions';
 export * from './DischargeTime';
+export * from './ExtendedChargeMode';
 export * from './ForecastDisagreementStrategy';
 export * from './ForecastSnapshot';
 export * from './Forecasts';
