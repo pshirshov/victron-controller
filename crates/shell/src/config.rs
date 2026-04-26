@@ -30,6 +30,12 @@ pub struct Config {
     /// runtime-tunable — see `core::topology::HardwareParams`.
     #[serde(default)]
     pub hardware: HardwareConfig,
+    /// PR-ev-soc-sensor: optional MQTT bridge for an EV state-of-charge
+    /// sensor published by an external integration (e.g. saic-python-
+    /// mqtt-gateway). Same broker as `[mqtt]`. Disabled when
+    /// `discovery_topic` is None.
+    #[serde(default)]
+    pub ev_soc: EvSocConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -406,6 +412,20 @@ fn default_max_celsius() -> f64 {
     80.0
 }
 
+/// PR-ev-soc-sensor: external MQTT publisher providing the EV
+/// state-of-charge. The configured `discovery_topic` is the
+/// publisher's HA-discovery config topic. The shell subscribes to it
+/// once at startup, parses the retained JSON to extract `state_topic`,
+/// then subscribes to `state_topic` for the actual SoC readings. When
+/// `discovery_topic` is `None`, the entire path stays dormant — no
+/// subscription, no log noise, and `world.sensors.ev_soc` remains
+/// `Unknown`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EvSocConfig {
+    #[serde(default)]
+    pub discovery_topic: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuningConfig {
     /// Heartbeat for freshness decay + periodic controller re-evaluation.
@@ -666,6 +686,7 @@ impl Default for Config {
             tuning: TuningConfig::default(),
             outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
             hardware: HardwareConfig::default(),
+            ev_soc: EvSocConfig::default(),
         }
     }
 }

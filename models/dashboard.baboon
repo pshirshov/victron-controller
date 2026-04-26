@@ -140,6 +140,8 @@ data Sensors {
   outdoor_temperature: ActualF64
   // 0.2.0 addition (PR-session-kwh-sensor).
   session_kwh: ActualF64
+  // 0.2.0 addition (PR-ev-soc-sensor).
+  ev_soc: ActualF64
 }
 
 // 0.2.0 addition (PR-tass-dag-view). Per-core observability snapshot

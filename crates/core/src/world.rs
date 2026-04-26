@@ -35,6 +35,12 @@ pub struct Sensors {
     /// session (kWh). Surfaced via the dashboard `Sensors` row;
     /// driven by the myenergi cloud poller. See PR-session-kwh-sensor.
     pub session_kwh: Actual<f64>,
+    /// PR-ev-soc-sensor: EV state-of-charge percentage. Pushed in by
+    /// an external MQTT publisher (saic-python-mqtt-gateway today)
+    /// after the shell-side subscriber resolves the publisher's HA-
+    /// discovery `state_topic`. Pure observability — no controller
+    /// reads from this slot.
+    pub ev_soc: Actual<f64>,
 }
 
 impl Sensors {
@@ -66,6 +72,8 @@ impl Sensors {
             SensorId::EssState => self.ess_state,
             SensorId::OutdoorTemperature => self.outdoor_temperature,
             SensorId::SessionKwh => self.session_kwh,
+            // PR-ev-soc-sensor.
+            SensorId::EvSoc => self.ev_soc,
             // PR-actuated-as-sensors: the actuated-mirror sensor
             // variants don't have dedicated storage on `Sensors`. Their
             // storage of truth is `world.<entity>.actual`; the post-
@@ -115,6 +123,7 @@ impl Sensors {
             ess_state: Actual::unknown(now),
             outdoor_temperature: Actual::unknown(now),
             session_kwh: Actual::unknown(now),
+            ev_soc: Actual::unknown(now),
         }
     }
 }

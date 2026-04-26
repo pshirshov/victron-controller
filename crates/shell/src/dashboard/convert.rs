@@ -48,6 +48,13 @@ pub struct MetaContext {
     /// fallback source (whichever publishes most recently wins via
     /// `Actual::on_reading`'s freshness reset).
     pub matter_outdoor_topic: Option<String>,
+    /// PR-ev-soc-sensor: when `Some`, the dashboard's `ev_soc` row is
+    /// annotated with this discovery topic. The actual subscribe path
+    /// resolves the publisher's `state_topic` from the retained
+    /// discovery payload — that resolved topic isn't visible here, so
+    /// we surface the discovery topic as the operator-visible
+    /// identifier instead.
+    pub ev_soc_discovery_topic: Option<String>,
     /// PR-soc-chart: shared in-memory ring of recent SoC samples.
     /// `world_to_snapshot` reads from this synchronously to populate
     /// `soc_chart.history`.
@@ -296,6 +303,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             ess_state: actual_f64(&s.ess_state),
             outdoor_temperature: actual_f64(&s.outdoor_temperature),
             session_kwh: actual_f64(&s.session_kwh),
+            ev_soc: actual_f64(&s.ev_soc),
         },
         sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
@@ -588,6 +596,25 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             staleness_ms: staleness_ms(SensorId::SessionKwh),
         },
     );
+    // PR-ev-soc-sensor: surfaced only when the bridge is configured.
+    // When disabled the row's value stays `Unknown`, but the meta entry
+    // is omitted so the operator isn't misled into thinking we have a
+    // wire it'll never see traffic on.
+    if let Some(topic) = &ctx.ev_soc_discovery_topic {
+        m.insert(
+            "ev_soc".into(),
+            ModelSensorMeta {
+                origin: "ext-mqtt".to_string(),
+                identifier: topic.clone(),
+                cadence_ms: SensorId::EvSoc
+                    .reseed_cadence()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(i64::MAX),
+                staleness_ms: staleness_ms(SensorId::EvSoc),
+            },
+        );
+    }
     m
 }
 

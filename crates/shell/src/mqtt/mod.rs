@@ -28,6 +28,13 @@ pub use serialize::{
     parse_matter_outdoor_temp, set_hardware_params, MatterOutdoorTempParse,
 };
 
+// PR-ev-soc-sensor: parsers re-exported for unit testing and any
+// future caller that needs to parse the same wire formats out-of-band.
+// `parse_discovery_state_topic` and `parse_ev_soc_state_value` are
+// defined in this module (not `serialize`) because they're only used
+// by the subscriber's inbound dispatch path and have no symmetric
+// `encode_*` counterpart.
+
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -42,10 +49,11 @@ use tracing::{debug, info, warn};
 
 use victron_controller_core::owner::Owner;
 use victron_controller_core::types::{
-    Command, Event, KnobId, KnobValue, PublishPayload, TimerId, TimerStatus,
+    Command, Event, KnobId, KnobValue, PublishPayload, SensorId, SensorReading, TimerId,
+    TimerStatus,
 };
 
-use crate::config::{MqttConfig, OutdoorTemperatureLocalConfig};
+use crate::config::{EvSocConfig, MqttConfig, OutdoorTemperatureLocalConfig};
 use crate::dashboard::SocHistoryStore;
 use std::sync::Arc;
 
@@ -99,6 +107,7 @@ impl Publisher {
 pub async fn connect(
     config: &MqttConfig,
     outdoor_temp: &OutdoorTemperatureLocalConfig,
+    ev_soc: &EvSocConfig,
     soc_history: Arc<SocHistoryStore>,
 ) -> Result<Option<(Publisher, Subscriber)>> {
     if config.host.is_empty() {
@@ -167,8 +176,47 @@ pub async fn connect(
         matter_outdoor_min_c: outdoor_temp.min_celsius,
         matter_outdoor_max_c: outdoor_temp.max_celsius,
         soc_history,
+        ev_soc_discovery_topic: ev_soc.discovery_topic.clone(),
+        ev_soc_state_topic: None,
+        ev_soc_last_parse_warn: None,
     };
     Ok(Some((publisher, subscriber)))
+}
+
+// -----------------------------------------------------------------------------
+// PR-ev-soc-sensor — parsers shared with unit tests
+// -----------------------------------------------------------------------------
+
+/// Parse an HA-discovery config JSON body and extract the `state_topic`
+/// field. Returns `None` when the payload is not valid JSON, isn't an
+/// object, or is missing a string-typed `state_topic`. Lives at module
+/// scope so the unit tests can exercise it without standing up an MQTT
+/// client.
+#[must_use]
+pub fn parse_discovery_state_topic(payload: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    v.get("state_topic")?.as_str().map(str::to_string)
+}
+
+/// Parse an EV SoC state-topic body. The publisher (saic-python-mqtt-
+/// gateway) sends a plain decimal like `"42.5"`. Rejects:
+///
+///   * non-UTF-8 bodies,
+///   * unparseable / non-finite floats,
+///   * values outside the inclusive `[0.0, 100.0]` percentage range.
+///
+/// Returns `Some(value)` only on a clean, in-range reading.
+#[must_use]
+pub fn parse_ev_soc_state_value(payload: &[u8]) -> Option<f64> {
+    let s = std::str::from_utf8(payload).ok()?.trim();
+    let v: f64 = s.parse().ok()?;
+    if !v.is_finite() {
+        return None;
+    }
+    if !(0.0..=100.0).contains(&v) {
+        return None;
+    }
+    Some(v)
 }
 
 /// PR-timers-section: wall-clock epoch-ms helper used for the one-shot
@@ -221,6 +269,23 @@ pub struct Subscriber {
     /// bootstrap are ignored — we already have those samples in the
     /// deque locally.
     soc_history: Arc<SocHistoryStore>,
+    /// PR-ev-soc-sensor: HA-discovery config topic for an external
+    /// publisher (saic-python-mqtt-gateway today). When `Some`, the
+    /// subscriber subscribes to the discovery topic, parses
+    /// `state_topic` from the retained JSON, and subscribes to *that*
+    /// for the actual SoC readings. `None` ⇒ the entire path is
+    /// dormant.
+    ev_soc_discovery_topic: Option<String>,
+    /// PR-ev-soc-sensor: state_topic resolved from the most recent
+    /// discovery payload. Carried in `Subscriber` (instead of the run-
+    /// loop locals) so re-issuing subscriptions after a connection drop
+    /// can refer to it.
+    ev_soc_state_topic: Option<String>,
+    /// PR-ev-soc-sensor: monotonic timestamp of the last
+    /// `debug!`-logged value-parse failure on the EV SoC state topic.
+    /// Used to rate-limit the noisy "garbage body" warnings to one
+    /// emission per 60 s, mirroring the matter-outdoor-temp pattern.
+    ev_soc_last_parse_warn: Option<Instant>,
 }
 
 impl std::fmt::Debug for Subscriber {
@@ -234,6 +299,9 @@ impl std::fmt::Debug for Subscriber {
             .field("matter_outdoor_min_c", &self.matter_outdoor_min_c)
             .field("matter_outdoor_max_c", &self.matter_outdoor_max_c)
             .field("soc_history", &"<SocHistoryStore>")
+            .field("ev_soc_discovery_topic", &self.ev_soc_discovery_topic)
+            .field("ev_soc_state_topic", &self.ev_soc_state_topic)
+            .field("ev_soc_last_parse_warn", &self.ev_soc_last_parse_warn)
             .finish()
     }
 }
@@ -403,6 +471,17 @@ impl Subscriber {
         // Phase 2: main loop ---------------------------------------------------
         self.subscribe_set_topics(&set_topics).await?;
         self.subscribe_matter_outdoor().await;
+        // PR-ev-soc-sensor: subscribe to the publisher's HA-discovery
+        // config topic. The retained discovery payload arrives shortly
+        // after subscribe; the inbound dispatch below resolves
+        // `state_topic` from it and chains a second subscribe.
+        self.subscribe_ev_soc_discovery().await;
+        if let Some(state_topic) = self.ev_soc_state_topic.clone() {
+            // Already-known state topic from a previous run cycle (e.g.
+            // post-reconnect). Re-issue the subscribe so the broker
+            // re-delivers retained values.
+            self.subscribe_ev_soc_state(&state_topic).await;
+        }
 
         // PR-matter-outdoor-temp: rate-limit the out-of-range warn to
         // once per 60 s. Genuine sensor failures stay visible without
@@ -422,6 +501,10 @@ impl Subscriber {
                         warn!(error = %e2, "re-subscribe failed; continuing");
                     }
                     self.subscribe_matter_outdoor().await;
+                    self.subscribe_ev_soc_discovery().await;
+                    if let Some(t) = self.ev_soc_state_topic.clone() {
+                        self.subscribe_ev_soc_state(&t).await;
+                    }
                     continue;
                 }
             };
@@ -432,6 +515,10 @@ impl Subscriber {
                         warn!(error = %e, "re-subscribe after ConnAck failed");
                     }
                     self.subscribe_matter_outdoor().await;
+                    self.subscribe_ev_soc_discovery().await;
+                    if let Some(t) = self.ev_soc_state_topic.clone() {
+                        self.subscribe_ev_soc_state(&t).await;
+                    }
                 }
                 MqttEvent::Incoming(Packet::Publish(publish)) => {
                     // PR-matter-outdoor-temp: exact-match against the
@@ -481,6 +568,106 @@ impl Subscriber {
                             continue;
                         }
                     }
+                    // PR-ev-soc-sensor: discovery + state topic dispatch.
+                    // Discovery payload is retained; the gateway may also
+                    // republish it on its own restart with a new
+                    // state_topic — handle that case by swapping the
+                    // subscription.
+                    if self
+                        .ev_soc_discovery_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        match parse_discovery_state_topic(&publish.payload) {
+                            Some(new_state_topic) => {
+                                let prev = self.ev_soc_state_topic.clone();
+                                if prev.as_deref() != Some(new_state_topic.as_str()) {
+                                    if let Some(old) = prev.as_deref() {
+                                        if let Err(e) = self.client.unsubscribe(old).await {
+                                            warn!(
+                                                error = %e,
+                                                old_topic = %old,
+                                                "ev_soc: unsubscribe old state_topic failed"
+                                            );
+                                        }
+                                        info!(
+                                            old_topic = %old,
+                                            new_topic = %new_state_topic,
+                                            "ev_soc: state_topic changed; re-subscribing",
+                                        );
+                                    } else {
+                                        info!(
+                                            new_topic = %new_state_topic,
+                                            "ev_soc: state_topic resolved from discovery",
+                                        );
+                                    }
+                                    self.ev_soc_state_topic = Some(new_state_topic.clone());
+                                    self.subscribe_ev_soc_state(&new_state_topic).await;
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    topic = %publish.topic,
+                                    "ev_soc: discovery payload missing string `state_topic`; \
+                                     no state subscription"
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                    if self
+                        .ev_soc_state_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        match parse_ev_soc_state_value(&publish.payload) {
+                            Some(v) => {
+                                let event = Event::Sensor(SensorReading {
+                                    id: SensorId::EvSoc,
+                                    value: v,
+                                    at: Instant::now(),
+                                });
+                                // try_send drops on full instead of
+                                // blocking the dispatch loop — we'd
+                                // rather lose a single SoC sample than
+                                // wedge the whole subscriber.
+                                if let Err(e) = tx.try_send(event) {
+                                    use tokio::sync::mpsc::error::TrySendError;
+                                    match e {
+                                        TrySendError::Full(_) => {
+                                            warn!(
+                                                "ev_soc: event channel full; dropped reading"
+                                            );
+                                        }
+                                        TrySendError::Closed(_) => {
+                                            info!(
+                                                "runtime receiver closed; mqtt subscriber exiting"
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                let now = Instant::now();
+                                let should_warn = self
+                                    .ev_soc_last_parse_warn
+                                    .is_none_or(|t| {
+                                        now.duration_since(t) >= Duration::from_secs(60)
+                                    });
+                                if should_warn {
+                                    debug!(
+                                        topic = %publish.topic,
+                                        body_len = publish.payload.len(),
+                                        "ev_soc: state body unparseable / out of range; \
+                                         dropped (rate-limited 60s)"
+                                    );
+                                    self.ev_soc_last_parse_warn = Some(now);
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(event) = serialize::decode_knob_set(
                         &self.topic_root,
                         &publish.topic,
@@ -526,5 +713,112 @@ impl Subscriber {
                 warn!(error = %e, %topic, "matter outdoor temperature MQTT subscribe failed");
             }
         }
+    }
+
+    /// PR-ev-soc-sensor: subscribe to the publisher's HA-discovery
+    /// config topic (Stage A). Silent no-op when the bridge is
+    /// unconfigured. Non-fatal on subscribe failure — the bridge is
+    /// optional and the rest of the subscriber must keep running.
+    async fn subscribe_ev_soc_discovery(&self) {
+        let Some(topic) = self.ev_soc_discovery_topic.as_deref() else {
+            return;
+        };
+        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+            Ok(()) => {
+                info!(%topic, "ev_soc discovery topic subscribed: {topic}");
+            }
+            Err(e) => {
+                warn!(error = %e, %topic, "ev_soc discovery topic subscribe failed");
+            }
+        }
+    }
+
+    /// PR-ev-soc-sensor: subscribe to a resolved state topic (Stage B).
+    async fn subscribe_ev_soc_state(&self, topic: &str) {
+        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+            Ok(()) => {
+                info!(%topic, "ev_soc state topic subscribed: {topic}");
+            }
+            Err(e) => {
+                warn!(error = %e, %topic, "ev_soc state topic subscribe failed");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_discovery_state_topic, parse_ev_soc_state_value};
+
+    // ------------------------------------------------------------------
+    // PR-ev-soc-sensor: discovery JSON → state_topic
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_discovery_extracts_state_topic() {
+        let body = br#"{
+            "name": "MG SOC",
+            "state_topic": "saic/LSJW/drivetrain/soc",
+            "unit_of_measurement": "%",
+            "device_class": "battery"
+        }"#;
+        assert_eq!(
+            parse_discovery_state_topic(body).as_deref(),
+            Some("saic/LSJW/drivetrain/soc"),
+        );
+    }
+
+    #[test]
+    fn parse_discovery_rejects_missing_state_topic() {
+        let body = br#"{
+            "name": "MG SOC",
+            "unit_of_measurement": "%"
+        }"#;
+        assert!(parse_discovery_state_topic(body).is_none());
+    }
+
+    #[test]
+    fn parse_discovery_rejects_non_string_state_topic() {
+        let body = br#"{ "state_topic": 42 }"#;
+        assert!(parse_discovery_state_topic(body).is_none());
+    }
+
+    #[test]
+    fn parse_discovery_rejects_malformed_json() {
+        assert!(parse_discovery_state_topic(b"not json").is_none());
+        assert!(parse_discovery_state_topic(b"").is_none());
+        assert!(parse_discovery_state_topic(b"{").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ev-soc-sensor: state body → f64
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_state_value_accepts_valid_float() {
+        let v = parse_ev_soc_state_value(b"42.5").unwrap();
+        assert!((v - 42.5).abs() < f64::EPSILON);
+        // Trims surrounding whitespace, accepts integer-shaped bodies.
+        assert!((parse_ev_soc_state_value(b" 0 ").unwrap() - 0.0).abs() < f64::EPSILON);
+        assert!((parse_ev_soc_state_value(b"100").unwrap() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_state_value_rejects_nonfinite_or_out_of_range() {
+        assert!(parse_ev_soc_state_value(b"NaN").is_none());
+        assert!(parse_ev_soc_state_value(b"inf").is_none());
+        assert!(parse_ev_soc_state_value(b"-inf").is_none());
+        assert!(parse_ev_soc_state_value(b"-1").is_none());
+        assert!(parse_ev_soc_state_value(b"100.1").is_none());
+        assert!(parse_ev_soc_state_value(b"101").is_none());
+    }
+
+    #[test]
+    fn parse_state_value_rejects_garbage() {
+        assert!(parse_ev_soc_state_value(b"hello").is_none());
+        assert!(parse_ev_soc_state_value(b"").is_none());
+        assert!(parse_ev_soc_state_value(b"42.5%").is_none());
+        // Non-UTF-8 bytes
+        assert!(parse_ev_soc_state_value(&[0xff, 0xfe]).is_none());
     }
 }

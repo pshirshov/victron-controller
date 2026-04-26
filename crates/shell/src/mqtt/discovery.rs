@@ -351,7 +351,11 @@ struct SensorMeta {
 fn sensor_meta(id: SensorId) -> SensorMeta {
     use SensorId::*;
     match id {
-        BatterySoc | BatterySoh => SensorMeta {
+        // PR-ev-soc-sensor: `EvSoc` is also a `%`-unit battery — same
+        // HA shape as `BatterySoc` / `BatterySoh`. Folded into this arm
+        // so future tweaks to the battery-percent sensor metadata
+        // (precision, icon, …) propagate uniformly.
+        BatterySoc | BatterySoh | EvSoc => SensorMeta {
             unit: Some("%"),
             device_class: Some("battery"),
             state_class: "measurement",

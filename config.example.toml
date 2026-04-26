@@ -135,6 +135,18 @@ bind = "0.0.0.0"
 # max_celsius = 50.0
 
 # =============================================================================
+# EV state-of-charge — external MQTT publisher (PR-ev-soc-sensor)
+# =============================================================================
+# Optional: subscribe to an external MQTT publisher's HA-discovery
+# config to pull the EV SoC into our sensor table. We subscribe to the
+# discovery topic, parse the retained JSON for `state_topic`, then
+# subscribe to that for the actual readings. Leave commented out to
+# disable the bridge entirely.
+#
+# [ev_soc]
+# discovery_topic = "homeassistant/sensor/example_ev_vin_mg/example_ev_vin_soc/config"
+
+# =============================================================================
 # Runtime tuning
 # =============================================================================
 [tuning]

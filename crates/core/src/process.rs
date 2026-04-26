@@ -223,6 +223,8 @@ fn apply_sensor_reading(
         SensorId::EssState => world.sensors.ess_state.on_reading(v, at),
         SensorId::OutdoorTemperature => world.sensors.outdoor_temperature.on_reading(v, at),
         SensorId::SessionKwh => world.sensors.session_kwh.on_reading(v, at),
+        // PR-ev-soc-sensor.
+        SensorId::EvSoc => world.sensors.ev_soc.on_reading(v, at),
         // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
         // variants don't have dedicated `world.sensors.<field>` slots —
         // their storage of truth is `world.<entity>.actual`, driven by
@@ -738,6 +740,8 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
         .tick(at, SensorId::OutdoorTemperature.freshness_threshold());
     ss.session_kwh
         .tick(at, SensorId::SessionKwh.freshness_threshold());
+    // PR-ev-soc-sensor.
+    ss.ev_soc.tick(at, SensorId::EvSoc.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
@@ -3699,6 +3703,23 @@ mod tests {
             50.0,
             "Forced mode must dispatch to user-owned knob"
         );
+    }
+
+    /// PR-ev-soc-sensor: an `Event::Sensor(EvSoc, ...)` lands on
+    /// `world.sensors.ev_soc` and the slot becomes `Fresh` immediately.
+    /// Pure dispatch test — no controller interaction.
+    #[test]
+    fn apply_sensor_reading_ev_soc_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::EvSoc,
+            value: 75.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.ev_soc.value, Some(75.0));
+        assert_eq!(world.sensors.ev_soc.freshness, Freshness::Fresh);
     }
 
     #[test]

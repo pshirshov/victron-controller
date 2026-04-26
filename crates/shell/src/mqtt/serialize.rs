@@ -406,6 +406,8 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         SensorId::EssState => "inverter.ess.state",
         SensorId::OutdoorTemperature => "weather.temperature.outdoor",
         SensorId::SessionKwh => "evcharger.session.energy",
+        // PR-ev-soc-sensor.
+        SensorId::EvSoc => "ev.soc",
         // PR-AS-C: actuated-mirror SensorId variants do not have a
         // sensor wire surface — they are surfaced via the actuated
         // entity table (`PublishPayload::ActuatedPhase`). Both call

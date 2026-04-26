@@ -564,16 +564,17 @@ mod sensor_broadcast {
     use crate::types::{Effect, PublishPayload, SensorId};
     use crate::world::World;
 
-    // 20 original sensor publishes plus 3 numeric + 3 boolean
-    // bookkeeping publishes on the first run with a fresh-boot world
-    // (every cache slot is absent → first-write emits the value).
+    // 21 sensor publishes (20 original + ev_soc per PR-ev-soc-sensor)
+    // plus 3 numeric + 3 boolean bookkeeping publishes on the first
+    // run with a fresh-boot world (every cache slot is absent →
+    // first-write emits the value).
     // PR-AS-C: the 12 actuated-mirror SensorId variants (grid setpoint
     // actual + current limit actual + 10 schedule leaves) are filtered
     // out of the broadcast iteration via `id.actuated_id().is_some()` —
     // their values are surfaced via the dedicated `Actuated` table
     // (`PublishPayload::ActuatedPhase`), so double-publishing them as
     // sensors would clutter HA.
-    const EXPECTED_FIRST_RUN_EFFECTS: usize = 20 + 3 + 3;
+    const EXPECTED_FIRST_RUN_EFFECTS: usize = 21 + 3 + 3;
 
     fn fixed_clock() -> FixedClock {
         let mono = Instant::now();

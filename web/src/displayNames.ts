@@ -37,6 +37,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   ess_state: "inverter.ess.state",
   outdoor_temperature: "weather.temperature.outdoor",
   session_kwh: "evcharger.session.energy",
+  ev_soc: "ev.soc",
 
   // --- Knobs (33) ---
   force_disable_export: "grid.export.force-disable",

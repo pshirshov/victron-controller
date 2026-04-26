@@ -102,6 +102,12 @@ pub enum SensorId {
     Schedule1SocActual,
     Schedule1DaysActual,
     Schedule1AllowDischargeActual,
+    /// PR-ev-soc-sensor: EV state-of-charge percentage sourced from an
+    /// external MQTT publisher (saic-python-mqtt-gateway today). Pushed
+    /// in by the MQTT subscriber after parsing the publisher's HA-
+    /// discovery `state_topic`; the value is opaque to the controllers
+    /// — surfaced on the dashboard sensor table only.
+    EvSoc,
 }
 
 impl SensorId {
@@ -169,6 +175,12 @@ impl SensorId {
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
             | Self::Schedule1AllowDischargeActual => Duration::from_secs(180),
+            // PR-ev-soc-sensor: external push from saic-python-mqtt-gateway.
+            // The car can sleep for hours between reports; 12 h is a
+            // generous Fresh window that still flips Stale if the gateway
+            // dies. Marked as external-polled so the staleness invariant
+            // uses the grace-window rule (cadence + slack).
+            Self::EvSoc => Duration::from_secs(12 * 3600),
         }
     }
 }
@@ -235,6 +247,8 @@ impl SensorId {
         SensorId::Schedule1SocActual,
         SensorId::Schedule1DaysActual,
         SensorId::Schedule1AllowDischargeActual,
+        // PR-ev-soc-sensor.
+        SensorId::EvSoc,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -298,7 +312,11 @@ impl SensorId {
             | Self::Schedule1DurationActual
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
-            | Self::Schedule1AllowDischargeActual => FreshnessRegime::ReseedDriven,
+            | Self::Schedule1AllowDischargeActual
+            // PR-ev-soc-sensor: external MQTT push (saic-python-mqtt-
+            // gateway). No organic D-Bus signal; the gateway pushes when
+            // the car reports a new SoC.
+            | Self::EvSoc => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -372,6 +390,13 @@ impl SensorId {
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
             | Self::Schedule1AllowDischargeActual => Duration::from_secs(60),
+            // PR-ev-soc-sensor: saic-python-mqtt-gateway typically polls
+            // the SAIC API every 60 min when the car is plugged in, slower
+            // when sleeping. Treated as external-polled below so the
+            // staleness invariant uses the grace-window model (cadence +
+            // slack) — the 12 h staleness window comfortably outlives the
+            // 60 min cadence.
+            Self::EvSoc => Duration::from_secs(60 * 60),
         }
     }
 
@@ -428,7 +453,9 @@ impl SensorId {
             | Self::EvchargerAcCurrent
             | Self::EssState
             | Self::OutdoorTemperature
-            | Self::SessionKwh => None,
+            | Self::SessionKwh
+            // PR-ev-soc-sensor.
+            | Self::EvSoc => None,
         }
     }
 }
@@ -442,7 +469,10 @@ impl SensorId {
 const fn is_external_polled(id: SensorId) -> bool {
     matches!(
         id,
-        SensorId::OutdoorTemperature | SensorId::SessionKwh
+        SensorId::OutdoorTemperature
+            | SensorId::SessionKwh
+            // PR-ev-soc-sensor: external MQTT push, gateway-paced.
+            | SensorId::EvSoc
     )
 }
 
@@ -1057,6 +1087,8 @@ mod tests {
                 | SensorId::Schedule1SocActual
                 | SensorId::Schedule1DaysActual
                 | SensorId::Schedule1AllowDischargeActual => Duration::from_secs(60),
+                // PR-ev-soc-sensor: gateway poll cadence ~60 min.
+                SensorId::EvSoc => Duration::from_secs(60 * 60),
             };
             assert_eq!(
                 id.reseed_cadence(),
@@ -1103,7 +1135,9 @@ mod tests {
                 | SensorId::Schedule1DurationActual
                 | SensorId::Schedule1SocActual
                 | SensorId::Schedule1DaysActual
-                | SensorId::Schedule1AllowDischargeActual => FreshnessRegime::ReseedDriven,
+                | SensorId::Schedule1AllowDischargeActual
+                // PR-ev-soc-sensor.
+                | SensorId::EvSoc => FreshnessRegime::ReseedDriven,
             };
             assert_eq!(
                 id.regime(),
@@ -1118,7 +1152,10 @@ mod tests {
             // model — see `is_external_polled` doc.
             let required = if matches!(
                 id,
-                SensorId::OutdoorTemperature | SensorId::SessionKwh,
+                SensorId::OutdoorTemperature
+                    | SensorId::SessionKwh
+                    // PR-ev-soc-sensor.
+                    | SensorId::EvSoc,
             ) {
                 cadence + Duration::from_secs(1)
             } else {
@@ -1173,7 +1210,9 @@ mod tests {
                 | SensorId::EvchargerAcCurrent
                 | SensorId::EssState
                 | SensorId::OutdoorTemperature
-                | SensorId::SessionKwh => None,
+                | SensorId::SessionKwh
+                // PR-ev-soc-sensor.
+                | SensorId::EvSoc => None,
             };
             assert_eq!(
                 id.actuated_id(),
