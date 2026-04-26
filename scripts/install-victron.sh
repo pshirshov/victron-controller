@@ -63,39 +63,15 @@ if [[ ! -f "$NIX_BIN" ]]; then
   exit 3
 fi
 # Copy out of /nix/store (read-only, perms 0555) into a writable path
-# so the optional UPX step can rewrite it in place. ELF interpreter
-# is already /lib/ld-linux-armhf.so.3 (postFixup in the derivation).
-# `mktemp` creates the temp file as 0600; `cp` keeps the destination
-# perms, so the file lands without an execute bit and UPX rejects
-# it as "file not executable". `u+wx` restores both.
+# so the install path doesn't carry the read-only mode forward. ELF
+# interpreter is already /lib/ld-linux-armhf.so.3 AND the binary is
+# already UPX-compressed via the derivation's postFixup — no
+# post-processing needed.
 BINARY_PATH="$(mktemp -t victron-controller.XXXXXX)"
 cp "$NIX_BIN" "$BINARY_PATH"
 chmod u+wx "$BINARY_PATH"
-echo "[local] nix output: $NIX_BIN"
-
-# UPX-compress the binary to minimise eMMC write volume on each deploy
-# and cut scp transfer time. UPX decompresses in-process on startup
-# (~50 ms on ARMv7) — insignificant next to our event-driven steady
-# state. Skip if UPX is absent or the binary already looks compressed
-# (first 4 bytes aren't the ELF magic sometimes after UPX, so we
-# check by size: a `NO_UPX=1 ./scripts/install-victron.sh ...` escape
-# hatch covers the rare case where UPX mangles a binary).
-UPX_BEFORE_SIZE=$(stat -c %s "$BINARY_PATH" 2>/dev/null || wc -c < "$BINARY_PATH")
-if [[ "${NO_UPX:-0}" == "1" ]]; then
-  echo "[local] NO_UPX=1 — skipping UPX compression"
-elif command -v upx >/dev/null 2>&1; then
-  # --lzma takes longer to compress but gives ~10-20% smaller output
-  # than default deflate; worth it for a once-per-deploy cost.
-  # -q keeps output terse; -9 = best ratio at a small cpu cost.
-  upx --lzma -q -9 "$BINARY_PATH" >/dev/null 2>&1 || {
-    echo "[local] WARNING: upx failed; continuing with uncompressed binary"
-  }
-  UPX_AFTER_SIZE=$(stat -c %s "$BINARY_PATH" 2>/dev/null || wc -c < "$BINARY_PATH")
-  echo "[local] UPX: $((UPX_BEFORE_SIZE / 1024)) KiB → $((UPX_AFTER_SIZE / 1024)) KiB"
-else
-  echo "[local] (upx not found — re-enter nix develop to get it)"
-fi
-
+SIZE=$(stat -c %s "$BINARY_PATH" 2>/dev/null || wc -c < "$BINARY_PATH")
+echo "[local] nix output: $NIX_BIN ($((SIZE / 1024)) KiB, UPX-compressed in derivation)"
 echo "[local] $(file "$BINARY_PATH" 2>/dev/null || echo "built $BINARY_PATH")"
 
 # ----- upload + install ---------------------------------------------------

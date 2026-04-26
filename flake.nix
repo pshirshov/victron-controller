@@ -120,21 +120,33 @@
           # the build platform still find a `$CC`.
           depsBuildBuild = [ pkgs.buildPackages.stdenv.cc ];
 
-          nativeBuildInputs = [ pkgs.patchelf ];
+          nativeBuildInputs = [ pkgs.patchelf pkgs.upx ];
 
           # Host can't execute armv7 binaries — skip cross tests.
           doCheck = false;
 
-          # Rewrite the ELF interpreter to the path Venus provides.
-          # Without this the binary points at a /nix/store path that
-          # doesn't exist on the target.
+          # postFixup:
+          #   1. Rewrite the ELF interpreter to the path Venus provides.
+          #      Without this the binary points at a /nix/store path that
+          #      doesn't exist on the target.
+          #   2. UPX-compress the binary in-place. `--lzma -9` is
+          #      deterministic for a given (input, UPX version) pair, so
+          #      pinning UPX via nixpkgs gives reproducible output. Cuts
+          #      the ARMv7 ELF from ~8 MiB to ~2 MiB — directly halves
+          #      the bytes pushed on every deploy and the eMMC write
+          #      pressure on the Venus.
           # Note: empty rpath is written as `""` because Nix indented
           # strings treat `''` as an escape sequence for `''`.
+          # Note: chmod u+w before UPX because /nix/store binaries are
+          # 0555 and UPX needs to rewrite the file in place.
           postFixup = ''
             patchelf \
               --set-interpreter /lib/ld-linux-armhf.so.3 \
               --set-rpath "" \
               $out/bin/victron-controller
+            chmod u+w $out/bin/victron-controller
+            upx --lzma -q -9 $out/bin/victron-controller
+            chmod a-w $out/bin/victron-controller
           '';
         });
       in {
