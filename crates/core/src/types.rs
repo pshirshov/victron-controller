@@ -1010,11 +1010,6 @@ pub enum BookkeepingKey {
     NextFullCharge,
     AboveSocDate,
     PrevEssState,
-    /// PR-bookkeeping-edit-bool: editable bool added to the
-    /// SetBookkeeping allowlist. The field is otherwise derived
-    /// per-tick by run_setpoint, but operator override is useful for
-    /// debug + manual full-charge triggering.
-    ChargeToFullRequired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1022,9 +1017,6 @@ pub enum BookkeepingValue {
     NaiveDateTime(chrono::NaiveDateTime),
     NaiveDate(chrono::NaiveDate),
     OptionalInt(Option<i32>),
-    /// PR-bookkeeping-edit-bool: dashboard-driven edits of boolean
-    /// bookkeeping fields (today: `charge_to_full_required`).
-    Bool(bool),
     Cleared,
 }
 
