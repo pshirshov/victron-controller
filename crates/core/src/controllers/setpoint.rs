@@ -239,16 +239,13 @@ pub fn compute_battery_balance(
         g.discharge_soc_target
     };
 
-    // Battery-full short-circuit: the live controller doesn't carve this
-    // out as a separate branch (its post-clamp arithmetic happens to land
-    // at idle for SoC=100), but for projection purposes we surface it
-    // explicitly so the chart shows a flat trace at the ceiling.
-    if battery_soc >= 99.99 {
-        return BatteryBalance {
-            net_battery_w: 0.0,
-            branch: BatteryBalanceBranch::BatteryFull,
-        };
-    }
+    // (Removed `if battery_soc >= 99.99 → BatteryFull` short-circuit
+    // — it pre-empted the evening branch when projection started at
+    // 100% SoC and prevented EveningDischarge slopes from ever
+    // appearing on the chart. The projection walker emits its own
+    // `Clamped` kind when SoC genuinely hits the ceiling, and the live
+    // controller has no such short-circuit either, so removing it
+    // brings the helper back in line with `evaluate_setpoint`.)
 
     let hour = now.hour();
     let minute = now.minute();
@@ -1783,8 +1780,14 @@ mod tests {
         assert!(b.net_battery_w < 0.0, "expected discharge, got {}", b.net_battery_w);
     }
 
+    /// At SoC = 100% in the daytime window, the helper now lands in
+    /// the daytime branch's "actively exporting" arm (slope 0, tagged
+    /// EveningDischarge) instead of the removed BatteryFull
+    /// short-circuit. The projection walker emits its own `Clamped`
+    /// kind when SoC genuinely sits at the ceiling — see
+    /// `convert_soc_chart::compute_projection`.
     #[test]
-    fn balance_battery_full_returns_zero() {
+    fn balance_at_full_soc_daytime_returns_zero_via_export_arm() {
         let input = SetpointInput {
             mppt_power_0: 1000.0,
             mppt_power_1: 0.0,
@@ -1797,8 +1800,43 @@ mod tests {
             now: now_at(2026, 1, 15, 12, 0),
         };
         let b = compute_battery_balance(&input, &hw(), h);
-        assert_eq!(b.branch, BatteryBalanceBranch::BatteryFull);
+        // Daytime + above export threshold → "actively exporting" arm
+        // returns net = 0 with EveningDischarge tag.
+        assert_eq!(b.branch, BatteryBalanceBranch::EveningDischarge);
         assert_eq!(b.net_battery_w, 0.0);
+    }
+
+    /// The fix that made the chart's evening drain visible: at SoC =
+    /// 100% in the EVENING window, the helper must land in the active-
+    /// discharge arm of the evening branch and return a NEGATIVE net
+    /// battery flow. Pre-fix this case hit the BatteryFull short-
+    /// circuit and returned 0, masking the controller's actual
+    /// evening behaviour on the chart.
+    ///
+    /// Fixture pins to the 1-hour-before-discharge-end window
+    /// (At0200 + now=01:00 → millis_remaining_1hour is 0, so the
+    /// `current_target` drops the +3000 Wh buffer and the headroom
+    /// exceeds the pessimism-baseload check).
+    #[test]
+    fn balance_at_full_soc_evening_returns_negative_via_evening_branch() {
+        let input = SetpointInput {
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            power_consumption: 600.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 100.0,
+            mppt_power_total_w: 0.0,
+            now: now_at(2026, 1, 16, 1, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::EveningDischarge);
+        assert!(
+            b.net_battery_w < 0.0,
+            "evening drain at SoC=100 must show negative net flow, got {}",
+            b.net_battery_w,
+        );
     }
 
     #[test]

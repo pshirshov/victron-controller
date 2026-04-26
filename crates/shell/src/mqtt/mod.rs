@@ -168,6 +168,17 @@ pub async fn connect(
         client: client.clone(),
         topic_root: config.topic_root.clone(),
     };
+    // Defensive validation: MQTT topics must not contain whitespace.
+    // A copy-paste artefact ("LSJW74098PZ09  2927_mg" with two spaces)
+    // silently broke the EV SoC subscription in the field — we
+    // subscribed to a topic the broker had nothing on, never received
+    // a discovery payload, and the sensor stayed Unknown forever
+    // without any visible warning. Treat whitespace-bearing topics as
+    // misconfiguration: warn loud at startup and refuse to subscribe.
+    let ev_soc_topic_validated = validate_topic(ev.soc_topic.as_deref(), "ev.soc_topic");
+    let ev_charge_target_topic_validated =
+        validate_topic(ev.charge_target_topic.as_deref(), "ev.charge_target_topic");
+
     let subscriber = Subscriber {
         client,
         event_loop,
@@ -176,16 +187,41 @@ pub async fn connect(
         matter_outdoor_min_c: outdoor_temp.min_celsius,
         matter_outdoor_max_c: outdoor_temp.max_celsius,
         soc_history,
-        ev_soc_discovery_topic: ev.soc_topic.clone(),
+        ev_soc_discovery_topic: ev_soc_topic_validated,
         ev_soc_state_topic: None,
         ev_soc_value_field: None,
         ev_soc_last_parse_warn: None,
-        ev_charge_target_discovery_topic: ev.charge_target_topic.clone(),
+        ev_charge_target_discovery_topic: ev_charge_target_topic_validated,
         ev_charge_target_state_topic: None,
         ev_charge_target_value_field: None,
         ev_charge_target_last_parse_warn: None,
     };
     Ok(Some((publisher, subscriber)))
+}
+
+/// Reject MQTT topics containing whitespace (or empty strings, after
+/// trimming). Returns `Some(topic)` when valid, `None` when missing
+/// or malformed. Logs a `warn!` on rejection so the operator sees it
+/// in the boot log instead of silently subscribing to a topic the
+/// broker has nothing on.
+#[must_use]
+fn validate_topic(topic: Option<&str>, field_name: &str) -> Option<String> {
+    let raw = topic?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        warn!(field = %field_name, "mqtt: topic is empty; bridge dormant");
+        return None;
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        warn!(
+            field = %field_name,
+            topic = %raw,
+            "mqtt: topic contains whitespace (likely a copy-paste artefact); bridge dormant. \
+             Fix the value in config.toml and restart.",
+        );
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 // -----------------------------------------------------------------------------

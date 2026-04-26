@@ -82,9 +82,6 @@ pub fn compute_soc_chart(
     let net_power_w = usable(&s.battery_dc_power);
     let installed_ah = usable(&s.battery_installed_capacity);
     let soh_pct = usable(&s.battery_soh);
-    // PR-soc-chart-solar: held flat across the projection horizon (no
-    // EV-charging schedule yet).
-    let zappi_power_w = usable(&s.evcharger_ac_power).unwrap_or(0.0);
     // PR-soc-chart-evening-consumption: live `power_consumption`
     // (already includes zappi) held flat across the horizon — matches
     // what the live setpoint controller reads. Falls back to
@@ -134,8 +131,6 @@ pub fn compute_soc_chart(
         next_full_charge: world.bookkeeping.next_full_charge,
         timezone_iana: &world.timezone,
         hourly_kwh: &hourly_kwh,
-        baseload_w: hardware.baseload_consumption_w,
-        zappi_power_w,
         live_consumption_w,
         setpoint_template,
         hardware,
@@ -205,14 +200,6 @@ struct ProjectionInputs<'a> {
     /// LOCAL today (length 48 when populated, empty when no hourly
     /// forecast available — fall back to instantaneous slope).
     hourly_kwh: &'a [f64],
-    /// PR-soc-chart-solar: held-flat baseline consumption (W). Used as
-    /// the fallback when the live `power_consumption` sensor isn't
-    /// usable, AND for the `preserve_battery` gate inside
-    /// `compute_battery_balance` (mirrors the live controller, which
-    /// uses `baseload_consumption_w` for that gate's headroom math).
-    baseload_w: f64,
-    /// PR-soc-chart-solar: held-flat Zappi consumption (W).
-    zappi_power_w: f64,
     /// PR-soc-chart-evening-consumption: held-flat live
     /// `power_consumption` sensor reading (already includes Zappi). Used
     /// as `input.power_consumption` so the projection's `to_be_consumed`
