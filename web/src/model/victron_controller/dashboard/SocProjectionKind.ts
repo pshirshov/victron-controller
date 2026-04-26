@@ -6,7 +6,9 @@ export enum SocProjectionKind {
     Idle = "Idle",
     ScheduledCharge = "ScheduledCharge",
     FullChargePush = "FullChargePush",
-    Clamped = "Clamped"
+    Clamped = "Clamped",
+    SolarCharge = "SolarCharge",
+    Drain = "Drain"
 }
 
 export const SocProjectionKind_values: ReadonlyArray<SocProjectionKind> = [
@@ -14,7 +16,9 @@ export const SocProjectionKind_values: ReadonlyArray<SocProjectionKind> = [
     SocProjectionKind.Idle,
     SocProjectionKind.ScheduledCharge,
     SocProjectionKind.FullChargePush,
-    SocProjectionKind.Clamped
+    SocProjectionKind.Clamped,
+    SocProjectionKind.SolarCharge,
+    SocProjectionKind.Drain
 ] as const;
 
 export function SocProjectionKind_parse(s: string): SocProjectionKind {
@@ -37,6 +41,8 @@ export class SocProjectionKind_UEBACodec {
                 case "ScheduledCharge": BinTools.writeByte(writer, 2); break;
                 case "FullChargePush": BinTools.writeByte(writer, 3); break;
                 case "Clamped": BinTools.writeByte(writer, 4); break;
+                case "SolarCharge": BinTools.writeByte(writer, 5); break;
+                case "Drain": BinTools.writeByte(writer, 6); break;
             default: throw new Error("Unknown enum variant: " + value);
         }
     }
@@ -53,6 +59,8 @@ export class SocProjectionKind_UEBACodec {
                 case 2: return "ScheduledCharge" as SocProjectionKind;
                 case 3: return "FullChargePush" as SocProjectionKind;
                 case 4: return "Clamped" as SocProjectionKind;
+                case 5: return "SolarCharge" as SocProjectionKind;
+                case 6: return "Drain" as SocProjectionKind;
             default: throw new Error("Unknown enum variant tag: " + tag);
         }
     }

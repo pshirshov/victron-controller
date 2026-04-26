@@ -41,10 +41,16 @@ pub fn http_client() -> HttpClient {
 }
 
 /// One fetched snapshot ready to turn into a `TypedReading::Forecast`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// PR-soc-chart-solar: `hourly_kwh` is a length-48 vector of per-hour
+/// energy (kWh per hour) starting at midnight LOCAL today, fed into the
+/// SoC-chart projection. `Vec::new()` when the upstream provider didn't
+/// supply hourly data — fusion treats that as "no contribution".
+#[derive(Debug, Clone, PartialEq)]
 pub struct ForecastTotals {
     pub today_kwh: f64,
     pub tomorrow_kwh: f64,
+    pub hourly_kwh: Vec<f64>,
 }
 
 /// Common trait that each provider implementation satisfies.
@@ -117,6 +123,7 @@ pub async fn run_scheduler(
                     ?provider,
                     today_kwh = totals.today_kwh,
                     tomorrow_kwh = totals.tomorrow_kwh,
+                    hourly_len = totals.hourly_kwh.len(),
                     "forecast fetched"
                 );
                 if tx
@@ -124,6 +131,7 @@ pub async fn run_scheduler(
                         provider,
                         today_kwh: totals.today_kwh,
                         tomorrow_kwh: totals.tomorrow_kwh,
+                        hourly_kwh: totals.hourly_kwh,
                         at: std::time::Instant::now(),
                     }))
                     .await

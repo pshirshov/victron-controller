@@ -90,6 +90,20 @@ pub fn __opt_f64_total_cmp(a: &Option<f64>, b: &Option<f64>) -> std::cmp::Orderi
         (Some(x), Some(y)) => x.total_cmp(y),
     }
 }
+
+// PR-soc-chart-solar: same upstream codegen bug for `lst[f64]` fields.
+// Walk pairwise via `f64::total_cmp`; shorter slice is "less" when all
+// shared elements compare equal.
+pub fn __vec_f64_total_cmp(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    let n = a.len().min(b.len());
+    for i in 0..n {
+        match a[i].total_cmp(&b[i]) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+    }
+    a.len().cmp(&b.len())
+}
 RS
 
 # Targeted rewrites: known field names that are Option<f64>. Apply to
@@ -104,6 +118,15 @@ done
 find "$RS_OUT/src" -path '*/dashboard*/actuated_f64.rs' -print0 | while IFS= read -r -d '' f; do
   sed -i \
     -e 's|self\.target_value\.total_cmp(&other\.target_value)|crate::baboon_runtime::__opt_f64_total_cmp(\&self.target_value, \&other.target_value)|' \
+    "$f"
+done
+
+# PR-soc-chart-solar: ForecastSnapshot.hourly_kwh is `lst[f64]` →
+# Vec<f64>, which also has no `total_cmp`. Patch only the v0.2.0+
+# generated file (0.1.0 didn't have the field).
+find "$RS_OUT/src" -path '*/dashboard*/forecast_snapshot.rs' -print0 | while IFS= read -r -d '' f; do
+  sed -i \
+    -e 's|self\.hourly_kwh\.total_cmp(&other\.hourly_kwh)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_kwh, \&other.hourly_kwh)|' \
     "$f"
 done
 

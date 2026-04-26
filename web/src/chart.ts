@@ -25,7 +25,10 @@ type SegmentKind =
   | "Idle"
   | "ScheduledCharge"
   | "FullChargePush"
-  | "Clamped";
+  | "Clamped"
+  // PR-soc-chart-solar.
+  | "SolarCharge"
+  | "Drain";
 
 type ProjectionSegment = {
   start_epoch_ms: number;
@@ -86,6 +89,9 @@ const VALID_KINDS: ReadonlySet<string> = new Set([
   "ScheduledCharge",
   "FullChargePush",
   "Clamped",
+  // PR-soc-chart-solar.
+  "SolarCharge",
+  "Drain",
 ]);
 
 function asNum(v: unknown): number | null {
@@ -235,6 +241,9 @@ const KIND_SUFFIX: Record<SegmentKind, string> = {
   ScheduledCharge: "scheduled charge",
   FullChargePush: "full-charge push",
   Clamped: "clamped",
+  // PR-soc-chart-solar.
+  SolarCharge: "solar charge",
+  Drain: "drain",
 };
 
 const KIND_CSS: Record<SegmentKind, string> = {
@@ -243,6 +252,9 @@ const KIND_CSS: Record<SegmentKind, string> = {
   ScheduledCharge: "trace-projection-scheduledcharge",
   FullChargePush: "trace-projection-fullchargepush",
   Clamped: "trace-projection-clamped",
+  // PR-soc-chart-solar.
+  SolarCharge: "trace-projection-solarcharge",
+  Drain: "trace-projection-drain",
 };
 
 function escAttr(s: string): string {

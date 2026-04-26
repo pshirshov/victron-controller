@@ -120,15 +120,26 @@ impl Sensors {
 }
 
 /// Per-provider forecast snapshot.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// PR-soc-chart-solar: `hourly_kwh` carries per-hour estimates starting
+/// at midnight LOCAL today, length 48 (24 today + 24 tomorrow), kWh
+/// per hour. Empty when the provider didn't return hourly data
+/// (legacy / quota / partial response). The pre-existing daily totals
+/// (`today_kwh` / `tomorrow_kwh`) are unaffected and still drive
+/// `forecast_fusion::fused_today_kwh` for the weather_soc planner.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ForecastSnapshot {
     pub today_kwh: f64,
     pub tomorrow_kwh: f64,
     pub fetched_at: Instant,
+    /// Hourly energy estimates starting at midnight LOCAL time today.
+    /// Length 48 = 24 today + 24 tomorrow. kWh per hour. Empty when the
+    /// provider didn't supply hourly data.
+    pub hourly_kwh: Vec<f64>,
 }
 
 /// Non-scalar sensor state.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypedSensors {
     pub zappi_state: Actual<ZappiState>,
     pub eddi_mode: Actual<EddiMode>,

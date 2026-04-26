@@ -837,3 +837,17 @@ pub fn __opt_f64_total_cmp(a: &Option<f64>, b: &Option<f64>) -> std::cmp::Orderi
         (Some(x), Some(y)) => x.total_cmp(y),
     }
 }
+
+// PR-soc-chart-solar: same upstream codegen bug for `lst[f64]` fields.
+// Walk pairwise via `f64::total_cmp`; shorter slice is "less" when all
+// shared elements compare equal.
+pub fn __vec_f64_total_cmp(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    let n = a.len().min(b.len());
+    for i in 0..n {
+        match a[i].total_cmp(&b[i]) {
+            std::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+    }
+    a.len().cmp(&b.len())
+}

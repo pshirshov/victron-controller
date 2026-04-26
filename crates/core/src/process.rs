@@ -93,7 +93,7 @@ fn apply_event(
 ) {
     match event {
         Event::Sensor(reading) => apply_sensor_reading(*reading, world, topology, effects),
-        Event::TypedSensor(reading) => apply_typed_reading(*reading, world, effects),
+        Event::TypedSensor(reading) => apply_typed_reading(reading.clone(), world, effects),
         Event::ScheduleReadback { index, value, at } => {
             apply_schedule_readback(*index, *value, *at, world, effects);
         }
@@ -348,12 +348,14 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
             provider,
             today_kwh,
             tomorrow_kwh,
+            hourly_kwh,
             at,
         } => {
             let snap = ForecastSnapshot {
                 today_kwh,
                 tomorrow_kwh,
                 fetched_at: at,
+                hourly_kwh,
             };
             match provider {
                 ForecastProvider::Solcast => world.typed_sensors.forecast_solcast = Some(snap),
@@ -3606,6 +3608,7 @@ mod tests {
             today_kwh: 25.0,
             tomorrow_kwh: 25.0,
             fetched_at: at,
+            hourly_kwh: Vec::new(),
         });
     }
 

@@ -35,12 +35,15 @@ pub fn fused_today_kwh(
 ) -> Option<f64> {
     let solcast = typed
         .forecast_solcast
+        .as_ref()
         .filter(|s| is_fresh(ForecastProvider::Solcast, s));
     let fs = typed
         .forecast_forecast_solar
+        .as_ref()
         .filter(|s| is_fresh(ForecastProvider::ForecastSolar, s));
     let om = typed
         .forecast_open_meteo
+        .as_ref()
         .filter(|s| is_fresh(ForecastProvider::OpenMeteo, s));
 
     // A-41: filter non-finite values before reducing. A provider that
@@ -83,6 +86,112 @@ pub fn fused_today_kwh(
     }
 }
 
+/// PR-soc-chart-solar: fuse per-hour energy estimates across providers
+/// into a single length-48 vector, hour-by-hour. Returns an empty `Vec`
+/// when no fresh provider supplied any hourly data — callers must
+/// distinguish that case from "all providers say 0 kWh this hour".
+///
+/// For each hour 0..48 we collect the contribution of every fresh
+/// provider that has *non-empty* hourly data, then fold using the
+/// configured strategy. Providers whose `hourly_kwh` is empty (legacy
+/// fetch path / quota burnout) are silently omitted, mirroring the
+/// missing-snapshot behaviour of [`fused_today_kwh`].
+#[must_use]
+pub fn fused_hourly_kwh(
+    typed: &TypedSensors,
+    strategy: ForecastDisagreementStrategy,
+    mut is_fresh: impl FnMut(ForecastProvider, &ForecastSnapshot) -> bool,
+) -> Vec<f64> {
+    let solcast = typed
+        .forecast_solcast
+        .as_ref()
+        .filter(|s| is_fresh(ForecastProvider::Solcast, s));
+    let fs = typed
+        .forecast_forecast_solar
+        .as_ref()
+        .filter(|s| is_fresh(ForecastProvider::ForecastSolar, s));
+    let om = typed
+        .forecast_open_meteo
+        .as_ref()
+        .filter(|s| is_fresh(ForecastProvider::OpenMeteo, s));
+
+    // Only providers with non-empty hourly data participate.
+    let solcast_h: Option<&[f64]> = solcast
+        .map(|s| s.hourly_kwh.as_slice())
+        .filter(|v| !v.is_empty());
+    let fs_h: Option<&[f64]> = fs
+        .map(|s| s.hourly_kwh.as_slice())
+        .filter(|v| !v.is_empty());
+    let om_h: Option<&[f64]> = om
+        .map(|s| s.hourly_kwh.as_slice())
+        .filter(|v| !v.is_empty());
+
+    if solcast_h.is_none() && fs_h.is_none() && om_h.is_none() {
+        return Vec::new();
+    }
+
+    // Length is the max of all participating providers, capped at 48.
+    // A short provider (e.g. Forecast.Solar returning only 24 entries
+    // padded with 0) still contributes 0 for hours past its end.
+    let max_len = [solcast_h, fs_h, om_h]
+        .iter()
+        .filter_map(|x| x.map(<[f64]>::len))
+        .max()
+        .unwrap_or(0)
+        .min(48);
+
+    let mut out = Vec::with_capacity(max_len);
+    for h in 0..max_len {
+        let mut samples: Vec<f64> = Vec::with_capacity(3);
+        for src in [solcast_h, fs_h, om_h].iter().flatten() {
+            if let Some(v) = src.get(h).copied() {
+                if v.is_finite() {
+                    samples.push(v);
+                }
+            }
+        }
+        if samples.is_empty() {
+            // No participating provider supplied a finite value at this
+            // hour — emit 0 (as opposed to None) since the chart caller
+            // treats every entry as a numeric kWh estimate. Empty Vec
+            // (the "all providers had no hourly data" signal) is handled
+            // above by the early return.
+            out.push(0.0);
+            continue;
+        }
+        let fused = match strategy {
+            ForecastDisagreementStrategy::Max => {
+                samples.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            }
+            ForecastDisagreementStrategy::Min => {
+                samples.iter().copied().fold(f64::INFINITY, f64::min)
+            }
+            ForecastDisagreementStrategy::Mean => {
+                #[allow(clippy::cast_precision_loss)]
+                let n = samples.len() as f64;
+                samples.iter().sum::<f64>() / n
+            }
+            ForecastDisagreementStrategy::SolcastIfAvailableElseMean => {
+                if let Some(s) = solcast_h.and_then(|s| s.get(h).copied()) {
+                    if s.is_finite() {
+                        s
+                    } else {
+                        #[allow(clippy::cast_precision_loss)]
+                        let n = samples.len() as f64;
+                        samples.iter().sum::<f64>() / n
+                    }
+                } else {
+                    #[allow(clippy::cast_precision_loss)]
+                    let n = samples.len() as f64;
+                    samples.iter().sum::<f64>() / n
+                }
+            }
+        };
+        out.push(fused);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +202,7 @@ mod tests {
             today_kwh,
             tomorrow_kwh: 0.0,
             fetched_at: Instant::now(),
+            hourly_kwh: Vec::new(),
         }
     }
 
@@ -238,5 +348,90 @@ mod tests {
             fused_today_kwh(&t, ForecastDisagreementStrategy::Mean, f),
             Some(40.0) // mean(30, 50)
         );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-soc-chart-solar: hourly fusion
+    // ------------------------------------------------------------------
+
+    fn snap_hourly(today_kwh: f64, hourly: Vec<f64>) -> ForecastSnapshot {
+        ForecastSnapshot {
+            today_kwh,
+            tomorrow_kwh: 0.0,
+            fetched_at: Instant::now(),
+            hourly_kwh: hourly,
+        }
+    }
+
+    fn typed_hourly(
+        s: Option<Vec<f64>>,
+        fs: Option<Vec<f64>>,
+        om: Option<Vec<f64>>,
+    ) -> TypedSensors {
+        TypedSensors {
+            zappi_state: crate::Actual::unknown(Instant::now()),
+            eddi_mode: crate::Actual::unknown(Instant::now()),
+            forecast_solcast: s.map(|h| snap_hourly(0.0, h)),
+            forecast_forecast_solar: fs.map(|h| snap_hourly(0.0, h)),
+            forecast_open_meteo: om.map(|h| snap_hourly(0.0, h)),
+        }
+    }
+
+    #[test]
+    fn fused_hourly_mean_across_providers() {
+        let s = vec![1.0, 2.0, 3.0, 4.0];
+        let fs = vec![3.0, 4.0, 5.0, 6.0];
+        let om = vec![5.0, 6.0, 7.0, 8.0];
+        let t = typed_hourly(Some(s), Some(fs), Some(om));
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn fused_hourly_skips_stale() {
+        let s = vec![10.0, 10.0];
+        let fs = vec![20.0, 20.0];
+        let om = vec![30.0, 30.0];
+        let t = typed_hourly(Some(s), Some(fs), Some(om));
+        // ForecastSolar stale.
+        let f = |p: ForecastProvider, _: &ForecastSnapshot| p != ForecastProvider::ForecastSolar;
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, f);
+        assert_eq!(out, vec![20.0, 20.0]); // mean(10, 30)
+    }
+
+    #[test]
+    fn fused_hourly_empty_when_all_empty() {
+        // All providers present but with empty hourly arrays → empty Vec
+        // (signal: "no provider supplied hourly data at all").
+        let t = typed_hourly(Some(vec![]), Some(vec![]), Some(vec![]));
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert!(out.is_empty(), "expected empty Vec, got {out:?}");
+    }
+
+    #[test]
+    fn fused_hourly_empty_when_no_providers() {
+        let t = typed_hourly(None, None, None);
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn fused_hourly_handles_uneven_lengths() {
+        // Forecast.Solar returns only 24 entries; others return 4. Output
+        // length is the max of participating providers (24); short
+        // providers contribute 0 past their end.
+        let s = vec![10.0, 10.0, 10.0, 10.0];
+        let fs: Vec<f64> = (0..24).map(|_| 5.0).collect();
+        let t = typed_hourly(Some(s), Some(fs), None);
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert_eq!(out.len(), 24);
+        // Hours 0..4: mean(10, 5) = 7.5
+        for (h, &v) in out.iter().enumerate().take(4) {
+            assert!((v - 7.5).abs() < 1e-9, "hour {h}: {v}");
+        }
+        // Hour 4..24: only fs contributes (5)
+        for (h, &v) in out.iter().enumerate().take(24).skip(4) {
+            assert!((v - 5.0).abs() < 1e-9, "hour {h}: {v}");
+        }
     }
 }

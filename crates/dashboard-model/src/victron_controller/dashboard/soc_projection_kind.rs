@@ -7,6 +7,8 @@ pub enum SocProjectionKind {
     ScheduledCharge,
     FullChargePush,
     Clamped,
+    SolarCharge,
+    Drain,
 }
 
 impl SocProjectionKind {
@@ -17,6 +19,8 @@ impl SocProjectionKind {
             "ScheduledCharge" => Ok(SocProjectionKind::ScheduledCharge),
             "FullChargePush" => Ok(SocProjectionKind::FullChargePush),
             "Clamped" => Ok(SocProjectionKind::Clamped),
+            "SolarCharge" => Ok(SocProjectionKind::SolarCharge),
+            "Drain" => Ok(SocProjectionKind::Drain),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -28,6 +32,8 @@ impl SocProjectionKind {
             SocProjectionKind::ScheduledCharge,
             SocProjectionKind::FullChargePush,
             SocProjectionKind::Clamped,
+            SocProjectionKind::SolarCharge,
+            SocProjectionKind::Drain,
         ]
     }
 }
@@ -40,6 +46,8 @@ impl std::fmt::Display for SocProjectionKind {
             SocProjectionKind::ScheduledCharge => write!(f, "ScheduledCharge"),
             SocProjectionKind::FullChargePush => write!(f, "FullChargePush"),
             SocProjectionKind::Clamped => write!(f, "Clamped"),
+            SocProjectionKind::SolarCharge => write!(f, "SolarCharge"),
+            SocProjectionKind::Drain => write!(f, "Drain"),
         }
     }
 }
@@ -65,6 +73,8 @@ impl crate::baboon_runtime::BaboonBinEncode for SocProjectionKind {
             SocProjectionKind::ScheduledCharge => crate::baboon_runtime::bin_tools::write_byte(writer, 2)?,
             SocProjectionKind::FullChargePush => crate::baboon_runtime::bin_tools::write_byte(writer, 3)?,
             SocProjectionKind::Clamped => crate::baboon_runtime::bin_tools::write_byte(writer, 4)?,
+            SocProjectionKind::SolarCharge => crate::baboon_runtime::bin_tools::write_byte(writer, 5)?,
+            SocProjectionKind::Drain => crate::baboon_runtime::bin_tools::write_byte(writer, 6)?,
         }
         Ok(())
     }
@@ -79,6 +89,8 @@ impl crate::baboon_runtime::BaboonBinDecode for SocProjectionKind {
             2 => Ok(SocProjectionKind::ScheduledCharge),
             3 => Ok(SocProjectionKind::FullChargePush),
             4 => Ok(SocProjectionKind::Clamped),
+            5 => Ok(SocProjectionKind::SolarCharge),
+            6 => Ok(SocProjectionKind::Drain),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

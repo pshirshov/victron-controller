@@ -76,6 +76,10 @@ impl ForecastFetcher for ForecastSolarClient {
 
         let mut totals_today_wh = 0.0;
         let mut totals_tomorrow_wh = 0.0;
+        // PR-soc-chart-solar: per-hour Wh accumulators, length 48 starting
+        // at local midnight today (hours 0..24 = today, 24..48 = tomorrow).
+        let mut hourly_wh: Vec<f64> = vec![0.0; 48];
+        let mut saw_any_hourly = false;
 
         for plane in &self.planes {
             // dec = declination (tilt); az = forecast.solar azimuth;
@@ -90,23 +94,64 @@ impl ForecastFetcher for ForecastSolarClient {
             );
             let body = fetch_json(&self.http, &url, &[]).await?;
 
-            let Some(day_map) = body.pointer("/result/watt_hours_day").and_then(|v| v.as_object())
-            else {
-                continue;
-            };
             let today_key = today.format("%Y-%m-%d").to_string();
             let tomorrow_key = tomorrow.format("%Y-%m-%d").to_string();
-            if let Some(wh) = day_map.get(&today_key).and_then(as_f64) {
-                totals_today_wh += wh;
+
+            if let Some(day_map) = body
+                .pointer("/result/watt_hours_day")
+                .and_then(|v| v.as_object())
+            {
+                if let Some(wh) = day_map.get(&today_key).and_then(as_f64) {
+                    totals_today_wh += wh;
+                }
+                if let Some(wh) = day_map.get(&tomorrow_key).and_then(as_f64) {
+                    totals_tomorrow_wh += wh;
+                }
             }
-            if let Some(wh) = day_map.get(&tomorrow_key).and_then(as_f64) {
-                totals_tomorrow_wh += wh;
+
+            // Per-hour accumulation. Forecast.Solar's `watt_hours_period`
+            // keys are site-local timestamps "YYYY-MM-DD HH:MM:SS"
+            // representing the END of a period; values are Wh produced
+            // during that period. Bucket by the end timestamp's hour
+            // (close enough for the chart at hour granularity).
+            if let Some(period_map) = body
+                .pointer("/result/watt_hours_period")
+                .and_then(|v| v.as_object())
+            {
+                for (k, v) in period_map {
+                    let Some(wh) = as_f64(v) else { continue };
+                    // Expect "YYYY-MM-DD HH:MM:SS" — at minimum 13 chars.
+                    let Some(date_part) = k.get(..10) else { continue };
+                    let Some(hour) = k.get(11..13).and_then(|h| h.parse::<usize>().ok()) else {
+                        continue;
+                    };
+                    if hour >= 24 {
+                        continue;
+                    }
+                    if date_part == today_key {
+                        hourly_wh[hour] += wh;
+                        saw_any_hourly = true;
+                    } else if date_part == tomorrow_key {
+                        hourly_wh[24 + hour] += wh;
+                        saw_any_hourly = true;
+                    }
+                }
             }
         }
+
+        let final_hourly = if saw_any_hourly {
+            hourly_wh.iter().map(|wh| wh / 1000.0).collect::<Vec<_>>()
+        } else {
+            tracing::debug!(
+                "forecast_solar: no hourly entries parsed; emitting empty hourly_kwh"
+            );
+            Vec::new()
+        };
 
         Ok(ForecastTotals {
             today_kwh: totals_today_wh / 1000.0,
             tomorrow_kwh: totals_tomorrow_wh / 1000.0,
+            hourly_kwh: final_hourly,
         })
     }
 }

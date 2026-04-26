@@ -5,5 +5,6 @@ pub fn convert__forecast_snapshot__from__0_1_0(from: &crate::victron_controller:
         today_kwh: from.today_kwh.clone(),
         tomorrow_kwh: from.tomorrow_kwh.clone(),
         fetched_at_epoch_ms: from.fetched_at_epoch_ms.clone(),
+        hourly_kwh: Vec::new(),
     }
 }

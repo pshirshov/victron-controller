@@ -75,6 +75,13 @@ impl ForecastFetcher for SolcastClient {
         let mut total_items = 0usize;
         let mut parsed_items = 0usize;
 
+        // PR-soc-chart-solar: per-hour kWh, length 48 starting at local
+        // midnight today (hours 0..24 = today, 24..48 = tomorrow).
+        // Solcast typically delivers PT30M periods → two consecutive
+        // half-hour buckets sum into one hourly entry.
+        let mut hourly_kwh: Vec<f64> = vec![0.0; 48];
+        let mut saw_any_hourly = false;
+
         for site in &self.site_ids {
             let url = format!("https://api.solcast.com.au/rooftop_sites/{site}/forecasts");
             let body = fetch_json(
@@ -92,15 +99,22 @@ impl ForecastFetcher for SolcastClient {
                 let Some(kwh_contrib) = item_to_kwh(item) else {
                     continue;
                 };
-                let day = match item_day_in_tz(item, self.tz) {
-                    Some(d) => d,
-                    None => continue,
+                let Some((day, hour)) = item_local_day_hour(item, self.tz) else {
+                    continue;
                 };
                 parsed_items += 1;
                 if day == today {
                     totals_today += kwh_contrib;
+                    if hour < 24 {
+                        hourly_kwh[hour] += kwh_contrib;
+                        saw_any_hourly = true;
+                    }
                 } else if day == tomorrow {
                     totals_tomorrow += kwh_contrib;
+                    if hour < 24 {
+                        hourly_kwh[24 + hour] += kwh_contrib;
+                        saw_any_hourly = true;
+                    }
                 }
             }
         }
@@ -119,9 +133,17 @@ impl ForecastFetcher for SolcastClient {
             );
         }
 
+        let final_hourly = if saw_any_hourly {
+            hourly_kwh
+        } else {
+            tracing::debug!("solcast: no hourly entries parsed; emitting empty hourly_kwh");
+            Vec::new()
+        };
+
         Ok(ForecastTotals {
             today_kwh: totals_today,
             tomorrow_kwh: totals_tomorrow,
+            hourly_kwh: final_hourly,
         })
     }
 }
@@ -155,7 +177,12 @@ fn period_to_hours(s: &str) -> Option<f64> {
 /// period's midpoint (= `period_end - period/2`) for day attribution.
 /// A-50: project the midpoint into the configured site TZ, not the
 /// machine's `Local` (Venus runs UTC).
-fn item_day_in_tz(item: &Value, tz: Tz) -> Option<NaiveDate> {
+///
+/// PR-soc-chart-solar: returns the local-clock `hour` 0..23 alongside
+/// the local date so the caller can bucket per-period kWh into hourly
+/// slots for the SoC-chart projection.
+fn item_local_day_hour(item: &Value, tz: Tz) -> Option<(NaiveDate, usize)> {
+    use chrono::Timelike;
     let s = item.get("period_end").and_then(|v| v.as_str())?;
     let utc: DateTime<Utc> = s.parse().ok()?;
     let period_str = item.get("period").and_then(|v| v.as_str()).unwrap_or("PT30M");
@@ -163,7 +190,8 @@ fn item_day_in_tz(item: &Value, tz: Tz) -> Option<NaiveDate> {
     let half = chrono::Duration::milliseconds((period_hours * 1_800_000.0) as i64);
     let midpoint_utc = utc.checked_sub_signed(half)?;
     let local = midpoint_utc.with_timezone(&tz);
-    Some(local.date_naive())
+    let hour = local.hour() as usize;
+    Some((local.date_naive(), hour))
 }
 
 #[cfg(test)]

@@ -727,7 +727,11 @@ pub struct SensorReading {
 }
 
 /// Typed (non-scalar) sensor updates.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// PR-soc-chart-solar: `Forecast::hourly_kwh` carries the per-hour
+/// energy estimates the SoC-chart projection consumes. May be empty
+/// when the upstream provider didn't return hourly data.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypedReading {
     Zappi { state: ZappiState, at: Instant },
     Eddi { mode: EddiMode, at: Instant },
@@ -735,6 +739,9 @@ pub enum TypedReading {
         provider: ForecastProvider,
         today_kwh: f64,
         tomorrow_kwh: f64,
+        /// Length-48 vector starting at midnight LOCAL today. Empty when
+        /// the provider didn't supply hourly data.
+        hourly_kwh: Vec<f64>,
         at: Instant,
     },
 }

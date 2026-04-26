@@ -95,6 +95,10 @@ impl ForecastFetcher for OpenMeteoClient {
 
         let mut totals_today_kwh = 0.0;
         let mut totals_tomorrow_kwh = 0.0;
+        // PR-soc-chart-solar: per-hour kWh, length 48 starting at local
+        // midnight today (hours 0..24 = today, 24..48 = tomorrow).
+        let mut hourly_kwh: Vec<f64> = vec![0.0; 48];
+        let mut saw_any_hourly = false;
 
         let url = "https://api.open-meteo.com/v1/forecast";
         let tz_name = self.tz.name();
@@ -132,6 +136,10 @@ impl ForecastFetcher for OpenMeteoClient {
 
             // Sum hourly irradiance (W/m²) × 1 h × efficiency × kWp/1000
             // into today/tomorrow buckets, using the time string's date.
+            // Also accumulate per-hour into `hourly_kwh` indexed by
+            // local-clock hour (today = 0..24, tomorrow = 24..48).
+            let today_str = today.format("%Y-%m-%d").to_string();
+            let tomorrow_str = tomorrow.format("%Y-%m-%d").to_string();
             for (t, w) in times.iter().zip(irrad.iter()) {
                 let Some(t_str) = t.as_str() else { continue };
                 let Some(w_f) = w.as_f64() else { continue };
@@ -140,17 +148,39 @@ impl ForecastFetcher for OpenMeteoClient {
                     continue;
                 };
                 let kwh_contrib = (w_f / 1000.0) * self.system_efficiency * plane.kwp;
-                if date_part == today.format("%Y-%m-%d").to_string() {
+                let hour: Option<usize> = t_str
+                    .get(11..13)
+                    .and_then(|h| h.parse::<usize>().ok())
+                    .filter(|h| *h < 24);
+                if date_part == today_str {
                     totals_today_kwh += kwh_contrib;
-                } else if date_part == tomorrow.format("%Y-%m-%d").to_string() {
+                    if let Some(h) = hour {
+                        hourly_kwh[h] += kwh_contrib;
+                        saw_any_hourly = true;
+                    }
+                } else if date_part == tomorrow_str {
                     totals_tomorrow_kwh += kwh_contrib;
+                    if let Some(h) = hour {
+                        hourly_kwh[24 + h] += kwh_contrib;
+                        saw_any_hourly = true;
+                    }
                 }
             }
         }
 
+        let final_hourly = if saw_any_hourly {
+            hourly_kwh
+        } else {
+            tracing::debug!(
+                "open_meteo: no hourly entries parsed; emitting empty hourly_kwh"
+            );
+            Vec::new()
+        };
+
         Ok(ForecastTotals {
             today_kwh: totals_today_kwh,
             tomorrow_kwh: totals_tomorrow_kwh,
+            hourly_kwh: final_hourly,
         })
     }
 }

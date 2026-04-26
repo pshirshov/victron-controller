@@ -1,7 +1,7 @@
 model victron_controller.dashboard
 version "0.2.0"
 
-import "0.1.0" { * } without { Sensors WorldSnapshot Knobs Bookkeeping Command }
+import "0.1.0" { * } without { Sensors WorldSnapshot Knobs Bookkeeping Command ForecastSnapshot }
 
 // PR-soc-chart additions (additive within 0.2.0). Three traces fed by
 // the shell's in-memory `SocHistoryStore` plus a per-tick projection
@@ -13,20 +13,27 @@ data SocHistorySample {
 
 // PR-soc-chart-segments: classification of a single projection segment.
 //
-//   * Natural          — current battery_dc_power-derived slope, no
-//                         schedule active.
+//   * Natural          — fallback used when no hourly forecast is
+//                         available; battery_dc_power-derived slope held
+//                         flat.
 //   * Idle             — |net_power| below threshold; flat segment.
 //   * ScheduledCharge  — inside an enabled (days==7) schedule window.
 //   * FullChargePush   — inside a 1 h window starting at
 //                         bookkeeping.next_full_charge.
 //   * Clamped          — SoC sits at 10% or 100%; no further movement
 //                         until conditions change.
+//   * SolarCharge      — PR-soc-chart-solar: outside any schedule window,
+//                         hourly forecast says solar > baseload+zappi.
+//   * Drain            — PR-soc-chart-solar: outside any schedule window,
+//                         load exceeds solar so SoC falls.
 enum SocProjectionKind {
   Natural
   Idle
   ScheduledCharge
   FullChargePush
   Clamped
+  SolarCharge
+  Drain
 }
 
 // PR-soc-chart-segments: one piecewise-linear segment of the projection.
@@ -87,6 +94,18 @@ data SocChart {
 enum Mode {
   Weather
   Forced
+}
+
+// PR-soc-chart-solar (additive within 0.2.0): per-hour kWh estimates the
+// SoC-chart projection consumes. `hourly_kwh` is length 48 starting at
+// midnight LOCAL today (24 today + 24 tomorrow). Empty when the upstream
+// provider didn't supply hourly data — the chart falls back to the
+// instantaneous battery_dc_power-derived slope in that case.
+data ForecastSnapshot {
+  today_kwh: f64
+  tomorrow_kwh: f64
+  fetched_at_epoch_ms: i64
+  hourly_kwh: lst[f64]
 }
 
 data Sensors {

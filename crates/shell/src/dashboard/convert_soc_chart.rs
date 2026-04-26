@@ -9,13 +9,16 @@
 //! Pure: callable from tests with a hand-built world.
 
 use std::str::FromStr;
+use std::time::Instant;
 
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
 
+use victron_controller_core::controllers::forecast_fusion::fused_hourly_kwh;
 use victron_controller_core::controllers::schedules::{DAYS_ENABLED, ScheduleSpec};
 use victron_controller_core::tass::{Actual, Actuated, Freshness};
-use victron_controller_core::topology::HardwareParams;
-use victron_controller_core::world::World;
+use victron_controller_core::topology::{ControllerParams, HardwareParams};
+use victron_controller_core::types::ForecastProvider;
+use victron_controller_core::world::{ForecastSnapshot, World};
 
 use victron_controller_dashboard_model::victron_controller::dashboard::soc_chart::SocChart as ModelSocChart;
 use victron_controller_dashboard_model::victron_controller::dashboard::soc_history_sample::SocHistorySample as ModelSocSample;
@@ -54,6 +57,7 @@ pub fn compute_soc_chart(
     world: &World,
     history: &[ShellSocSample],
     hardware: HardwareParams,
+    controller_params: ControllerParams,
     now_ms: i64,
 ) -> ModelSocChart {
     let s = &world.sensors;
@@ -74,6 +78,9 @@ pub fn compute_soc_chart(
     let net_power_w = usable(&s.battery_dc_power);
     let installed_ah = usable(&s.battery_installed_capacity);
     let soh_pct = usable(&s.battery_soh);
+    // PR-soc-chart-solar: held flat across the projection horizon (no
+    // EV-charging schedule yet).
+    let zappi_power_w = usable(&s.evcharger_ac_power).unwrap_or(0.0);
 
     let capacity_wh = match (installed_ah, soh_pct) {
         (Some(ah), Some(soh)) if ah > 0.0 && soh > 0.0 => {
@@ -83,6 +90,21 @@ pub fn compute_soc_chart(
     };
 
     let charge_rate_w = derive_charge_rate_w(hardware);
+
+    // PR-soc-chart-solar: fuse provider-level hourly forecasts into a
+    // single length-48 array (kWh per hour), starting at midnight LOCAL
+    // today. Empty when no provider supplied hourly data — the segment
+    // walker falls back to the instantaneous battery_dc_power slope.
+    let now_mono = Instant::now();
+    let freshness_threshold = controller_params.freshness_forecast;
+    let is_fresh_forecast = |_p: ForecastProvider, snap: &ForecastSnapshot| {
+        now_mono.saturating_duration_since(snap.fetched_at) <= freshness_threshold
+    };
+    let hourly_kwh = fused_hourly_kwh(
+        &world.typed_sensors,
+        world.knobs.forecast_disagreement_strategy,
+        is_fresh_forecast,
+    );
 
     let projection = compute_projection(&ProjectionInputs {
         now_ms,
@@ -94,6 +116,9 @@ pub fn compute_soc_chart(
         schedule_1: enabled_schedule(&world.schedule_1),
         next_full_charge: world.bookkeeping.next_full_charge,
         timezone_iana: &world.timezone,
+        hourly_kwh: &hourly_kwh,
+        baseload_w: hardware.baseload_consumption_w,
+        zappi_power_w,
     });
 
     let history_wire: Vec<ModelSocSample> = history
@@ -156,6 +181,14 @@ struct ProjectionInputs<'a> {
     schedule_1: Option<ScheduleSpec>,
     next_full_charge: Option<NaiveDateTime>,
     timezone_iana: &'a str,
+    /// PR-soc-chart-solar: per-hour energy estimates starting at midnight
+    /// LOCAL today (length 48 when populated, empty when no hourly
+    /// forecast available — fall back to instantaneous slope).
+    hourly_kwh: &'a [f64],
+    /// PR-soc-chart-solar: held-flat baseline consumption (W).
+    baseload_w: f64,
+    /// PR-soc-chart-solar: held-flat Zappi consumption (W).
+    zappi_power_w: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -225,8 +258,15 @@ fn compute_projection(inputs: &ProjectionInputs<'_>) -> ModelSocProjection {
     // conflicts by precedence: FullChargePush > ScheduledCharge).
     windows.sort_by_key(|w| (w.start_ms, w.end_ms));
 
-    // Build event list: now, horizon, all window starts/ends.
-    let mut events: Vec<i64> = Vec::with_capacity(2 + windows.len() * 2);
+    // PR-soc-chart-solar: anchor for hourly forecast indexing — local
+    // midnight today (in the display TZ). Used by `solar_w_at` and to
+    // generate hour-boundary events so each Natural-classified slice
+    // gets its own per-hour solar slope.
+    let local_midnight_ms = local_midnight_today_ms(inputs.now_ms, tz);
+
+    // Build event list: now, horizon, all window starts/ends, plus
+    // hour boundaries when we have hourly forecast data.
+    let mut events: Vec<i64> = Vec::with_capacity(2 + windows.len() * 2 + 48);
     events.push(inputs.now_ms);
     events.push(horizon_ms);
     for w in &windows {
@@ -235,6 +275,16 @@ fn compute_projection(inputs: &ProjectionInputs<'_>) -> ModelSocProjection {
         }
         if w.end_ms > inputs.now_ms && w.end_ms < horizon_ms {
             events.push(w.end_ms);
+        }
+    }
+    if !inputs.hourly_kwh.is_empty() {
+        // Walk hour boundaries within [now, horizon]. Cap at 48 to bound
+        // the loop independently of horizon_ms shenanigans.
+        for h in 0..=48 {
+            let edge = local_midnight_ms.saturating_add(i64::from(h) * HOUR_MS);
+            if edge > inputs.now_ms && edge < horizon_ms {
+                events.push(edge);
+            }
         }
     }
     events.sort_unstable();
@@ -253,11 +303,23 @@ fn compute_projection(inputs: &ProjectionInputs<'_>) -> ModelSocProjection {
         // (start_ms == a) still picks the in-window kind.
         let midpoint = a.saturating_add((b - a) / 2);
         let active_window = active_window_at(&windows, midpoint);
+        // PR-soc-chart-solar: outside any scheduled window, derive net
+        // from the hourly forecast (solar - baseload - zappi). Inside a
+        // window the existing schedule slope wins. When no hourly
+        // forecast is available, fall back to the instantaneous
+        // battery_dc_power slope (matches pre-PR behaviour).
+        let natural_net_w = if active_window.is_some() || inputs.hourly_kwh.is_empty() {
+            net_power_w
+        } else {
+            let solar_w = solar_w_at(midpoint, local_midnight_ms, inputs.hourly_kwh);
+            solar_w - inputs.baseload_w - inputs.zappi_power_w
+        };
         let (slope_w, kind, ceiling, floor) = classify_segment(
             active_window,
-            net_power_w,
+            natural_net_w,
             inputs.charge_rate_w,
             soc,
+            !inputs.hourly_kwh.is_empty(),
         );
 
         let dur_h = (b - a) as f64 / (HOUR_MS as f64);
@@ -347,11 +409,23 @@ fn active_window_at(windows: &[Window], epoch_ms: i64) -> Option<Window> {
 /// Returns `(slope_w, kind, soc_ceiling, soc_floor)` for the segment.
 /// Floor is always `SOC_DEPLETION_FLOOR_PCT`. Ceiling depends on the
 /// active window's spec.
+///
+/// PR-soc-chart-solar: outside any scheduled window we now classify by
+/// the *sign* of `natural_net_power_w` (solar - baseload - zappi when
+/// hourly forecast is available; battery_dc_power snapshot otherwise):
+/// - `> +SOC_IDLE_POWER_W`  → SolarCharge (or Natural in the fallback path)
+/// - `< -SOC_IDLE_POWER_W`  → Drain      (or Natural in the fallback path)
+/// - `|net| <= threshold`   → Idle
+///
+/// `have_hourly_forecast` distinguishes the two cases so the operator
+/// can tell from the segment kind whether the projection is forecast-
+/// driven or a flat extrapolation of the current battery snapshot.
 fn classify_segment(
     active: Option<Window>,
     natural_net_power_w: f64,
     charge_rate_w: Option<f64>,
     soc: f64,
+    have_hourly_forecast: bool,
 ) -> (f64, ModelKind, f64, f64) {
     let floor = SOC_DEPLETION_FLOOR_PCT;
     if let Some(win) = active {
@@ -370,14 +444,18 @@ fn classify_segment(
             Some(w) => (w, kind, win.soc_ceiling, floor),
             None => (natural_net_power_w, kind, win.soc_ceiling, floor),
         }
+    } else if natural_net_power_w.abs() < SOC_IDLE_POWER_W {
+        // Outside any window, sub-threshold net → Idle.
+        (0.0, ModelKind::Idle, SOC_FULL_PCT, floor)
+    } else if !have_hourly_forecast {
+        // No hourly forecast — fall back to the historical "Natural"
+        // kind so the operator can tell the projection is a flat
+        // extrapolation, not a forecast-driven curve.
+        (natural_net_power_w, ModelKind::Natural, SOC_FULL_PCT, floor)
+    } else if natural_net_power_w > 0.0 {
+        (natural_net_power_w, ModelKind::SolarCharge, SOC_FULL_PCT, floor)
     } else {
-        // Outside any window. Idle when net power is below the noise
-        // threshold; otherwise Natural.
-        if natural_net_power_w.abs() < SOC_IDLE_POWER_W {
-            (0.0, ModelKind::Idle, SOC_FULL_PCT, floor)
-        } else {
-            (natural_net_power_w, ModelKind::Natural, SOC_FULL_PCT, floor)
-        }
+        (natural_net_power_w, ModelKind::Drain, SOC_FULL_PCT, floor)
     }
 }
 
@@ -435,6 +513,51 @@ fn expand_schedule_windows(
         }
     }
     out
+}
+
+/// PR-soc-chart-solar: epoch-ms of midnight today in the configured
+/// display TZ. Returns `now_ms` (clamped) when DST or out-of-range
+/// arithmetic makes the resolution ambiguous — the chart is a forecast,
+/// so a sub-hour skew during the DST fold is acceptable.
+fn local_midnight_today_ms(now_ms: i64, tz: chrono_tz::Tz) -> i64 {
+    let now_utc: DateTime<Utc> = match Utc.timestamp_millis_opt(now_ms).single() {
+        Some(dt) => dt,
+        None => return now_ms,
+    };
+    let now_local = now_utc.with_timezone(&tz);
+    let date = now_local.date_naive();
+    let local_midnight = match date.and_hms_opt(0, 0, 0) {
+        Some(dt) => dt,
+        None => return now_ms,
+    };
+    match tz.from_local_datetime(&local_midnight) {
+        chrono::LocalResult::Single(dt) => dt.timestamp_millis(),
+        chrono::LocalResult::Ambiguous(early, _late) => early.timestamp_millis(),
+        chrono::LocalResult::None => now_ms,
+    }
+}
+
+/// PR-soc-chart-solar: instantaneous solar W at `epoch_ms`, derived
+/// from the fused hourly kWh array. The hourly value is treated as a
+/// constant W average across the local-clock hour it covers; we resolve
+/// the hour by `(epoch_ms - local_midnight_ms) / 3_600_000`.
+///
+/// Returns 0.0 when `epoch_ms` falls outside the array's coverage.
+fn solar_w_at(epoch_ms: i64, local_midnight_ms: i64, hourly_kwh: &[f64]) -> f64 {
+    if hourly_kwh.is_empty() {
+        return 0.0;
+    }
+    let delta_ms = epoch_ms.saturating_sub(local_midnight_ms);
+    if delta_ms < 0 {
+        return 0.0;
+    }
+    let hour_idx = (delta_ms / HOUR_MS) as usize;
+    if hour_idx >= hourly_kwh.len() {
+        return 0.0;
+    }
+    // kWh per hour at constant power = (kWh × 1000) W averaged across
+    // 1 hour.
+    hourly_kwh[hour_idx] * 1000.0
 }
 
 fn full_charge_window(
@@ -502,6 +625,24 @@ mod tests {
         h
     }
 
+    /// PR-soc-chart-solar: default ControllerParams (only `freshness_forecast`
+    /// matters here — the test injects forecast snapshots with `Instant::now()`
+    /// so the 12 h freshness window keeps them fresh trivially).
+    fn cp() -> ControllerParams {
+        ControllerParams::defaults()
+    }
+
+    /// PR-soc-chart-solar: install a single Open-Meteo hourly forecast on
+    /// the world. `hourly` length should be 48 (24 today + 24 tomorrow).
+    fn install_hourly_open_meteo(w: &mut World, hourly: Vec<f64>) {
+        w.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh: hourly.iter().take(24).sum(),
+            tomorrow_kwh: hourly.iter().skip(24).sum(),
+            fetched_at: Instant::now(),
+            hourly_kwh: hourly,
+        });
+    }
+
     fn install_schedule(w: &mut World, slot: usize, spec: ScheduleSpec) {
         let target = match slot {
             0 => &mut w.schedule_0,
@@ -524,7 +665,7 @@ mod tests {
         // Should produce a single Natural segment that splits at the
         // 10 % floor and emits a trailing Clamped tail.
         let w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         let segs = &chart.projection.segments;
         // Expect: Natural [now, now+8h] from 50→10, then Clamped tail.
         assert!(!segs.is_empty(), "expected some segments");
@@ -542,7 +683,7 @@ mod tests {
     fn idle_outside_window() {
         // 30 W is below the 50 W idle floor → single Idle segment.
         let w = world_with_inputs(50.0, 30.0, 100.0, 200.0);
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         let segs = &chart.projection.segments;
         assert_eq!(segs.len(), 1, "expected single Idle segment, got {segs:?}");
         assert_eq!(segs[0].kind, ModelKind::Idle);
@@ -577,7 +718,7 @@ mod tests {
                 days: DAYS_ENABLED,
             },
         );
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         let segs = &chart.projection.segments;
 
         // The first segment must be Natural (depleting before schedule fires).
@@ -617,7 +758,7 @@ mod tests {
             .unwrap()
             .naive_utc();
         w.bookkeeping.next_full_charge = Some(nfc);
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         let segs = &chart.projection.segments;
         let has_fc = segs.iter().any(|s| s.kind == ModelKind::FullChargePush);
         assert!(has_fc, "expected a FullChargePush segment in {segs:?}");
@@ -634,7 +775,7 @@ mod tests {
         let mut w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
         w.bookkeeping.soc_end_of_day_target = 35.0;
         w.bookkeeping.battery_selected_soc_target = 85.0;
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         assert_eq!(chart.discharge_target_pct, Some(35.0));
         assert_eq!(chart.charge_target_pct, Some(85.0));
     }
@@ -656,7 +797,7 @@ mod tests {
                 days: DAYS_DISABLED,
             },
         );
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         let segs = &chart.projection.segments;
         // No ScheduledCharge anywhere.
         assert!(
@@ -670,7 +811,7 @@ mod tests {
         let mut w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
         // SoC stale → no projection.
         w.sensors.battery_soc.freshness = Freshness::Stale;
-        let chart = compute_soc_chart(&w, &[], hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         assert!(chart.projection.segments.is_empty());
         // But targets and history pass-through are still set.
         assert_eq!(chart.projection.net_power_w, Some(-500.0));
@@ -683,7 +824,7 @@ mod tests {
             ShellSocSample { epoch_ms: 100, soc: 47.0 },
             ShellSocSample { epoch_ms: 200, soc: 48.5 },
         ];
-        let chart = compute_soc_chart(&w, &history, hw_50v(), TEST_NOW_MS);
+        let chart = compute_soc_chart(&w, &history, hw_50v(), cp(), TEST_NOW_MS);
         assert_eq!(chart.history.len(), 2);
         assert_eq!(chart.history[0].epoch_ms, 100);
         assert!((chart.history[0].soc_pct - 47.0).abs() < 1e-9);
@@ -694,4 +835,196 @@ mod tests {
     // schedule installer path stops needing it.
     #[allow(dead_code)]
     fn _imports_used(_a: Actuated<ScheduleSpec>) {}
+
+    // ------------------------------------------------------------------
+    // PR-soc-chart-solar
+    // ------------------------------------------------------------------
+
+    /// Build a hand-crafted hourly profile for "today" (24 entries) and
+    /// repeat it for "tomorrow" so tests are robust against the natural
+    /// 24 h horizon walk crossing midnight.
+    fn solar_profile_repeat(today: &[f64; 24]) -> Vec<f64> {
+        let mut v = Vec::with_capacity(48);
+        v.extend_from_slice(today);
+        v.extend_from_slice(today);
+        v
+    }
+
+    /// Force the "now" cursor to UTC midnight so hour 0 of the hourly
+    /// array aligns to TEST_NOW_MS_MIDNIGHT.
+    const TEST_NOW_MS_MIDNIGHT: i64 = 1_777_420_800_000; // 2026-04-25 00:00:00 UTC
+
+    #[test]
+    fn solar_curve_drives_morning_climb() {
+        // 14 kWh capacity (200 Ah × 70 V), baseline 1200 W, soc 50.
+        // Solar profile peaks midday → SoC must climb during noon and
+        // fall in the evening.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 70.0; // 200 Ah * 70 V = 14000 Wh
+        hw.baseload_consumption_w = 1200.0;
+        let profile: [f64; 24] = [
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,    // 00..06: night
+            0.5, 1.0, 2.0, 3.0, 4.0, 5.0,    // 06..12: ramp
+            5.0, 4.0, 3.0, 2.0, 1.0, 0.5,    // 12..18: ramp down
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,    // 18..24: night
+        ];
+        let mut w = world_with_inputs(50.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&profile));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
+        let segs = &chart.projection.segments;
+        assert!(!segs.is_empty(), "expected segments");
+
+        // Find a SolarCharge segment in the noon window (hour 11..14).
+        let mut found_solar_charge = false;
+        for s in segs {
+            if matches!(s.kind, ModelKind::SolarCharge) {
+                let mid = (s.start_epoch_ms + s.end_epoch_ms) / 2;
+                let hour = (mid - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
+                if (10..=14).contains(&hour) {
+                    found_solar_charge = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            found_solar_charge,
+            "expected a SolarCharge segment around noon, got {segs:?}"
+        );
+
+        // Find a Drain segment after sunset (hour 18..24) when solar = 0.
+        let mut found_drain = false;
+        for s in segs {
+            if matches!(s.kind, ModelKind::Drain) {
+                let mid = (s.start_epoch_ms + s.end_epoch_ms) / 2;
+                let hour = (mid - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
+                if (18..24).contains(&hour) {
+                    found_drain = true;
+                    break;
+                }
+            }
+        }
+        assert!(found_drain, "expected a Drain segment after sunset, got {segs:?}");
+
+        // SoC must climb above the starting 50% at some point during the
+        // day. (We can't predict an exact peak without re-implementing
+        // the integrator, but it should rise meaningfully.)
+        let max_soc = segs
+            .iter()
+            .map(|s| s.end_soc_pct.max(s.start_soc_pct))
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            max_soc > 55.0,
+            "SoC should climb during midday with 4-5 kWh hourly solar; max_soc={max_soc}"
+        );
+    }
+
+    #[test]
+    fn solar_empty_falls_back_to_natural_slope() {
+        // hourly_kwh empty → must reproduce the pre-PR Natural-only
+        // projection (depleting at -500 W from 50% into 10 kWh →
+        // single Natural segment with Clamped tail at the floor).
+        let w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
+        let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
+        let segs = &chart.projection.segments;
+        // No SolarCharge / Drain — only Natural and Clamped.
+        for s in segs {
+            assert!(
+                matches!(s.kind, ModelKind::Natural | ModelKind::Clamped),
+                "expected only Natural/Clamped without forecast, got {:?} in {segs:?}",
+                s.kind
+            );
+        }
+        let first = &segs[0];
+        assert_eq!(first.kind, ModelKind::Natural);
+        assert!((first.start_soc_pct - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solar_with_schedule_window_combines_correctly() {
+        // schedule_0 02:00-05:00 UTC charges to 80%. Hourly forecast:
+        // big midday solar. Expect ScheduledCharge segment 02:00-05:00
+        // and SolarCharge segment(s) in the daylight band.
+        let mut profile = [0.0_f64; 24];
+        for v in profile.iter_mut().take(16).skip(9) {
+            *v = 4.0; // 4 kWh/h → 4000 W
+        }
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 1200.0;
+        let mut w = world_with_inputs(40.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_schedule(
+            &mut w,
+            0,
+            ScheduleSpec {
+                start_s: 2 * 3600,
+                duration_s: 3 * 3600,
+                discharge: 0,
+                soc: 80.0,
+                days: DAYS_ENABLED,
+            },
+        );
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&profile));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
+        let segs = &chart.projection.segments;
+
+        let has_sched = segs.iter().any(|s| s.kind == ModelKind::ScheduledCharge);
+        let has_solar = segs.iter().any(|s| s.kind == ModelKind::SolarCharge);
+        assert!(has_sched, "expected ScheduledCharge in {segs:?}");
+        assert!(has_solar, "expected SolarCharge in {segs:?}");
+
+        // Check that the ScheduledCharge segment(s) live inside
+        // [02:00, 05:00] UTC.
+        for s in segs {
+            if s.kind == ModelKind::ScheduledCharge {
+                let start_hour = (s.start_epoch_ms - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
+                let end_hour = (s.end_epoch_ms - TEST_NOW_MS_MIDNIGHT) / HOUR_MS;
+                assert!(
+                    start_hour >= 2 && end_hour <= 5,
+                    "ScheduledCharge outside [02,05]: {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn solar_threshold_classifies_kinds() {
+        // Use a 1-h hourly profile and check the classification for the
+        // first hour by inspecting the produced segments.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 50.0;
+        hw.baseload_consumption_w = 1000.0;
+
+        // Case 1: solar_w = 1500 → net = +500 → SolarCharge.
+        // 1.5 kWh/h * 1000 = 1500 W, baseline 1000 W → net 500 W.
+        let mut prof = [0.0_f64; 24];
+        prof[0] = 1.5;
+        let mut w = world_with_inputs(50.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
+        let first = &chart.projection.segments[0];
+        assert_eq!(first.kind, ModelKind::SolarCharge);
+
+        // Case 2: solar_w = 500 → net = -500 → Drain.
+        let mut prof = [0.0_f64; 24];
+        prof[0] = 0.5;
+        let mut w = world_with_inputs(50.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
+        let first = &chart.projection.segments[0];
+        assert_eq!(first.kind, ModelKind::Drain);
+
+        // Case 3: solar_w = 1030 → net = +30 → Idle (|net| < 50 W).
+        let mut prof = [0.0_f64; 24];
+        prof[0] = 1.030;
+        let mut w = world_with_inputs(50.0, 0.0, 100.0, 200.0);
+        w.timezone = "Etc/UTC".to_string();
+        install_hourly_open_meteo(&mut w, solar_profile_repeat(&prof));
+        let chart = compute_soc_chart(&w, &[], hw, cp(), TEST_NOW_MS_MIDNIGHT);
+        let first = &chart.projection.segments[0];
+        assert_eq!(first.kind, ModelKind::Idle);
+    }
 }

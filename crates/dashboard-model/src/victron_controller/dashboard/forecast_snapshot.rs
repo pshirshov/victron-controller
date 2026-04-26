@@ -6,6 +6,7 @@ pub struct ForecastSnapshot {
     pub tomorrow_kwh: f64,
     #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
     pub fetched_at_epoch_ms: i64,
+    pub hourly_kwh: Vec<f64>,
 }
 
 impl PartialEq for ForecastSnapshot {
@@ -36,13 +37,17 @@ impl Ord for ForecastSnapshot {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match crate::baboon_runtime::__vec_f64_total_cmp(&self.hourly_kwh, &other.hourly_kwh) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for ForecastSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        0
+        1
     }
 }
 
@@ -55,12 +60,27 @@ impl crate::baboon_runtime::BaboonBinEncode for ForecastSnapshot {
             value.today_kwh.encode_ueba(ctx, &mut buffer)?;
             value.tomorrow_kwh.encode_ueba(ctx, &mut buffer)?;
             value.fetched_at_epoch_ms.encode_ueba(ctx, &mut buffer)?;
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.hourly_kwh.len() as i32)?;
+            for item in (value.hourly_kwh).iter() {
+                item.encode_ueba(ctx, &mut buffer)?;
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
             value.today_kwh.encode_ueba(ctx, writer)?;
             value.tomorrow_kwh.encode_ueba(ctx, writer)?;
             value.fetched_at_epoch_ms.encode_ueba(ctx, writer)?;
+            crate::baboon_runtime::bin_tools::write_i32(writer, value.hourly_kwh.len() as i32)?;
+            for item in (value.hourly_kwh).iter() {
+                item.encode_ueba(ctx, writer)?;
+            }
         }
         Ok(())
     }
@@ -75,10 +95,15 @@ impl crate::baboon_runtime::BaboonBinDecode for ForecastSnapshot {
         let today_kwh = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let tomorrow_kwh = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let fetched_at_epoch_ms = crate::baboon_runtime::bin_tools::read_i64(reader)?;
+        let hourly_kwh = {
+            let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
+            (0..count).map(|_| Ok(crate::baboon_runtime::bin_tools::read_f64(reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
+        };
         Ok(ForecastSnapshot {
             today_kwh,
             tomorrow_kwh,
             fetched_at_epoch_ms,
+            hourly_kwh,
         })
     }
 }

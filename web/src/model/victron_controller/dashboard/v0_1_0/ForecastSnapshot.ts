@@ -58,7 +58,7 @@ export class ForecastSnapshot implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return ForecastSnapshot.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0"]
     public baboonSameInVersions() {
         return ForecastSnapshot.BaboonSameInVersions
     }

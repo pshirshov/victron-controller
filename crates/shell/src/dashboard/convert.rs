@@ -353,6 +353,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             world,
             &meta.soc_history.snapshot_blocking(),
             meta.hardware,
+            meta.controller_params,
             now_epoch,
         ),
     }
@@ -673,6 +674,9 @@ fn forecast_snapshot(f: &victron_controller_core::world::ForecastSnapshot) -> Mo
         today_kwh: f.today_kwh,
         tomorrow_kwh: f.tomorrow_kwh,
         fetched_at_epoch_ms: instant_to_epoch_ms(f.fetched_at),
+        // PR-soc-chart-solar: surface the hourly array so the
+        // dashboard's SoC chart can subdivide Natural segments.
+        hourly_kwh: f.hourly_kwh.clone(),
     }
 }
 
