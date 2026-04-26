@@ -39,12 +39,6 @@ const SOC_DEPLETION_FLOOR_PCT: f64 = 10.0;
 /// SoC ceiling used as the natural filling clamp.
 const SOC_FULL_PCT: f64 = 100.0;
 
-/// Default scheduled-charge ceiling for `ScheduledCharge` slope. This is
-/// an approximate ceiling; real rates depend on inverter limits, the
-/// grid-import-limit knob, and battery state. We use it when
-/// `max_grid_current_a * grid_nominal_voltage_v` would exceed it.
-const MAX_CHARGE_RATE_W_DEFAULT: f64 = 5000.0;
-
 /// Width of the `FullChargePush` window, starting at `next_full_charge`.
 /// 1 h is a heuristic — the actual full-charge cycle ends when the
 /// battery hits 100 %, but for projection purposes assume one hour of
@@ -123,14 +117,18 @@ pub fn compute_soc_chart(
     }
 }
 
-/// `min(max_grid_current_a * grid_nominal_voltage_v, MAX_CHARGE_RATE_W_DEFAULT)`,
-/// or None when the hardware values aren't sane. This is an approximate
-/// ceiling; real rates depend on inverter limits, the grid-import-limit
-/// knob, and battery state.
+/// `max_grid_current_a * grid_nominal_voltage_v`, or None when the
+/// hardware values aren't sane. This is the inverter-nameplate ceiling
+/// for grid-sourced charge power; real rates may be lower if the
+/// inverter throttles, the battery-side BMS limits accept current, or
+/// the grid-import-limit knob caps it. We deliberately do NOT apply a
+/// per-PR fixed cap on top — earlier versions used a 5000 W default
+/// that was wrong for high-power inverters (e.g. MultiPlus-II 15 kVA
+/// at 65 A × 230 V ≈ 15 kW).
 fn derive_charge_rate_w(hardware: HardwareParams) -> Option<f64> {
     let raw = hardware.max_grid_current_a * hardware.grid_nominal_voltage_v;
     if raw.is_finite() && raw > 0.0 {
-        Some(raw.min(MAX_CHARGE_RATE_W_DEFAULT))
+        Some(raw)
     } else {
         None
     }
