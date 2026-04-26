@@ -5,6 +5,7 @@ pub enum BookkeepingKey {
     NextFullCharge,
     AboveSocDate,
     PrevEssState,
+    ChargeToFullRequired,
 }
 
 impl BookkeepingKey {
@@ -13,6 +14,7 @@ impl BookkeepingKey {
             "NextFullCharge" => Ok(BookkeepingKey::NextFullCharge),
             "AboveSocDate" => Ok(BookkeepingKey::AboveSocDate),
             "PrevEssState" => Ok(BookkeepingKey::PrevEssState),
+            "ChargeToFullRequired" => Ok(BookkeepingKey::ChargeToFullRequired),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -22,6 +24,7 @@ impl BookkeepingKey {
             BookkeepingKey::NextFullCharge,
             BookkeepingKey::AboveSocDate,
             BookkeepingKey::PrevEssState,
+            BookkeepingKey::ChargeToFullRequired,
         ]
     }
 }
@@ -32,6 +35,7 @@ impl std::fmt::Display for BookkeepingKey {
             BookkeepingKey::NextFullCharge => write!(f, "NextFullCharge"),
             BookkeepingKey::AboveSocDate => write!(f, "AboveSocDate"),
             BookkeepingKey::PrevEssState => write!(f, "PrevEssState"),
+            BookkeepingKey::ChargeToFullRequired => write!(f, "ChargeToFullRequired"),
         }
     }
 }
@@ -55,6 +59,7 @@ impl crate::baboon_runtime::BaboonBinEncode for BookkeepingKey {
             BookkeepingKey::NextFullCharge => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
             BookkeepingKey::AboveSocDate => crate::baboon_runtime::bin_tools::write_byte(writer, 1)?,
             BookkeepingKey::PrevEssState => crate::baboon_runtime::bin_tools::write_byte(writer, 2)?,
+            BookkeepingKey::ChargeToFullRequired => crate::baboon_runtime::bin_tools::write_byte(writer, 3)?,
         }
         Ok(())
     }
@@ -67,6 +72,7 @@ impl crate::baboon_runtime::BaboonBinDecode for BookkeepingKey {
             0 => Ok(BookkeepingKey::NextFullCharge),
             1 => Ok(BookkeepingKey::AboveSocDate),
             2 => Ok(BookkeepingKey::PrevEssState),
+            3 => Ok(BookkeepingKey::ChargeToFullRequired),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

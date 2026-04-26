@@ -4,13 +4,15 @@ import {BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} fr
 export enum BookkeepingKey {
     NextFullCharge = "NextFullCharge",
     AboveSocDate = "AboveSocDate",
-    PrevEssState = "PrevEssState"
+    PrevEssState = "PrevEssState",
+    ChargeToFullRequired = "ChargeToFullRequired"
 }
 
 export const BookkeepingKey_values: ReadonlyArray<BookkeepingKey> = [
     BookkeepingKey.NextFullCharge,
     BookkeepingKey.AboveSocDate,
-    BookkeepingKey.PrevEssState
+    BookkeepingKey.PrevEssState,
+    BookkeepingKey.ChargeToFullRequired
 ] as const;
 
 export function BookkeepingKey_parse(s: string): BookkeepingKey {
@@ -31,6 +33,7 @@ export class BookkeepingKey_UEBACodec {
             case "NextFullCharge": BinTools.writeByte(writer, 0); break;
                 case "AboveSocDate": BinTools.writeByte(writer, 1); break;
                 case "PrevEssState": BinTools.writeByte(writer, 2); break;
+                case "ChargeToFullRequired": BinTools.writeByte(writer, 3); break;
             default: throw new Error("Unknown enum variant: " + value);
         }
     }
@@ -45,6 +48,7 @@ export class BookkeepingKey_UEBACodec {
             case 0: return "NextFullCharge" as BookkeepingKey;
                 case 1: return "AboveSocDate" as BookkeepingKey;
                 case 2: return "PrevEssState" as BookkeepingKey;
+                case 3: return "ChargeToFullRequired" as BookkeepingKey;
             default: throw new Error("Unknown enum variant tag: " + tag);
         }
     }

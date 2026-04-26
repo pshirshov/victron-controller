@@ -317,11 +317,19 @@ enum BookkeepingKey {
   NextFullCharge
   AboveSocDate
   PrevEssState
+  // PR-bookkeeping-edit-bool: editable bool. ChargeToFullRequired
+  // is normally derived per-tick by run_setpoint, but the operator
+  // can override it (manual full-charge trigger / debug).
+  ChargeToFullRequired
 }
 
 adt BookkeepingValue {
   data NaiveDateTime {
     iso: str
+  }
+  // PR-bookkeeping-edit-bool.
+  data Bool {
+    value: bit
   }
   data Cleared {}
 }

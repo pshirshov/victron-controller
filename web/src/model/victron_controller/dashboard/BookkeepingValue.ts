@@ -1,7 +1,7 @@
 // @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 
-export type BookkeepingValue = NaiveDateTime | Cleared
+export type BookkeepingValue = NaiveDateTime | Bool | Cleared
 
 export const BookkeepingValue = {
     BaboonDomainVersion: '0.2.0',
@@ -15,6 +15,7 @@ export const BookkeepingValue = {
 } as const
 
 export function isNaiveDateTime(value: BookkeepingValue): value is NaiveDateTime { return value instanceof NaiveDateTime; }
+export function isBool(value: BookkeepingValue): value is Bool { return value instanceof Bool; }
 export function isCleared(value: BookkeepingValue): value is Cleared { return value instanceof Cleared; }
 
 export class NaiveDateTime implements BaboonGeneratedLatest {
@@ -134,6 +135,120 @@ export class NaiveDateTime_UEBACodec {
     protected static lazyInstance = new Lazy(() => new NaiveDateTime_UEBACodec())
     public static get instance(): NaiveDateTime_UEBACodec {
         return NaiveDateTime_UEBACodec.lazyInstance.value
+    }
+}
+
+export class Bool implements BaboonGeneratedLatest {
+    private readonly _value: boolean;
+
+    constructor(value: boolean) {
+        this._value = value
+    }
+
+    public get value(): boolean {
+        return this._value;
+    }
+
+    public toJSON(): Record<string, unknown> {
+        return {
+            value: this._value
+        };
+    }
+
+    public with(overrides: {value?: boolean}): Bool {
+        return new Bool(
+            'value' in overrides ? overrides.value! : this._value
+        );
+    }
+
+    public static fromPlain(obj: {value: boolean}): Bool {
+        return new Bool(
+            obj.value
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return Bool.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return Bool.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#BookkeepingValue]#Bool'
+    public baboonTypeIdentifier() {
+        return Bool.BaboonTypeIdentifier
+    }
+    public static readonly BaboonSameInVersions = ["0.2.0"]
+    public baboonSameInVersions() {
+        return Bool.BaboonSameInVersions
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#BookkeepingValue]#Bool'
+    public baboonAdtTypeIdentifier() {
+        return Bool.BaboonAdtTypeIdentifier
+    }
+    
+    public static binCodec(): Bool_UEBACodec {
+        return Bool_UEBACodec.instance
+    }
+}
+
+export class Bool_UEBACodec {
+    public encode(ctx: BaboonCodecContext, value: Bool, writer: BaboonBinWriter): unknown {
+        if (this !== Bool_UEBACodec.lazyInstance.value) {
+          return Bool_UEBACodec.lazyInstance.value.encode(ctx, value, writer)
+        }
+    
+        if (ctx === BaboonCodecContext.Indexed) {
+            BinTools.writeByte(writer, 0x01);
+            const buffer = new BaboonBinWriter();
+            BinTools.writeBool(buffer, value.value);
+            writer.writeAll(buffer.toBytes());
+        } else {
+            BinTools.writeByte(writer, 0x00)
+            BinTools.writeBool(writer, value.value);
+        }
+    }
+    
+    public decode(ctx: BaboonCodecContext, reader: BaboonBinReader): Bool {
+        if (this !== Bool_UEBACodec .lazyInstance.value) {
+            return Bool_UEBACodec.lazyInstance.value.decode(ctx, reader)
+        }
+    
+        const header = BinTools.readByte(reader);
+        const useIndices = header === 0x01;
+        if (useIndices) {
+            for (let i = 0; i < 0; i++) {
+                BinTools.readI32(reader);
+                BinTools.readI32(reader);
+            }
+        }
+        const value = BinTools.readBool(reader);
+        return new Bool(
+            value,
+        );
+    }
+
+    public static readonly BaboonDomainVersion = '0.2.0'
+    public baboonDomainVersion() {
+        return Bool_UEBACodec.BaboonDomainVersion
+    }
+    public static readonly BaboonDomainIdentifier = 'victron_controller.dashboard'
+    public baboonDomainIdentifier() {
+        return Bool_UEBACodec.BaboonDomainIdentifier
+    }
+    public static readonly BaboonTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#BookkeepingValue]#Bool'
+    public baboonTypeIdentifier() {
+        return Bool_UEBACodec.BaboonTypeIdentifier
+    }
+    public static readonly BaboonAdtTypeIdentifier = 'victron_controller.dashboard/[victron_controller.dashboard/:#BookkeepingValue]#Bool'
+    public baboonAdtTypeIdentifier() {
+        return Bool_UEBACodec.BaboonAdtTypeIdentifier
+    }
+
+    protected static lazyInstance = new Lazy(() => new Bool_UEBACodec())
+    public static get instance(): Bool_UEBACodec {
+        return Bool_UEBACodec.lazyInstance.value
     }
 }
 
@@ -259,8 +374,12 @@ export class BookkeepingValue_UEBACodec {
                 BinTools.writeByte(writer, 0);
                 NaiveDateTime_UEBACodec.instance.encode(ctx, value, writer);
             }
-            if (value instanceof Cleared) {
+            if (value instanceof Bool) {
                 BinTools.writeByte(writer, 1);
+                Bool_UEBACodec.instance.encode(ctx, value, writer);
+            }
+            if (value instanceof Cleared) {
+                BinTools.writeByte(writer, 2);
                 Cleared_UEBACodec.instance.encode(ctx, value, writer);
             }
     }
@@ -273,7 +392,8 @@ export class BookkeepingValue_UEBACodec {
         const tag = BinTools.readByte(reader);
         switch (tag) {
             case 0: return NaiveDateTime_UEBACodec.instance.decode(ctx, reader)
-                case 1: return Cleared_UEBACodec.instance.decode(ctx, reader)
+                case 1: return Bool_UEBACodec.instance.decode(ctx, reader)
+                case 2: return Cleared_UEBACodec.instance.decode(ctx, reader)
             default: throw new Error("Unknown ADT branch tag: " + tag);
         }
     }

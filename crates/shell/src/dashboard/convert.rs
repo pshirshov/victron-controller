@@ -861,6 +861,7 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
                 ModelBkKey::NextFullCharge => BookkeepingKey::NextFullCharge,
                 ModelBkKey::AboveSocDate => BookkeepingKey::AboveSocDate,
                 ModelBkKey::PrevEssState => BookkeepingKey::PrevEssState,
+                ModelBkKey::ChargeToFullRequired => BookkeepingKey::ChargeToFullRequired,
             };
             let value = match &c.value {
                 ModelBkValue::NaiveDateTime(v) => {
@@ -886,6 +887,7 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
                     BookkeepingValue::NaiveDateTime(parsed)
                 }
                 ModelBkValue::Cleared(_) => BookkeepingValue::Cleared,
+                ModelBkValue::Bool(b) => BookkeepingValue::Bool(b.value),
             };
             Command::SetBookkeeping { key, value }
         }

@@ -383,15 +383,21 @@ export function renderBookkeeping(snap: WorldSnapshot) {
       disp = maybeBoolBadge(s) ?? esc(s);
     }
     // PR-bookkeeping-edit: pencil icon for editable bookkeeping fields.
-    // Only `next_full_charge` is editable today (allowlisted in
-    // `apply_set_bookkeeping`). The click handler swaps the cell into
-    // edit mode. The snapshot field name is `next_full_charge_iso`
-    // (it carries an ISO 8601 string); the data-edit-bk attribute
-    // carries the canonical key the click handler dispatches on.
+    // The snapshot field name carries a suffix (`_iso` for dates) the
+    // server uses for serialisation; the data-edit-bk attribute is the
+    // canonical key the click handler dispatches on. Each editable row
+    // is allowlisted server-side in `apply_set_bookkeeping`.
     if (name === "next_full_charge_iso") {
       const editBtn =
         `<button class="edit-btn icon" data-edit-bk="next_full_charge" title="Edit next full charge">&#9998;</button>`;
       disp = `${disp} ${editBtn}`;
+    } else if (name === "charge_to_full_required") {
+      // PR-bookkeeping-edit-bool: bool field — flip-arrow toggle
+      // instead of an inline editor. One click toggles the value.
+      const next = val === true ? "false" : "true";
+      const toggleBtn =
+        `<button class="edit-btn icon" data-toggle-bk="charge_to_full_required" data-toggle-to="${next}" title="Toggle charge_to_full_required">&#x21bb;</button>`;
+      disp = `${disp} ${toggleBtn}`;
     }
     return {
       key: name,
@@ -1070,6 +1076,16 @@ export function installBookkeepingEditHandler(
       clearBookkeepingEdit(clearBtn);
       return;
     }
+    // PR-bookkeeping-edit-bool: one-click toggle for editable bool
+    // fields. The button carries the canonical key + the desired
+    // post-toggle value as data-toggle-to.
+    const toggleBtn = target.closest(
+      "button[data-toggle-bk]",
+    ) as HTMLButtonElement | null;
+    if (toggleBtn) {
+      toggleBookkeepingBool(toggleBtn);
+      return;
+    }
   });
 }
 
@@ -1165,9 +1181,31 @@ function bookkeepingKeyToWire(name: string): string | null {
       return "AboveSocDate";
     case "prev_ess_state":
       return "PrevEssState";
+    case "charge_to_full_required":
+      return "ChargeToFullRequired";
     default:
       return null;
   }
+}
+
+// PR-bookkeeping-edit-bool: dispatch a SetBookkeeping command with a
+// boolean payload. Reads the desired post-toggle value from
+// data-toggle-to and the canonical key from data-toggle-bk.
+function toggleBookkeepingBool(btn: HTMLButtonElement): void {
+  if (!bkEditSend) return;
+  const key = btn.getAttribute("data-toggle-bk") ?? "";
+  const desired = btn.getAttribute("data-toggle-to") === "true";
+  const cmdKey = bookkeepingKeyToWire(key);
+  if (!cmdKey) return;
+  bkEditSend({
+    SetBookkeeping: {
+      key: cmdKey,
+      value: { Bool: { value: desired } },
+    },
+  });
+  // Brief visual ack — flashButton shows the new state until the next
+  // snapshot tick redraws the row with the updated value.
+  flashButton(btn, desired ? "true" : "false", true);
 }
 
 function flashButton(el: HTMLButtonElement, label: string, good: boolean) {

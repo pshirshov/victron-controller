@@ -275,6 +275,11 @@ fn parse_bookkeeping_value(key: BookkeepingKey, body: &str) -> Option<Bookkeepin
             .parse::<i32>()
             .ok()
             .map(|n| BookkeepingValue::OptionalInt(Some(n))),
+        BookkeepingKey::ChargeToFullRequired => match body {
+            "true" => Some(BookkeepingValue::Bool(true)),
+            "false" => Some(BookkeepingValue::Bool(false)),
+            _ => None,
+        },
     }
 }
 
@@ -381,6 +386,13 @@ fn bookkeeping_name(k: BookkeepingKey) -> &'static str {
         BookkeepingKey::NextFullCharge => "schedule.full-charge.next",
         BookkeepingKey::AboveSocDate => "battery.soc.above-threshold.date",
         BookkeepingKey::PrevEssState => "inverter.ess.state.previous",
+        // PR-bookkeeping-edit-bool: ChargeToFullRequired is *not*
+        // published via the persistence path (it's derived per-tick,
+        // and the BookkeepingId taxonomy already publishes it via the
+        // BookkeepingBool channel). The dotted name here is only used
+        // by the SetBookkeeping accept path; mirror the BookkeepingId
+        // dotted name for consistency.
+        BookkeepingKey::ChargeToFullRequired => "schedule.full-charge.required",
     }
 }
 
@@ -724,6 +736,7 @@ fn encode_bookkeeping_value(v: BookkeepingValue) -> String {
         BookkeepingValue::NaiveDate(d) => d.format("%Y-%m-%d").to_string(),
         BookkeepingValue::OptionalInt(None) | BookkeepingValue::Cleared => "null".to_string(),
         BookkeepingValue::OptionalInt(Some(n)) => n.to_string(),
+        BookkeepingValue::Bool(b) => if b { "true" } else { "false" }.to_string(),
     }
 }
 

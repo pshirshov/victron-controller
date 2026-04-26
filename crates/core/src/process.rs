@@ -459,6 +459,9 @@ fn apply_set_bookkeeping(
         (
             BookkeepingKey::NextFullCharge,
             BookkeepingValue::NaiveDateTime(_) | BookkeepingValue::Cleared,
+        ) | (
+            BookkeepingKey::ChargeToFullRequired,
+            BookkeepingValue::Bool(_),
         ),
     );
     if !accepted {
@@ -502,6 +505,9 @@ fn apply_bookkeeping(
         }
         (BookkeepingKey::PrevEssState, BookkeepingValue::Cleared) => {
             bk.prev_ess_state = None;
+        }
+        (BookkeepingKey::ChargeToFullRequired, BookkeepingValue::Bool(v)) => {
+            bk.charge_to_full_required = v;
         }
         _ => {
             // Type mismatch — retained payload shape doesn't match the
