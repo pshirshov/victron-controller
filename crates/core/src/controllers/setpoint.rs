@@ -358,7 +358,15 @@ pub fn compute_battery_balance(
             battery_capacity_ah * (input.soh / 100.0) * nominal_voltage_v;
         let current_capacity = total_capacity_wh * (battery_soc / 100.0);
         let end_of_day_target = total_capacity_wh * (soc_end_of_day_target / 100.0);
-        let current_target = end_of_day_target + 3000.0;
+        // Mirror evaluate_setpoint: the +3000 Wh "discharge buffer"
+        // applies only while we're still inside the 1-hour-before-end
+        // window (millis_remaining_1hour > 0). Past the 1-hour mark we
+        // squeeze toward end_of_day_target exactly.
+        let current_target = if millis_remaining_1hour <= 0.0 {
+            end_of_day_target
+        } else {
+            end_of_day_target + 3000.0
+        };
         let to_be_consumed = 0.0_f64.max(consumption * hours_remaining * pessimism_multiplier);
         let exportable_capacity =
             0.0_f64.max(current_capacity - to_be_consumed - current_target);
@@ -366,8 +374,11 @@ pub fn compute_battery_balance(
         let remaining_baseload_consumption = baseload_w * hours_remaining;
         let baseload_to_be_consumed =
             0.0_f64.max(remaining_baseload_consumption * pessimism_multiplier);
+        // Mirror evaluate_setpoint: compare against `current_target`
+        // (which already includes the +3000 buffer when applicable),
+        // not bare `end_of_day_target`.
         let preserve_battery = export_soc_threshold == 100.0
-            || current_capacity - end_of_day_target < baseload_to_be_consumed;
+            || current_capacity - current_target < baseload_to_be_consumed;
 
         if preserve_battery {
             // Setpoint pinned at idle — all surplus stays in battery.
@@ -378,13 +389,19 @@ pub fn compute_battery_balance(
         }
 
         if battery_soc >= export_soc_threshold {
-            // Active discharge window: battery_export = exportable / hours.
+            // Active discharge window. The live controller targets
+            //   setpoint = -(battery_export + solar_export - consumption)
+            // (see evaluate_setpoint's evening sub-branch). Conservation
+            // (grid_import + solar + battery_discharge = loads) plus the
+            // assumption solar_export ≈ mppt (the soltaro/hoymiles
+            // contributions are small in the projection horizon) gives
+            //   battery_discharge ≈ battery_export
+            // So the net flow into the battery is `-battery_export`. The
+            // baseline is NOT separately subtracted: it's already folded
+            // into the setpoint via the `-consumption` term.
             let battery_export = exportable_capacity / hours_remaining;
             return BatteryBalance {
-                // Battery is being drained at battery_export plus
-                // covering the baseline (consumption is fed from the
-                // battery while we export).
-                net_battery_w: -battery_export - baseline_drain_w,
+                net_battery_w: -battery_export,
                 branch: BatteryBalanceBranch::EveningDischarge,
             };
         }
@@ -1805,5 +1822,246 @@ mod tests {
         let b = compute_battery_balance(&input, &hw(), h);
         assert_eq!(b.branch, BatteryBalanceBranch::PreserveForZappi);
         assert_eq!(b.net_battery_w, 0.0);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-soc-chart-evening-discharge: evening-branch helper tests
+    // ------------------------------------------------------------------
+
+    /// Evening branch must return a negative net_battery_w (i.e.
+    /// discharging) at the magnitude `exportable_capacity / hours_remaining`.
+    /// Pin the exact value so a future drift in the helper math gets
+    /// caught here, not silently downstream in the chart.
+    #[test]
+    fn balance_evening_discharge_emits_negative_net_battery_w() {
+        // Big battery so preserve_battery clamp doesn't fire.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 70.0,
+                discharge_soc_target: 25.0,
+                discharge_time: DischargeTime::At0200,
+                pessimism_multiplier_modifier: 1.0,
+                ..base_input().globals
+            },
+            battery_soc: 90.0,
+            soh: 100.0,
+            capacity: 800.0, // 800 Ah * 48 V = 38.4 kWh
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 90.0,
+            mppt_power_total_w: 0.0,
+            now: now_at(2026, 1, 15, 22, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        assert_eq!(b.branch, BatteryBalanceBranch::EveningDischarge);
+
+        // Reproduce the helper's arithmetic to pin the slope exactly.
+        // discharge_end_time = 02:00 next day; hour_before = 01:00
+        // next day; now = 22:00 → millis_remaining_1hour = 3 h (positive).
+        let total_capacity_wh = 800.0 * 1.0 * 48.0; // 38400
+        let current_capacity = total_capacity_wh * 0.90; // 34560
+        let end_of_day_target = total_capacity_wh * 0.25; // 9600
+        let current_target = end_of_day_target + 3000.0; // 12600
+        let hours_remaining = 3.0_f64;
+        // pessimism_multiplier = min(1.8, 1.0 * round((3/10 + 1)*80)/80)
+        //                      = min(1.8, 1.3) = 1.3
+        let pessimism = 1.3_f64;
+        let to_be_consumed = 1500.0 * hours_remaining * pessimism;
+        let exportable = (current_capacity - to_be_consumed - current_target).max(0.0);
+        let battery_export = exportable / hours_remaining;
+        let expected = -battery_export;
+        assert!(
+            (b.net_battery_w - expected).abs() < 1.0,
+            "expected {expected}, got {}",
+            b.net_battery_w
+        );
+        assert!(b.net_battery_w < 0.0);
+    }
+
+    /// `preserve_battery=true` must short-circuit to non-discharging
+    /// (helper folds it into Idle). With a small battery whose
+    /// remaining headroom is dominated by baseload, preserve_battery
+    /// fires and the controller pins setpoint to idle — net battery
+    /// flow is bounded by `solar - load`, never deeper.
+    #[test]
+    fn balance_evening_discharge_respects_preserve_battery() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 70.0,
+                discharge_soc_target: 25.0,
+                discharge_time: DischargeTime::At0200,
+                pessimism_multiplier_modifier: 1.0,
+                ..base_input().globals
+            },
+            battery_soc: 80.0,
+            soh: 100.0,
+            // Small battery: 100 Ah × 48 V = 4800 Wh. With SoC=80 →
+            // current_capacity ≈ 3840 Wh. End-of-day target at 25 % +
+            // 3000 buffer ≈ 4200 Wh (already above current_capacity),
+            // so preserve_battery fires.
+            capacity: 100.0,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 80.0,
+            mppt_power_total_w: 0.0,
+            now: now_at(2026, 1, 15, 22, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        // preserve_battery → Idle (per helper). Not EveningDischarge.
+        assert_eq!(b.branch, BatteryBalanceBranch::Idle);
+        // The Idle branch returns solar − load. With solar=0, load=1500,
+        // baseload=1500 (default hw), result is -1500. NOT a deeper
+        // discharge driven by `battery_export`.
+        assert!(
+            b.net_battery_w >= -1501.0 && b.net_battery_w <= -1499.0,
+            "preserve_battery should bound net to ~-baseline, got {}",
+            b.net_battery_w
+        );
+    }
+
+    /// At SoC = `discharge_soc_target` the exportable_capacity clamps
+    /// to 0; net_battery_w must not exceed (in magnitude) the
+    /// baseline-to-load drain the controller would otherwise pin to
+    /// idle. With this configuration preserve_battery fires (the only
+    /// remaining headroom IS exactly the baseload buffer), so the
+    /// branch is Idle and net = solar − load.
+    #[test]
+    fn balance_evening_discharge_clamps_at_target_soc() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 50.0,
+                discharge_soc_target: 30.0,
+                discharge_time: DischargeTime::At0200,
+                pessimism_multiplier_modifier: 1.0,
+                ..base_input().globals
+            },
+            battery_soc: 30.0, // exactly at target
+            soh: 100.0,
+            capacity: 200.0, // 200 Ah * 48 V = 9.6 kWh
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            power_consumption: 1500.0,
+            ..base_input()
+        };
+        let h = BalanceHypothetical {
+            battery_soc: 30.0,
+            mppt_power_total_w: 0.0,
+            now: now_at(2026, 1, 15, 22, 0),
+        };
+        let b = compute_battery_balance(&input, &hw(), h);
+        // current_capacity − current_target = 0 − 3000 = -3000 < baseload
+        // pessimism → preserve_battery fires.
+        assert_eq!(b.branch, BatteryBalanceBranch::Idle);
+        // Drain bounded by the baseline-vs-solar idle formula. With
+        // solar=0, baseline=1500 (default hw) → -1500 W. Critically:
+        // NOT deeper than -baseline (no battery_export added on top).
+        assert!(
+            b.net_battery_w >= -1501.0,
+            "drain must not exceed baseline at target SoC, got {}",
+            b.net_battery_w
+        );
+    }
+
+    /// Sharp drift-guard: live `evaluate_setpoint` and helper
+    /// `compute_battery_balance` must agree on the modelled battery
+    /// flow during the evening branch. We derive the expected
+    /// `net_battery_w` from the live controller's debug fields
+    /// (`exportable_capacity` / `hours_remaining`) and assert the
+    /// helper produces the same number to within 1 W.
+    ///
+    /// If a future setpoint refactor breaks this equivalence the chart
+    /// projection will silently drift from the live controller's
+    /// behaviour — this test is the canary.
+    #[test]
+    fn drift_guard_evening_branch() {
+        // High SoC, big battery, modest baseline → ensures the active
+        // discharge sub-branch fires (preserve_battery=false). The PR
+        // suggested 14 kWh at SoC=70 with 1.2 kW baseline, but with the
+        // controller's pessimism multiplier (~1.4 over 4 h) the
+        // baseload_to_be_consumed (~6.7 kWh) dominates the headroom and
+        // preserve_battery wins. Bump SoC and trim baseline so the
+        // active branch is exercised here; the unit-tests above already
+        // cover the preserve_battery path.
+        let mut hw = HardwareParams::defaults();
+        hw.battery_nominal_voltage_v = 70.0;
+        hw.baseload_consumption_w = 600.0;
+
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                export_soc_threshold: 50.0,
+                discharge_soc_target: 30.0,
+                discharge_time: DischargeTime::At2300,
+                pessimism_multiplier_modifier: 1.0,
+                ..base_input().globals
+            },
+            battery_soc: 90.0,
+            soh: 100.0,
+            capacity: 200.0,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            evcharger_ac_power: 0.0,
+            power_consumption: 600.0, // = baseline
+        };
+
+        // 18:00 — evening branch with At2300, hours_remaining ≈ 4 h.
+        let c = clock_at(2026, 1, 15, 18, 0);
+        let live = evaluate_setpoint(&input, &c, &hw);
+
+        // Live must have entered the evening branch — hours_remaining
+        // > 0, exportable_capacity computed.
+        assert!(
+            live.debug.hours_remaining > 0.0,
+            "live controller must have entered evening branch; hours_remaining={}",
+            live.debug.hours_remaining
+        );
+
+        let now = c.naive();
+        let bal = compute_battery_balance(
+            &input,
+            &hw,
+            BalanceHypothetical {
+                battery_soc: 90.0,
+                mppt_power_total_w: 0.0,
+                now,
+            },
+        );
+
+        // Expected: -exportable_capacity / hours_remaining (the
+        // discharge rate the live controller plans for). The helper
+        // returns this directly when EveningDischarge fires.
+        let expected_net_w =
+            -live.debug.exportable_capacity / live.debug.hours_remaining;
+
+        // Confirm the live controller actually planned a real export
+        // (not a preserve_battery clamp). If preserve_battery fires
+        // the helper returns Idle — that's a different branch and
+        // the equivalence we want to pin doesn't apply.
+        assert!(
+            !live.debug.preserve_battery,
+            "this fixture must exercise the active-discharge sub-branch; \
+             preserve_battery={}",
+            live.debug.preserve_battery
+        );
+        assert_eq!(
+            bal.branch,
+            BatteryBalanceBranch::EveningDischarge,
+            "expected EveningDischarge, got {:?}",
+            bal.branch
+        );
+        assert!(
+            (bal.net_battery_w - expected_net_w).abs() < 1.0,
+            "drift: helper net_battery_w={} vs live-derived={}",
+            bal.net_battery_w,
+            expected_net_w
+        );
     }
 }
