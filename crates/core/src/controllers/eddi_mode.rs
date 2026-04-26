@@ -79,6 +79,34 @@ pub struct EddiModeOutput {
     pub decision: Decision,
 }
 
+/// Tariff-window override (PR-eddi-tariff-windows). The four windows
+/// match the legacy NR cron triggers — the Eddi follows the cheap-rate
+/// tariff schedule rather than waiting for SoC to climb above the
+/// hysteresis band:
+///
+/// - 02:00–05:00 → Normal  (cheap-rate Boost window)
+/// - 05:00–07:00 → Stopped (rest)
+/// - 07:00–08:00 → Normal  (last cheap-rate hour before day rate)
+/// - 08:00–02:00 → no override; SoC-based hysteresis runs
+///
+/// Returns `None` when no schedule applies, so the existing SoC-based
+/// hysteresis below takes over. Hardcoded for now — if other tariff
+/// shapes appear later, lift to knob-driven schedule.
+#[must_use]
+pub fn eddi_schedule_override(now: chrono::NaiveDateTime) -> Option<EddiMode> {
+    use chrono::Timelike;
+    let h = now.hour();
+    if (2..5).contains(&h) {
+        Some(EddiMode::Normal)
+    } else if (5..7).contains(&h) {
+        Some(EddiMode::Stopped)
+    } else if h == 7 {
+        Some(EddiMode::Normal)
+    } else {
+        None
+    }
+}
+
 /// Evaluate the desired Eddi mode target.
 #[must_use]
 pub fn evaluate_eddi_mode(input: &EddiModeInput, clock: &dyn Clock) -> EddiModeOutput {
@@ -116,13 +144,24 @@ pub fn evaluate_eddi_mode(input: &EddiModeInput, clock: &dyn Clock) -> EddiModeO
         };
     };
 
-    let (desired, band): (EddiMode, &'static str) = if soc >= input.knobs.enable_soc {
-        (EddiMode::Normal, "SoC ≥ enable threshold → Normal")
-    } else if soc <= input.knobs.disable_soc {
-        (EddiMode::Stopped, "SoC ≤ disable threshold → Stopped")
-    } else {
-        (input.current_mode, "SoC in hysteresis band → hold current mode")
-    };
+    // PR-eddi-tariff-windows: clock-of-day override. When the operator
+    // is on a multi-window cheap-rate tariff (legacy NR pattern), drive
+    // Eddi by the schedule regardless of SoC. Outside the override
+    // windows, the SoC-based hysteresis below runs as before.
+    let now_naive = clock.naive();
+    let (desired, band): (EddiMode, &'static str) =
+        if let Some(forced) = eddi_schedule_override(now_naive) {
+            match forced {
+                EddiMode::Normal => (EddiMode::Normal, "tariff window → Normal"),
+                EddiMode::Stopped => (EddiMode::Stopped, "tariff window → Stopped"),
+            }
+        } else if soc >= input.knobs.enable_soc {
+            (EddiMode::Normal, "SoC ≥ enable threshold → Normal")
+        } else if soc <= input.knobs.disable_soc {
+            (EddiMode::Stopped, "SoC ≤ disable threshold → Stopped")
+        } else {
+            (input.current_mode, "SoC in hysteresis band → hold current mode")
+        };
 
     let (action, dwell_note) = apply_dwell(desired, input, clock);
     let full_summary = if let Some(n) = dwell_note {
@@ -424,5 +463,91 @@ mod tests {
             evaluate_eddi_mode(&input, &clock()).action,
             EddiModeAction::Set(EddiMode::Stopped)
         );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-eddi-tariff-windows: clock-of-day overrides
+    // ------------------------------------------------------------------
+
+    fn clock_at(h: u32, m: u32) -> FixedClock {
+        FixedClock::at(
+            NaiveDate::from_ymd_opt(2026, 4, 26)
+                .unwrap()
+                .and_hms_opt(h, m, 0)
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn schedule_lookup_returns_correct_modes_per_window() {
+        use chrono::NaiveDate;
+        let at = |h: u32, m: u32| {
+            NaiveDate::from_ymd_opt(2026, 4, 26)
+                .unwrap()
+                .and_hms_opt(h, m, 0)
+                .unwrap()
+        };
+        // Boost cheap-rate window 02:00–05:00 → Normal.
+        assert_eq!(eddi_schedule_override(at(2, 0)), Some(EddiMode::Normal));
+        assert_eq!(eddi_schedule_override(at(3, 30)), Some(EddiMode::Normal));
+        assert_eq!(eddi_schedule_override(at(4, 59)), Some(EddiMode::Normal));
+        // Rest 05:00–07:00 → Stopped.
+        assert_eq!(eddi_schedule_override(at(5, 0)), Some(EddiMode::Stopped));
+        assert_eq!(eddi_schedule_override(at(6, 0)), Some(EddiMode::Stopped));
+        assert_eq!(eddi_schedule_override(at(6, 59)), Some(EddiMode::Stopped));
+        // Last cheap-rate hour 07:00–08:00 → Normal.
+        assert_eq!(eddi_schedule_override(at(7, 0)), Some(EddiMode::Normal));
+        assert_eq!(eddi_schedule_override(at(7, 59)), Some(EddiMode::Normal));
+        // Outside windows → no override (SoC hysteresis rules).
+        assert_eq!(eddi_schedule_override(at(8, 0)), None);
+        assert_eq!(eddi_schedule_override(at(12, 0)), None);
+        assert_eq!(eddi_schedule_override(at(23, 0)), None);
+        assert_eq!(eddi_schedule_override(at(0, 30)), None);
+        assert_eq!(eddi_schedule_override(at(1, 59)), None);
+    }
+
+    #[test]
+    fn tariff_window_normal_overrides_low_soc() {
+        // Below disable threshold but in the boost window — must Normal.
+        let input = input_with(Some(50.0), Freshness::Fresh, EddiMode::Stopped, None);
+        let out = evaluate_eddi_mode(&input, &clock_at(3, 0));
+        assert_eq!(out.action, EddiModeAction::Set(EddiMode::Normal));
+        assert!(out.decision.summary.contains("tariff window"));
+    }
+
+    #[test]
+    fn tariff_window_stopped_overrides_high_soc() {
+        // Above enable threshold but in the rest window — must Stopped.
+        let input = input_with(Some(99.0), Freshness::Fresh, EddiMode::Normal, None);
+        let out = evaluate_eddi_mode(&input, &clock_at(6, 0));
+        assert_eq!(out.action, EddiModeAction::Set(EddiMode::Stopped));
+        assert!(out.decision.summary.contains("tariff window"));
+    }
+
+    #[test]
+    fn tariff_window_last_cheap_rate_hour_normal_at_high_soc() {
+        // 07:00–08:00 forces Normal regardless of SoC.
+        let input = input_with(Some(50.0), Freshness::Fresh, EddiMode::Stopped, None);
+        let out = evaluate_eddi_mode(&input, &clock_at(7, 30));
+        assert_eq!(out.action, EddiModeAction::Set(EddiMode::Normal));
+    }
+
+    #[test]
+    fn outside_tariff_windows_falls_through_to_soc_hysteresis() {
+        // Daytime, SoC well above enable → Normal via hysteresis (not
+        // via tariff window). Decision summary must NOT mention tariff.
+        let input = input_with(Some(98.0), Freshness::Fresh, EddiMode::Stopped, None);
+        let out = evaluate_eddi_mode(&input, &clock_at(13, 0));
+        assert_eq!(out.action, EddiModeAction::Set(EddiMode::Normal));
+        assert!(!out.decision.summary.contains("tariff window"));
+    }
+
+    #[test]
+    fn safety_unknown_soc_still_wins_over_tariff_window() {
+        // Safety direction takes precedence over the tariff override.
+        let input = input_with(None, Freshness::Unknown, EddiMode::Normal, None);
+        let out = evaluate_eddi_mode(&input, &clock_at(3, 0));
+        assert_eq!(out.action, EddiModeAction::Set(EddiMode::Stopped));
+        assert!(out.decision.summary.contains("not Fresh"));
     }
 }
