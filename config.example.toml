@@ -239,3 +239,80 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # path  = "com.victronenergy.settings:/Settings/CGwacs/Hub4Mode"
 # type  = "int"
 # value = 1
+
+# =============================================================================
+# Cold-start knob defaults
+# =============================================================================
+# Each value below seeds `World::knobs` on a fresh boot. Retained MQTT
+# values still win on the next boot — this section only changes the
+# initial value used before any retained value arrives. Every field is
+# optional; uncomment only what you want to deviate from the SPEC §7
+# baseline (see crates/core/src/knobs.rs::safe_defaults).
+#
+# Wire format for enums matches the MQTT/HA spelling so the same
+# strings work everywhere:
+#   discharge_time:                "02:00" | "23:00"
+#   debug_full_charge:             "forbid" | "force" | "auto"
+#   forecast_disagreement_strategy: "max" | "min" | "mean"
+#                                  | "solcast_if_available_else_mean"
+#   charge_battery_extended_mode:  "auto" | "forced" | "disabled"
+#   charge_car_extended_mode:      "auto" | "forced" | "disabled"
+#   *_mode (gamma-hold per-knob):  "weather" | "forced"
+#
+# `allow_battery_to_car` is intentionally NOT exposed here — it always
+# boots `false` regardless of any external value (SPEC §2.10a).
+[knobs]
+# --- Export / discharge policy ---
+# force_disable_export                = false
+# export_soc_threshold                = 80.0
+# discharge_soc_target                = 80.0
+# battery_soc_target                  = 80.0
+# full_charge_discharge_soc_target    = 57.0
+# full_charge_export_soc_threshold    = 100.0
+# discharge_time                      = "02:00"
+# debug_full_charge                   = "auto"
+# pessimism_multiplier_modifier       = 1.0
+# disable_night_grid_discharge        = false
+
+# --- Zappi ---
+# charge_car_boost                    = true
+# charge_car_extended_mode            = "auto"
+# zappi_current_target                = 9.5
+# zappi_limit                         = 65.0      # kWh per session
+# zappi_emergency_margin              = 5.0
+
+# --- Setpoint / grid caps ---
+# grid_export_limit_w                 = 5000
+# grid_import_limit_w                 = 10
+
+# --- Eddi ---
+# eddi_enable_soc                     = 96.0
+# eddi_disable_soc                    = 94.0
+# eddi_dwell_s                        = 60
+
+# --- Weather-SoC planner thresholds ---
+# weathersoc_winter_temperature_threshold = 12.0
+# weathersoc_low_energy_threshold         = 8.0
+# weathersoc_ok_energy_threshold          = 15.0
+# weathersoc_high_energy_threshold        = 30.0
+# weathersoc_too_much_energy_threshold    = 45.0
+
+# --- Ops ---
+# writes_enabled                      = false
+# forecast_disagreement_strategy      = "solcast_if_available_else_mean"
+# charge_battery_extended_mode        = "auto"
+
+# --- PR-gamma-hold-redesign: per-knob source selectors ---
+# export_soc_threshold_mode           = "weather"
+# discharge_soc_target_mode           = "weather"
+# battery_soc_target_mode             = "weather"
+# disable_night_grid_discharge_mode   = "weather"
+
+# --- PR-safe-discharge-enable ---
+# inverter_safe_discharge_enable      = false
+
+# --- PR-baseline-forecast: 4 runtime knobs ---
+# baseline_winter_start_mm_dd         = 1101
+# baseline_winter_end_mm_dd           = 301
+# baseline_wh_per_hour_winter         = 100.0
+# baseline_wh_per_hour_summer         = 1000.0

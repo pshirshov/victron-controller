@@ -211,6 +211,10 @@ async fn main() -> Result<()> {
         hardware: topology.hardware,
     };
     let mut world_seed = World::fresh_boot(Instant::now());
+    // Apply config-file knob defaults on top of `Knobs::safe_defaults`.
+    // Retained MQTT values still win on the next boot; this only
+    // changes the seed used before any retained value arrives.
+    cfg.knobs.apply_to(&mut world_seed.knobs);
     // PR-pinned-registers: seed `world.pinned_registers` from
     // `[[dbus_pinned_registers]]` so the dashboard surfaces every
     // configured row from boot, even before the first hourly read

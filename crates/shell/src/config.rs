@@ -6,8 +6,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use victron_controller_core::HardwareParams;
+use victron_controller_core::knobs::{
+    ChargeBatteryExtendedMode as CoreChargeBatteryExtendedMode,
+    DebugFullCharge as CoreDebugFullCharge, DischargeTime as CoreDischargeTime,
+    ExtendedChargeMode as CoreExtendedChargeMode,
+    ForecastDisagreementStrategy as CoreForecastDisagreementStrategy, Knobs,
+    Mode as CoreMode,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -46,6 +53,12 @@ pub struct Config {
     /// Goes through the existing `[dbus] writes_enabled` chokepoint.
     #[serde(default)]
     pub dbus_pinned_registers: Vec<DbusPinnedRegister>,
+    /// Cold-start overrides for `Knobs::safe_defaults`. Each field is
+    /// optional — anything left absent keeps the SPEC §7 baseline.
+    /// Retained MQTT values still win on the next boot; this section
+    /// only changes the *seed* used before any retained value arrives.
+    #[serde(default)]
+    pub knobs: KnobsDefaultsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -776,6 +789,278 @@ impl From<HardwareConfig> for HardwareParams {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Knob defaults (cold-start seed for World::knobs)
+// -----------------------------------------------------------------------------
+
+/// Cold-start overrides for `Knobs::safe_defaults`. Each field is
+/// `Option<…>`; absent fields keep the SPEC §7 baseline. The struct is
+/// applied once at boot in `main`, after `World::fresh_boot` and before
+/// retained MQTT values are replayed — so retained values still win
+/// per-knob if the user has touched them.
+///
+/// Mirror enums (`DischargeTimeCfg` etc.) exist so we can derive
+/// `Deserialize` without polluting `core` with a serde dep, and so the
+/// TOML wire-form spelling matches the existing MQTT/HA spelling
+/// (`"02:00"`, `"forbid"`, `"weather"`, …).
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct KnobsDefaultsConfig {
+    // --- Export / discharge policy ---
+    pub force_disable_export: Option<bool>,
+    pub export_soc_threshold: Option<f64>,
+    pub discharge_soc_target: Option<f64>,
+    pub battery_soc_target: Option<f64>,
+    pub full_charge_discharge_soc_target: Option<f64>,
+    pub full_charge_export_soc_threshold: Option<f64>,
+    pub discharge_time: Option<DischargeTimeCfg>,
+    pub debug_full_charge: Option<DebugFullChargeCfg>,
+    pub pessimism_multiplier_modifier: Option<f64>,
+    pub disable_night_grid_discharge: Option<bool>,
+
+    // --- Zappi ---
+    pub charge_car_boost: Option<bool>,
+    pub charge_car_extended_mode: Option<ExtendedChargeModeCfg>,
+    pub zappi_current_target: Option<f64>,
+    pub zappi_limit: Option<f64>,
+    pub zappi_emergency_margin: Option<f64>,
+
+    // --- Setpoint / grid caps ---
+    pub grid_export_limit_w: Option<u32>,
+    pub grid_import_limit_w: Option<u32>,
+    // `allow_battery_to_car` is intentionally NOT exposed here — it
+    // always boots `false` regardless of any external value (SPEC §2.10a).
+
+    // --- Eddi ---
+    pub eddi_enable_soc: Option<f64>,
+    pub eddi_disable_soc: Option<f64>,
+    pub eddi_dwell_s: Option<u32>,
+
+    // --- Weather-SoC planner thresholds ---
+    pub weathersoc_winter_temperature_threshold: Option<f64>,
+    pub weathersoc_low_energy_threshold: Option<f64>,
+    pub weathersoc_ok_energy_threshold: Option<f64>,
+    pub weathersoc_high_energy_threshold: Option<f64>,
+    pub weathersoc_too_much_energy_threshold: Option<f64>,
+
+    // --- Ops ---
+    pub writes_enabled: Option<bool>,
+    pub forecast_disagreement_strategy: Option<ForecastDisagreementStrategyCfg>,
+    pub charge_battery_extended_mode: Option<ChargeBatteryExtendedModeCfg>,
+
+    // --- PR-gamma-hold-redesign: per-knob source selectors ---
+    pub export_soc_threshold_mode: Option<ModeCfg>,
+    pub discharge_soc_target_mode: Option<ModeCfg>,
+    pub battery_soc_target_mode: Option<ModeCfg>,
+    pub disable_night_grid_discharge_mode: Option<ModeCfg>,
+
+    // --- PR-safe-discharge-enable ---
+    pub inverter_safe_discharge_enable: Option<bool>,
+
+    // --- PR-baseline-forecast: 4 runtime knobs ---
+    pub baseline_winter_start_mm_dd: Option<u32>,
+    pub baseline_winter_end_mm_dd: Option<u32>,
+    pub baseline_wh_per_hour_winter: Option<f64>,
+    pub baseline_wh_per_hour_summer: Option<f64>,
+}
+
+impl KnobsDefaultsConfig {
+    /// Override the corresponding fields in `knobs`. Fields left `None`
+    /// keep their `Knobs::safe_defaults` value.
+    pub fn apply_to(self, knobs: &mut Knobs) {
+        macro_rules! set {
+            ($field:ident) => {
+                if let Some(v) = self.$field {
+                    knobs.$field = v;
+                }
+            };
+            ($field:ident, into) => {
+                if let Some(v) = self.$field {
+                    knobs.$field = v.into();
+                }
+            };
+        }
+        set!(force_disable_export);
+        set!(export_soc_threshold);
+        set!(discharge_soc_target);
+        set!(battery_soc_target);
+        set!(full_charge_discharge_soc_target);
+        set!(full_charge_export_soc_threshold);
+        set!(discharge_time, into);
+        set!(debug_full_charge, into);
+        set!(pessimism_multiplier_modifier);
+        set!(disable_night_grid_discharge);
+
+        set!(charge_car_boost);
+        set!(charge_car_extended_mode, into);
+        set!(zappi_current_target);
+        set!(zappi_limit);
+        set!(zappi_emergency_margin);
+
+        set!(grid_export_limit_w);
+        set!(grid_import_limit_w);
+
+        set!(eddi_enable_soc);
+        set!(eddi_disable_soc);
+        set!(eddi_dwell_s);
+
+        set!(weathersoc_winter_temperature_threshold);
+        set!(weathersoc_low_energy_threshold);
+        set!(weathersoc_ok_energy_threshold);
+        set!(weathersoc_high_energy_threshold);
+        set!(weathersoc_too_much_energy_threshold);
+
+        set!(writes_enabled);
+        set!(forecast_disagreement_strategy, into);
+        set!(charge_battery_extended_mode, into);
+
+        set!(export_soc_threshold_mode, into);
+        set!(discharge_soc_target_mode, into);
+        set!(battery_soc_target_mode, into);
+        set!(disable_night_grid_discharge_mode, into);
+
+        set!(inverter_safe_discharge_enable);
+
+        set!(baseline_winter_start_mm_dd);
+        set!(baseline_winter_end_mm_dd);
+        set!(baseline_wh_per_hour_winter);
+        set!(baseline_wh_per_hour_summer);
+    }
+}
+
+/// Mirror of `core::knobs::DischargeTime`. Wire form matches MQTT:
+/// `"02:00"` / `"23:00"` (or `"02:00:00"` / `"23:00:00"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DischargeTimeCfg {
+    At0200,
+    At2300,
+}
+
+impl<'de> Deserialize<'de> for DischargeTimeCfg {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.trim() {
+            "02:00" | "02:00:00" => Ok(Self::At0200),
+            "23:00" | "23:00:00" => Ok(Self::At2300),
+            other => Err(serde::de::Error::custom(format!(
+                "invalid discharge_time {other:?}; expected \"02:00\" or \"23:00\""
+            ))),
+        }
+    }
+}
+
+impl From<DischargeTimeCfg> for CoreDischargeTime {
+    fn from(c: DischargeTimeCfg) -> Self {
+        match c {
+            DischargeTimeCfg::At0200 => Self::At0200,
+            DischargeTimeCfg::At2300 => Self::At2300,
+        }
+    }
+}
+
+/// Mirror of `core::knobs::DebugFullCharge`. Wire form matches MQTT:
+/// `"forbid"` / `"force"` / `"auto"`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugFullChargeCfg {
+    Forbid,
+    Force,
+    Auto,
+}
+
+impl From<DebugFullChargeCfg> for CoreDebugFullCharge {
+    fn from(c: DebugFullChargeCfg) -> Self {
+        match c {
+            DebugFullChargeCfg::Forbid => Self::Forbid,
+            DebugFullChargeCfg::Force => Self::Force,
+            DebugFullChargeCfg::Auto => Self::Auto,
+        }
+    }
+}
+
+/// Mirror of `core::knobs::ForecastDisagreementStrategy`. Wire form
+/// matches MQTT: `"max"` / `"min"` / `"mean"` /
+/// `"solcast_if_available_else_mean"`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForecastDisagreementStrategyCfg {
+    Max,
+    Min,
+    Mean,
+    SolcastIfAvailableElseMean,
+}
+
+impl From<ForecastDisagreementStrategyCfg> for CoreForecastDisagreementStrategy {
+    fn from(c: ForecastDisagreementStrategyCfg) -> Self {
+        match c {
+            ForecastDisagreementStrategyCfg::Max => Self::Max,
+            ForecastDisagreementStrategyCfg::Min => Self::Min,
+            ForecastDisagreementStrategyCfg::Mean => Self::Mean,
+            ForecastDisagreementStrategyCfg::SolcastIfAvailableElseMean => {
+                Self::SolcastIfAvailableElseMean
+            }
+        }
+    }
+}
+
+/// Mirror of `core::knobs::ChargeBatteryExtendedMode`. Wire form
+/// matches MQTT: `"auto"` / `"forced"` / `"disabled"`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargeBatteryExtendedModeCfg {
+    Auto,
+    Forced,
+    Disabled,
+}
+
+impl From<ChargeBatteryExtendedModeCfg> for CoreChargeBatteryExtendedMode {
+    fn from(c: ChargeBatteryExtendedModeCfg) -> Self {
+        match c {
+            ChargeBatteryExtendedModeCfg::Auto => Self::Auto,
+            ChargeBatteryExtendedModeCfg::Forced => Self::Forced,
+            ChargeBatteryExtendedModeCfg::Disabled => Self::Disabled,
+        }
+    }
+}
+
+/// Mirror of `core::knobs::ExtendedChargeMode`. Wire form matches MQTT:
+/// `"auto"` / `"forced"` / `"disabled"`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendedChargeModeCfg {
+    Auto,
+    Forced,
+    Disabled,
+}
+
+impl From<ExtendedChargeModeCfg> for CoreExtendedChargeMode {
+    fn from(c: ExtendedChargeModeCfg) -> Self {
+        match c {
+            ExtendedChargeModeCfg::Auto => Self::Auto,
+            ExtendedChargeModeCfg::Forced => Self::Forced,
+            ExtendedChargeModeCfg::Disabled => Self::Disabled,
+        }
+    }
+}
+
+/// Mirror of `core::knobs::Mode` (PR-gamma-hold-redesign per-knob
+/// selector). Wire form matches MQTT: `"weather"` / `"forced"`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModeCfg {
+    Weather,
+    Forced,
+}
+
+impl From<ModeCfg> for CoreMode {
+    fn from(c: ModeCfg) -> Self {
+        match c {
+            ModeCfg::Weather => Self::Weather,
+            ModeCfg::Forced => Self::Forced,
+        }
+    }
+}
+
 fn default_inverter_max_discharge_w() -> u32 {
     5000
 }
@@ -930,6 +1215,7 @@ impl Default for Config {
             hardware: HardwareConfig::default(),
             ev: EvConfig::default(),
             dbus_pinned_registers: Vec::new(),
+            knobs: KnobsDefaultsConfig::default(),
         }
     }
 }
@@ -1022,6 +1308,95 @@ mod tests {
         assert!(
             msg.contains("Atlantis/R'lyeh"),
             "error must mention the offending value, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn example_config_parses_cleanly() {
+        // Guards against typos / unknown-field regressions in the
+        // shipped example after edits to the [knobs] section etc.
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml");
+        let cfg = load(&path).unwrap_or_else(|e| panic!("example config failed to load: {e:#}"));
+        // Smoke-check a couple of values so the parser actually walked it.
+        assert_eq!(cfg.dashboard.port, 8910);
+        assert_eq!(cfg.forecast.timezone, "Europe/London");
+    }
+
+    #[test]
+    fn knobs_section_absent_keeps_safe_defaults() {
+        let c: Config = toml::from_str("").unwrap();
+        let mut k = Knobs::safe_defaults();
+        let before = k;
+        c.knobs.apply_to(&mut k);
+        assert_eq!(k, before, "absent [knobs] must not perturb safe_defaults");
+    }
+
+    #[test]
+    fn knobs_section_overrides_floats_and_enums() {
+        let t = r#"
+            [knobs]
+            export_soc_threshold     = 75.0
+            grid_export_limit_w      = 4000
+            discharge_time           = "23:00"
+            debug_full_charge        = "force"
+            forecast_disagreement_strategy = "max"
+            charge_battery_extended_mode   = "forced"
+            charge_car_extended_mode       = "disabled"
+            export_soc_threshold_mode      = "forced"
+            inverter_safe_discharge_enable = true
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        let mut k = Knobs::safe_defaults();
+        c.knobs.apply_to(&mut k);
+        assert!((k.export_soc_threshold - 75.0).abs() < f64::EPSILON);
+        assert_eq!(k.grid_export_limit_w, 4000);
+        assert_eq!(k.discharge_time, CoreDischargeTime::At2300);
+        assert_eq!(k.debug_full_charge, CoreDebugFullCharge::Force);
+        assert_eq!(
+            k.forecast_disagreement_strategy,
+            CoreForecastDisagreementStrategy::Max
+        );
+        assert_eq!(
+            k.charge_battery_extended_mode,
+            CoreChargeBatteryExtendedMode::Forced
+        );
+        assert_eq!(
+            k.charge_car_extended_mode,
+            CoreExtendedChargeMode::Disabled
+        );
+        assert_eq!(k.export_soc_threshold_mode, CoreMode::Forced);
+        assert!(k.inverter_safe_discharge_enable);
+        // Untouched fields keep safe_defaults.
+        let d = Knobs::safe_defaults();
+        assert!((k.discharge_soc_target - d.discharge_soc_target).abs() < f64::EPSILON);
+        assert_eq!(k.grid_import_limit_w, d.grid_import_limit_w);
+    }
+
+    #[test]
+    fn knobs_unknown_field_rejected() {
+        let t = r"
+            [knobs]
+            allow_battery_to_car = true
+        ";
+        let err = toml::from_str::<Config>(t).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("allow_battery_to_car") || msg.contains("unknown field"),
+            "expected unknown-field rejection, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn knobs_invalid_discharge_time_rejected() {
+        let t = r#"[knobs]
+discharge_time = "noon"
+"#;
+        let err = toml::from_str::<Config>(t).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("noon") && msg.contains("discharge_time"),
+            "expected discharge_time enum failure, got: {msg}"
         );
     }
 
