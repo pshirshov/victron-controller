@@ -37,6 +37,25 @@ export type EntityType =
 export type RowCell = { cls?: string; html: string; colspan?: number };
 export type KeyedRow = { key: string; cells: RowCell[]; cls?: string };
 
+/// Per-tbody scratch collections. Reusing them across ticks instead of
+/// allocating fresh `Map`/`Set` per call removes ~22 collection allocs
+/// per snapshot (one pair × 11 renderers). The WeakMap lets a tbody
+/// removed from the DOM be GC'd without leaking its scratch.
+type TbodyScratch = {
+  existing: Map<string, HTMLTableRowElement>;
+  seen: Set<string>;
+};
+const tbodyScratch: WeakMap<HTMLElement, TbodyScratch> = new WeakMap();
+
+function getScratch(tbody: HTMLElement): TbodyScratch {
+  let s = tbodyScratch.get(tbody);
+  if (!s) {
+    s = { existing: new Map(), seen: new Set() };
+    tbodyScratch.set(tbody, s);
+  }
+  return s;
+}
+
 /// Diff-update the children of `tbody` so they match `rows` exactly,
 /// by row key. Existing rows are kept in place; only cells whose class
 /// or innerHTML has actually changed are written to the DOM. Cells
@@ -45,15 +64,23 @@ export type KeyedRow = { key: string; cells: RowCell[]; cls?: string };
 /// selection inside a cell) survive a snapshot tick.
 export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
   const active = document.activeElement;
-  const existing = new Map<string, HTMLTableRowElement>();
-  Array.from(tbody.children).forEach((el) => {
-    const tr = el as HTMLTableRowElement;
+  const scratch = getScratch(tbody);
+  const existing = scratch.existing;
+  const seen = scratch.seen;
+  existing.clear();
+  seen.clear();
+
+  // Index existing rows by key. Iterate by index to skip the
+  // Array.from(tbody.children) snapshot allocation.
+  const childCount = tbody.children.length;
+  for (let i = 0; i < childCount; i++) {
+    const tr = tbody.children[i] as HTMLTableRowElement;
     const k = tr.dataset.key;
     if (k !== undefined) existing.set(k, tr);
-  });
+  }
 
-  const seen = new Set<string>();
-  rows.forEach((row, idx) => {
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     seen.add(row.key);
     let tr = existing.get(row.key);
     if (!tr) {
@@ -64,9 +91,10 @@ export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
     if (tr.className !== trCls) tr.className = trCls;
     while (tr.children.length < row.cells.length) tr.appendChild(document.createElement("td"));
     while (tr.children.length > row.cells.length) tr.removeChild(tr.lastChild!);
-    row.cells.forEach((cell, i) => {
-      const td = tr!.children[i] as HTMLTableCellElement;
-      if (active && td.contains(active)) return;
+    for (let i = 0; i < row.cells.length; i++) {
+      const cell = row.cells[i];
+      const td = tr.children[i] as HTMLTableCellElement;
+      if (active && td.contains(active)) continue;
       const cls = cell.cls ?? "";
       if (td.className !== cls) td.className = cls;
       if (td.innerHTML !== cell.html) td.innerHTML = cell.html;
@@ -78,53 +106,114 @@ export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
         const want = String(colspan);
         if (cur !== want) td.setAttribute("colspan", want);
       }
-    });
+    }
     // Position row at the correct index without disturbing untouched ones.
     if (tbody.children[idx] !== tr) tbody.insertBefore(tr, tbody.children[idx] ?? null);
-  });
+  }
 
-  // Drop rows that no longer appear.
-  Array.from(tbody.children).forEach((el) => {
-    const tr = el as HTMLTableRowElement;
+  // Drop rows that no longer appear. Iterate backwards so removals
+  // don't shift indices we're about to visit.
+  for (let i = tbody.children.length - 1; i >= 0; i--) {
+    const tr = tbody.children[i] as HTMLTableRowElement;
     const k = tr.dataset.key;
     if (k !== undefined && !seen.has(k)) tr.remove();
-  });
+  }
 }
 
 // --- formatting helpers --------------------------------------------------
+//
+// Memoization: most formatters get called with stable inputs every tick
+// (a sensor at 82.4% formats to "82.4" frame after frame). Caching the
+// result keeps the returned string identity stable, which both saves
+// allocation AND lets the per-cell `td.innerHTML !== cell.html` check
+// short-circuit at the comparison stage.
+//
+// Caches are bounded by `MEMO_CACHE_MAX` and cleared (not LRU) when
+// they grow past that — simpler than an LRU and correct because keys
+// are content-addressed.
+const MEMO_CACHE_MAX = 4096;
 
+function bumpCache<K, V>(cache: Map<K, V>): void {
+  if (cache.size > MEMO_CACHE_MAX) cache.clear();
+}
+
+const fmtNumCache = new Map<string, string>();
 function fmtNum(v: number | null | undefined, digits = 1): string {
   if (v === null || v === undefined) return "—";
   if (!isFinite(v)) return String(v);
-  return v.toFixed(digits);
+  // Key folds the discriminator + digits + the value's bit pattern so
+  // -0 / +0 don't collide and NaN handling stays explicit (already
+  // returned above).
+  const key = `${digits}:${v}`;
+  let s = fmtNumCache.get(key);
+  if (s === undefined) {
+    s = v.toFixed(digits);
+    fmtNumCache.set(key, s);
+    bumpCache(fmtNumCache);
+  }
+  return s;
 }
 
+// fmtEpoch / fmtFuture depend on `Date.now()`, so cache keys must
+// include a wall-clock bucket. Bucketed at one-second granularity:
+// per-second the function returns at most one string for a given `ms`,
+// and the cache resets every second to avoid unbounded growth.
+let fmtEpochSecond = 0;
+const fmtEpochCache = new Map<number, string>();
 function fmtEpoch(ms: number): string {
   if (!ms) return "—";
-  // Clamp future timestamps (tiny clock skew between Venus and browser).
-  const dt = Math.max(0, (Date.now() - ms) / 1000);
-  if (dt < 60) return `${dt.toFixed(0)} s ago`;
-  if (dt < 3600) return `${(dt / 60).toFixed(0)} min ago`;
-  return new Date(ms).toLocaleString();
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (nowSec !== fmtEpochSecond) {
+    fmtEpochCache.clear();
+    fmtEpochSecond = nowSec;
+  }
+  let s = fmtEpochCache.get(ms);
+  if (s === undefined) {
+    const dt = Math.max(0, (Date.now() - ms) / 1000);
+    if (dt < 60) s = `${dt.toFixed(0)} s ago`;
+    else if (dt < 3600) s = `${(dt / 60).toFixed(0)} min ago`;
+    else s = new Date(ms).toLocaleString();
+    fmtEpochCache.set(ms, s);
+    bumpCache(fmtEpochCache);
+  }
+  return s;
 }
 
 // Future-tense sibling of fmtEpoch — used by the Schedule section.
 // Returns "now" / "in 12m" / "in 4h 23m" / "in 2d 3h" depending on how
 // far ahead `ms` sits. Past timestamps clamp to "now" (a snapshot
 // arriving slightly after a scheduled fire shouldn't say "−2 s").
+let fmtFutureSecond = 0;
+const fmtFutureCache = new Map<number, string>();
 function fmtFuture(ms: number): string {
   if (!ms) return "—";
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (nowSec !== fmtFutureSecond) {
+    fmtFutureCache.clear();
+    fmtFutureSecond = nowSec;
+  }
+  let s = fmtFutureCache.get(ms);
+  if (s !== undefined) return s;
   const dtSec = (ms - Date.now()) / 1000;
-  if (dtSec <= 30) return "now";
-  if (dtSec < 60) return `in ${dtSec.toFixed(0)}s`;
-  const m = Math.round(dtSec / 60);
-  if (m < 60) return `in ${m}m`;
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  if (h < 24) return mm === 0 ? `in ${h}h` : `in ${h}h ${mm}m`;
-  const d = Math.floor(h / 24);
-  const hh = h % 24;
-  return hh === 0 ? `in ${d}d` : `in ${d}d ${hh}h`;
+  if (dtSec <= 30) s = "now";
+  else if (dtSec < 60) s = `in ${dtSec.toFixed(0)}s`;
+  else {
+    const m = Math.round(dtSec / 60);
+    if (m < 60) s = `in ${m}m`;
+    else {
+      const h = Math.floor(m / 60);
+      const mm = m % 60;
+      if (h < 24) s = mm === 0 ? `in ${h}h` : `in ${h}h ${mm}m`;
+      else {
+        const d = Math.floor(h / 24);
+        const hh = h % 24;
+        s = hh === 0 ? `in ${d}d` : `in ${d}d ${hh}h`;
+      }
+    }
+  }
+  fmtFutureCache.set(ms, s);
+  bumpCache(fmtFutureCache);
+  return s;
 }
 
 // Wall-clock for the next-fire epoch — used in the Schedule section
@@ -183,17 +272,31 @@ function maybeBoolBadge(value: string): string | null {
 }
 
 // Format a duration in ms as "500ms", "2s", "30s", "15m", "1h 30m".
+// Inputs are stable across ticks (cadence/staleness constants per
+// sensor), so memoization gives a near-100% hit rate.
+const fmtDurationCache = new Map<number, string>();
 function fmtDurationMs(totalMs: number): string {
   if (!isFinite(totalMs) || totalMs <= 0) return "—";
-  if (totalMs < 1000) return `${totalMs}ms`;
-  const totalSec = Math.round(totalMs / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  if (m < 60) return s === 0 ? `${m}m` : `${m}m ${s}s`;
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return mm === 0 ? `${h}h` : `${h}h ${mm}m`;
+  let s = fmtDurationCache.get(totalMs);
+  if (s !== undefined) return s;
+  if (totalMs < 1000) s = `${totalMs}ms`;
+  else {
+    const totalSec = Math.round(totalMs / 1000);
+    if (totalSec < 60) s = `${totalSec}s`;
+    else {
+      const m = Math.floor(totalSec / 60);
+      const sec = totalSec % 60;
+      if (m < 60) s = sec === 0 ? `${m}m` : `${m}m ${sec}s`;
+      else {
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        s = mm === 0 ? `${h}h` : `${h}h ${mm}m`;
+      }
+    }
+  }
+  fmtDurationCache.set(totalMs, s);
+  bumpCache(fmtDurationCache);
+  return s;
 }
 
 // --- table renderers -----------------------------------------------------

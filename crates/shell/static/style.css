@@ -235,6 +235,30 @@ input[type=number], input[type=text], select {
    * truncation in the closed select while staying compact for the
    * shorter number fields. */
   width: 200px;
+  /* Chromium's <select> has `min-width: auto` defaulted to the longest
+   * option's intrinsic width — that override-fights the declared width
+   * and can render the select wider than a sibling <input>. Force
+   * min-width: 0 so the explicit width is the truth. */
+  min-width: 0;
+  margin: 0;
+}
+
+/* Knob "set" cells: anchor the input/select + button as a flex pair so
+ * the button always lands at a fixed 6px gap after a fixed-width
+ * input/select. Without this, browser-chrome differences (Chromium
+ * <select> intrinsic width, Firefox spinner widget on number inputs)
+ * still leak through and shift the button by a few pixels. */
+#knobs-operator-table tbody td:nth-child(4),
+#knobs-config-table tbody td:nth-child(4) {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+#knobs-operator-table tbody td:nth-child(4) > input[type=number],
+#knobs-operator-table tbody td:nth-child(4) > select,
+#knobs-config-table tbody td:nth-child(4) > input[type=number],
+#knobs-config-table tbody td:nth-child(4) > select {
+  flex: 0 0 200px;
 }
 
 button {

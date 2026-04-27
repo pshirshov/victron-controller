@@ -54,31 +54,119 @@ function onServerMessage(raw: unknown): void {
   // Hello / Pong / Log are handled inside the connection/widget.
 }
 
-function applySnapshot(snap: WorldSnapshot): void {
-  const writesBadge = document.getElementById("writes-badge") as HTMLElement;
-  if (snap.knobs.writes_enabled) {
-    writesBadge.textContent = "WRITES ON";
-    writesBadge.className = "badge on";
-  } else {
-    writesBadge.textContent = "OBSERVER";
-    writesBadge.className = "badge off";
+/// Tier 2: structural equality without allocations. Walks plain
+/// JSON-shaped values (primitives, arrays, plain objects). Returns
+/// early on the first mismatch — no intermediate string keys built up,
+/// so the equal-path costs only memory reads. NaN is treated as
+/// equal-to-itself (the JSON parser never produces NaN, but explicit
+/// safety doesn't hurt).
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (typeof a !== "object") {
+    // Number NaN === NaN handling: both NaN ⇒ equal.
+    return typeof a === "number" && typeof b === "number"
+      && Number.isNaN(a) && Number.isNaN(b);
   }
-  renderSensors(snap);
-  renderDecisions(snap);
-  renderActuated(snap);
-  renderCoresState(snap);
-  renderTimers(snap);
-  renderBookkeeping(snap);
-  renderForecasts(snap);
-  renderKnobs(snap, sendCommand);
-  // PR-schedule-section: forward-looking controller actions table.
-  renderSchedule(snap);
-  // PR-pinned-registers.
-  renderPinnedRegisters(snap);
-  // PR-soc-chart: paint the in-memory SoC history + linear projection.
-  renderSocChart(snap);
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  // Same key set, same value at each key. Length check first so we
+  // bail on mismatched sizes without iterating either side.
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  for (let i = 0; i < ak.length; i++) {
+    const k = ak[i];
+    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
+    if (!deepEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
 
-  // Live-refresh the entity inspector if it's open.
+/// Tier 2: previous snapshot used by `applySnapshot` to skip renderers
+/// whose slice of the world didn't change. Distinct from `lastSnapshot`,
+/// which the entity-inspector path uses; the inspector wants the
+/// current snapshot regardless of skip decisions.
+let prevSnapshot: WorldSnapshot | null = null;
+/// Wall-clock second at which we last rendered a time-dependent
+/// renderer. Used to force a re-render once per second so "X s ago"
+/// cells stay current even when the underlying snapshot hasn't moved.
+let lastRenderSecond = 0;
+
+function applySnapshot(snap: WorldSnapshot): void {
+  // Writes badge — cheap; only update on transition.
+  const writesNow = snap.knobs.writes_enabled;
+  const writesPrev = prevSnapshot?.knobs.writes_enabled;
+  if (writesPrev !== writesNow) {
+    const writesBadge = document.getElementById("writes-badge") as HTMLElement;
+    if (writesNow) {
+      writesBadge.textContent = "WRITES ON";
+      writesBadge.className = "badge on";
+    } else {
+      writesBadge.textContent = "OBSERVER";
+      writesBadge.className = "badge off";
+    }
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const tickedSecond = nowSec !== lastRenderSecond;
+  lastRenderSecond = nowSec;
+
+  // Per-slice change detection. Equal-path is allocation-free; only
+  // renderers whose inputs actually changed (or whose output is
+  // time-dependent and a wall-clock second has passed) re-run. On the
+  // first call `prevSnapshot` is null and every renderer fires.
+  const prev = prevSnapshot;
+  // Sensors table also surfaces synthetic rows for `timezone` and
+  // sunrise/sunset, plus uses `sensors_meta` for cadence/staleness/
+  // origin columns — and renders "X s ago" so it's time-dependent.
+  const sensorsChanged =
+    !prev
+    || !deepEqual(prev.sensors, snap.sensors)
+    || !deepEqual(prev.sensors_meta, snap.sensors_meta)
+    || prev.timezone !== snap.timezone
+    || (prev as unknown as { sunrise_local_iso?: string | null }).sunrise_local_iso
+       !== (snap as unknown as { sunrise_local_iso?: string | null }).sunrise_local_iso
+    || (prev as unknown as { sunset_local_iso?: string | null }).sunset_local_iso
+       !== (snap as unknown as { sunset_local_iso?: string | null }).sunset_local_iso;
+  if (sensorsChanged || tickedSecond) renderSensors(snap);
+
+  if (!prev || !deepEqual(prev.decisions, snap.decisions)) renderDecisions(snap);
+  // Actuated rows show "since X" age — time-dependent.
+  if (!prev || !deepEqual(prev.actuated, snap.actuated) || tickedSecond) renderActuated(snap);
+  if (!prev || !deepEqual(prev.cores_state, snap.cores_state)) renderCoresState(snap);
+  // Timers: last-fire / next-fire ages — time-dependent.
+  if (!prev || !deepEqual(prev.timers, snap.timers) || tickedSecond) renderTimers(snap);
+  if (!prev || !deepEqual(prev.bookkeeping, snap.bookkeeping)) renderBookkeeping(snap);
+  // Forecasts: last-fetch age — time-dependent.
+  if (!prev || !deepEqual(prev.forecasts, snap.forecasts) || tickedSecond) renderForecasts(snap);
+  // Knobs: structural only. Pure (sendCommand handler unchanged).
+  if (!prev || !deepEqual(prev.knobs, snap.knobs)) renderKnobs(snap, sendCommand);
+  // Schedule: "in 4h 23m" → time-dependent.
+  if (
+    !prev
+    || !deepEqual(prev.scheduled_actions, snap.scheduled_actions)
+    || tickedSecond
+  ) renderSchedule(snap);
+  // Pinned registers: last-check / last-drift ages — time-dependent.
+  if (!prev || !deepEqual(prev.pinned_registers, snap.pinned_registers) || tickedSecond) {
+    renderPinnedRegisters(snap);
+  }
+  // SoC chart: server stamps `now_epoch_ms` per snapshot, so the
+  // chart slice changes every tick anyway; deepEqual short-circuits
+  // immediately. We simply forward the snapshot.
+  if (!prev || !deepEqual(prev.soc_chart, snap.soc_chart)) renderSocChart(snap);
+
+  prevSnapshot = snap;
   lastSnapshot = snap;
   if (openEntityId !== null && openEntityType !== null) {
     renderEntityModal(openEntityId, openEntityType, snap);
