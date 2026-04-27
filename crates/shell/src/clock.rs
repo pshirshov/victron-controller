@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn dst_boundary_london_summer() {
-        // 2026-07-01T12:00:00Z — Europe/London observes IST = UTC+1.
+        // 2026-07-01T12:00:00Z — Europe/London observes BST = UTC+1.
         let n = london_naive_for("2026-07-01T12:00:00Z");
         assert_eq!(n.time().hour(), 13, "summer offset = +1h");
         assert_eq!(n.date(), chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap());
