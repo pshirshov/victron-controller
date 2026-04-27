@@ -20,7 +20,9 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tracing::{debug, warn};
 
+use victron_controller_dashboard_model::baboon_runtime::{BaboonBinEncode, BaboonCodecContext};
 use victron_controller_dashboard_model::victron_controller::dashboard::command_ack::CommandAck;
+use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 use victron_controller_dashboard_model::victron_controller::dashboard::ws_client_message::WsClientMessage;
 use victron_controller_dashboard_model::victron_controller::dashboard::ws_pong::WsPong;
 use victron_controller_dashboard_model::victron_controller::dashboard::ws_server_message as srv;
@@ -53,12 +55,17 @@ async fn client_task(socket: WebSocket, state: DashboardState) {
     // before the runtime's first tick. Build the snapshot inside a
     // tight scope that drops the MutexGuard BEFORE the network send —
     // otherwise a stalled WS client wedges the whole runtime (PR-URGENT-16).
+    //
+    // PR-tier-3-ueba: snapshots ride a binary frame carrying the
+    // baboon UEBA-encoded `WorldSnapshot` bytes. JSON envelope stays
+    // for the small / infrequent messages (Hello/Pong/Ack/Log) so the
+    // discriminator on the client is "frame type" rather than a JSON
+    // tag — saves the JSON.parse cost on the hot path.
     let snap = {
         let w = state.world.lock().await;
         world_to_snapshot(&w, &state.meta)
     };
-    let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
-    if send_json(&mut tx_ws, &out).await.is_err() {
+    if send_snapshot_binary(&mut tx_ws, &snap).await.is_err() {
         return;
     }
 
@@ -78,8 +85,7 @@ async fn client_task(socket: WebSocket, state: DashboardState) {
             recv = snapshot_rx.recv() => {
                 match recv {
                     Ok(snap) => {
-                        let out = WsServerMessage::Snapshot(srv::Snapshot { body: snap });
-                        if send_json(&mut tx_ws, &out).await.is_err() { break; }
+                        if send_snapshot_binary(&mut tx_ws, &snap).await.is_err() { break; }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         debug!(skipped = n, "ws client lagged; skipping snapshots");
@@ -167,6 +173,27 @@ async fn send_json(
         }
     };
     tx.send(Message::Text(body)).await.map_err(|_| ())
+}
+
+/// PR-tier-3-ueba: serialize the snapshot via baboon's UEBA codec and
+/// ship it as a WebSocket Binary frame. Avoids the multi-KB JSON
+/// allocation+serialize on the server *and* the parallel `JSON.parse`
+/// allocation on the browser — the dashboard's hottest path.
+///
+/// `BaboonCodecContext::Default` is the plain-bytes mode (no per-field
+/// indices / lengths). The TS-side decoder also defaults to that mode,
+/// so the two ends agree without extra negotiation.
+async fn send_snapshot_binary(
+    tx: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    snap: &WorldSnapshot,
+) -> Result<(), ()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let ctx = BaboonCodecContext::Default;
+    if let Err(e) = snap.encode_ueba(&ctx, &mut buf) {
+        warn!(error = %e, "ws ueba encode failed");
+        return Err(());
+    }
+    tx.send(Message::Binary(buf)).await.map_err(|_| ())
 }
 
 fn epoch_ms() -> i64 {

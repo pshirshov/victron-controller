@@ -120,6 +120,19 @@ export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
   }
 }
 
+// PR-tier-3-ueba: small adapter for the renderers that iterate top-level
+// snapshot slices. The UEBA decoder produces baboon class instances with
+// private backing fields (`_battery_soc`, …) and public getters
+// (`battery_soc`); `toJSON()` returns a plain object keyed by the public
+// names. We accept both shapes so a future protocol swap doesn't break
+// renderers (and unit-test harnesses can keep feeding plain objects).
+function toPlain(v: unknown): Record<string, unknown> {
+  if (v && typeof v === "object" && typeof (v as { toJSON?: () => unknown }).toJSON === "function") {
+    return (v as { toJSON: () => Record<string, unknown> }).toJSON();
+  }
+  return v as Record<string, unknown>;
+}
+
 // --- formatting helpers --------------------------------------------------
 //
 // Memoization: most formatters get called with stable inputs every tick
@@ -303,7 +316,11 @@ function fmtDurationMs(totalMs: number): string {
 
 export function renderSensors(snap: WorldSnapshot) {
   const tbody = document.querySelector("#sensors-table tbody") as HTMLElement;
-  const entries = Object.entries(snap.sensors).sort(([a], [b]) =>
+  // PR-tier-3-ueba: snapshot is now a baboon class instance with private
+  // backing fields and public getters. `toJSON()` returns a plain object
+  // keyed by the public field names (`battery_soc`, …) so the existing
+  // entry iteration works against either wire format.
+  const entries = Object.entries(toPlain(snap.sensors)).sort(([a], [b]) =>
     displayNameOfTyped(a, "sensor").localeCompare(displayNameOfTyped(b, "sensor")),
   );
   const meta = snap.sensors_meta as unknown as Record<
@@ -533,7 +550,7 @@ function bkPersistenceTag(name: string): string {
 
 export function renderBookkeeping(snap: WorldSnapshot) {
   const tbody = document.querySelector("#bk-table tbody") as HTMLElement;
-  const entries = Object.entries(snap.bookkeeping)
+  const entries = Object.entries(toPlain(snap.bookkeeping))
     .sort(([a], [b]) => displayNameOfTyped(a, "bookkeeping").localeCompare(displayNameOfTyped(b, "bookkeeping")));
   const rows: KeyedRow[] = entries.map(([name, val]) => {
     let disp: string;

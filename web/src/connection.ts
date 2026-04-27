@@ -4,6 +4,57 @@
 // Adapted from pshirshov/ws-reconnect-demo (src/client/connection.ts),
 // with our baboon-typed WsClientMessage / WsServerMessage envelope.
 
+import {
+  BaboonBinReader,
+  BaboonCodecContext,
+} from "./model/BaboonSharedRuntime.js";
+import { WorldSnapshot_UEBACodec } from "./model/victron_controller/dashboard/WorldSnapshot.js";
+
+/// PR-tier-3-ueba: decode a baboon-UEBA-encoded `WorldSnapshot` from a
+/// binary WS frame. Returns the decoded tree with `bigint` (i64) fields
+/// converted to `number` in place. We do NOT rebuild the tree — that
+/// would re-allocate every object the decoder just allocated and erase
+/// the GC win we're trying to achieve.
+///
+/// The decoder produces class instances (e.g. `WorldSnapshot`,
+/// `Sensors`, …) instead of plain objects; downstream renderers only
+/// dot-access fields, so the class prototype is harmless. Only the i64
+/// → number coercion is needed so arithmetic works (`Date.now() - ms`,
+/// rounding, etc.). Epoch-millisecond values fit comfortably below
+/// `Number.MAX_SAFE_INTEGER` (~285 ky from epoch).
+function decodeSnapshotBinary(buf: ArrayBuffer): unknown {
+  const reader = new BaboonBinReader(new Uint8Array(buf));
+  const decoded = WorldSnapshot_UEBACodec.instance.decode(
+    BaboonCodecContext.Default,
+    reader,
+  );
+  normalizeBigintsInPlace(decoded as unknown as Record<string, unknown>);
+  return decoded;
+}
+
+/// Walk an object tree mutating `bigint` properties to `number`. Skips
+/// primitives, recurses into arrays + nested objects. Allocates only
+/// the per-call `Object.keys` array — no new wrapper objects.
+function normalizeBigintsInPlace(v: unknown): void {
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) {
+      const x = v[i];
+      if (typeof x === "bigint") v[i] = Number(x);
+      else if (x !== null && typeof x === "object") normalizeBigintsInPlace(x);
+    }
+    return;
+  }
+  if (v === null || typeof v !== "object") return;
+  const obj = v as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const x = obj[k];
+    if (typeof x === "bigint") obj[k] = Number(x);
+    else if (x !== null && typeof x === "object") normalizeBigintsInPlace(x);
+  }
+}
+
 // Generate a ping nonce. `crypto.randomUUID()` is only available on
 // secure contexts (HTTPS or localhost). When the dashboard is served
 // over plain HTTP to a LAN IP — our default — Chrome/Firefox throw
@@ -110,6 +161,10 @@ export class ManagedConnection {
     this.onServerMessage = onServerMessage;
 
     this.ws = new WebSocket(config.url);
+    // PR-tier-3-ueba: snapshots arrive as Binary frames carrying baboon
+    // UEBA bytes. Switch to ArrayBuffer (default is Blob, which would
+    // force an async `await blob.arrayBuffer()` on every snapshot).
+    this.ws.binaryType = "arraybuffer";
     this.ws.onopen = this.handleOpen.bind(this);
     this.ws.onclose = this.handleClose.bind(this);
     this.ws.onerror = () => {}; // onclose always follows
@@ -254,6 +309,27 @@ export class ManagedConnection {
 
   private handleMessage(event: MessageEvent): void {
     if (this.frozen) return;
+
+    // PR-tier-3-ueba: Binary frames carry the UEBA-encoded WorldSnapshot.
+    // Decoded once here, wrapped to look like the previous JSON Snapshot
+    // envelope so downstream consumers (`onServerMessage` in index.ts)
+    // don't change.
+    if (event.data instanceof ArrayBuffer) {
+      let snap: unknown;
+      try {
+        snap = decodeSnapshotBinary(event.data);
+      } catch (e) {
+        // Malformed frame — log to console (no in-band channel for
+        // structured warnings here) and drop. The next frame will
+        // attempt a fresh decode.
+        // eslint-disable-next-line no-console
+        console.warn("ws ueba decode failed", e);
+        return;
+      }
+      this.onServerMessage({ Snapshot: { body: snap } });
+      return;
+    }
+
     let msg: unknown;
     try { msg = JSON.parse(event.data as string); } catch { return; }
     if (typeof msg !== "object" || msg === null) return;

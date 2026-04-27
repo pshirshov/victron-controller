@@ -309,6 +309,49 @@ button.secondary { background: transparent; color: var(--fg); border: 1px solid 
   font-weight: 600;
 }
 
+/* Operator and Configuration knob tables share an identical 4-column
+ * shape (Knob / Value / Default / Set). Without an explicit layout each
+ * <table> sizes its columns from its own content, so the two tables
+ * end up with mismatched column widths even though they sit one above
+ * the other. `table-layout: fixed` plus per-column widths via the
+ * column header gives both tables the same visual rhythm. The Set
+ * column is widest because it embeds an input/select (200px) plus the
+ * "set" button. */
+#knobs-operator-table,
+#knobs-config-table {
+  table-layout: fixed;
+  width: 100%;
+}
+#knobs-operator-table th:nth-child(1),
+#knobs-config-table th:nth-child(1) { width: 38%; }
+#knobs-operator-table th:nth-child(2),
+#knobs-config-table th:nth-child(2) { width: 14%; }
+#knobs-operator-table th:nth-child(3),
+#knobs-config-table th:nth-child(3) { width: 14%; }
+#knobs-operator-table th:nth-child(4),
+#knobs-config-table th:nth-child(4) { width: 34%; }
+/* With table-layout: fixed, long unbreakable strings (entity IDs like
+ * "weathersoc.threshold.energy.too-much") would overflow the cell.
+ * Allow break inside the entity-name column so the layout stays clean
+ * if a future knob name pushes past the column width. */
+#knobs-operator-table tbody td:nth-child(1),
+#knobs-config-table tbody td:nth-child(1) {
+  overflow-wrap: anywhere;
+}
+
+/* Highlight rows whose current value differs from the spec default,
+ * so an operator scanning the knobs panel can pick out drift at a
+ * glance. The amber tint matches the existing "Stale" / warning
+ * accents in the rest of the table. */
+#knobs-operator-table tbody tr.knob-modified > td,
+#knobs-config-table tbody tr.knob-modified > td {
+  background: rgba(255, 176, 32, 0.08);
+}
+#knobs-operator-table tbody tr.knob-modified > td:first-child,
+#knobs-config-table tbody tr.knob-modified > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 footer {
   margin-top: 24px;
   padding-top: 8px;

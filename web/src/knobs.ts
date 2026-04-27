@@ -304,7 +304,13 @@ export function renderKnobs(
   // under operator so they're at least visible.
   const opGroups = new Map<string, Array<[string, unknown]>>();
   const cfgGroups = new Map<string, Array<[string, unknown]>>();
-  Object.entries(snap.knobs).forEach(([name, val]) => {
+  // PR-tier-3-ueba: see render.ts::toPlain — UEBA-decoded class
+  // instances need toJSON() to expose public field names.
+  const knobsPlain: Record<string, unknown> =
+    typeof (snap.knobs as { toJSON?: () => unknown }).toJSON === "function"
+      ? (snap.knobs as { toJSON: () => Record<string, unknown> }).toJSON()
+      : (snap.knobs as unknown as Record<string, unknown>);
+  Object.entries(knobsPlain).forEach(([name, val]) => {
     if (name === "writes_enabled") return;
     const spec = specFor(name);
     if (!spec) {
@@ -359,8 +365,13 @@ function buildGroupedRows(
             : esc(String(val));
       const setHtml = spec ? renderSetControl(name, val, spec) : "";
       const defaultHtml = spec ? renderDefaultCell(name, val, spec) : `<span class="dim">—</span>`;
+      // Highlight rows whose current value drifts from the spec
+      // default. `valuesEqual` mirrors the float-tolerance check used
+      // inside `renderDefaultCell` so the pill and the row class agree.
+      const modified = spec ? !valuesEqual(val, spec.default) : false;
       rows.push({
         key: name,
+        cls: modified ? "knob-modified" : "",
         cells: [
           { cls: "mono", html: entityLink(name, "knob") },
           { cls: "mono", html: valStr },
