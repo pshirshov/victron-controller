@@ -59,7 +59,7 @@ export class Forecasts implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Forecasts.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0"]
     public baboonSameInVersions() {
         return Forecasts.BaboonSameInVersions
     }

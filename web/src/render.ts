@@ -257,6 +257,36 @@ export function renderSensors(snap: WorldSnapshot) {
     ],
   });
 
+  // PR-baseline-forecast: synthetic rows for today's sunrise/sunset.
+  // Wire fields are `opt[str]` — `null` means "Stale or never observed",
+  // rendered as an em-dash row with Stale class. The freshness window
+  // (3 h, see core::world::SUNRISE_SUNSET_FRESHNESS) is enforced
+  // server-side; the client just reflects what it received.
+  const sunriseStr = (snap as unknown as { sunrise_local_iso?: string | null })
+    .sunrise_local_iso ?? null;
+  const sunsetStr = (snap as unknown as { sunset_local_iso?: string | null })
+    .sunset_local_iso ?? null;
+  for (const [key, value] of [
+    ["solar.sunrise", sunriseStr],
+    ["solar.sunset", sunsetStr],
+  ] as Array<[string, string | null]>) {
+    const fresh = value !== null;
+    rows.push({
+      key,
+      cells: [
+        { cls: "mono", html: entityLink(key, "sensor") },
+        { cls: "mono", html: fresh ? esc(value as string) : "—" },
+        {
+          cls: fresh ? "freshness-Fresh" : "freshness-Stale",
+          html: fresh ? "Fresh" : "Stale",
+        },
+        { cls: "mono", html: fmtDurationMs(60 * 60 * 1000) },
+        { cls: "mono", html: fmtDurationMs(3 * 60 * 60 * 1000) },
+        { cls: "mono", html: "baseline forecast" },
+      ],
+    });
+  }
+
   // Re-sort so the synthetic row lands alphabetically alongside the rest.
   rows.sort((a, b) =>
     displayNameOfTyped(a.key, "sensor").localeCompare(displayNameOfTyped(b.key, "sensor")),
@@ -1075,6 +1105,9 @@ export function renderForecasts(snap: WorldSnapshot) {
     ["solcast", snap.forecasts.solcast],
     ["forecast_solar", snap.forecasts.forecast_solar],
     ["open_meteo", snap.forecasts.open_meteo],
+    // PR-baseline-forecast: locally-computed pessimistic baseline,
+    // used as a fallback when no cloud provider is fresh.
+    ["baseline", (snap.forecasts as unknown as { baseline?: any }).baseline],
   ];
   providers.sort(([a], [b]) => displayNameOfTyped(a, "forecast").localeCompare(displayNameOfTyped(b, "forecast")));
   const rows: KeyedRow[] = providers.map(([name, f]) => {

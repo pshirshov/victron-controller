@@ -138,6 +138,15 @@ impl Sensors {
     }
 }
 
+/// PR-baseline-forecast: how long after the most recent sunrise/sunset
+/// observation we still consider those values trustworthy. Two hours of
+/// the default 1 h baseline scheduler cadence plus an hour of slack —
+/// the values themselves move slowly so the threshold is generous, but
+/// finite so a polar night (no event emissions for weeks) reverts to
+/// "Unknown" rather than rendering June values in December.
+pub const SUNRISE_SUNSET_FRESHNESS: std::time::Duration =
+    std::time::Duration::from_secs(3 * 60 * 60);
+
 /// Per-provider forecast snapshot.
 ///
 /// PR-soc-chart-solar: `hourly_kwh` carries per-hour estimates starting
@@ -165,6 +174,10 @@ pub struct TypedSensors {
     pub forecast_solcast: Option<ForecastSnapshot>,
     pub forecast_forecast_solar: Option<ForecastSnapshot>,
     pub forecast_open_meteo: Option<ForecastSnapshot>,
+    /// PR-baseline-forecast: locally-computed pessimistic baseline.
+    /// Consulted by `forecast_fusion` only when no cloud provider is
+    /// fresh — see that module for the fallback gate.
+    pub forecast_baseline: Option<ForecastSnapshot>,
 }
 
 impl TypedSensors {
@@ -176,6 +189,7 @@ impl TypedSensors {
             forecast_solcast: None,
             forecast_forecast_solar: None,
             forecast_open_meteo: None,
+            forecast_baseline: None,
         }
     }
 
@@ -185,6 +199,7 @@ impl TypedSensors {
             ForecastProvider::Solcast => self.forecast_solcast.as_ref(),
             ForecastProvider::ForecastSolar => self.forecast_forecast_solar.as_ref(),
             ForecastProvider::OpenMeteo => self.forecast_open_meteo.as_ref(),
+            ForecastProvider::Baseline => self.forecast_baseline.as_ref(),
         }
     }
 }
@@ -452,6 +467,24 @@ pub struct World {
     /// the freshness window lapses.
     pub timezone_updated_at: Option<Instant>,
 
+    /// PR-baseline-forecast: today's sunrise / sunset in local time.
+    /// Driven by `Event::SunriseSunset` from the shell-side baseline
+    /// scheduler. `None` until the first event lands (or for polar days
+    /// where the sun never rises/sets).
+    pub sunrise: Option<NaiveDateTime>,
+    pub sunset: Option<NaiveDateTime>,
+    /// Monotonic timestamp of the most recent successful sunrise/sunset
+    /// observation; matches the freshness pattern used for
+    /// `timezone_updated_at`. Consumers compare `now - this` against
+    /// [`SUNRISE_SUNSET_FRESHNESS`] to decide whether the cached
+    /// sunrise/sunset are still trustworthy. The baseline scheduler
+    /// runs at a 1 h default cadence; we allow ~2 cadences plus slack
+    /// before we declare the values stale, identical to the cloud
+    /// forecast freshness pattern. Polar nights / equipment failure
+    /// drop the value back to "no fresh signal" without us having to
+    /// fabricate clearing events.
+    pub sunrise_sunset_updated_at: Option<Instant>,
+
     /// PR-pinned-registers: per-register drift state. Keyed by the
     /// joined `service:dbus_path` so the shell-side reader can match
     /// readings back to entries without re-splitting the path. Entries
@@ -485,6 +518,9 @@ impl World {
             // `/Settings/System/TimeZone` reading lands.
             timezone: "Etc/UTC".to_string(),
             timezone_updated_at: None,
+            sunrise: None,
+            sunset: None,
+            sunrise_sunset_updated_at: None,
             pinned_registers: std::collections::BTreeMap::new(),
         }
     }

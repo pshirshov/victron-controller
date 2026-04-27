@@ -6,6 +6,7 @@ export function convert__forecasts__from__0_2_0(from: v0_2_0_Forecasts): dashboa
     return new dashboard_Forecasts (
         JSON.parse(JSON.stringify(from.solcast)),
         JSON.parse(JSON.stringify(from.forecast_solar)),
-        JSON.parse(JSON.stringify(from.open_meteo))
+        JSON.parse(JSON.stringify(from.open_meteo)),
+        undefined
     )
 }

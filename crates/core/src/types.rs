@@ -697,6 +697,12 @@ pub enum KnobId {
     // PR-inverter-safe-discharge-knob — gates the legacy 4020 W
     // safety margin in the setpoint controller's `max_discharge`.
     InverterSafeDischargeEnable,
+    // PR-baseline-forecast: 4 runtime knobs. Dates are MMDD-encoded
+    // u32 (e.g. 1101 = Nov 1, 301 = Mar 1).
+    BaselineWinterStartMmDd,
+    BaselineWinterEndMmDd,
+    BaselineWhPerHourWinter,
+    BaselineWhPerHourSummer,
 }
 
 /// Forecast providers.
@@ -705,6 +711,11 @@ pub enum ForecastProvider {
     Solcast,
     ForecastSolar,
     OpenMeteo,
+    /// PR-baseline-forecast: locally-computed pessimistic baseline. Used
+    /// only as a last-resort fallback when every cloud provider is stale
+    /// or unconfigured — see the fallback gate in
+    /// `forecast_fusion::fused_today_kwh`.
+    Baseline,
 }
 
 // =============================================================================
@@ -725,6 +736,10 @@ pub enum TimerId {
     ForecastSolar,
     /// Open-Meteo HTTP poller (forecast scheduler).
     OpenMeteo,
+    /// PR-baseline-forecast: locally-computed baseline scheduler. No
+    /// network I/O; ticks on its cadence to recompute sunrise/sunset and
+    /// the flat-during-daylight kWh estimate.
+    ForecastBaseline,
     /// Open-Meteo current-weather poller — separate task from the
     /// forecast scheduler.
     OpenMeteoCurrent,
@@ -762,6 +777,7 @@ impl TimerId {
         TimerId::ForecastSolcast,
         TimerId::ForecastSolar,
         TimerId::OpenMeteo,
+        TimerId::ForecastBaseline,
         TimerId::OpenMeteoCurrent,
         TimerId::MyenergiPoller,
         TimerId::DbusReseedBattery,
@@ -786,6 +802,7 @@ impl TimerId {
             Self::ForecastSolcast => "timer.forecast.solcast",
             Self::ForecastSolar => "timer.forecast.solar",
             Self::OpenMeteo => "timer.forecast.open-meteo",
+            Self::ForecastBaseline => "timer.forecast.baseline",
             Self::OpenMeteoCurrent => "timer.weather.current",
             Self::MyenergiPoller => "timer.myenergi.poll",
             Self::DbusReseedBattery => "timer.dbus.reseed.battery",
@@ -810,6 +827,7 @@ impl TimerId {
             Self::ForecastSolcast => "Solcast HTTP forecast poller",
             Self::ForecastSolar => "Forecast.Solar HTTP forecast poller",
             Self::OpenMeteo => "Open-Meteo HTTP forecast poller",
+            Self::ForecastBaseline => "Local baseline forecast (sunrise/sunset × Wh-per-hour)",
             Self::OpenMeteoCurrent => "Open-Meteo current-weather poller",
             Self::MyenergiPoller => "myenergi cloud poller (Zappi/Eddi state + session kWh)",
             Self::DbusReseedBattery => "D-Bus reseed timer for the battery service",
@@ -988,6 +1006,23 @@ pub enum Event {
     /// longer `Copy`.
     Timezone {
         value: String,
+        at: Instant,
+    },
+    /// PR-baseline-forecast: today's sunrise/sunset surfaced as a pair of
+    /// non-numeric "sensors". Both are local-time `NaiveDateTime` values
+    /// in the **`[forecast].timezone`** TZ — same TZ the cloud forecast
+    /// providers use, NOT the (separately-tracked) Victron-display
+    /// `world.timezone`. Mismatch is possible if the two are configured
+    /// differently; the dashboard renders sunrise/sunset using
+    /// `world.timezone` per the existing convention, so on a mismatch the
+    /// rendered local time will drift by the offset between the two TZs.
+    /// The shell-side baseline scheduler recomputes them once per cadence
+    /// using the `sunrise` crate. Polar latitudes can yield no sunrise/
+    /// sunset on a given day — the shell drops the event in that case
+    /// rather than fabricating placeholder values.
+    SunriseSunset {
+        sunrise: chrono::NaiveDateTime,
+        sunset: chrono::NaiveDateTime,
         at: Instant,
     },
     /// PR-pinned-registers: a fresh reading of a pinned D-Bus register

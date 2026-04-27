@@ -30,13 +30,15 @@ pub struct WorldSnapshot {
     pub soc_chart: SocChart,
     pub scheduled_actions: ScheduledActions,
     pub pinned_registers: Vec<PinnedRegister>,
+    pub sunrise_local_iso: Option<String>,
+    pub sunset_local_iso: Option<String>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        13
+        15
     }
 }
 
@@ -159,6 +161,34 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.sunrise_local_iso {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.sunset_local_iso {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -183,6 +213,20 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             crate::baboon_runtime::bin_tools::write_i32(writer, value.pinned_registers.len() as i32)?;
             for item in (value.pinned_registers).iter() {
                 item.encode_ueba(ctx, writer)?;
+            }
+            match &value.sunrise_local_iso {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
+            match &value.sunset_local_iso {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
             }
         }
         Ok(())
@@ -220,6 +264,14 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
             (0..count).map(|_| Ok(PinnedRegister::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
         };
+        let sunrise_local_iso = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
+        };
+        let sunset_local_iso = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
+        };
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -236,6 +288,8 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             soc_chart,
             scheduled_actions,
             pinned_registers,
+            sunrise_local_iso,
+            sunset_local_iso,
         })
     }
 }

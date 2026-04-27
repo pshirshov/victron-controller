@@ -29,8 +29,10 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _soc_chart: SocChart;
     private readonly _scheduled_actions: ScheduledActions;
     private readonly _pinned_registers: Array<PinnedRegister>;
+    private readonly _sunrise_local_iso: string | undefined;
+    private readonly _sunset_local_iso: string | undefined;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, timezone: string, soc_chart: SocChart, scheduled_actions: ScheduledActions, pinned_registers: Array<PinnedRegister>) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, timezone: string, soc_chart: SocChart, scheduled_actions: ScheduledActions, pinned_registers: Array<PinnedRegister>, sunrise_local_iso: string | undefined, sunset_local_iso: string | undefined) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -46,6 +48,8 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._soc_chart = soc_chart
         this._scheduled_actions = scheduled_actions
         this._pinned_registers = pinned_registers
+        this._sunrise_local_iso = sunrise_local_iso
+        this._sunset_local_iso = sunset_local_iso
     }
 
     public get captured_at_epoch_ms(): bigint {
@@ -93,6 +97,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get pinned_registers(): Array<PinnedRegister> {
         return this._pinned_registers;
     }
+    public get sunrise_local_iso(): string | undefined {
+        return this._sunrise_local_iso;
+    }
+    public get sunset_local_iso(): string | undefined {
+        return this._sunset_local_iso;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -110,11 +120,13 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             timezone: this._timezone,
             soc_chart: this._soc_chart,
             scheduled_actions: this._scheduled_actions,
-            pinned_registers: this._pinned_registers
+            pinned_registers: this._pinned_registers,
+            sunrise_local_iso: this._sunrise_local_iso !== undefined ? this._sunrise_local_iso : undefined,
+            sunset_local_iso: this._sunset_local_iso !== undefined ? this._sunset_local_iso : undefined
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; timezone?: string; soc_chart?: SocChart; scheduled_actions?: ScheduledActions; pinned_registers?: Array<PinnedRegister>}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; timezone?: string; soc_chart?: SocChart; scheduled_actions?: ScheduledActions; pinned_registers?: Array<PinnedRegister>; sunrise_local_iso?: string | undefined; sunset_local_iso?: string | undefined}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -130,11 +142,13 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'timezone' in overrides ? overrides.timezone! : this._timezone,
             'soc_chart' in overrides ? overrides.soc_chart! : this._soc_chart,
             'scheduled_actions' in overrides ? overrides.scheduled_actions! : this._scheduled_actions,
-            'pinned_registers' in overrides ? overrides.pinned_registers! : this._pinned_registers
+            'pinned_registers' in overrides ? overrides.pinned_registers! : this._pinned_registers,
+            'sunrise_local_iso' in overrides ? overrides.sunrise_local_iso! : this._sunrise_local_iso,
+            'sunset_local_iso' in overrides ? overrides.sunset_local_iso! : this._sunset_local_iso
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; timezone: string; soc_chart: SocChart; scheduled_actions: ScheduledActions; pinned_registers: Array<PinnedRegister>}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; timezone: string; soc_chart: SocChart; scheduled_actions: ScheduledActions; pinned_registers: Array<PinnedRegister>; sunrise_local_iso: string | undefined; sunset_local_iso: string | undefined}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -150,7 +164,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.timezone,
             obj.soc_chart,
             obj.scheduled_actions,
-            obj.pinned_registers
+            obj.pinned_registers,
+            obj.sunrise_local_iso,
+            obj.sunset_local_iso
         );
     }
 
@@ -287,6 +303,30 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.sunrise_local_iso === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeString(buffer, value.sunrise_local_iso);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.sunset_local_iso === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeString(buffer, value.sunset_local_iso);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -315,6 +355,18 @@ export class WorldSnapshot_UEBACodec {
             for (const item of value.pinned_registers) {
                 PinnedRegister_UEBACodec.instance.encode(ctx, item, writer);
             }
+            if (value.sunrise_local_iso === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeString(writer, value.sunrise_local_iso);
+            }
+            if (value.sunset_local_iso === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeString(writer, value.sunset_local_iso);
+            }
         }
     }
     
@@ -326,7 +378,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 13; i++) {
+            for (let i = 0; i < 15; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -346,6 +398,8 @@ export class WorldSnapshot_UEBACodec {
         const soc_chart = SocChart_UEBACodec.instance.decode(ctx, reader);
         const scheduled_actions = ScheduledActions_UEBACodec.instance.decode(ctx, reader);
         const pinned_registers = Array.from({ length: BinTools.readI32(reader) }, () => PinnedRegister_UEBACodec.instance.decode(ctx, reader));
+        const sunrise_local_iso = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
+        const sunset_local_iso = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
         return new WorldSnapshot(
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -362,6 +416,8 @@ export class WorldSnapshot_UEBACodec {
             soc_chart,
             scheduled_actions,
             pinned_registers,
+            sunrise_local_iso,
+            sunset_local_iso,
         );
     }
 

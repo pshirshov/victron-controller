@@ -6,7 +6,67 @@ version "0.3.0"
 // `PinnedRegister` data type plus a `pinned_registers: lst[PinnedRegister]`
 // field on `WorldSnapshot`. Every other 0.2.0 type is inherited
 // untouched.
-import "0.2.0" { * } without { WorldSnapshot }
+//
+// PR-baseline-forecast (in-place additive): two new `opt[str]` fields
+// on `WorldSnapshot` carrying today's sunrise / sunset in local time.
+// We have a single client; in-place addition without a version bump is
+// safe.
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs }
+
+// PR-baseline-forecast: extend `Forecasts` with the locally-computed
+// baseline provider so the dashboard can render it alongside the three
+// cloud rows. Fusion still gates baseline as a fallback (only consulted
+// when no cloud provider is fresh) — see core::controllers::forecast_fusion.
+data Forecasts {
+  solcast: opt[ForecastSnapshot]
+  forecast_solar: opt[ForecastSnapshot]
+  open_meteo: opt[ForecastSnapshot]
+  baseline: opt[ForecastSnapshot]
+}
+
+// PR-baseline-forecast: extend `Knobs` with the four runtime knobs
+// driving the local baseline forecast. Dates are MMDD-encoded i32
+// (1101 = Nov 1, 301 = Mar 1).
+data Knobs {
+  force_disable_export: bit
+  export_soc_threshold: f64
+  discharge_soc_target: f64
+  battery_soc_target: f64
+  full_charge_discharge_soc_target: f64
+  full_charge_export_soc_threshold: f64
+  discharge_time: DischargeTime
+  debug_full_charge: DebugFullCharge
+  pessimism_multiplier_modifier: f64
+  disable_night_grid_discharge: bit
+  charge_car_boost: bit
+  charge_car_extended_mode: ExtendedChargeMode
+  zappi_current_target: f64
+  zappi_limit: f64
+  zappi_emergency_margin: f64
+  grid_export_limit_w: i32
+  grid_import_limit_w: i32
+  allow_battery_to_car: bit
+  eddi_enable_soc: f64
+  eddi_disable_soc: f64
+  eddi_dwell_s: i32
+  weathersoc_winter_temperature_threshold: f64
+  weathersoc_low_energy_threshold: f64
+  weathersoc_ok_energy_threshold: f64
+  weathersoc_high_energy_threshold: f64
+  weathersoc_too_much_energy_threshold: f64
+  writes_enabled: bit
+  forecast_disagreement_strategy: ForecastDisagreementStrategy
+  charge_battery_extended_mode: ChargeBatteryExtendedMode
+  export_soc_threshold_mode: Mode
+  discharge_soc_target_mode: Mode
+  battery_soc_target_mode: Mode
+  disable_night_grid_discharge_mode: Mode
+  inverter_safe_discharge_enable: bit
+  baseline_winter_start_mm_dd: i32
+  baseline_winter_end_mm_dd: i32
+  baseline_wh_per_hour_winter: f64
+  baseline_wh_per_hour_summer: f64
+}
 
 // One row per configured (path, type, value) triplet. The shell reads
 // each register on a 1 h cadence, compares the reading against the
@@ -51,4 +111,10 @@ root data WorldSnapshot {
   // 0.3.0 addition (PR-pinned-registers). Sorted by `path` ascending
   // so the dashboard renders deterministically.
   pinned_registers: lst[PinnedRegister]
+  // PR-baseline-forecast: today's sunrise/sunset as ISO 8601 local-time
+  // strings (no offset suffix). `None` = Unknown OR Stale per
+  // `core::world::SUNRISE_SUNSET_FRESHNESS`; the dashboard uniformly
+  // renders an em-dash row for either case.
+  sunrise_local_iso: opt[str]
+  sunset_local_iso: opt[str]
 }

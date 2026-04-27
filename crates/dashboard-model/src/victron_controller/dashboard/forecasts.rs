@@ -5,13 +5,14 @@ pub struct Forecasts {
     pub solcast: Option<ForecastSnapshot>,
     pub forecast_solar: Option<ForecastSnapshot>,
     pub open_meteo: Option<ForecastSnapshot>,
+    pub baseline: Option<ForecastSnapshot>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Forecasts {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        3
+        4
     }
 }
 
@@ -63,6 +64,20 @@ impl crate::baboon_runtime::BaboonBinEncode for Forecasts {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.baseline {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -81,6 +96,13 @@ impl crate::baboon_runtime::BaboonBinEncode for Forecasts {
                 }
             }
             match &value.open_meteo {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
+            match &value.baseline {
                 None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
                 Some(v) => {
                     crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
@@ -110,10 +132,15 @@ impl crate::baboon_runtime::BaboonBinDecode for Forecasts {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(ForecastSnapshot::decode_ueba(ctx, reader)?) }
         };
+        let baseline = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(ForecastSnapshot::decode_ueba(ctx, reader)?) }
+        };
         Ok(Forecasts {
             solcast,
             forecast_solar,
             open_meteo,
+            baseline,
         })
     }
 }

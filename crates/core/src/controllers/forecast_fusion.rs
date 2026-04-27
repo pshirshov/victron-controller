@@ -27,6 +27,14 @@ use crate::world::{ForecastSnapshot, TypedSensors};
 /// Fuse today's kWh estimates into a single number.
 ///
 /// Returns `None` when no provider is fresh.
+///
+/// PR-baseline-forecast: the locally-computed `Baseline` provider is a
+/// last-resort fallback. It participates ONLY when zero of the three
+/// cloud providers (Solcast / Forecast.Solar / Open-Meteo) supplied a
+/// fresh snapshot. With at least one cloud snapshot fresh, baseline is
+/// ignored entirely — even under `Mean` (which would otherwise drag the
+/// fused estimate toward the very pessimistic baseline number) and even
+/// under `Min` (which would otherwise nearly always pick baseline).
 #[must_use]
 pub fn fused_today_kwh(
     typed: &TypedSensors,
@@ -59,7 +67,13 @@ pub fn fused_today_kwh(
         .collect();
 
     if fresh.is_empty() {
-        return None;
+        // Last-resort fallback: consult the locally-computed baseline.
+        return typed
+            .forecast_baseline
+            .as_ref()
+            .filter(|s| is_fresh(ForecastProvider::Baseline, s))
+            .map(|s| s.today_kwh)
+            .filter(|v| v.is_finite());
     }
 
     match strategy {
@@ -127,7 +141,15 @@ pub fn fused_hourly_kwh(
         .filter(|v| !v.is_empty());
 
     if solcast_h.is_none() && fs_h.is_none() && om_h.is_none() {
-        return Vec::new();
+        // PR-baseline-forecast: last-resort fallback. Identical fallback
+        // gate as `fused_today_kwh`: only consulted when no cloud
+        // provider supplied fresh hourly data.
+        return typed
+            .forecast_baseline
+            .as_ref()
+            .filter(|s| is_fresh(ForecastProvider::Baseline, s))
+            .map(|s| s.hourly_kwh.clone())
+            .unwrap_or_default();
     }
 
     // Length is the max of all participating providers, capped at 48.
@@ -213,6 +235,7 @@ mod tests {
             forecast_solcast: s.map(snap),
             forecast_forecast_solar: fs.map(snap),
             forecast_open_meteo: om.map(snap),
+            forecast_baseline: None,
         }
     }
 
@@ -374,6 +397,7 @@ mod tests {
             forecast_solcast: s.map(|h| snap_hourly(0.0, h)),
             forecast_forecast_solar: fs.map(|h| snap_hourly(0.0, h)),
             forecast_open_meteo: om.map(|h| snap_hourly(0.0, h)),
+            forecast_baseline: None,
         }
     }
 
@@ -433,5 +457,128 @@ mod tests {
         for (h, &v) in out.iter().enumerate().take(24).skip(4) {
             assert!((v - 5.0).abs() < 1e-9, "hour {h}: {v}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // PR-baseline-forecast: Baseline acts as a last-resort fallback.
+    // ------------------------------------------------------------------
+
+    fn typed_with_baseline(
+        s: Option<f64>,
+        fs: Option<f64>,
+        om: Option<f64>,
+        baseline: Option<f64>,
+    ) -> TypedSensors {
+        TypedSensors {
+            zappi_state: crate::Actual::unknown(Instant::now()),
+            eddi_mode: crate::Actual::unknown(Instant::now()),
+            forecast_solcast: s.map(snap),
+            forecast_forecast_solar: fs.map(snap),
+            forecast_open_meteo: om.map(snap),
+            forecast_baseline: baseline.map(snap),
+        }
+    }
+
+    fn typed_hourly_with_baseline(
+        s: Option<Vec<f64>>,
+        fs: Option<Vec<f64>>,
+        om: Option<Vec<f64>>,
+        baseline: Option<Vec<f64>>,
+    ) -> TypedSensors {
+        TypedSensors {
+            zappi_state: crate::Actual::unknown(Instant::now()),
+            eddi_mode: crate::Actual::unknown(Instant::now()),
+            forecast_solcast: s.map(|h| snap_hourly(0.0, h)),
+            forecast_forecast_solar: fs.map(|h| snap_hourly(0.0, h)),
+            forecast_open_meteo: om.map(|h| snap_hourly(0.0, h)),
+            forecast_baseline: baseline.map(|h| snap_hourly(0.0, h)),
+        }
+    }
+
+    #[test]
+    fn baseline_ignored_when_any_cloud_provider_fresh() {
+        // Even under Min (which would otherwise pick the very pessimistic
+        // baseline) and Mean (which would drag the average down), baseline
+        // must be ignored when at least one cloud provider is fresh.
+        let t = typed_with_baseline(Some(40.0), None, None, Some(2.0));
+        for s in [
+            ForecastDisagreementStrategy::Max,
+            ForecastDisagreementStrategy::Min,
+            ForecastDisagreementStrategy::Mean,
+            ForecastDisagreementStrategy::SolcastIfAvailableElseMean,
+        ] {
+            assert_eq!(
+                fused_today_kwh(&t, s, always_fresh),
+                Some(40.0),
+                "strategy {s:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_used_when_all_clouds_stale() {
+        let t = typed_with_baseline(Some(40.0), Some(50.0), Some(60.0), Some(2.0));
+        // Mark all three clouds stale, baseline fresh.
+        let f = |p: ForecastProvider, _: &ForecastSnapshot| p == ForecastProvider::Baseline;
+        for s in [
+            ForecastDisagreementStrategy::Max,
+            ForecastDisagreementStrategy::Min,
+            ForecastDisagreementStrategy::Mean,
+            ForecastDisagreementStrategy::SolcastIfAvailableElseMean,
+        ] {
+            assert_eq!(fused_today_kwh(&t, s, f), Some(2.0), "strategy {s:?}");
+        }
+    }
+
+    #[test]
+    fn baseline_used_when_no_cloud_configured() {
+        let t = typed_with_baseline(None, None, None, Some(3.0));
+        assert_eq!(
+            fused_today_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh),
+            Some(3.0),
+        );
+    }
+
+    #[test]
+    fn baseline_stale_returns_none() {
+        let t = typed_with_baseline(None, None, None, Some(3.0));
+        // Baseline present but stale.
+        assert_eq!(
+            fused_today_kwh(&t, ForecastDisagreementStrategy::Mean, never_fresh),
+            None,
+        );
+    }
+
+    #[test]
+    fn fused_hourly_baseline_ignored_when_any_cloud_fresh() {
+        let t = typed_hourly_with_baseline(
+            Some(vec![10.0, 10.0]),
+            None,
+            None,
+            Some(vec![1.0, 1.0]),
+        );
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert_eq!(out, vec![10.0, 10.0]);
+    }
+
+    #[test]
+    fn fused_hourly_baseline_used_when_clouds_empty() {
+        // All clouds present but with empty hourly arrays — fall back to
+        // baseline.
+        let t = typed_hourly_with_baseline(
+            Some(vec![]),
+            Some(vec![]),
+            Some(vec![]),
+            Some(vec![1.0, 2.0, 3.0]),
+        );
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, always_fresh);
+        assert_eq!(out, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn fused_hourly_baseline_empty_when_baseline_stale() {
+        let t = typed_hourly_with_baseline(None, None, None, Some(vec![1.0, 2.0]));
+        let out = fused_hourly_kwh(&t, ForecastDisagreementStrategy::Mean, never_fresh);
+        assert!(out.is_empty());
     }
 }

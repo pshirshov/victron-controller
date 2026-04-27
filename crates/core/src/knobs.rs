@@ -171,6 +171,20 @@ pub struct Knobs {
     /// "forced grid charge during 4.8k+ discharge" inverter glitch
     /// on some MultiPlus firmware).
     pub inverter_safe_discharge_enable: bool,
+
+    // --- PR-baseline-forecast: 4 runtime knobs steering the local
+    // last-resort forecast. Dates are encoded as `MMDD` (e.g. 1101 for
+    // November 1, 301 for March 1) to keep one knob per conceptual
+    // setting; the baseline scheduler validates and falls back to the
+    // (1101, 301) defaults if a value is malformed at runtime.
+    /// Inclusive winter MM-DD start, encoded as `month*100 + day`.
+    pub baseline_winter_start_mm_dd: u32,
+    /// Inclusive winter MM-DD end, encoded as `month*100 + day`.
+    pub baseline_winter_end_mm_dd: u32,
+    /// Average per-hour Wh produced during winter daylight hours.
+    pub baseline_wh_per_hour_winter: f64,
+    /// Average per-hour Wh produced during summer daylight hours.
+    pub baseline_wh_per_hour_summer: f64,
 }
 
 impl Knobs {
@@ -249,6 +263,14 @@ impl Knobs {
             // confirming their MultiPlus firmware doesn't reproduce
             // the legacy "forced grid charge during 4.8k+" glitch.
             inverter_safe_discharge_enable: false,
+            // PR-baseline-forecast: defaults are the canonical NH
+            // winter (Nov 1 .. Mar 1) and rough order-of-magnitude
+            // Wh-per-daylight-hour figures. Operator overrides via the
+            // dashboard / HA / retained MQTT.
+            baseline_winter_start_mm_dd: 1101,
+            baseline_winter_end_mm_dd: 301,
+            baseline_wh_per_hour_winter: 100.0,
+            baseline_wh_per_hour_summer: 1000.0,
         }
     }
 }

@@ -17,5 +17,7 @@ pub fn convert__world_snapshot__from__0_2_0(from: &crate::victron_controller::da
         soc_chart: serde_json::from_value(serde_json::to_value(&from.soc_chart).unwrap()).unwrap(),
         scheduled_actions: serde_json::from_value(serde_json::to_value(&from.scheduled_actions).unwrap()).unwrap(),
         pinned_registers: Vec::new(),
+        sunrise_local_iso: None,
+        sunset_local_iso: None,
     }
 }

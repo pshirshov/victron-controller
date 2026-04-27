@@ -119,6 +119,11 @@ fn apply_event(
         Event::Timezone { value, at } => {
             apply_timezone(value, *at, world, topology, effects);
         }
+        Event::SunriseSunset { sunrise, sunset, at } => {
+            world.sunrise = Some(*sunrise);
+            world.sunset = Some(*sunset);
+            world.sunrise_sunset_updated_at = Some(*at);
+        }
         Event::PinnedRegisterReading { path, value, at } => {
             apply_pinned_register_reading(path, value, *at, world, effects);
         }
@@ -458,6 +463,9 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
                 ForecastProvider::OpenMeteo => {
                     world.typed_sensors.forecast_open_meteo = Some(snap);
                 }
+                ForecastProvider::Baseline => {
+                    world.typed_sensors.forecast_baseline = Some(snap);
+                }
             }
         }
     }
@@ -684,6 +692,19 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::InverterSafeDischargeEnable, KnobValue::Bool(v)) => {
             replace(&mut k.inverter_safe_discharge_enable, v) != v
         }
+        // PR-baseline-forecast.
+        (KnobId::BaselineWinterStartMmDd, KnobValue::Uint32(v)) => {
+            replace(&mut k.baseline_winter_start_mm_dd, v) != v
+        }
+        (KnobId::BaselineWinterEndMmDd, KnobValue::Uint32(v)) => {
+            replace(&mut k.baseline_winter_end_mm_dd, v) != v
+        }
+        (KnobId::BaselineWhPerHourWinter, KnobValue::Float(v)) => {
+            replace(&mut k.baseline_wh_per_hour_winter, v) != v
+        }
+        (KnobId::BaselineWhPerHourSummer, KnobValue::Float(v)) => {
+            replace(&mut k.baseline_wh_per_hour_summer, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -796,6 +817,23 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::InverterSafeDischargeEnable,
             value: V::Bool(k.inverter_safe_discharge_enable),
+        },
+        // PR-baseline-forecast: 4 runtime knobs.
+        PublishPayload::Knob {
+            id: I::BaselineWinterStartMmDd,
+            value: V::Uint32(k.baseline_winter_start_mm_dd),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineWinterEndMmDd,
+            value: V::Uint32(k.baseline_winter_end_mm_dd),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineWhPerHourWinter,
+            value: V::Float(k.baseline_wh_per_hour_winter),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineWhPerHourSummer,
+            value: V::Float(k.baseline_wh_per_hour_summer),
         },
     ]
 }

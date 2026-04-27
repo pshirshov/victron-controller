@@ -11,6 +11,7 @@
 //! config = no task = no events = no problem — the fusion layer
 //! tolerates missing providers.
 
+pub mod baseline;
 pub mod current_weather;
 pub mod forecast_solar;
 pub mod open_meteo;
@@ -71,6 +72,13 @@ fn provider_timer_id(p: ForecastProvider) -> TimerId {
         ForecastProvider::Solcast => TimerId::ForecastSolcast,
         ForecastProvider::ForecastSolar => TimerId::ForecastSolar,
         ForecastProvider::OpenMeteo => TimerId::OpenMeteo,
+        // Baseline doesn't go through `run_scheduler` (no HTTP, no
+        // FetchFailure classification) — it has its own scheduler in
+        // `baseline::run_baseline_scheduler` that emits the timer state
+        // directly. This arm is only reachable if a future caller wires
+        // a Baseline `ForecastFetcher` through `run_scheduler`, which
+        // we don't do today.
+        ForecastProvider::Baseline => TimerId::ForecastBaseline,
     }
 }
 

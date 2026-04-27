@@ -6,11 +6,13 @@ export class Forecasts implements BaboonGeneratedLatest {
     private readonly _solcast: ForecastSnapshot | undefined;
     private readonly _forecast_solar: ForecastSnapshot | undefined;
     private readonly _open_meteo: ForecastSnapshot | undefined;
+    private readonly _baseline: ForecastSnapshot | undefined;
 
-    constructor(solcast: ForecastSnapshot | undefined, forecast_solar: ForecastSnapshot | undefined, open_meteo: ForecastSnapshot | undefined) {
+    constructor(solcast: ForecastSnapshot | undefined, forecast_solar: ForecastSnapshot | undefined, open_meteo: ForecastSnapshot | undefined, baseline: ForecastSnapshot | undefined) {
         this._solcast = solcast
         this._forecast_solar = forecast_solar
         this._open_meteo = open_meteo
+        this._baseline = baseline
     }
 
     public get solcast(): ForecastSnapshot | undefined {
@@ -22,28 +24,34 @@ export class Forecasts implements BaboonGeneratedLatest {
     public get open_meteo(): ForecastSnapshot | undefined {
         return this._open_meteo;
     }
+    public get baseline(): ForecastSnapshot | undefined {
+        return this._baseline;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
             solcast: this._solcast !== undefined ? this._solcast : undefined,
             forecast_solar: this._forecast_solar !== undefined ? this._forecast_solar : undefined,
-            open_meteo: this._open_meteo !== undefined ? this._open_meteo : undefined
+            open_meteo: this._open_meteo !== undefined ? this._open_meteo : undefined,
+            baseline: this._baseline !== undefined ? this._baseline : undefined
         };
     }
 
-    public with(overrides: {solcast?: ForecastSnapshot | undefined; forecast_solar?: ForecastSnapshot | undefined; open_meteo?: ForecastSnapshot | undefined}): Forecasts {
+    public with(overrides: {solcast?: ForecastSnapshot | undefined; forecast_solar?: ForecastSnapshot | undefined; open_meteo?: ForecastSnapshot | undefined; baseline?: ForecastSnapshot | undefined}): Forecasts {
         return new Forecasts(
             'solcast' in overrides ? overrides.solcast! : this._solcast,
             'forecast_solar' in overrides ? overrides.forecast_solar! : this._forecast_solar,
-            'open_meteo' in overrides ? overrides.open_meteo! : this._open_meteo
+            'open_meteo' in overrides ? overrides.open_meteo! : this._open_meteo,
+            'baseline' in overrides ? overrides.baseline! : this._baseline
         );
     }
 
-    public static fromPlain(obj: {solcast: ForecastSnapshot | undefined; forecast_solar: ForecastSnapshot | undefined; open_meteo: ForecastSnapshot | undefined}): Forecasts {
+    public static fromPlain(obj: {solcast: ForecastSnapshot | undefined; forecast_solar: ForecastSnapshot | undefined; open_meteo: ForecastSnapshot | undefined; baseline: ForecastSnapshot | undefined}): Forecasts {
         return new Forecasts(
             obj.solcast,
             obj.forecast_solar,
-            obj.open_meteo
+            obj.open_meteo,
+            obj.baseline
         );
     }
 
@@ -59,7 +67,7 @@ export class Forecasts implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Forecasts.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return Forecasts.BaboonSameInVersions
     }
@@ -113,6 +121,18 @@ export class Forecasts_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.baseline === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                ForecastSnapshot_UEBACodec.instance.encode(ctx, value.baseline, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -134,6 +154,12 @@ export class Forecasts_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 ForecastSnapshot_UEBACodec.instance.encode(ctx, value.open_meteo, writer);
             }
+            if (value.baseline === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                ForecastSnapshot_UEBACodec.instance.encode(ctx, value.baseline, writer);
+            }
         }
     }
     
@@ -145,7 +171,7 @@ export class Forecasts_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 3; i++) {
+            for (let i = 0; i < 4; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -153,10 +179,12 @@ export class Forecasts_UEBACodec {
         const solcast = (BinTools.readByte(reader) === 0 ? undefined : ForecastSnapshot_UEBACodec.instance.decode(ctx, reader));
         const forecast_solar = (BinTools.readByte(reader) === 0 ? undefined : ForecastSnapshot_UEBACodec.instance.decode(ctx, reader));
         const open_meteo = (BinTools.readByte(reader) === 0 ? undefined : ForecastSnapshot_UEBACodec.instance.decode(ctx, reader));
+        const baseline = (BinTools.readByte(reader) === 0 ? undefined : ForecastSnapshot_UEBACodec.instance.decode(ctx, reader));
         return new Forecasts(
             solcast,
             forecast_solar,
             open_meteo,
+            baseline,
         );
     }
 

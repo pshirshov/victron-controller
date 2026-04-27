@@ -113,6 +113,17 @@ cadence     = "1h"
 # ]
 cadence     = "30m"
 
+[forecast.baseline]
+# PR-baseline-forecast: locally-computed pessimistic forecast used as a
+# last-resort fallback when every cloud provider is stale. Install-time
+# inputs only — winter range and per-hour Wh constants are runtime knobs
+# (`forecast.baseline.*` topics on MQTT, "baseline.*" rows on the
+# dashboard knobs panel).
+# enabled   = true
+# latitude  = 55.9
+# longitude = -3.2
+# cadence   = "1h"
+
 # =============================================================================
 # Local dashboard — not implemented yet (per user deferral); reserved.
 # =============================================================================

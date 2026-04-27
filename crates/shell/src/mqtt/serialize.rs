@@ -321,6 +321,11 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::BatterySocTargetMode => "battery.soc.target.charge.mode",
         KnobId::DisableNightGridDischargeMode => "grid.night.discharge.disable.mode",
         KnobId::InverterSafeDischargeEnable => "inverter.safe-discharge.enable",
+        // PR-baseline-forecast: 4 runtime knobs.
+        KnobId::BaselineWinterStartMmDd => "forecast.baseline.winter.start.mmdd",
+        KnobId::BaselineWinterEndMmDd => "forecast.baseline.winter.end.mmdd",
+        KnobId::BaselineWhPerHourWinter => "forecast.baseline.wh-per-hour.winter",
+        KnobId::BaselineWhPerHourSummer => "forecast.baseline.wh-per-hour.summer",
     }
 }
 
@@ -361,6 +366,11 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "battery.soc.target.charge.mode" => KnobId::BatterySocTargetMode,
         "grid.night.discharge.disable.mode" => KnobId::DisableNightGridDischargeMode,
         "inverter.safe-discharge.enable" => KnobId::InverterSafeDischargeEnable,
+        // PR-baseline-forecast.
+        "forecast.baseline.winter.start.mmdd" => KnobId::BaselineWinterStartMmDd,
+        "forecast.baseline.winter.end.mmdd" => KnobId::BaselineWinterEndMmDd,
+        "forecast.baseline.wh-per-hour.winter" => KnobId::BaselineWhPerHourWinter,
+        "forecast.baseline.wh-per-hour.summer" => KnobId::BaselineWhPerHourSummer,
         _ => return None,
     })
 }
@@ -537,6 +547,19 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // Time (s)
         KnobId::EddiDwellS => (0.0, 3600.0),
 
+        // PR-baseline-forecast: MMDD-encoded dates. Range covers any
+        // legal MMDD literal (101 = Jan 1, 1231 = Dec 31). Day-of-month
+        // legality (e.g. rejecting 230 / 431) is enforced at use-site
+        // in the baseline scheduler — this range is the wire-level
+        // sanity floor / ceiling for the HA discovery slider.
+        KnobId::BaselineWinterStartMmDd | KnobId::BaselineWinterEndMmDd => (101.0, 1231.0),
+
+        // PR-baseline-forecast: per-daylight-hour Wh constants. Upper
+        // bound generous — a 10 kWp array at peak yields ~10 kWh in a
+        // single fully-clear midday hour, but the baseline is a
+        // pessimistic average so 10000 Wh/h is hard ceiling.
+        KnobId::BaselineWhPerHourWinter | KnobId::BaselineWhPerHourSummer => (0.0, 10000.0),
+
         // Multiplier
         KnobId::PessimismMultiplierModifier => (0.0, 2.0),
 
@@ -638,10 +661,18 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::WeathersocLowEnergyThreshold
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
-        | KnobId::WeathersocTooMuchEnergyThreshold => {
+        | KnobId::WeathersocTooMuchEnergyThreshold
+        // PR-baseline-forecast: per-hour Wh constants are floats.
+        | KnobId::BaselineWhPerHourWinter
+        | KnobId::BaselineWhPerHourSummer => {
             parse_ranged_float(id, body).map(KnobValue::Float)
         }
-        KnobId::GridExportLimitW | KnobId::GridImportLimitW | KnobId::EddiDwellS => {
+        KnobId::GridExportLimitW
+        | KnobId::GridImportLimitW
+        | KnobId::EddiDwellS
+        // PR-baseline-forecast: MMDD encoded as Uint32.
+        | KnobId::BaselineWinterStartMmDd
+        | KnobId::BaselineWinterEndMmDd => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {

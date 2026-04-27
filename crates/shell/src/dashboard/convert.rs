@@ -399,6 +399,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             solcast: f.forecast_solcast.as_ref().map(forecast_snapshot),
             forecast_solar: f.forecast_forecast_solar.as_ref().map(forecast_snapshot),
             open_meteo: f.forecast_open_meteo.as_ref().map(forecast_snapshot),
+            baseline: f.forecast_baseline.as_ref().map(forecast_snapshot),
         },
         decisions: decisions_to_model(&world.decisions),
         cores_state: cores_state_to_model(&world.cores_state),
@@ -424,7 +425,48 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         ),
         // PR-pinned-registers: per-register drift state.
         pinned_registers: pinned_registers_to_model(world),
+        // PR-baseline-forecast: today's sunrise/sunset. Returned as
+        // `None` when the world-state has never been seeded OR when the
+        // last successful update is older than
+        // `world::SUNRISE_SUNSET_FRESHNESS` (3 h). Both paths render
+        // the same em-dash row on the dashboard, which is the right
+        // call: from the operator's perspective "we don't know" and
+        // "we last knew this 12 h ago" are equivalent.
+        sunrise_local_iso: fresh_sunrise_sunset(world).0,
+        sunset_local_iso: fresh_sunrise_sunset(world).1,
     }
+}
+
+/// Today's sunrise / sunset as ISO-formatted local-time strings, OR
+/// `None` when the freshness window has elapsed (or values were never
+/// observed). See `world::SUNRISE_SUNSET_FRESHNESS` for the threshold.
+fn fresh_sunrise_sunset(world: &World) -> (Option<String>, Option<String>) {
+    use std::time::Instant;
+    fresh_sunrise_sunset_impl(
+        world.sunrise_sunset_updated_at,
+        world.sunrise,
+        world.sunset,
+        Instant::now(),
+    )
+}
+
+/// Pure helper backing [`fresh_sunrise_sunset`] — split out so tests
+/// can drive `now` without poking into `Instant::now()`.
+fn fresh_sunrise_sunset_impl(
+    updated_at: Option<std::time::Instant>,
+    sunrise: Option<chrono::NaiveDateTime>,
+    sunset: Option<chrono::NaiveDateTime>,
+    now: std::time::Instant,
+) -> (Option<String>, Option<String>) {
+    let fresh = match updated_at {
+        Some(at) => now.saturating_duration_since(at)
+            <= victron_controller_core::world::SUNRISE_SUNSET_FRESHNESS,
+        None => false,
+    };
+    if !fresh {
+        return (None, None);
+    }
+    (sunrise.map(|dt| dt.to_string()), sunset.map(|dt| dt.to_string()))
 }
 
 /// Convert the per-timer observability state in `world.timers` into the
@@ -762,6 +804,13 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         battery_soc_target_mode: mode(k.battery_soc_target_mode),
         disable_night_grid_discharge_mode: mode(k.disable_night_grid_discharge_mode),
         inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
+        // PR-baseline-forecast.
+        baseline_winter_start_mm_dd: i32::try_from(k.baseline_winter_start_mm_dd)
+            .unwrap_or(i32::MAX),
+        baseline_winter_end_mm_dd: i32::try_from(k.baseline_winter_end_mm_dd)
+            .unwrap_or(i32::MAX),
+        baseline_wh_per_hour_winter: k.baseline_wh_per_hour_winter,
+        baseline_wh_per_hour_summer: k.baseline_wh_per_hour_summer,
     }
 }
 
@@ -970,7 +1019,81 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "battery_soc_target_mode" => KnobId::BatterySocTargetMode,
         "disable_night_grid_discharge_mode" => KnobId::DisableNightGridDischargeMode,
         "inverter_safe_discharge_enable" => KnobId::InverterSafeDischargeEnable,
+        // PR-baseline-forecast.
+        "baseline_winter_start_mm_dd" => KnobId::BaselineWinterStartMmDd,
+        "baseline_winter_end_mm_dd" => KnobId::BaselineWinterEndMmDd,
+        "baseline_wh_per_hour_winter" => KnobId::BaselineWhPerHourWinter,
+        "baseline_wh_per_hour_summer" => KnobId::BaselineWhPerHourSummer,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod sunrise_sunset_freshness_tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use std::time::Duration;
+    use std::time::Instant;
+    use victron_controller_core::world::SUNRISE_SUNSET_FRESHNESS;
+
+    fn dt(h: u32, m: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 6, 21)
+            .unwrap()
+            .and_hms_opt(h, m, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn fresh_within_window() {
+        // `now` is anchored ahead of `updated_at` so the subtraction
+        // we care about (`now - updated_at`) doesn't go through
+        // Instant arithmetic that clippy flags as unchecked.
+        let updated_at = Instant::now();
+        let now = updated_at + Duration::from_secs(60);
+        let (sr, ss) = fresh_sunrise_sunset_impl(
+            Some(updated_at),
+            Some(dt(4, 30)),
+            Some(dt(22, 0)),
+            now,
+        );
+        assert!(sr.is_some(), "sunrise should be fresh");
+        assert!(ss.is_some());
+    }
+
+    #[test]
+    fn stale_outside_window() {
+        let updated_at = Instant::now();
+        let now = updated_at + SUNRISE_SUNSET_FRESHNESS + Duration::from_secs(1);
+        let (sr, ss) = fresh_sunrise_sunset_impl(
+            Some(updated_at),
+            Some(dt(4, 30)),
+            Some(dt(22, 0)),
+            now,
+        );
+        assert!(sr.is_none(), "sunrise should be stale");
+        assert!(ss.is_none());
+    }
+
+    #[test]
+    fn never_observed_yields_none() {
+        let now = Instant::now();
+        let (sr, ss) = fresh_sunrise_sunset_impl(None, Some(dt(4, 30)), Some(dt(22, 0)), now);
+        assert!(sr.is_none());
+        assert!(ss.is_none());
+    }
+
+    #[test]
+    fn fresh_but_polar_day_yields_none_for_each_missing_value() {
+        let updated_at = Instant::now();
+        let now = updated_at + Duration::from_secs(10);
+        let (sr, ss) = fresh_sunrise_sunset_impl(
+            Some(updated_at),
+            Some(dt(4, 30)),
+            None,
+            now,
+        );
+        assert!(sr.is_some());
+        assert!(ss.is_none());
+    }
 }
 

@@ -588,6 +588,34 @@ impl Core for WeatherSocCore {
             };
             out.push(factor(&format!("forecast_{name}"), value));
         }
+        // PR-baseline-forecast: surface the locally-computed baseline
+        // last so an operator can see why a fused number exists when all
+        // three cloud rows above are "—". The fusion gate is exclusive:
+        // baseline contributes ONLY when no cloud snapshot is fresh
+        // (see `forecast_fusion::fused_today_kwh`). To make the panel
+        // honest about that gate we tag the row "(unused — cloud
+        // available)" whenever any cloud snapshot is present, even when
+        // baseline itself has values. This avoids the operator
+        // misreading a populated baseline row as "this is what
+        // weather_soc actually saw".
+        let any_cloud_present = world.typed_sensors.forecast_solcast.is_some()
+            || world.typed_sensors.forecast_forecast_solar.is_some()
+            || world.typed_sensors.forecast_open_meteo.is_some();
+        let baseline_value = match world.typed_sensors.forecast(ForecastProvider::Baseline) {
+            None => "—".to_string(),
+            Some(s) => {
+                let core = format!(
+                    "today={:.2} kWh, tomorrow={:.2} kWh",
+                    s.today_kwh, s.tomorrow_kwh,
+                );
+                if any_cloud_present {
+                    format!("{core} (unused — cloud available)")
+                } else {
+                    core
+                }
+            }
+        };
+        out.push(factor("forecast_baseline", baseline_value));
         out.push(factor(
             "last_run_date",
             bk.last_weather_soc_run_date.map_or("—".to_string(), |d| format!("{d}")),

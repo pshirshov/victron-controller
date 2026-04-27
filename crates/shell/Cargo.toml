@@ -32,6 +32,7 @@ toml = "0.8"
 # Time
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = { version = "0.10", default-features = false }
+sunrise = { version = "3", default-features = false, features = ["std"] }
 
 # Logging
 tracing = "0.1"

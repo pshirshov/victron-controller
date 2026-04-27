@@ -18,6 +18,8 @@ export function convert__world_snapshot__from__0_2_0(from: v0_2_0_WorldSnapshot)
         from.timezone,
         JSON.parse(JSON.stringify(from.soc_chart)),
         JSON.parse(JSON.stringify(from.scheduled_actions)),
-        []
+        [],
+        undefined,
+        undefined
     )
 }

@@ -75,6 +75,11 @@ const DISPLAY_NAMES: Record<string, string> = {
   forecast_disagreement_strategy: "forecast.disagreement.strategy",
   charge_battery_extended_mode: "schedule.extended.charge.mode",
   writes_enabled: "writes-enabled",
+  // PR-baseline-forecast.
+  baseline_winter_start_mm_dd: "forecast.baseline.winter.start.mmdd",
+  baseline_winter_end_mm_dd: "forecast.baseline.winter.end.mmdd",
+  baseline_wh_per_hour_winter: "forecast.baseline.wh-per-hour.winter",
+  baseline_wh_per_hour_summer: "forecast.baseline.wh-per-hour.summer",
 
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",
@@ -112,10 +117,11 @@ const DISPLAY_NAMES: Record<string, string> = {
   // The default (`displayNameOf`) returns the actuated form — that's what
   // appears in the actuated table; decision/core rows pass type explicitly.
 
-  // --- Forecasts (3) ---
+  // --- Forecasts (4) ---
   solcast: "forecast.solcast",
   forecast_solar: "forecast.solar",
   open_meteo: "forecast.open-meteo",
+  baseline: "forecast.baseline",
 };
 
 // Per-type overrides for collision keys. When the same canonical name

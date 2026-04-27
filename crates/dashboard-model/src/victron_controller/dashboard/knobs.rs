@@ -41,6 +41,10 @@ pub struct Knobs {
     pub battery_soc_target_mode: Mode,
     pub disable_night_grid_discharge_mode: Mode,
     pub inverter_safe_discharge_enable: bool,
+    pub baseline_winter_start_mm_dd: i32,
+    pub baseline_winter_end_mm_dd: i32,
+    pub baseline_wh_per_hour_winter: f64,
+    pub baseline_wh_per_hour_summer: f64,
 }
 
 impl PartialEq for Knobs {
@@ -195,6 +199,22 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.baseline_winter_start_mm_dd.cmp(&other.baseline_winter_start_mm_dd) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_winter_end_mm_dd.cmp(&other.baseline_winter_end_mm_dd) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_wh_per_hour_winter.total_cmp(&other.baseline_wh_per_hour_winter) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_wh_per_hour_summer.total_cmp(&other.baseline_wh_per_hour_summer) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -245,6 +265,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.battery_soc_target_mode.encode_ueba(ctx, &mut buffer)?;
             value.disable_night_grid_discharge_mode.encode_ueba(ctx, &mut buffer)?;
             value.inverter_safe_discharge_enable.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_winter_start_mm_dd.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_winter_end_mm_dd.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_wh_per_hour_winter.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_wh_per_hour_summer.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -282,6 +306,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.battery_soc_target_mode.encode_ueba(ctx, writer)?;
             value.disable_night_grid_discharge_mode.encode_ueba(ctx, writer)?;
             value.inverter_safe_discharge_enable.encode_ueba(ctx, writer)?;
+            value.baseline_winter_start_mm_dd.encode_ueba(ctx, writer)?;
+            value.baseline_winter_end_mm_dd.encode_ueba(ctx, writer)?;
+            value.baseline_wh_per_hour_winter.encode_ueba(ctx, writer)?;
+            value.baseline_wh_per_hour_summer.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -327,6 +355,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let battery_soc_target_mode = Mode::decode_ueba(ctx, reader)?;
         let disable_night_grid_discharge_mode = Mode::decode_ueba(ctx, reader)?;
         let inverter_safe_discharge_enable = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let baseline_winter_start_mm_dd = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let baseline_winter_end_mm_dd = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let baseline_wh_per_hour_winter = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let baseline_wh_per_hour_summer = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -362,6 +394,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             battery_soc_target_mode,
             disable_night_grid_discharge_mode,
             inverter_safe_discharge_enable,
+            baseline_winter_start_mm_dd,
+            baseline_winter_end_mm_dd,
+            baseline_wh_per_hour_winter,
+            baseline_wh_per_hour_summer,
         })
     }
 }

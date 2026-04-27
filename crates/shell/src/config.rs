@@ -203,6 +203,10 @@ pub struct ForecastConfig {
     pub forecast_solar: ForecastSolarProviderConfig,
     #[serde(default)]
     pub open_meteo: OpenMeteoProviderConfig,
+    /// PR-baseline-forecast: locally-computed pessimistic baseline. Used
+    /// only when every cloud provider is stale — see fusion logic.
+    #[serde(default)]
+    pub baseline: BaselineProviderConfig,
     /// IANA name of the site's timezone — used both when querying
     /// Open-Meteo (`timezone=…`) and when bucketing Solcast / Open-Meteo
     /// responses into today/tomorrow. Do NOT rely on the machine TZ:
@@ -219,6 +223,7 @@ impl Default for ForecastConfig {
             solcast: SolcastProviderConfig::default(),
             forecast_solar: ForecastSolarProviderConfig::default(),
             open_meteo: OpenMeteoProviderConfig::default(),
+            baseline: BaselineProviderConfig::default(),
             timezone: default_forecast_timezone(),
         }
     }
@@ -336,6 +341,62 @@ impl Default for OpenMeteoProviderConfig {
 
 fn default_open_meteo_system_efficiency() -> f64 {
     0.75
+}
+
+/// PR-baseline-forecast: install-time config for the local baseline
+/// forecast. Runtime-tunable values (winter range, per-hour Wh) live on
+/// `World::knobs` as four runtime knobs and are read by the scheduler
+/// per cycle — see `core::knobs::Knobs::baseline_*` and the four
+/// `KnobId::Baseline*` variants. This struct only carries the
+/// install-time values that don't change at runtime.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BaselineProviderConfig {
+    /// Latitude / longitude — sun position drives the daylight window.
+    /// Defaults to (0, 0). Coordinate sanity is delegated to the
+    /// `sunrise` crate's `Coordinates::new`; the scheduler exits
+    /// cleanly with a warning if the values are out of range.
+    #[serde(default)]
+    pub latitude: f64,
+    #[serde(default)]
+    pub longitude: f64,
+    /// When `false`, the scheduler doesn't start regardless of the
+    /// other fields. Default `false` so a fresh deployment doesn't
+    /// emit dummy baseline values until the operator has explicitly
+    /// opted in.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Recompute cadence. Sunrise/sunset and the season indicator move
+    /// slowly — once an hour is plenty, but the cheap math means a
+    /// faster cadence is fine too. Default 1 h.
+    #[serde(
+        default = "default_baseline_cadence",
+        with = "humantime_serde_compat"
+    )]
+    pub cadence: Duration,
+}
+
+impl Default for BaselineProviderConfig {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            enabled: false,
+            cadence: default_baseline_cadence(),
+        }
+    }
+}
+
+impl BaselineProviderConfig {
+    /// True iff the provider is enabled and has a non-zero cadence.
+    /// Coordinate sanity is the sunrise crate's job.
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        self.enabled && !self.cadence.is_zero()
+    }
+}
+
+fn default_baseline_cadence() -> Duration {
+    Duration::from_secs(60 * 60)
 }
 
 fn default_open_meteo_cadence() -> Duration {
@@ -1136,6 +1197,44 @@ mod tests {
             format!("{}", PinnedValue::String("foo".to_string())),
             "\"foo\""
         );
+    }
+
+    // PR-baseline-forecast --------------------------------------------------
+
+    #[test]
+    fn baseline_disabled_by_default() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(!c.forecast.baseline.is_configured());
+        assert!(!c.forecast.baseline.enabled);
+        assert_eq!(c.forecast.baseline.cadence, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn baseline_parses_install_time_section() {
+        let t = r#"
+            [forecast.baseline]
+            latitude = 51.5
+            longitude = -0.1
+            enabled = true
+            cadence = "30m"
+        "#;
+        let c: Config = toml::from_str(t).unwrap();
+        assert!(c.forecast.baseline.is_configured());
+        assert_eq!(c.forecast.baseline.latitude, 51.5);
+        assert_eq!(c.forecast.baseline.cadence, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn baseline_is_configured_requires_enabled_and_cadence() {
+        let mut cfg = BaselineProviderConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert!(!cfg.is_configured(), "disabled");
+        cfg.enabled = true;
+        assert!(cfg.is_configured());
+        cfg.cadence = Duration::ZERO;
+        assert!(!cfg.is_configured(), "cadence=0 must disable");
     }
 
     #[test]

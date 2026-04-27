@@ -471,6 +471,26 @@ async fn main() -> Result<()> {
         info!("forecast: Open-Meteo disabled (no planes configured)");
     }
 
+    // PR-baseline-forecast: locally-computed last-resort fallback. Spun
+    // up only when the operator has supplied both a site location and at
+    // least one non-zero per-hour Wh constant.
+    if cfg.forecast.baseline.is_configured() {
+        let baseline = cfg.forecast.baseline.clone();
+        let params = forecast::baseline::BaselineParams {
+            latitude: baseline.latitude,
+            longitude: baseline.longitude,
+            cadence: baseline.cadence,
+            tz: forecast_tz,
+        };
+        let tx_b = tx.clone();
+        let world_b = world.clone();
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ = forecast::baseline::run_baseline_scheduler(params, world_b, tx_b).await;
+        }));
+    } else {
+        info!("forecast: baseline disabled (set [forecast.baseline] enabled = true to enable)");
+    }
+
     // Outdoor temperature from Open-Meteo. Runs whenever Open-Meteo has
     // valid coordinates, independent of plane config — this is the
     // placeholder source for `outdoor_temperature` until the MQTT

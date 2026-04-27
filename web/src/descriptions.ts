@@ -153,6 +153,16 @@ export const entityDescriptions: Record<string, string> = {
   "inverter.safe-discharge.enable":
     "When true, applies the legacy 4020 W safety margin below the inverter's full discharge rating to avoid an observed 'forced grid charge during 4.8 kW+ discharge' glitch on some MultiPlus firmware. Default false — the margin is OFF and the inverter discharges at its full rated capacity. Flip to true if your specific firmware reproduces the glitch.",
 
+  // --- Knobs (baseline forecast — PR-baseline-forecast) ---
+  "forecast.baseline.winter.start.mmdd":
+    "Winter range start (inclusive), encoded as MMDD (e.g. 1101 for Nov 1). Year-wrapping range together with the end knob.",
+  "forecast.baseline.winter.end.mmdd":
+    "Winter range end (inclusive), encoded as MMDD (e.g. 301 for Mar 1). Year-wrapping range together with the start knob.",
+  "forecast.baseline.wh-per-hour.winter":
+    "Average per-daylight-hour Wh during winter. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
+  "forecast.baseline.wh-per-hour.summer":
+    "Average per-daylight-hour Wh during summer. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
+
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:
     "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",
@@ -167,6 +177,8 @@ export const entityDescriptions: Record<string, string> = {
   "forecast.solcast": "Solcast forecast provider (free tier, paid for accuracy on this site).",
   "forecast.solar": "Forecast.Solar forecast provider (free tier).",
   "forecast.open-meteo": "Open-Meteo forecast provider (free).",
+  "forecast.baseline":
+    "Local pessimistic baseline (sunrise/sunset × Wh-per-hour). Used as a last-resort fallback when no cloud provider is fresh.",
 };
 
 // Bookkeeping field → list of cores that write to it (PR-entity-inspectors).
@@ -191,4 +203,5 @@ export const forecastProviderLabels: Record<string, string> = {
   "forecast.solcast": "Solcast",
   "forecast.solar": "Forecast.Solar",
   "forecast.open-meteo": "Open-Meteo",
+  "forecast.baseline": "Baseline",
 };

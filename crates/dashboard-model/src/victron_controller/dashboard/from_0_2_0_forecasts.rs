@@ -5,5 +5,6 @@ pub fn convert__forecasts__from__0_2_0(from: &crate::victron_controller::dashboa
         solcast: serde_json::from_value(serde_json::to_value(&from.solcast).unwrap()).unwrap(),
         forecast_solar: serde_json::from_value(serde_json::to_value(&from.forecast_solar).unwrap()).unwrap(),
         open_meteo: serde_json::from_value(serde_json::to_value(&from.open_meteo).unwrap()).unwrap(),
+        baseline: None,
     }
 }

@@ -226,7 +226,15 @@ input[type=number], input[type=text], select {
   padding: 2px 6px;
   font-size: 13px;
   font-family: inherit;
-  width: 120px;
+  /* Identical outer box across input and select, so the "set" button
+   * after either lands at the same x offset. content-box (the default)
+   * leaves room for the browser's internal <select> chrome (dropdown
+   * arrow) outside the declared width, which mis-aligns the button. */
+  box-sizing: border-box;
+  /* Wide enough to fit `solcast_if_available_else_mean` without
+   * truncation in the closed select while staying compact for the
+   * shorter number fields. */
+  width: 200px;
 }
 
 button {
