@@ -330,7 +330,7 @@ No Hoymiles DTU integration — the ET112 is the low-latency source of truth.
 
 ### 5.11. Grid export hard cap (new)
 
-- Knob `grid_export_limit_w` (default 4900).
+- Knob `grid_export_limit_w` (default 5000).
 - Applied in `_prepare_setpoint` post-processing: `setpoint = max(-grid_export_limit_w, setpoint)` in addition to the existing battery-side `max_discharge = max(-5000, -(4020 + solar_export))`. The more restrictive cap wins.
 
 ### 5.12. Dashboard + MQTT bridge
@@ -422,7 +422,7 @@ crates/
 
 ## 7. Hard-coded safe defaults (cold-start baseline)
 
-These values apply on cold start before any retained MQTT knobs arrive. They are chosen to match the user's conservative 80 % policy: keep battery around 80, export above 80, schedule-only grid charging, cap grid export at 4900 W, don't discharge battery.
+These values apply on cold start before any retained MQTT knobs arrive. They are chosen to match the user's conservative 80 % policy: keep battery around 80, export above 80, schedule-only grid charging, cap grid export at 5000 W, don't discharge battery.
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -441,7 +441,7 @@ These values apply on cold start before any retained MQTT knobs arrive. They are
 | `zappi_current_target` | `9.5` A | Unchanged |
 | `zappi_limit` | `65` kWh | A-14: unit is kWh (per-session EV charge ceiling), not % as earlier revisions advertised. 65 kWh default sits on the `<= 65` auto-stop gate and covers a Tesla Model 3 LR full charge. |
 | `zappi_emergency_margin` | `5.0` A | Unchanged |
-| `grid_export_limit_w` | `4900` | **NEW** grid-meter-side hard cap on export (applied in `_prepare_setpoint` post-processing). See §5.11 / PR-09a. Safe-max clamped to 10 kW at ingest (A-09). |
+| `grid_export_limit_w` | `5000` | **NEW** grid-meter-side hard cap on export (applied in `_prepare_setpoint` post-processing). See §5.11 / PR-09a. Safe-max clamped to 10 kW at ingest (A-09). |
 | `grid_import_limit_w` | `10` | **NEW** grid-meter-side hard cap on import. Symmetric with `grid_export_limit_w`. Default `10 W` preserves the idle-bleed invariant (§5.11): the setpoint controller never emits `> 10 W` by default, so any positive setpoint (a bug, an operator override, an undetected branch) is pinned at 10 W. Raise explicitly only when the user wants the controller to actively import (e.g. charge-to-full from grid). A-10 / PR-09a. |
 | `allow_battery_to_car` | `false` | **NEW**. Boot-resets regardless of retained value |
 | `eddi_enable_soc` | `96` | **NEW** |

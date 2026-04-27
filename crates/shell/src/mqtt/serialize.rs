@@ -1156,8 +1156,8 @@ mod tests {
             Some(KnobValue::Float(_))
         ));
         assert!(matches!(
-            parse_knob_value(KnobId::GridExportLimitW, "4900"),
-            Some(KnobValue::Uint32(4900))
+            parse_knob_value(KnobId::GridExportLimitW, "5000"),
+            Some(KnobValue::Uint32(5000))
         ));
         assert!(matches!(
             parse_knob_value(KnobId::EddiDwellS, "0"),

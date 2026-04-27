@@ -320,7 +320,7 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   `bookkeeping.charge_battery_extended_today` that resets at midnight.
   Schedules ORs that in. Lands in PR-04.
 - [x] **`grid_import_limit_w` default:** `10 W` (matches idle-bleed
-  promotion). `grid_export_limit_w` unchanged (`4900 W`). Ingest clamp
+  promotion). `grid_export_limit_w` unchanged (`5000 W`). Ingest clamp
   `SAFE_MAX_GRID_LIMIT_W = 10_000` applied to both. Lands in PR-09.
 - [x] **`force_disable_export` in `CurrentLimitInputGlobals`:** delete
   the field (not yet used; dead code). Lands in PR-10.

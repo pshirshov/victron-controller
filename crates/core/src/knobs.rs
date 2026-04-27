@@ -190,7 +190,7 @@ pub struct Knobs {
 impl Knobs {
     /// Cold-start safe defaults. Chosen per SPEC §7 to match the user's
     /// "keep battery around 80, schedule-only grid charging, cap grid export
-    /// at 4900 W, don't discharge battery" policy.
+    /// at 5000 W, don't discharge battery" policy.
     #[must_use]
     pub fn safe_defaults() -> Self {
         Self {
@@ -222,7 +222,7 @@ impl Knobs {
             // for typical EV sessions. Tune per vehicle.
             zappi_limit: 65.0,
             zappi_emergency_margin: 5.0,
-            grid_export_limit_w: 4900,
+            grid_export_limit_w: 5000,
             grid_import_limit_w: 10,
             allow_battery_to_car: false,
             eddi_enable_soc: 96.0,
@@ -297,7 +297,7 @@ mod tests {
         assert!((k.full_charge_export_soc_threshold - 100.0).abs() < f64::EPSILON);
         assert_eq!(k.discharge_time, DischargeTime::At0200);
         assert_eq!(k.debug_full_charge, DebugFullCharge::Auto);
-        assert_eq!(k.grid_export_limit_w, 4900);
+        assert_eq!(k.grid_export_limit_w, 5000);
         assert!(!k.allow_battery_to_car);
         assert!((k.eddi_enable_soc - 96.0).abs() < f64::EPSILON);
         assert!((k.eddi_disable_soc - 94.0).abs() < f64::EPSILON);

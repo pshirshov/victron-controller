@@ -148,7 +148,7 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "battery.soc.threshold.full-charge.export": { kind: "float", min: 0, max: 100, step: 1, default: 100, category: "config", group: "Tariff / scheduling" },
 
   // --- Config: Hard installation caps ---
-  "grid.export.limit": { kind: "int", min: 0, max: 10000, step: 50, default: 4900, category: "config", group: "Hard installation caps" },
+  "grid.export.limit": { kind: "int", min: 0, max: 10000, step: 50, default: 5000, category: "config", group: "Hard installation caps" },
   "grid.import.limit": { kind: "int", min: 0, max: 10000, step: 10, default: 10, category: "config", group: "Hard installation caps" },
   // PR-inverter-safe-discharge-knob.
   "inverter.safe-discharge.enable": { kind: "bool", default: false, category: "config", group: "Hard installation caps" },
@@ -162,6 +162,27 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     default: "SolcastIfAvailableElseMean",
     category: "config",
     group: "Forecast",
+  },
+  // PR-baseline-forecast: 4 runtime knobs steering the local last-resort
+  // baseline. Dates are MMDD (1101 = Nov 1, 301 = Mar 1); per-hour Wh
+  // are the average daylight-hour production split by season.
+  // Defaults mirror `Knobs::safe_defaults` in core. Ranges mirror
+  // `knob_range` in shell/src/mqtt/serialize.rs.
+  "forecast.baseline.winter.start.mmdd": {
+    kind: "int", min: 101, max: 1231, step: 1, default: 1101,
+    category: "config", group: "Forecast",
+  },
+  "forecast.baseline.winter.end.mmdd": {
+    kind: "int", min: 101, max: 1231, step: 1, default: 301,
+    category: "config", group: "Forecast",
+  },
+  "forecast.baseline.wh-per-hour.winter": {
+    kind: "float", min: 0, max: 10000, step: 10, default: 100,
+    category: "config", group: "Forecast",
+  },
+  "forecast.baseline.wh-per-hour.summer": {
+    kind: "float", min: 0, max: 10000, step: 10, default: 1000,
+    category: "config", group: "Forecast",
   },
 
   // --- Config: Eddi ---
