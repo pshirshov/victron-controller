@@ -284,6 +284,13 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
   `SetValue` + lazy infallible constructor (A-56). Mirrors
   PR-URGENT-20 subscriber pattern. Plan:
   `docs/drafts/20260424-2245-pr-writer-reconnect.md`.
+- [x] **PR-zappi-schedule-stop** — Field-observed regression: extended
+  charge started at 05:00 but never stopped because the legacy `00 08
+  * * *` Off-cron was not ported. Adds a post-extended stop rule in
+  `evaluate_zappi_mode` (08:00–08:04 window forces Off when current
+  mode != Off) plus surfaces the three daily Zappi mode edges (02:00 /
+  05:00 / 08:00) in the dashboard schedules section. Plan:
+  `docs/drafts/20260427-1133-pr-zappi-schedule-stop.md`.
 
 ---
 
@@ -328,6 +335,75 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 ---
 
 ## Completed
+
+- **PR-zappi-schedule-stop** (2026-04-27) — Field regression: last night
+  the user had `charge_car_boost = false` and `charge_car_extended =
+  true` (Auto path). The Zappi went Fast at 05:00 and stayed Fast past
+  08:00 forever, charging the car into the day-rate band. Root cause:
+  the legacy Node-RED flow had a separate `00 08 * * *` cron firing a
+  `chargeMode: Off` change-node (`legacy/debug/20260421-120500-injects-crons.txt:8`,
+  flow node id `f93090cc98e44e37`); the Rust port reproduced the
+  Boost / NightExtended cron-windows in `evaluate_zappi_mode` but
+  not the standalone Off-edge. Two surgical fixes in one PR:
+  (1) **`crates/core/src/controllers/zappi_mode.rs`** — new "post-
+  extended stop" rule between the NightExtended block and the night
+  auto-stop block: when `now.hour() == 8 && now.minute() <
+  POST_EXTENDED_STOP_WINDOW_MINUTES (= 5)` and `current_mode !=
+  Off`, return `Set(Off)`; if already Off, return Leave. The Decision
+  summary formats the upper-bound minute from the constant, so
+  changing the window width keeps the summary honest. 5-minute width
+  gives 20 ticks of headroom over the 15s poll cadence; outside the
+  window the daytime Leave is unchanged so manual user mode-changes
+  during the day still survive.
+  (2) **`crates/shell/src/dashboard/convert_schedule.rs`** — new
+  `zappi_actions(world, now_local)` emits three daily edges (02:00,
+  05:00, 08:00) with `source = "zappi.mode"` and `period_ms =
+  Some(DAY_MS)`, mirroring the eddi-edge pattern. Labels reflect knob
+  state: `world.knobs.charge_car_boost` for 02:00,
+  `victron_controller_core::process::effective_charge_car_extended`
+  for 05:00 (which in `Auto` mode reads `bookkeeping.auto_extended_today`),
+  always `Off` for 08:00. Wired into `compute_scheduled_actions`
+  between the weather-soc edge and the sort. The `WireAction.source`
+  is an open string (`crates/dashboard-model/.../scheduled_action.rs`)
+  and the frontend (`web/src/render.ts:580`) renders by index, so no
+  TS-side changes were needed.
+  Verification: `cargo test --workspace --no-fail-fast` →
+  283 (core) + 10 (dashboard-model) + 168 (shell) passing, +5 new
+  zappi_mode tests + 3 new convert_schedule tests; `cargo clippy
+  --workspace --all-targets -- -D warnings` clean.
+  Two adversarial review rounds; round 1 surfaced four nits
+  (D01–D04, all minor/nit) which were resolved in round 2:
+  D01 — formatted summary derives end-minute from the constant so the
+  user-facing string can never lie about the window width;
+  D02 — added an `Eco`-arm test (`base_input` defaulted to Eco; the
+  predicate `current_mode != Off` covers Eco/EcoPlus too);
+  D03 — substring assertion changed from `"08:00"` to `"Post-extended"`
+  to pin rule identity rather than a digit that recurs in other
+  Decision summaries;
+  D04 — added a dashboard test pinning the production `Auto`-mode →
+  `bookkeeping.auto_extended_today` linkage that the original two
+  knob-state tests bypassed via `Disabled` / `Forced` short-circuits.
+  Notes / surprises:
+  - `Knobs::safe_defaults()` defaults `charge_car_boost = true` and
+    `charge_car_extended_mode = Auto` — opposite of what the plan doc
+    initially assumed. Tests pin both flags explicitly to keep the
+    assertions deterministic.
+  - `effective_charge_car_extended` is now a cross-crate import from
+    the dashboard read-path. Verified pure (`crates/core/src/process.rs:975-982`):
+    `Forced → true`, `Disabled → false`, `Auto → bookkeeping.auto_extended_today`
+    — no side effects, safe to call every snapshot tick. The latch
+    itself is written once per local date by `maybe_evaluate_auto_extended`
+    on the controller path.
+  - Idempotency over the 5-minute window relies on the existing TASS
+    `propose_target` short-circuit: first tick at 08:00:00 sets
+    target=Off (changed=true) and `Effect::CallMyenergi(SetZappiMode(Off))`
+    is emitted; subsequent ticks at 08:00:15..08:04:45 with the same
+    target/owner return changed=false at `crates/core/src/process.rs:1741`
+    and the controller early-returns. No write amplification.
+  - DST: the 02:00 zappi/eddi edge gets DST handling for free via the
+    existing `next_local_hm` helper (eddi spring-forward test already
+    covers it). 08:00 always exists in Europe/London — no extra
+    coverage needed.
 
 - **PR-auto-extended-charge** (2026-04-25) — Replace the boolean
   `evcharger.extended.enable` knob with a tri-state

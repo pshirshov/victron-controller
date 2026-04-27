@@ -1404,3 +1404,35 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/types.rs` `reseed_cadence` arm; matrix doc
 **Description:** Pre-PR matrix had `BatterySoh = 300 s` reseed; the rewrite folds it into the standard battery-service 60 s cadence (since the per-service min is now 5 s anyway, this is a free tightening). Plan called it "no change".
 **Fix:** Matrix Updates bullet now mentions the BatterySoh tightening explicitly.
+
+---
+
+## PR-zappi-schedule-stop
+
+### [PR-zappi-schedule-stop-D01] Decision summary hardcodes "08:00–08:04" instead of formatting from `POST_EXTENDED_STOP_WINDOW_MINUTES`
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/zappi_mode.rs:114, 122`
+**Description:** A new constant `POST_EXTENDED_STOP_WINDOW_MINUTES = 5` gates the new rule, but both Decision summary strings hard-coded the literal `"08:00–08:04"`. If the constant were bumped to e.g. `10`, the rule would fire until 08:09 but the summary would still claim 08:00–08:04 — user-visible lie in the dashboard Decision panel for Zappi.
+**Fix:** Both summary strings now format the upper-bound minute from the constant: `let end_min = POST_EXTENDED_STOP_WINDOW_MINUTES - 1; format!("Post-extended stop window (08:00–08:{end_min:02}) → Off")` (and the same for the already-Off Leave branch).
+
+### [PR-zappi-schedule-stop-D02] `Eco` / `EcoPlus` arm of the post-extended stop rule is not test-covered
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/zappi_mode.rs` tests module (post-extended stop window section)
+**Description:** The new rule fires on `current_mode != ZappiMode::Off`, which includes `Fast`, `Eco`, and `EcoPlus`. Only `Fast` was exercised. `base_input()` defaults `current_mode = Eco`, so the production failure mode could just as plausibly have been Eco-stuck. A future refactor narrowing the predicate to `current_mode == Fast` would not have been caught by tests.
+**Fix:** Added `post_extended_stop_window_sets_off_when_currently_eco` covering the Eco arm at `clock_at(8, 0)` → `Set(Off)`.
+
+### [PR-zappi-schedule-stop-D03] `post_extended_stop_summary_mentions_window` asserts on `"08:00"` — not specific to the rule
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/controllers/zappi_mode.rs` test `post_extended_stop_summary_mentions_window`
+**Description:** The substring `"08:00"` appears in many places (Boost / eddi tariff). A refactor that swapped the rule's summary for the Boost summary would not have been caught.
+**Fix:** Assertion changed to `assert!(d.decision.summary.contains("Post-extended"))` so the rule's identity is pinned.
+
+### [PR-zappi-schedule-stop-D04] `zappi_actions_label_reflects_knob_state` doesn't exercise the `Auto`-mode branch of `effective_charge_car_extended`
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert_schedule.rs` test `zappi_actions_label_reflects_knob_state`
+**Description:** The two existing dashboard tests pinned `ExtendedChargeMode::Disabled` (short-circuit false) and `ExtendedChargeMode::Forced` (short-circuit true). The production-default `Auto` branch reads `bookkeeping.auto_extended_today` (verified pure passthrough at `crates/core/src/process.rs:975-982`), which is the case the field actually runs.
+**Fix:** Added `zappi_actions_label_auto_mode_tracks_bookkeeping`. Pins `ExtendedChargeMode::Auto`, toggles `world.bookkeeping.auto_extended_today` true/false, asserts the 05:00 label flips between `"Zappi 05:00 → Fast"` and `"Zappi 05:00 → Off"`.

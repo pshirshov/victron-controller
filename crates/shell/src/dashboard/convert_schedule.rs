@@ -11,6 +11,9 @@
 //!   surfaced as one daily entry per slot.
 //! - **`next_full_charge`** — one-shot at the bookkeeping field's value.
 //! - **`weather_soc` planner** — daily 01:55 re-evaluation.
+//! - **`zappi.mode`** — three daily edges (02:00, 05:00, 08:00) whose
+//!   labels reflect the current `charge_car_boost` /
+//!   `effective_charge_car_extended` state.
 //!
 //! Pure compute: callable from tests with a hand-built `World` and a
 //! fixed `now_ms`. TZ discipline mirrors `convert_soc_chart` —
@@ -24,6 +27,7 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, TimeZone
 use chrono_tz::Tz;
 
 use victron_controller_core::controllers::schedules::{DAYS_ENABLED, ScheduleSpec};
+use victron_controller_core::process::effective_charge_car_extended;
 use victron_controller_core::tass::Actuated;
 use victron_controller_core::world::World;
 
@@ -57,6 +61,7 @@ pub fn compute_scheduled_actions(world: &World, now_ms: i64) -> WireActions {
     entries.extend(schedule_actions(world, now_local));
     entries.extend(next_full_charge_action(world, tz, now_ms));
     entries.extend(weather_soc_action(now_local));
+    entries.extend(zappi_actions(world, now_local));
 
     entries.sort_by_key(|e| e.next_fire_epoch_ms);
     WireActions { entries }
@@ -104,6 +109,41 @@ fn eddi_tariff_actions(now_local: DateTime<Tz>) -> Vec<WireAction> {
             Some(WireAction {
                 label: format!("Eddi {suffix}"),
                 source: "eddi.tariff".to_string(),
+                next_fire_epoch_ms,
+                period_ms: Some(DAY_MS),
+            })
+        })
+        .collect()
+}
+
+/// Zappi mode edges — three predictable daily transitions (02:00 boost
+/// start, 05:00 NightExtended start, 08:00 day-rate stop). Labels reflect
+/// the current knob state so the dashboard surfaces what *will* happen.
+fn zappi_actions(world: &World, now_local: DateTime<Tz>) -> Vec<WireAction> {
+    let edges: [(u32, String); 3] = [
+        (
+            2,
+            format!(
+                "Zappi 02:00 → {}",
+                if world.knobs.charge_car_boost { "Fast" } else { "Off" }
+            ),
+        ),
+        (
+            5,
+            format!(
+                "Zappi 05:00 → {}",
+                if effective_charge_car_extended(world) { "Fast" } else { "Off" }
+            ),
+        ),
+        (8, "Zappi 08:00 → Off".to_string()),
+    ];
+    edges
+        .into_iter()
+        .filter_map(|(hour, label)| {
+            let next_fire_epoch_ms = next_local_hm(now_local, hour, 0)?;
+            Some(WireAction {
+                label,
+                source: "zappi.mode".to_string(),
                 next_fire_epoch_ms,
                 period_ms: Some(DAY_MS),
             })
@@ -538,5 +578,84 @@ mod tests {
         assert!(sources.contains("schedule.1"));
         assert!(sources.contains("next_full_charge"));
         assert!(sources.contains("weather_soc"));
+        assert!(sources.contains("zappi.mode"));
+    }
+
+    // ----- zappi mode edges ------------------------------------------
+
+    #[test]
+    fn zappi_actions_emits_three_daily_edges() {
+        use victron_controller_core::knobs::ExtendedChargeMode;
+        let tz = chrono_tz::UTC;
+        let now_ms = local_to_epoch_ms(tz, 2026, 4, 26, 12, 0);
+        let now_local = dt_local(tz, now_ms);
+        let mut w = world_with_tz("Etc/UTC");
+        // `Knobs::safe_defaults` sets boost=true and extended_mode=Auto;
+        // pin both to the all-Off branches for a deterministic label
+        // assertion.
+        w.knobs.charge_car_boost = false;
+        w.knobs.charge_car_extended_mode = ExtendedChargeMode::Disabled;
+        let actions = zappi_actions(&w, now_local);
+        assert_eq!(actions.len(), 3, "expected 3 zappi edges, got {actions:?}");
+        for a in &actions {
+            assert_eq!(a.source, "zappi.mode");
+            assert_eq!(a.period_ms, Some(DAY_MS));
+            let dt = a.next_fire_epoch_ms - now_ms;
+            assert!(
+                dt > 0 && dt <= DAY_MS,
+                "next_fire {} not in (now, now+24h]",
+                a.next_fire_epoch_ms
+            );
+        }
+        let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).collect();
+        assert!(labels.contains(&"Zappi 02:00 → Off"), "labels: {labels:?}");
+        assert!(labels.contains(&"Zappi 05:00 → Off"), "labels: {labels:?}");
+        assert!(labels.contains(&"Zappi 08:00 → Off"), "labels: {labels:?}");
+    }
+
+    #[test]
+    fn zappi_actions_label_reflects_knob_state() {
+        use victron_controller_core::knobs::ExtendedChargeMode;
+        let tz = chrono_tz::UTC;
+        let now_ms = local_to_epoch_ms(tz, 2026, 4, 26, 12, 0);
+        let now_local = dt_local(tz, now_ms);
+        let mut w = world_with_tz("Etc/UTC");
+        w.knobs.charge_car_boost = true;
+        w.knobs.charge_car_extended_mode = ExtendedChargeMode::Forced;
+        let actions = zappi_actions(&w, now_local);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).collect();
+        assert!(labels.contains(&"Zappi 02:00 → Fast"), "labels: {labels:?}");
+        assert!(labels.contains(&"Zappi 05:00 → Fast"), "labels: {labels:?}");
+        assert!(labels.contains(&"Zappi 08:00 → Off"), "labels: {labels:?}");
+    }
+
+    /// `ExtendedChargeMode::Auto` is the production default: the 05:00
+    /// label must track `bookkeeping.auto_extended_today` (the latch the
+    /// daily 04:30 evaluator writes). Pinning `Disabled` / `Forced`
+    /// short-circuits this path, so it needs its own coverage.
+    #[test]
+    fn zappi_actions_label_auto_mode_tracks_bookkeeping() {
+        use victron_controller_core::knobs::ExtendedChargeMode;
+        let tz = chrono_tz::UTC;
+        let now_ms = local_to_epoch_ms(tz, 2026, 4, 26, 12, 0);
+        let now_local = dt_local(tz, now_ms);
+        let mut w = world_with_tz("Etc/UTC");
+        w.knobs.charge_car_extended_mode = ExtendedChargeMode::Auto;
+
+        w.bookkeeping.auto_extended_today = true;
+        let actions = zappi_actions(&w, now_local);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Zappi 05:00 → Fast"),
+            "Auto + auto_extended_today=true should yield Fast at 05:00; labels: {labels:?}"
+        );
+
+        w.bookkeeping.auto_extended_today = false;
+        let actions = zappi_actions(&w, now_local);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Zappi 05:00 → Off"),
+            "Auto + auto_extended_today=false should yield Off at 05:00; labels: {labels:?}"
+        );
     }
 }

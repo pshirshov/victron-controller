@@ -18,6 +18,13 @@ use crate::Clock;
 use crate::controllers::tariff_band::{TariffBand, TariffBandKind, tariff_band};
 use crate::myenergi::ZappiMode;
 use crate::types::Decision;
+use chrono::Timelike;
+
+/// Width of the post-extended stop window in minutes (08:00..08:00+N).
+/// Five minutes = 20× headroom over the 15 s controller tick, so a
+/// briefly-skipped tick at 08:00:00 still hits the rule before the
+/// window closes.
+const POST_EXTENDED_STOP_WINDOW_MINUTES: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ZappiModeInput {
@@ -96,7 +103,32 @@ pub fn evaluate_zappi_mode(input: &ZappiModeInput, clock: &dyn Clock) -> ZappiMo
         };
     }
 
-    // 3. Night-time auto-stop. The `<= 65 kWh` gate mirrors the legacy
+    // 3. Post-extended stop window — replaces the legacy NR `00 08 * * *`
+    // cron that injected `chargeMode: Off`. Must run after NightExtended
+    // (so 07:55 still goes to Fast) and before night auto-stop.
+    if now.hour() == 8 && now.minute() < POST_EXTENDED_STOP_WINDOW_MINUTES {
+        let end_min = POST_EXTENDED_STOP_WINDOW_MINUTES - 1;
+        if input.current_mode != ZappiMode::Off {
+            return ZappiModeOutput {
+                action: ZappiModeAction::Set(ZappiMode::Off),
+                decision: Decision {
+                    summary: format!("Post-extended stop window (08:00–08:{end_min:02}) → Off"),
+                    factors: common.factors,
+                },
+            };
+        }
+        return ZappiModeOutput {
+            action: ZappiModeAction::Leave,
+            decision: Decision {
+                summary: format!(
+                    "Post-extended stop window (08:00–08:{end_min:02}) — already Off, leaving"
+                ),
+                factors: common.factors,
+            },
+        };
+    }
+
+    // 4. Night-time auto-stop. The `<= 65 kWh` gate mirrors the legacy
     // NR behaviour: auto-stop only fires when the user has configured a
     // sub-full-charge session cap; above 65 kWh (typical big-battery
     // full-charge figure) we assume the user wants the Zappi to run to
@@ -300,5 +332,49 @@ mod tests {
         // Boost rule wins — mode becomes Fast regardless of over-limit.
         let d = evaluate_zappi_mode(&input, &clock_at(3, 0));
         assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Fast));
+    }
+
+    // ------------------------------------------------------------------
+    // Post-extended stop window (08:00–08:04)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn post_extended_stop_window_sets_off_when_currently_fast() {
+        let mut input = base_input();
+        input.current_mode = ZappiMode::Fast;
+        let d = evaluate_zappi_mode(&input, &clock_at(8, 0));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
+    }
+
+    #[test]
+    fn post_extended_stop_window_leaves_when_already_off() {
+        let mut input = base_input();
+        input.current_mode = ZappiMode::Off;
+        let d = evaluate_zappi_mode(&input, &clock_at(8, 2));
+        assert_eq!(d.action, ZappiModeAction::Leave);
+    }
+
+    #[test]
+    fn post_extended_stop_window_ends_at_0805() {
+        let mut input = base_input();
+        input.current_mode = ZappiMode::Fast;
+        let d = evaluate_zappi_mode(&input, &clock_at(8, 5));
+        assert_eq!(d.action, ZappiModeAction::Leave);
+    }
+
+    #[test]
+    fn post_extended_stop_summary_mentions_window() {
+        let mut input = base_input();
+        input.current_mode = ZappiMode::Fast;
+        let d = evaluate_zappi_mode(&input, &clock_at(8, 0));
+        assert!(d.decision.summary.contains("Post-extended"));
+    }
+
+    #[test]
+    fn post_extended_stop_window_sets_off_when_currently_eco() {
+        let mut input = base_input();
+        input.current_mode = ZappiMode::Eco;
+        let d = evaluate_zappi_mode(&input, &clock_at(8, 0));
+        assert_eq!(d.action, ZappiModeAction::Set(ZappiMode::Off));
     }
 }
