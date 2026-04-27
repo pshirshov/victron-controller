@@ -34,8 +34,8 @@ export type EntityType =
 
 // --- incremental update primitives ---------------------------------------
 
-export type RowCell = { cls?: string; html: string };
-export type KeyedRow = { key: string; cells: RowCell[] };
+export type RowCell = { cls?: string; html: string; colspan?: number };
+export type KeyedRow = { key: string; cells: RowCell[]; cls?: string };
 
 /// Diff-update the children of `tbody` so they match `rows` exactly,
 /// by row key. Existing rows are kept in place; only cells whose class
@@ -60,6 +60,8 @@ export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
       tr = document.createElement("tr");
       tr.dataset.key = row.key;
     }
+    const trCls = row.cls ?? "";
+    if (tr.className !== trCls) tr.className = trCls;
     while (tr.children.length < row.cells.length) tr.appendChild(document.createElement("td"));
     while (tr.children.length > row.cells.length) tr.removeChild(tr.lastChild!);
     row.cells.forEach((cell, i) => {
@@ -68,6 +70,14 @@ export function updateKeyedRows(tbody: HTMLElement, rows: KeyedRow[]): void {
       const cls = cell.cls ?? "";
       if (td.className !== cls) td.className = cls;
       if (td.innerHTML !== cell.html) td.innerHTML = cell.html;
+      const colspan = cell.colspan ?? 1;
+      if (colspan === 1) {
+        if (td.hasAttribute("colspan")) td.removeAttribute("colspan");
+      } else {
+        const cur = td.getAttribute("colspan");
+        const want = String(colspan);
+        if (cur !== want) td.setAttribute("colspan", want);
+      }
     });
     // Position row at the correct index without disturbing untouched ones.
     if (tbody.children[idx] !== tr) tbody.insertBefore(tr, tbody.children[idx] ?? null);

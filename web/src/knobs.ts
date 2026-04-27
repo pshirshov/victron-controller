@@ -12,11 +12,41 @@ import type { WorldSnapshot } from "./model/victron_controller/dashboard/WorldSn
 import { displayNameOfTyped } from "./displayNames.js";
 import { entityLink, updateKeyedRows, type KeyedRow } from "./render.js";
 
-export type KnobSpec =
+// Knobs split into two user-facing tables:
+//   - "operator" — daily/weekly decisions (planner overrides, EV session
+//     ad-hocs, schedule overrides). Lives at the top of the Knobs section.
+//   - "config" — installation / tariff / firmware-pinned values that
+//     change rarely. Lives below operator.
+// `group` is a subsection label inside its table; rows inside a group
+// stay alphabetically sorted (matches the prior single-table behaviour).
+export type KnobCategory = "operator" | "config";
+
+type KnobSpecBase = { category: KnobCategory; group: string };
+
+export type KnobSpec = (
   | { kind: "bool"; default: boolean }
   | { kind: "float"; min: number; max: number; step: number; default: number }
   | { kind: "int"; min: number; max: number; step: number; default: number }
-  | { kind: "enum"; cmdVariant: string; options: string[]; default: string };
+  | { kind: "enum"; cmdVariant: string; options: string[]; default: string }
+) & KnobSpecBase;
+
+// Order in which subsections are rendered inside each table. Knob entries
+// reference these exact strings via `group`; rendering iterates this list
+// so the on-screen order is stable and intentional rather than alpha by
+// group name.
+export const OPERATOR_GROUPS: ReadonlyArray<string> = [
+  "Planner overrides",
+  "EV / Zappi",
+  "Schedule overrides",
+];
+export const CONFIG_GROUPS: ReadonlyArray<string> = [
+  "Tariff / scheduling",
+  "Hard installation caps",
+  "Forecast",
+  "Eddi",
+  "Zappi calibration",
+  "Weather-SoC planner",
+];
 
 // PR-rename-entities: keyed by the dotted display name (the user-facing
 // surface). Renderers look up via `displayNameOfTyped(canonical, "knob")`
@@ -26,53 +56,12 @@ export type KnobSpec =
 // Powers the "Default" column + reset icon in the Knobs table. Edit
 // here when the safe_defaults change in core.
 export const KNOB_SPEC: Record<string, KnobSpec> = {
-  "grid.export.force-disable": { kind: "bool", default: false },
-  "battery.soc.threshold.export.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80 },
-  "battery.soc.target.discharge.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80 },
-  "battery.soc.target.charge.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80 },
-  "battery.soc.target.full-charge.discharge": { kind: "float", min: 0, max: 100, step: 1, default: 57 },
-  "battery.soc.threshold.full-charge.export": { kind: "float", min: 0, max: 100, step: 1, default: 100 },
-  "battery.discharge.time": { kind: "enum", cmdVariant: "SetDischargeTime", options: ["At0200", "At2300"], default: "At0200" },
-  "debug.full-charge.mode": { kind: "enum", cmdVariant: "SetDebugFullCharge", options: ["Forbid", "Force", "Auto"], default: "Auto" },
-  "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05, default: 1 },
-  "grid.night.discharge.disable.forced-value": { kind: "bool", default: false },
-  "evcharger.boost.enable": { kind: "bool", default: true },
-  // PR-auto-extended-charge: tri-state mode replaces the legacy bool.
-  "evcharger.extended.mode": {
-    kind: "enum",
-    cmdVariant: "SetExtendedChargeMode",
-    options: ["Auto", "Forced", "Disabled"],
-    default: "Auto",
-  },
-  "evcharger.current.target": { kind: "float", min: 6, max: 32, step: 0.5, default: 9.5 },
-  // A-14: kWh (per-session EV charge ceiling), not %. Default 65 kWh
-  // covers a Tesla Model 3 LR full charge and sits on the auto-stop
-  // gate boundary.
-  "evcharger.session.limit": { kind: "float", min: 0, max: 100, step: 0.5, default: 65 },
-  "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5 },
-  "grid.export.limit": { kind: "int", min: 0, max: 10000, step: 50, default: 4900 },
-  "grid.import.limit": { kind: "int", min: 0, max: 10000, step: 10, default: 10 },
-  "battery.export.car.allow": { kind: "bool", default: false },
-  "eddi.soc.enable": { kind: "float", min: 50, max: 100, step: 1, default: 96 },
-  "eddi.soc.disable": { kind: "float", min: 50, max: 100, step: 1, default: 94 },
-  "eddi.dwell.seconds": { kind: "int", min: 0, max: 3600, step: 5, default: 60 },
-  "weathersoc.threshold.winter-temperature": { kind: "float", min: -30, max: 40, step: 0.5, default: 12 },
-  "weathersoc.threshold.energy.low": { kind: "float", min: 0, max: 500, step: 1, default: 8 },
-  "weathersoc.threshold.energy.ok": { kind: "float", min: 0, max: 500, step: 1, default: 15 },
-  "weathersoc.threshold.energy.high": { kind: "float", min: 0, max: 500, step: 1, default: 30 },
-  "weathersoc.threshold.energy.too-much": { kind: "float", min: 0, max: 500, step: 1, default: 45 },
-  "forecast.disagreement.strategy": {
-    kind: "enum",
-    cmdVariant: "SetForecastDisagreementStrategy",
-    options: ["Max", "Min", "Mean", "SolcastIfAvailableElseMean"],
-    default: "SolcastIfAvailableElseMean",
-  },
-  "schedule.extended.charge.mode": {
-    kind: "enum",
-    cmdVariant: "SetChargeBatteryExtendedMode",
-    options: ["Auto", "Forced", "Disabled"],
-    default: "Auto",
-  },
+  // --- Operator: Planner overrides ---
+  "grid.export.force-disable": { kind: "bool", default: false, category: "operator", group: "Planner overrides" },
+  "battery.soc.threshold.export.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80, category: "operator", group: "Planner overrides" },
+  "battery.soc.target.discharge.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80, category: "operator", group: "Planner overrides" },
+  "battery.soc.target.charge.forced-value": { kind: "float", min: 0, max: 100, step: 1, default: 80, category: "operator", group: "Planner overrides" },
+  "grid.night.discharge.disable.forced-value": { kind: "bool", default: false, category: "operator", group: "Planner overrides" },
   // PR-gamma-hold-redesign mode knobs (4): Weather selects the
   // weathersoc-derived bookkeeping value; Forced uses the matching
   // *.forced-value knob instead. cmdVariant is `SetMode`; the Rust
@@ -82,27 +71,113 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     cmdVariant: "SetMode",
     options: ["Weather", "Forced"],
     default: "Weather",
+    category: "operator",
+    group: "Planner overrides",
   },
   "battery.soc.target.discharge.mode": {
     kind: "enum",
     cmdVariant: "SetMode",
     options: ["Weather", "Forced"],
     default: "Weather",
+    category: "operator",
+    group: "Planner overrides",
   },
   "battery.soc.target.charge.mode": {
     kind: "enum",
     cmdVariant: "SetMode",
     options: ["Weather", "Forced"],
     default: "Weather",
+    category: "operator",
+    group: "Planner overrides",
   },
   "grid.night.discharge.disable.mode": {
     kind: "enum",
     cmdVariant: "SetMode",
     options: ["Weather", "Forced"],
     default: "Weather",
+    category: "operator",
+    group: "Planner overrides",
   },
+
+  // --- Operator: EV / Zappi ---
+  "evcharger.boost.enable": { kind: "bool", default: true, category: "operator", group: "EV / Zappi" },
+  // PR-auto-extended-charge: tri-state mode replaces the legacy bool.
+  "evcharger.extended.mode": {
+    kind: "enum",
+    cmdVariant: "SetExtendedChargeMode",
+    options: ["Auto", "Forced", "Disabled"],
+    default: "Auto",
+    category: "operator",
+    group: "EV / Zappi",
+  },
+  "evcharger.current.target": { kind: "float", min: 6, max: 32, step: 0.5, default: 9.5, category: "operator", group: "EV / Zappi" },
+  // A-14: kWh (per-session EV charge ceiling), not %. Default 65 kWh
+  // covers a Tesla Model 3 LR full charge and sits on the auto-stop
+  // gate boundary.
+  "evcharger.session.limit": { kind: "float", min: 0, max: 100, step: 0.5, default: 65, category: "operator", group: "EV / Zappi" },
+  "battery.export.car.allow": { kind: "bool", default: false, category: "operator", group: "EV / Zappi" },
+
+  // --- Operator: Schedule overrides ---
+  "debug.full-charge.mode": {
+    kind: "enum",
+    cmdVariant: "SetDebugFullCharge",
+    options: ["Forbid", "Force", "Auto"],
+    default: "Auto",
+    category: "operator",
+    group: "Schedule overrides",
+  },
+  "schedule.extended.charge.mode": {
+    kind: "enum",
+    cmdVariant: "SetChargeBatteryExtendedMode",
+    options: ["Auto", "Forced", "Disabled"],
+    default: "Auto",
+    category: "operator",
+    group: "Schedule overrides",
+  },
+
+  // --- Config: Tariff / scheduling ---
+  "battery.discharge.time": {
+    kind: "enum",
+    cmdVariant: "SetDischargeTime",
+    options: ["At0200", "At2300"],
+    default: "At0200",
+    category: "config",
+    group: "Tariff / scheduling",
+  },
+  "battery.soc.target.full-charge.discharge": { kind: "float", min: 0, max: 100, step: 1, default: 57, category: "config", group: "Tariff / scheduling" },
+  "battery.soc.threshold.full-charge.export": { kind: "float", min: 0, max: 100, step: 1, default: 100, category: "config", group: "Tariff / scheduling" },
+
+  // --- Config: Hard installation caps ---
+  "grid.export.limit": { kind: "int", min: 0, max: 10000, step: 50, default: 4900, category: "config", group: "Hard installation caps" },
+  "grid.import.limit": { kind: "int", min: 0, max: 10000, step: 10, default: 10, category: "config", group: "Hard installation caps" },
   // PR-inverter-safe-discharge-knob.
-  "inverter.safe-discharge.enable": { kind: "bool", default: false },
+  "inverter.safe-discharge.enable": { kind: "bool", default: false, category: "config", group: "Hard installation caps" },
+
+  // --- Config: Forecast ---
+  "forecast.pessimism.modifier": { kind: "float", min: 0, max: 2, step: 0.05, default: 1, category: "config", group: "Forecast" },
+  "forecast.disagreement.strategy": {
+    kind: "enum",
+    cmdVariant: "SetForecastDisagreementStrategy",
+    options: ["Max", "Min", "Mean", "SolcastIfAvailableElseMean"],
+    default: "SolcastIfAvailableElseMean",
+    category: "config",
+    group: "Forecast",
+  },
+
+  // --- Config: Eddi ---
+  "eddi.soc.enable": { kind: "float", min: 50, max: 100, step: 1, default: 96, category: "config", group: "Eddi" },
+  "eddi.soc.disable": { kind: "float", min: 50, max: 100, step: 1, default: 94, category: "config", group: "Eddi" },
+  "eddi.dwell.seconds": { kind: "int", min: 0, max: 3600, step: 5, default: 60, category: "config", group: "Eddi" },
+
+  // --- Config: Zappi calibration ---
+  "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5, category: "config", group: "Zappi calibration" },
+
+  // --- Config: Weather-SoC planner ---
+  "weathersoc.threshold.winter-temperature": { kind: "float", min: -30, max: 40, step: 0.5, default: 12, category: "config", group: "Weather-SoC planner" },
+  "weathersoc.threshold.energy.low": { kind: "float", min: 0, max: 500, step: 1, default: 8, category: "config", group: "Weather-SoC planner" },
+  "weathersoc.threshold.energy.ok": { kind: "float", min: 0, max: 500, step: 1, default: 15, category: "config", group: "Weather-SoC planner" },
+  "weathersoc.threshold.energy.high": { kind: "float", min: 0, max: 500, step: 1, default: 30, category: "config", group: "Weather-SoC planner" },
+  "weathersoc.threshold.energy.too-much": { kind: "float", min: 0, max: 500, step: 1, default: 45, category: "config", group: "Weather-SoC planner" },
 };
 
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it
@@ -139,10 +214,11 @@ function installHandlers() {
     currentSend({ SetKillSwitch: { value: target } });
   });
 
-  // Knob table: one delegated click handler for all "toggle" / "set" buttons.
-  const tbody = document.querySelector("#knobs-table tbody") as HTMLElement | null;
-  if (!tbody) return;
-  tbody.addEventListener("click", (ev) => {
+  // Knob tables: one delegated click handler covers both operator and
+  // config tbodies. The handler fishes out the action button on click;
+  // its spec lookup uses `data-knob` (the dotted display name) so both
+  // tables share the same dispatcher.
+  const handler = (ev: Event) => {
     const btn = (ev.target as HTMLElement).closest("button[data-knob-action]") as HTMLButtonElement | null;
     if (!btn || !currentSend || !currentSnap) return;
     const name = btn.getAttribute("data-knob") ?? "";
@@ -173,7 +249,9 @@ function installHandlers() {
       const sel = td.querySelector("select") as HTMLSelectElement;
       dispatchKnobValue(name, spec, sel.value);
     }
-  });
+  };
+  document.querySelector("#knobs-operator-table tbody")?.addEventListener("click", handler);
+  document.querySelector("#knobs-config-table tbody")?.addEventListener("click", handler);
 }
 
 function dispatchKnobValue(name: string, spec: KnobSpec, value: unknown) {
@@ -215,34 +293,84 @@ export function renderKnobs(
   `;
   if (kill.innerHTML !== killHtml) kill.innerHTML = killHtml;
 
-  const tbody = document.querySelector("#knobs-table tbody") as HTMLElement;
-  const entries = Object.entries(snap.knobs)
-    .filter(([name]) => name !== "writes_enabled")
-    .sort(([a], [b]) =>
+  const opTbody = document.querySelector("#knobs-operator-table tbody") as HTMLElement | null;
+  const cfgTbody = document.querySelector("#knobs-config-table tbody") as HTMLElement | null;
+  if (!opTbody || !cfgTbody) return;
+
+  // Bucket every knob in the snapshot by category + group based on its
+  // `KNOB_SPEC` entry. `writes_enabled` lives in its own kill-switch
+  // banner, not either table. Knobs without a spec (defensive — could
+  // happen if backend is ahead of frontend) land in an "Other" group
+  // under operator so they're at least visible.
+  const opGroups = new Map<string, Array<[string, unknown]>>();
+  const cfgGroups = new Map<string, Array<[string, unknown]>>();
+  Object.entries(snap.knobs).forEach(([name, val]) => {
+    if (name === "writes_enabled") return;
+    const spec = specFor(name);
+    if (!spec) {
+      const bucket = opGroups.get("Other") ?? [];
+      bucket.push([name, val]);
+      opGroups.set("Other", bucket);
+      return;
+    }
+    const target = spec.category === "operator" ? opGroups : cfgGroups;
+    const bucket = target.get(spec.group) ?? [];
+    bucket.push([name, val]);
+    target.set(spec.group, bucket);
+  });
+
+  // Sort each bucket alphabetically by dotted display name (matches the
+  // pre-split single-table behaviour for stable row positions).
+  const sortBucket = (bucket: Array<[string, unknown]>) =>
+    bucket.sort(([a], [b]) =>
       displayNameOfTyped(a, "knob").localeCompare(displayNameOfTyped(b, "knob")),
     );
+  opGroups.forEach(sortBucket);
+  cfgGroups.forEach(sortBucket);
 
-  const rows: KeyedRow[] = entries.map(([name, val]) => {
-    const spec = specFor(name);
-    const valStr =
-      typeof val === "boolean"
-        ? val ? "true" : "false"
-        : typeof val === "number"
-          ? fmtNum(val)
-          : esc(String(val));
-    const setHtml = spec ? renderSetControl(name, val, spec) : "";
-    const defaultHtml = spec ? renderDefaultCell(name, val, spec) : `<span class="dim">—</span>`;
-    return {
-      key: name,
-      cells: [
-        { cls: "mono", html: entityLink(name, "knob") },
-        { cls: "mono", html: valStr },
-        { cls: "mono", html: defaultHtml },
-        { html: setHtml },
-      ],
-    };
+  const opOrder = [...OPERATOR_GROUPS, "Other"];
+  updateKeyedRows(opTbody, buildGroupedRows(opOrder, opGroups));
+  updateKeyedRows(cfgTbody, buildGroupedRows([...CONFIG_GROUPS], cfgGroups));
+}
+
+// Render a list of groups (header row + entry rows) in `groupOrder`
+// against the supplied bucket map. Empty groups are skipped so the
+// table doesn't sprout headers above zero rows.
+function buildGroupedRows(
+  groupOrder: ReadonlyArray<string>,
+  buckets: Map<string, Array<[string, unknown]>>,
+): KeyedRow[] {
+  const rows: KeyedRow[] = [];
+  groupOrder.forEach((group) => {
+    const bucket = buckets.get(group);
+    if (!bucket || bucket.length === 0) return;
+    rows.push({
+      key: `__group__${group}`,
+      cls: "knob-group-header",
+      cells: [{ cls: "knob-group-label", colspan: 4, html: esc(group) }],
+    });
+    bucket.forEach(([name, val]) => {
+      const spec = specFor(name);
+      const valStr =
+        typeof val === "boolean"
+          ? val ? "true" : "false"
+          : typeof val === "number"
+            ? fmtNum(val)
+            : esc(String(val));
+      const setHtml = spec ? renderSetControl(name, val, spec) : "";
+      const defaultHtml = spec ? renderDefaultCell(name, val, spec) : `<span class="dim">—</span>`;
+      rows.push({
+        key: name,
+        cells: [
+          { cls: "mono", html: entityLink(name, "knob") },
+          { cls: "mono", html: valStr },
+          { cls: "mono", html: defaultHtml },
+          { html: setHtml },
+        ],
+      });
+    });
   });
-  updateKeyedRows(tbody, rows);
+  return rows;
 }
 
 /// Render the Default column: shows the spec.default value plus a

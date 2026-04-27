@@ -252,6 +252,31 @@ button.secondary { background: transparent; color: var(--fg); border: 1px solid 
   font-size: 13px;
 }
 
+/* Operator / Configuration headings above each knob table. Slightly
+ * smaller than the section <h2> so the visual hierarchy reads
+ * Section > Table > Subsection-row. */
+.knob-table-heading {
+  margin: 16px 0 6px;
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* Subsection-header rows inside a knob table. Rendered as a single
+ * full-width labelled band — visually distinct from the knob rows
+ * so the operator can scan group boundaries at a glance. */
+#knobs-operator-table tbody tr.knob-group-header > td,
+#knobs-config-table tbody tr.knob-group-header > td {
+  padding: 6px 8px 4px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
 footer {
   margin-top: 24px;
   padding-top: 8px;
@@ -747,10 +772,32 @@ footer {
   #actuated-table tbody tr td:nth-of-type(5)::before { content: "Actual"; }
   #actuated-table tbody tr td:nth-of-type(6)::before { content: "Freshness"; }
 
-  #knobs-table tbody tr td:nth-of-type(1)::before { content: "Knob"; }
-  #knobs-table tbody tr td:nth-of-type(2)::before { content: "Value"; }
-  #knobs-table tbody tr td:nth-of-type(3)::before { content: "Default"; }
-  #knobs-table tbody tr td:nth-of-type(4)::before { content: "Set"; }
+  #knobs-operator-table tbody tr td:nth-of-type(1)::before,
+  #knobs-config-table tbody tr td:nth-of-type(1)::before { content: "Knob"; }
+  #knobs-operator-table tbody tr td:nth-of-type(2)::before,
+  #knobs-config-table tbody tr td:nth-of-type(2)::before { content: "Value"; }
+  #knobs-operator-table tbody tr td:nth-of-type(3)::before,
+  #knobs-config-table tbody tr td:nth-of-type(3)::before { content: "Default"; }
+  #knobs-operator-table tbody tr td:nth-of-type(4)::before,
+  #knobs-config-table tbody tr td:nth-of-type(4)::before { content: "Set"; }
+
+  /* Subsection-header rows render as a single full-width band — drop
+   * the row-as-card chrome and the field-label gutter that the rest
+   * of the rows use, so the heading reads as a label, not a key/value
+   * pair. */
+  #knobs-operator-table tbody tr.knob-group-header,
+  #knobs-config-table tbody tr.knob-group-header {
+    border: none;
+    padding: 0;
+    margin: 8px 0 2px;
+  }
+  #knobs-operator-table tbody tr.knob-group-header > td,
+  #knobs-config-table tbody tr.knob-group-header > td {
+    padding: 0;
+    display: block;
+  }
+  #knobs-operator-table tbody tr.knob-group-header > td::before,
+  #knobs-config-table tbody tr.knob-group-header > td::before { content: none; }
 
   #decisions-table tbody tr td:nth-of-type(1)::before { content: "Controller"; }
   #decisions-table tbody tr td:nth-of-type(2)::before { content: "Summary"; }
