@@ -163,6 +163,12 @@ export const entityDescriptions: Record<string, string> = {
   "forecast.baseline.wh-per-hour.summer":
     "Average per-daylight-hour Wh during summer. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
 
+  // --- Knobs (PR-keep-batteries-charged) ---
+  "ess.full-charge.keep-batteries-charged":
+    "When true and bookkeeping.charge_to_full_required is set, the shell forces ESS state 9 (KeepBatteriesCharged) inside the daylight window [sunrise + offset, sunset - offset] and restores the captured pre-override state on exit.",
+  "ess.full-charge.sunrise-sunset-offset-min":
+    "Symmetric inset (minutes) applied to local sunrise and sunset to delimit the keep-batteries-charged override window. Default 60.",
+
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:
     "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",

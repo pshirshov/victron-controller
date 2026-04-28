@@ -346,6 +346,10 @@ impl Writer {
                 s.vebus.clone(),
                 "/Ac/In/1/CurrentLimit".to_string(),
             )),
+            DbusTarget::EssState => Some((
+                s.settings.clone(),
+                "/Settings/CGwacs/BatteryLife/State".to_string(),
+            )),
             DbusTarget::Schedule { index, field } => {
                 let field_name = match field {
                     ScheduleField::Start => "Start",
@@ -444,6 +448,7 @@ mod tests {
         let w = Writer::new(test_services(), true);
         assert!(w.resolve(DbusTarget::GridSetpoint).is_some());
         assert!(w.resolve(DbusTarget::InputCurrentLimit).is_some());
+        assert!(w.resolve(DbusTarget::EssState).is_some());
         for index in [0u8, 1u8] {
             for field in [
                 ScheduleField::Start,

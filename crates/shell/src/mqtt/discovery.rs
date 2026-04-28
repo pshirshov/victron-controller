@@ -473,6 +473,13 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::BaselineWinterEndMmDd, 1.0, None),
         number_knob(KnobId::BaselineWhPerHourWinter, 10.0, Some("Wh/h")),
         number_knob(KnobId::BaselineWhPerHourSummer, 10.0, Some("Wh/h")),
+        // PR-keep-batteries-charged.
+        (
+            KnobId::KeepBatteriesChargedDuringFullCharge,
+            "switch",
+            json!({"payload_on": "true", "payload_off": "false"}),
+        ),
+        number_knob(KnobId::SunriseSunsetOffsetMin, 5.0, Some("min")),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),

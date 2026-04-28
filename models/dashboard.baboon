@@ -66,6 +66,13 @@ data Knobs {
   baseline_winter_end_mm_dd: i32
   baseline_wh_per_hour_winter: f64
   baseline_wh_per_hour_summer: f64
+  // PR-keep-batteries-charged: gate the daytime ESS-state override
+  // (state 9 = KeepBatteriesCharged) on full-charge days.
+  keep_batteries_charged_during_full_charge: bit
+  // PR-keep-batteries-charged: minutes inset from local sunrise/sunset
+  // delimiting the override window. Single value applied symmetrically:
+  // window = [sunrise + offset, sunset - offset].
+  sunrise_sunset_offset_min: i32
 }
 
 // One row per configured (path, type, value) triplet. The shell reads

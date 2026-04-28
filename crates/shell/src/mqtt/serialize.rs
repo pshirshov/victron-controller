@@ -326,6 +326,9 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::BaselineWinterEndMmDd => "forecast.baseline.winter.end.mmdd",
         KnobId::BaselineWhPerHourWinter => "forecast.baseline.wh-per-hour.winter",
         KnobId::BaselineWhPerHourSummer => "forecast.baseline.wh-per-hour.summer",
+        // PR-keep-batteries-charged.
+        KnobId::KeepBatteriesChargedDuringFullCharge => "ess.full-charge.keep-batteries-charged",
+        KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min",
     }
 }
 
@@ -371,6 +374,9 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "forecast.baseline.winter.end.mmdd" => KnobId::BaselineWinterEndMmDd,
         "forecast.baseline.wh-per-hour.winter" => KnobId::BaselineWhPerHourWinter,
         "forecast.baseline.wh-per-hour.summer" => KnobId::BaselineWhPerHourSummer,
+        // PR-keep-batteries-charged.
+        "ess.full-charge.keep-batteries-charged" => KnobId::KeepBatteriesChargedDuringFullCharge,
+        "ess.full-charge.sunrise-sunset-offset-min" => KnobId::SunriseSunsetOffsetMin,
         _ => return None,
     })
 }
@@ -547,6 +553,13 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // Time (s)
         KnobId::EddiDwellS => (0.0, 3600.0),
 
+        // PR-keep-batteries-charged: minutes inset from sunrise/sunset.
+        // Cap at 8 h — anything larger collapses the daylight window
+        // even at the summer solstice; the controller falls back to "no
+        // write" via the empty-window guard if the operator goes
+        // pathological.
+        KnobId::SunriseSunsetOffsetMin => (0.0, 480.0),
+
         // PR-baseline-forecast: MMDD-encoded dates. Range covers any
         // legal MMDD literal (101 = Jan 1, 1231 = Dec 31). Day-of-month
         // legality (e.g. rejecting 230 / 431) is enforced at use-site
@@ -580,7 +593,9 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::BatterySocTargetMode
         | KnobId::DisableNightGridDischargeMode
         // bool — no range
-        | KnobId::InverterSafeDischargeEnable => return None,
+        | KnobId::InverterSafeDischargeEnable
+        // PR-keep-batteries-charged — bool, no range.
+        | KnobId::KeepBatteriesChargedDuringFullCharge => return None,
     })
 }
 
@@ -645,7 +660,9 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::DisableNightGridDischarge
         | KnobId::ChargeCarBoost
         | KnobId::AllowBatteryToCar
-        | KnobId::InverterSafeDischargeEnable => parse_bool(body).map(KnobValue::Bool),
+        | KnobId::InverterSafeDischargeEnable
+        // PR-keep-batteries-charged — bool.
+        | KnobId::KeepBatteriesChargedDuringFullCharge => parse_bool(body).map(KnobValue::Bool),
         KnobId::ExportSocThreshold
         | KnobId::DischargeSocTarget
         | KnobId::BatterySocTarget
@@ -672,7 +689,9 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::EddiDwellS
         // PR-baseline-forecast: MMDD encoded as Uint32.
         | KnobId::BaselineWinterStartMmDd
-        | KnobId::BaselineWinterEndMmDd => {
+        | KnobId::BaselineWinterEndMmDd
+        // PR-keep-batteries-charged — minutes encoded as Uint32.
+        | KnobId::SunriseSunsetOffsetMin => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {

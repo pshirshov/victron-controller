@@ -705,6 +705,13 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::BaselineWhPerHourSummer, KnobValue::Float(v)) => {
             replace(&mut k.baseline_wh_per_hour_summer, v) != v
         }
+        // PR-keep-batteries-charged.
+        (KnobId::KeepBatteriesChargedDuringFullCharge, KnobValue::Bool(v)) => {
+            replace(&mut k.keep_batteries_charged_during_full_charge, v) != v
+        }
+        (KnobId::SunriseSunsetOffsetMin, KnobValue::Uint32(v)) => {
+            replace(&mut k.sunrise_sunset_offset_min, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,

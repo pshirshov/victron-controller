@@ -16,6 +16,7 @@ pub mod current_weather;
 pub mod forecast_solar;
 pub mod open_meteo;
 pub mod solcast;
+pub mod sunrise_sunset;
 
 use std::time::Duration;
 

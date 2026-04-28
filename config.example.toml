@@ -316,3 +316,24 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # baseline_winter_end_mm_dd           = 301
 # baseline_wh_per_hour_winter         = 100.0
 # baseline_wh_per_hour_summer         = 1000.0
+
+# --- PR-keep-batteries-charged ---
+# keep_batteries_charged_during_full_charge = false
+# sunrise_sunset_offset_min                  = 60
+
+# =============================================================================
+# Site location — drives the always-on sunrise/sunset scheduler that the
+# keep-batteries-charged override consults. Independent of
+# [forecast.baseline] (which retains its own latitude/longitude). When
+# this section is omitted (or both coords are 0), the sunrise/sunset
+# scheduler does not start; the override controller bias-to-safety
+# branches kick in (no write).
+#
+# Timezone used to convert UTC sunrise/sunset to local time comes from
+# [forecast].timezone above — single source of truth.
+# =============================================================================
+# [location]
+# latitude  = 51.5
+# longitude = -0.13
+# cadence   = "15m"
+

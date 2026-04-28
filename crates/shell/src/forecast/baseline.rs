@@ -31,7 +31,7 @@ use chrono_tz::Tz;
 use sunrise::{Coordinates, SolarDay, SolarEvent};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use victron_controller_core::types::{
     Event, ForecastProvider, TimerId, TimerStatus, TypedReading,
@@ -149,26 +149,14 @@ pub async fn run_baseline_scheduler(
         let today_sr_ss = sunrise_sunset_local(coord, today, tz);
         let tomorrow_sr_ss = sunrise_sunset_local(coord, tomorrow, tz);
 
-        // Surface today's sunrise/sunset as a pair of sensors. Polar days
-        // (no sunrise/sunset) skip the event rather than fabricating
-        // values — `world.sunrise` / `world.sunset` stay at their last
-        // value (or `None` if never observed) until the sun comes back.
-        if let Some((sr, ss)) = today_sr_ss {
-            if tx
-                .send(Event::SunriseSunset {
-                    sunrise: sr,
-                    sunset: ss,
-                    at: Instant::now(),
-                })
-                .await
-                .is_err()
-            {
-                info!("runtime receiver closed; baseline scheduler exiting");
-                return Ok(());
-            }
-        } else {
-            debug!(?today, "baseline: no sunrise/sunset (polar day)");
-        }
+        // PR-keep-batteries-charged: SunriseSunset emission moved to
+        // `forecast::sunrise_sunset::run_sunrise_sunset_scheduler` —
+        // that scheduler is always-on when `[location]` is configured
+        // and decoupled from this baseline-forecast feature. We still
+        // *compute* sunrise/sunset locally here for the hourly-kWh
+        // accounting below. Polar-day handling sits inline in
+        // `build_hourly_kwh` so a polar bucket is silently zero.
+        let _ = (today_sr_ss, today);
 
         // Pick season per-day so the winter/summer boundary lands on the
         // right calendar date even when today and tomorrow straddle it.

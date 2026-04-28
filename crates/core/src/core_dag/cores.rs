@@ -25,6 +25,9 @@
 //! `current_limit_reads_same_tick_battery_selected_soc_target`.
 
 use crate::Clock;
+use crate::controllers::ess_state_override::{
+    EssStateOverrideInput, evaluate_ess_state_override,
+};
 use crate::controllers::zappi_active::classify_zappi_active;
 use crate::process::{
     build_current_limit_input, build_eddi_mode_input, build_schedules_input,
@@ -33,8 +36,11 @@ use crate::process::{
 };
 use crate::tass::Actual;
 use crate::topology::Topology;
-use crate::types::{BookkeepingId, Effect, ForecastProvider, PublishPayload, SensorId, encode_sensor_body};
-use crate::world::{CoreFactor, World};
+use crate::types::{
+    BookkeepingId, DbusTarget, DbusValue, Effect, ForecastProvider, LogLevel,
+    PublishPayload, SensorId, encode_sensor_body,
+};
+use crate::world::{CoreFactor, SUNRISE_SUNSET_FRESHNESS, World};
 
 use super::{Core, CoreId, DepEdge};
 
@@ -648,6 +654,149 @@ impl Core for WeatherSocCore {
     }
 }
 
+/// PR-keep-batteries-charged. Reads knobs + bookkeeping + sensors +
+/// world.sunrise/sunset, evaluates the pure
+/// [`evaluate_ess_state_override`] controller, writes the resulting
+/// Decision to `world.decisions.ess_state_override`, and (when the
+/// target differs from the live readback AND `writes_enabled`) emits a
+/// `WriteDbus(EssState, Int(target))` effect.
+///
+/// Depends on `CurrentLimit` because that core writes
+/// `bookkeeping.prev_ess_state` from the just-observed sensor reading;
+/// reading the *same-tick* value avoids a one-tick latency hazard
+/// (override flaps when prev was last refreshed against a stale
+/// readback).
+pub(crate) struct EssStateOverrideCore;
+impl Core for EssStateOverrideCore {
+    fn id(&self) -> CoreId {
+        CoreId::EssStateOverride
+    }
+    fn depends_on(&self) -> &'static [DepEdge] {
+        &[DepEdge {
+            from: CoreId::CurrentLimit,
+            fields: &["bookkeeping.prev_ess_state"],
+        }]
+    }
+    fn run(
+        &self,
+        world: &mut World,
+        clock: &dyn Clock,
+        _topology: &Topology,
+        effects: &mut Vec<Effect>,
+    ) {
+        let k = &world.knobs;
+        #[allow(clippy::cast_possible_truncation)]
+        let current_ess_state = if world.sensors.ess_state.is_usable() {
+            world.sensors.ess_state.value.map(|v| v as i32)
+        } else {
+            None
+        };
+        let input = EssStateOverrideInput {
+            knob_enabled: k.keep_batteries_charged_during_full_charge,
+            offset_min: k.sunrise_sunset_offset_min,
+            charge_to_full_required: world.bookkeeping.charge_to_full_required,
+            sunrise_local: world.sunrise,
+            sunset_local: world.sunset,
+            sunrise_sunset_updated_at: world.sunrise_sunset_updated_at,
+            freshness_threshold: SUNRISE_SUNSET_FRESHNESS,
+            prev_ess_state: world.bookkeeping.prev_ess_state,
+            current_ess_state,
+            now_local: clock.naive(),
+        };
+        let out = evaluate_ess_state_override(&input);
+        world.decisions.ess_state_override = Some(out.decision);
+        let Some(target) = out.target else {
+            return;
+        };
+        // Only emit when the live readback disagrees with the desired
+        // value — avoids re-asserting state 9 every tick.
+        if current_ess_state == Some(target) {
+            return;
+        }
+        if !world.knobs.writes_enabled {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "EssState would be set to {target} (current={current_ess_state:?}); suppressed by writes_enabled=false"
+                ),
+            });
+            return;
+        }
+        effects.push(Effect::WriteDbus {
+            target: DbusTarget::EssState,
+            value: DbusValue::Int(target),
+        });
+    }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let k = &world.knobs;
+        #[allow(clippy::cast_possible_truncation)]
+        let current = if world.sensors.ess_state.is_usable() {
+            world
+                .sensors
+                .ess_state
+                .value
+                .map_or("—".to_string(), |v| (v as i32).to_string())
+        } else {
+            format!("— ({:?})", world.sensors.ess_state.freshness)
+        };
+        vec![
+            factor(
+                "knob_enabled",
+                format!("{}", k.keep_batteries_charged_during_full_charge),
+            ),
+            factor("offset_min", format!("{}", k.sunrise_sunset_offset_min)),
+            factor(
+                "charge_to_full_required",
+                format!("{}", world.bookkeeping.charge_to_full_required),
+            ),
+            factor("ess_state", current),
+            factor(
+                "prev_ess_state",
+                world
+                    .bookkeeping
+                    .prev_ess_state
+                    .map_or("—".to_string(), |v| v.to_string()),
+            ),
+            factor(
+                "sunrise_local",
+                world
+                    .sunrise
+                    .map_or("—".to_string(), |t| t.to_string()),
+            ),
+            factor(
+                "sunset_local",
+                world
+                    .sunset
+                    .map_or("—".to_string(), |t| t.to_string()),
+            ),
+            factor(
+                "sunrise_sunset_age_s",
+                world.sunrise_sunset_updated_at.map_or(
+                    "—".to_string(),
+                    |at| match std::time::Instant::now().checked_duration_since(at) {
+                        Some(d) => format!("{}", d.as_secs()),
+                        None => "0".to_string(),
+                    },
+                ),
+            ),
+        ]
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let target = match world.decisions.ess_state_override.as_ref() {
+            Some(d) => d
+                .factors
+                .iter()
+                .find(|f| f.name == "target")
+                .map_or("—".to_string(), |f| f.value.clone()),
+            None => "—".to_string(),
+        };
+        vec![factor("target", target)]
+    }
+}
+
 /// PR-ha-discovery-expand: emits one `Publish(Sensor{…})` per `SensorId`
 /// and one `Publish(BookkeepingNumeric/Bool{…})` per published
 /// bookkeeping field, dedup'd against `world.published_cache`.
@@ -676,6 +825,7 @@ impl Core for SensorBroadcastCore {
             DepEdge { from: CoreId::ZappiMode, fields: &[] },
             DepEdge { from: CoreId::EddiMode, fields: &[] },
             DepEdge { from: CoreId::WeatherSoc, fields: &[] },
+            DepEdge { from: CoreId::EssStateOverride, fields: &[] },
         ]
     }
     fn run(
@@ -801,6 +951,7 @@ pub(crate) fn production_cores() -> Vec<Box<dyn Core>> {
         Box::new(ZappiModeCore),
         Box::new(EddiModeCore),
         Box::new(WeatherSocCore),
+        Box::new(EssStateOverrideCore),
         Box::new(SensorBroadcastCore),
     ]
 }

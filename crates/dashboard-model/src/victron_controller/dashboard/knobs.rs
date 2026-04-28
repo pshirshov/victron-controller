@@ -45,6 +45,8 @@ pub struct Knobs {
     pub baseline_winter_end_mm_dd: i32,
     pub baseline_wh_per_hour_winter: f64,
     pub baseline_wh_per_hour_summer: f64,
+    pub keep_batteries_charged_during_full_charge: bool,
+    pub sunrise_sunset_offset_min: i32,
 }
 
 impl PartialEq for Knobs {
@@ -215,6 +217,14 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.keep_batteries_charged_during_full_charge.cmp(&other.keep_batteries_charged_during_full_charge) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.sunrise_sunset_offset_min.cmp(&other.sunrise_sunset_offset_min) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -269,6 +279,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_winter_end_mm_dd.encode_ueba(ctx, &mut buffer)?;
             value.baseline_wh_per_hour_winter.encode_ueba(ctx, &mut buffer)?;
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, &mut buffer)?;
+            value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, &mut buffer)?;
+            value.sunrise_sunset_offset_min.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -310,6 +322,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_winter_end_mm_dd.encode_ueba(ctx, writer)?;
             value.baseline_wh_per_hour_winter.encode_ueba(ctx, writer)?;
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, writer)?;
+            value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, writer)?;
+            value.sunrise_sunset_offset_min.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -359,6 +373,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let baseline_winter_end_mm_dd = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let baseline_wh_per_hour_winter = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let baseline_wh_per_hour_summer = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let keep_batteries_charged_during_full_charge = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let sunrise_sunset_offset_min = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -398,6 +414,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             baseline_winter_end_mm_dd,
             baseline_wh_per_hour_winter,
             baseline_wh_per_hour_summer,
+            keep_batteries_charged_during_full_charge,
+            sunrise_sunset_offset_min,
         })
     }
 }

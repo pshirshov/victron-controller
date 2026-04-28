@@ -811,6 +811,10 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
             .unwrap_or(i32::MAX),
         baseline_wh_per_hour_winter: k.baseline_wh_per_hour_winter,
         baseline_wh_per_hour_summer: k.baseline_wh_per_hour_summer,
+        // PR-keep-batteries-charged.
+        keep_batteries_charged_during_full_charge: k.keep_batteries_charged_during_full_charge,
+        sunrise_sunset_offset_min: i32::try_from(k.sunrise_sunset_offset_min)
+            .unwrap_or(i32::MAX),
     }
 }
 
@@ -1024,6 +1028,11 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "baseline_winter_end_mm_dd" => KnobId::BaselineWinterEndMmDd,
         "baseline_wh_per_hour_winter" => KnobId::BaselineWhPerHourWinter,
         "baseline_wh_per_hour_summer" => KnobId::BaselineWhPerHourSummer,
+        // PR-keep-batteries-charged.
+        "keep_batteries_charged_during_full_charge" => {
+            KnobId::KeepBatteriesChargedDuringFullCharge
+        }
+        "sunrise_sunset_offset_min" => KnobId::SunriseSunsetOffsetMin,
         _ => return None,
     })
 }

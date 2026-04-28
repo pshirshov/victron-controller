@@ -59,6 +59,15 @@ pub struct Config {
     /// only changes the *seed* used before any retained value arrives.
     #[serde(default)]
     pub knobs: KnobsDefaultsConfig,
+    /// PR-keep-batteries-charged: site location used by the always-on
+    /// sunrise/sunset scheduler. Independent of `[forecast.baseline]`
+    /// (which retains its own copy for back-compat); when this section
+    /// is absent the sunrise/sunset scheduler does not start and
+    /// `world.sunrise` / `world.sunset` stay at their default `None`,
+    /// which the ESS-state override controller treats as
+    /// "bias-to-safety, no write".
+    #[serde(default)]
+    pub location: LocationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -410,6 +419,46 @@ impl BaselineProviderConfig {
 
 fn default_baseline_cadence() -> Duration {
     Duration::from_secs(60 * 60)
+}
+
+/// PR-keep-batteries-charged: site location for the always-on
+/// sunrise/sunset scheduler. Independent of `[forecast.baseline]` (the
+/// baseline forecast retains its own coordinates so a deployment with
+/// only the baseline configured keeps working unchanged).
+///
+/// `is_configured` requires both fields to be non-default zeros — `(0,
+/// 0)` is interpreted as "absent" rather than "Null Island". The
+/// timezone for sunrise/sunset comes from `[forecast].timezone` (single
+/// source of truth shared with the forecast schedulers), so an operator
+/// that only wants this feature still configures `[forecast].timezone`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocationConfig {
+    #[serde(default)]
+    pub latitude: f64,
+    #[serde(default)]
+    pub longitude: f64,
+    /// Sunrise/sunset recompute cadence. Kept short by default so a
+    /// fresh-boot has a value within ~15 min — the celestial values
+    /// move slowly so a faster cadence has no real cost. Default 15 min.
+    #[serde(
+        default = "default_sunrise_sunset_cadence",
+        with = "humantime_serde_compat"
+    )]
+    pub cadence: Duration,
+}
+
+impl LocationConfig {
+    /// True iff the operator has supplied non-zero coordinates. `(0, 0)`
+    /// is rejected as the absent state — Null Island is fine to ignore.
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        self.latitude != 0.0 || self.longitude != 0.0
+    }
+}
+
+fn default_sunrise_sunset_cadence() -> Duration {
+    Duration::from_secs(15 * 60)
 }
 
 fn default_open_meteo_cadence() -> Duration {
@@ -862,6 +911,10 @@ pub struct KnobsDefaultsConfig {
     pub baseline_winter_end_mm_dd: Option<u32>,
     pub baseline_wh_per_hour_winter: Option<f64>,
     pub baseline_wh_per_hour_summer: Option<f64>,
+
+    // --- PR-keep-batteries-charged ---
+    pub keep_batteries_charged_during_full_charge: Option<bool>,
+    pub sunrise_sunset_offset_min: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -925,6 +978,9 @@ impl KnobsDefaultsConfig {
         set!(baseline_winter_end_mm_dd);
         set!(baseline_wh_per_hour_winter);
         set!(baseline_wh_per_hour_summer);
+
+        set!(keep_batteries_charged_during_full_charge);
+        set!(sunrise_sunset_offset_min);
     }
 }
 
@@ -1216,6 +1272,7 @@ impl Default for Config {
             ev: EvConfig::default(),
             dbus_pinned_registers: Vec::new(),
             knobs: KnobsDefaultsConfig::default(),
+            location: LocationConfig::default(),
         }
     }
 }

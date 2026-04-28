@@ -703,6 +703,10 @@ pub enum KnobId {
     BaselineWinterEndMmDd,
     BaselineWhPerHourWinter,
     BaselineWhPerHourSummer,
+    // PR-keep-batteries-charged: gate + window-offset for the
+    // daytime ESS-state override (state 9, KeepBatteriesCharged).
+    KeepBatteriesChargedDuringFullCharge,
+    SunriseSunsetOffsetMin,
 }
 
 /// Forecast providers.
@@ -1053,6 +1057,11 @@ pub enum DbusTarget {
         index: u8,
         field: ScheduleField,
     },
+    /// PR-keep-batteries-charged: `/Settings/CGwacs/BatteryLife/State`
+    /// on `com.victronenergy.settings`. Written by the ESS-state
+    /// override controller as an `i32` (9 = KeepBatteriesCharged on the
+    /// way in, the prior `bookkeeping.prev_ess_state` on the way out).
+    EssState,
 }
 
 /// Value written to a D-Bus path.

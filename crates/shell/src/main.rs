@@ -475,6 +475,31 @@ async fn main() -> Result<()> {
         info!("forecast: Open-Meteo disabled (no planes configured)");
     }
 
+    // PR-keep-batteries-charged: always-on sunrise/sunset scheduler.
+    // Independent of `[forecast.baseline]` — the scheduler is a single
+    // producer of `Event::SunriseSunset` and is gated only on the
+    // operator having configured `[location]`. Without it, the
+    // ESS-state override controller bias-to-safety branches kick in
+    // (no override, no write).
+    if cfg.location.is_configured() {
+        let location = cfg.location.clone();
+        let params = forecast::sunrise_sunset::SunriseSunsetParams {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            cadence: location.cadence,
+            tz: forecast_tz,
+        };
+        let tx_l = tx.clone();
+        forecast_tasks.push(tokio::spawn(async move {
+            let _ =
+                forecast::sunrise_sunset::run_sunrise_sunset_scheduler(params, tx_l).await;
+        }));
+    } else {
+        info!(
+            "sunrise/sunset: scheduler disabled (set [location] latitude/longitude to enable)"
+        );
+    }
+
     // PR-baseline-forecast: locally-computed last-resort fallback. Spun
     // up only when the operator has supplied both a site location and at
     // least one non-zero per-hour Wh constant.

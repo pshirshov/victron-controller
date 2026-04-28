@@ -35,6 +35,11 @@ pub enum CoreId {
     ZappiMode,
     EddiMode,
     WeatherSoc,
+    /// PR-keep-batteries-charged: daytime ESS-state override (writes
+    /// `/Settings/CGwacs/BatteryLife/State` = 9 inside the configured
+    /// daylight window on full-charge days; restores
+    /// `bookkeeping.prev_ess_state` outside).
+    EssStateOverride,
 
     // Observability — must run AFTER every actuator core so the
     // broadcast sees the latest derived/bookkeeping state. PR-ha-
@@ -55,6 +60,7 @@ impl CoreId {
             Self::ZappiMode => "evcharger.mode",
             Self::EddiMode => "eddi.mode",
             Self::WeatherSoc => "weathersoc",
+            Self::EssStateOverride => "ess-state.override",
             Self::SensorBroadcast => "broadcast.sensor",
         }
     }

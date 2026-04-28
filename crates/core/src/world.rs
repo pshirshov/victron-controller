@@ -362,6 +362,9 @@ pub struct Decisions {
     pub zappi_mode: Option<Decision>,
     pub eddi_mode: Option<Decision>,
     pub weather_soc: Option<Decision>,
+    /// PR-keep-batteries-charged: target ESS state decision. Owns the
+    /// `world.bookkeeping.prev_ess_state` restore + `state 9` override.
+    pub ess_state_override: Option<Decision>,
 }
 
 /// PR-ha-discovery-expand: per-sensor + per-bookkeeping last-published

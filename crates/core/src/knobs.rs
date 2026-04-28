@@ -185,6 +185,18 @@ pub struct Knobs {
     pub baseline_wh_per_hour_winter: f64,
     /// Average per-hour Wh produced during summer daylight hours.
     pub baseline_wh_per_hour_summer: f64,
+
+    // --- PR-keep-batteries-charged ---
+    /// Gate the daytime ESS-state override on full-charge days. When
+    /// `true` AND `bookkeeping.charge_to_full_required` is set, the
+    /// shell forces ESS state 9 (KeepBatteriesCharged) inside the
+    /// daylight window `[sunrise + offset, sunset - offset]` and
+    /// restores `bookkeeping.prev_ess_state` outside it.
+    pub keep_batteries_charged_during_full_charge: bool,
+    /// Inset (minutes) applied symmetrically to local sunrise and
+    /// sunset to delimit the override window. Default 60 keeps the
+    /// override well clear of dawn/dusk shoulder periods.
+    pub sunrise_sunset_offset_min: u32,
 }
 
 impl Knobs {
@@ -271,6 +283,16 @@ impl Knobs {
             baseline_winter_end_mm_dd: 301,
             baseline_wh_per_hour_winter: 100.0,
             baseline_wh_per_hour_summer: 1000.0,
+            // PR-keep-batteries-charged: opt-in. The override is only
+            // useful when the operator's tariff makes daytime
+            // self-consumption from the grid expensive and the topology
+            // can absorb a forced "stay full" branch — defaults to
+            // disabled so a fresh deployment keeps the legacy behaviour.
+            keep_batteries_charged_during_full_charge: false,
+            // 60 min keeps the override clear of the shoulder hour
+            // around sunrise/sunset where the sun crate's accuracy
+            // matters less — and matches the user-stated default.
+            sunrise_sunset_offset_min: 60,
         }
     }
 }

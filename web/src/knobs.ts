@@ -185,6 +185,17 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     category: "config", group: "Forecast",
   },
 
+  // PR-keep-batteries-charged. Operator-table pair gating the daytime
+  // ESS state-9 (KeepBatteriesCharged) override on full-charge days.
+  "ess.full-charge.keep-batteries-charged": {
+    kind: "bool", default: false,
+    category: "operator", group: "Schedule overrides",
+  },
+  "ess.full-charge.sunrise-sunset-offset-min": {
+    kind: "int", min: 0, max: 480, step: 5, default: 60,
+    category: "operator", group: "Schedule overrides",
+  },
+
   // --- Config: Eddi ---
   "eddi.soc.enable": { kind: "float", min: 50, max: 100, step: 1, default: 96, category: "config", group: "Eddi" },
   "eddi.soc.disable": { kind: "float", min: 50, max: 100, step: 1, default: 94, category: "config", group: "Eddi" },

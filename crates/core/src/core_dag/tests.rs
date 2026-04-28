@@ -72,6 +72,9 @@ const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
     CoreId::WeatherSoc,
     CoreId::Schedules,
     CoreId::CurrentLimit,
+    // PR-keep-batteries-charged: depends on `CurrentLimit`
+    // (`bookkeeping.prev_ess_state`); slots in after it.
+    CoreId::EssStateOverride,
     CoreId::SensorBroadcast,
 ];
 
