@@ -448,7 +448,15 @@ impl SensorId {
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
             | Self::Schedule1AllowDischargeActual => Some(ActuatedId::Schedule1),
-            Self::BatterySoc
+            // PR-keep-batteries-charged: `EssState` keeps the primary-
+            // sensor classification (sensor table + HA sensor entity);
+            // `apply_sensor_reading` *also* feeds it into
+            // `world.ess_state_target.actual` directly so the daytime
+            // override has TASS phase tracking. Returning `None` here
+            // avoids the `actuated_id().is_some()` filter in
+            // `SensorBroadcastCore` swallowing the sensor publish.
+            Self::EssState
+            | Self::BatterySoc
             | Self::BatterySoh
             | Self::BatteryInstalledCapacity
             | Self::BatteryDcPower
@@ -465,7 +473,6 @@ impl SensorId {
             | Self::VebusInputCurrent
             | Self::EvchargerAcPower
             | Self::EvchargerAcCurrent
-            | Self::EssState
             | Self::OutdoorTemperature
             | Self::SessionKwh
             // PR-ev-soc-sensor.
@@ -654,6 +661,11 @@ pub enum ActuatedId {
     EddiMode,
     Schedule0,
     Schedule1,
+    /// PR-keep-batteries-charged: target ESS state
+    /// (`/Settings/CGwacs/BatteryLife/State` on
+    /// `com.victronenergy.settings`). Mirrored on `SensorId::EssState`
+    /// for readback / confirm.
+    EssStateTarget,
 }
 
 /// Knob identifiers — one per user-controllable setting in [`crate::knobs::Knobs`].

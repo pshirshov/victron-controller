@@ -12,14 +12,16 @@ export class Actuated implements BaboonGeneratedLatest {
     private readonly _eddi_mode: ActuatedEnumName;
     private readonly _schedule_0: ActuatedSchedule;
     private readonly _schedule_1: ActuatedSchedule;
+    private readonly _ess_state_target: ActuatedI32;
 
-    constructor(grid_setpoint: ActuatedI32, input_current_limit: ActuatedF64, zappi_mode: ActuatedEnumName, eddi_mode: ActuatedEnumName, schedule_0: ActuatedSchedule, schedule_1: ActuatedSchedule) {
+    constructor(grid_setpoint: ActuatedI32, input_current_limit: ActuatedF64, zappi_mode: ActuatedEnumName, eddi_mode: ActuatedEnumName, schedule_0: ActuatedSchedule, schedule_1: ActuatedSchedule, ess_state_target: ActuatedI32) {
         this._grid_setpoint = grid_setpoint
         this._input_current_limit = input_current_limit
         this._zappi_mode = zappi_mode
         this._eddi_mode = eddi_mode
         this._schedule_0 = schedule_0
         this._schedule_1 = schedule_1
+        this._ess_state_target = ess_state_target
     }
 
     public get grid_setpoint(): ActuatedI32 {
@@ -40,6 +42,9 @@ export class Actuated implements BaboonGeneratedLatest {
     public get schedule_1(): ActuatedSchedule {
         return this._schedule_1;
     }
+    public get ess_state_target(): ActuatedI32 {
+        return this._ess_state_target;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -48,29 +53,32 @@ export class Actuated implements BaboonGeneratedLatest {
             zappi_mode: this._zappi_mode,
             eddi_mode: this._eddi_mode,
             schedule_0: this._schedule_0,
-            schedule_1: this._schedule_1
+            schedule_1: this._schedule_1,
+            ess_state_target: this._ess_state_target
         };
     }
 
-    public with(overrides: {grid_setpoint?: ActuatedI32; input_current_limit?: ActuatedF64; zappi_mode?: ActuatedEnumName; eddi_mode?: ActuatedEnumName; schedule_0?: ActuatedSchedule; schedule_1?: ActuatedSchedule}): Actuated {
+    public with(overrides: {grid_setpoint?: ActuatedI32; input_current_limit?: ActuatedF64; zappi_mode?: ActuatedEnumName; eddi_mode?: ActuatedEnumName; schedule_0?: ActuatedSchedule; schedule_1?: ActuatedSchedule; ess_state_target?: ActuatedI32}): Actuated {
         return new Actuated(
             'grid_setpoint' in overrides ? overrides.grid_setpoint! : this._grid_setpoint,
             'input_current_limit' in overrides ? overrides.input_current_limit! : this._input_current_limit,
             'zappi_mode' in overrides ? overrides.zappi_mode! : this._zappi_mode,
             'eddi_mode' in overrides ? overrides.eddi_mode! : this._eddi_mode,
             'schedule_0' in overrides ? overrides.schedule_0! : this._schedule_0,
-            'schedule_1' in overrides ? overrides.schedule_1! : this._schedule_1
+            'schedule_1' in overrides ? overrides.schedule_1! : this._schedule_1,
+            'ess_state_target' in overrides ? overrides.ess_state_target! : this._ess_state_target
         );
     }
 
-    public static fromPlain(obj: {grid_setpoint: ActuatedI32; input_current_limit: ActuatedF64; zappi_mode: ActuatedEnumName; eddi_mode: ActuatedEnumName; schedule_0: ActuatedSchedule; schedule_1: ActuatedSchedule}): Actuated {
+    public static fromPlain(obj: {grid_setpoint: ActuatedI32; input_current_limit: ActuatedF64; zappi_mode: ActuatedEnumName; eddi_mode: ActuatedEnumName; schedule_0: ActuatedSchedule; schedule_1: ActuatedSchedule; ess_state_target: ActuatedI32}): Actuated {
         return new Actuated(
             obj.grid_setpoint,
             obj.input_current_limit,
             obj.zappi_mode,
             obj.eddi_mode,
             obj.schedule_0,
-            obj.schedule_1
+            obj.schedule_1,
+            obj.ess_state_target
         );
     }
 
@@ -86,7 +94,7 @@ export class Actuated implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Actuated.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return Actuated.BaboonSameInVersions
     }
@@ -146,6 +154,13 @@ export class Actuated_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActuatedI32_UEBACodec.instance.encode(ctx, value.ess_state_target, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -155,6 +170,7 @@ export class Actuated_UEBACodec {
             ActuatedEnumName_UEBACodec.instance.encode(ctx, value.eddi_mode, writer);
             ActuatedSchedule_UEBACodec.instance.encode(ctx, value.schedule_0, writer);
             ActuatedSchedule_UEBACodec.instance.encode(ctx, value.schedule_1, writer);
+            ActuatedI32_UEBACodec.instance.encode(ctx, value.ess_state_target, writer);
         }
     }
     
@@ -166,7 +182,7 @@ export class Actuated_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < 7; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -177,6 +193,7 @@ export class Actuated_UEBACodec {
         const eddi_mode = ActuatedEnumName_UEBACodec.instance.decode(ctx, reader);
         const schedule_0 = ActuatedSchedule_UEBACodec.instance.decode(ctx, reader);
         const schedule_1 = ActuatedSchedule_UEBACodec.instance.decode(ctx, reader);
+        const ess_state_target = ActuatedI32_UEBACodec.instance.decode(ctx, reader);
         return new Actuated(
             grid_setpoint,
             input_current_limit,
@@ -184,6 +201,7 @@ export class Actuated_UEBACodec {
             eddi_mode,
             schedule_0,
             schedule_1,
+            ess_state_target,
         );
     }
 

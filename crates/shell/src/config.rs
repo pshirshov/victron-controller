@@ -291,12 +291,10 @@ fn default_solcast_cadence() -> Duration {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ForecastSolarProviderConfig {
-    /// Latitude / longitude of the site.
-    #[serde(default)]
-    pub latitude: f64,
-    #[serde(default)]
-    pub longitude: f64,
     /// Representative planes. Empty ⇒ provider disabled.
+    /// Latitude / longitude come from the top-level `[location]`
+    /// section — single source of truth shared with every coord-driven
+    /// scheduler (forecast.solar / open-meteo / baseline / sunrise-sunset).
     #[serde(default)]
     pub planes: Vec<PlaneConfig>,
     /// Poll cadence. Free tier rate-limited at ~12 req/h/IP. Default 1 h.
@@ -310,8 +308,6 @@ pub struct ForecastSolarProviderConfig {
 impl Default for ForecastSolarProviderConfig {
     fn default() -> Self {
         Self {
-            latitude: 0.0,
-            longitude: 0.0,
             planes: Vec::new(),
             cadence: default_forecast_solar_cadence(),
         }
@@ -324,10 +320,9 @@ fn default_forecast_solar_cadence() -> Duration {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenMeteoProviderConfig {
-    #[serde(default)]
-    pub latitude: f64,
-    #[serde(default)]
-    pub longitude: f64,
+    /// Representative planes. Empty ⇒ provider disabled.
+    /// Latitude / longitude come from `[location]` — see
+    /// `LocationConfig`.
     #[serde(default)]
     pub planes: Vec<PlaneConfig>,
     /// Poll cadence. No rate limit; default 30 min (see
@@ -352,8 +347,6 @@ pub struct OpenMeteoProviderConfig {
 impl Default for OpenMeteoProviderConfig {
     fn default() -> Self {
         Self {
-            latitude: 0.0,
-            longitude: 0.0,
             planes: Vec::new(),
             cadence: default_open_meteo_cadence(),
             system_efficiency: default_open_meteo_system_efficiency(),
@@ -373,18 +366,11 @@ fn default_open_meteo_system_efficiency() -> f64 {
 /// install-time values that don't change at runtime.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaselineProviderConfig {
-    /// Latitude / longitude — sun position drives the daylight window.
-    /// Defaults to (0, 0). Coordinate sanity is delegated to the
-    /// `sunrise` crate's `Coordinates::new`; the scheduler exits
-    /// cleanly with a warning if the values are out of range.
-    #[serde(default)]
-    pub latitude: f64,
-    #[serde(default)]
-    pub longitude: f64,
-    /// When `false`, the scheduler doesn't start regardless of the
-    /// other fields. Default `false` so a fresh deployment doesn't
-    /// emit dummy baseline values until the operator has explicitly
-    /// opted in.
+    /// When `false`, the scheduler doesn't start regardless of `[location]`.
+    /// Default `false` so a fresh deployment doesn't emit dummy
+    /// baseline values until the operator has explicitly opted in.
+    /// Latitude / longitude come from `[location]` — see
+    /// `LocationConfig`.
     #[serde(default)]
     pub enabled: bool,
     /// Recompute cadence. Sunrise/sunset and the season indicator move
@@ -400,8 +386,6 @@ pub struct BaselineProviderConfig {
 impl Default for BaselineProviderConfig {
     fn default() -> Self {
         Self {
-            latitude: 0.0,
-            longitude: 0.0,
             enabled: false,
             cadence: default_baseline_cadence(),
         }
@@ -1644,15 +1628,18 @@ discharge_time = "noon"
     #[test]
     fn baseline_parses_install_time_section() {
         let t = r#"
-            [forecast.baseline]
+            [location]
             latitude = 51.5
             longitude = -0.1
+
+            [forecast.baseline]
             enabled = true
             cadence = "30m"
         "#;
         let c: Config = toml::from_str(t).unwrap();
         assert!(c.forecast.baseline.is_configured());
-        assert_eq!(c.forecast.baseline.latitude, 51.5);
+        assert!(c.location.is_configured());
+        assert_eq!(c.location.latitude, 51.5);
         assert_eq!(c.forecast.baseline.cadence, Duration::from_secs(30 * 60));
     }
 

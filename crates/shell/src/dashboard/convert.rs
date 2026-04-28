@@ -137,6 +137,8 @@ fn owner(o: Owner) -> ModelOwner {
         Owner::ZappiController => ModelOwner::ZappiController,
         Owner::EddiController => ModelOwner::EddiController,
         Owner::FullChargeScheduler => ModelOwner::FullChargeScheduler,
+        // PR-keep-batteries-charged.
+        Owner::EssStateOverrideController => ModelOwner::EssStateOverrideController,
     }
 }
 
@@ -370,6 +372,8 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             ),
             schedule_0: actuated_schedule(a.schedule_0),
             schedule_1: actuated_schedule(a.schedule_1),
+            // PR-keep-batteries-charged.
+            ess_state_target: actuated_i32(a.ess_state_target),
         },
         knobs: knobs_to_model(k),
         bookkeeping: ModelBookkeeping {
@@ -849,6 +853,7 @@ fn world_actuated(world: &World) -> WorldActuatedRefs<'_> {
         eddi_mode: &world.eddi_mode,
         schedule_0: &world.schedule_0,
         schedule_1: &world.schedule_1,
+        ess_state_target: &world.ess_state_target,
     }
 }
 
@@ -859,6 +864,7 @@ struct WorldActuatedRefs<'a> {
     eddi_mode: &'a Actuated<EddiMode>,
     schedule_0: &'a Actuated<ScheduleSpec>,
     schedule_1: &'a Actuated<ScheduleSpec>,
+    ess_state_target: &'a Actuated<i32>,
 }
 
 trait WorldActuatedAccess {

@@ -421,6 +421,12 @@ pub struct World {
     pub eddi_mode: Actuated<EddiMode>,
     pub schedule_0: Actuated<ScheduleSpec>,
     pub schedule_1: Actuated<ScheduleSpec>,
+    /// PR-keep-batteries-charged: target ESS state (Victron
+    /// `/Settings/CGwacs/BatteryLife/State`). Writes are produced by
+    /// `EssStateOverrideCore`; readback feeds in via `SensorId::EssState`
+    /// (see `apply_sensor_reading` for the on_reading + confirm_if
+    /// hook).
+    pub ess_state_target: Actuated<i32>,
 
     // PR-gamma-hold-redesign: knobs are user-owned plain values; γ-hold
     // and per-knob provenance are gone. Source-of-truth dispatch on the
@@ -508,6 +514,7 @@ impl World {
             eddi_mode: Actuated::new(now),
             schedule_0: Actuated::new(now),
             schedule_1: Actuated::new(now),
+            ess_state_target: Actuated::new(now),
             knobs: Knobs::safe_defaults(),
             sensors: Sensors::unknown(now),
             typed_sensors: TypedSensors::unknown(now),

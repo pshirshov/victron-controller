@@ -314,7 +314,26 @@ fn apply_sensor_reading(
         SensorId::VebusInputCurrent => world.sensors.vebus_input_current.on_reading(v, at),
         SensorId::EvchargerAcPower => world.sensors.evcharger_ac_power.on_reading(v, at),
         SensorId::EvchargerAcCurrent => world.sensors.evcharger_ac_current.on_reading(v, at),
-        SensorId::EssState => world.sensors.ess_state.on_reading(v, at),
+        // PR-keep-batteries-charged: feed both the primary sensor slot
+        // *and* the actuated-target's `actual` side. The actuated entry
+        // exists for TASS phase tracking on the daytime override; we
+        // keep `SensorId::EssState.actuated_id() == None` so the sensor
+        // table / HA sensor entity continues to surface ess_state.
+        SensorId::EssState => {
+            world.sensors.ess_state.on_reading(v, at);
+            #[allow(clippy::cast_possible_truncation)]
+            let value = v as i32;
+            world.ess_state_target.on_reading(value, at);
+            if world
+                .ess_state_target
+                .confirm_if(|t, a| t == a, at)
+            {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::EssStateTarget,
+                    phase: world.ess_state_target.target.phase,
+                }));
+            }
+        }
         SensorId::OutdoorTemperature => world.sensors.outdoor_temperature.on_reading(v, at),
         SensorId::SessionKwh => world.sensors.session_kwh.on_reading(v, at),
         // PR-ev-soc-sensor.
@@ -382,6 +401,8 @@ fn apply_sensor_reading(
             // `ScheduleSpec` is required) — the rollup arrives via
             // `Event::ScheduleReadback`. ZappiMode/EddiMode have no
             // matching `*Actual` sensor and never reach this branch.
+            // `EssStateTarget` is fed by its own dedicated arm in the
+            // sensor-id match above (PR-keep-batteries-charged), not here.
             debug_assert!(matches!(
                 other,
                 ActuatedId::Schedule0 | ActuatedId::Schedule1,

@@ -389,6 +389,8 @@ fn actuated_name(id: ActuatedId) -> &'static str {
         ActuatedId::EddiMode => "eddi.mode.target",
         ActuatedId::Schedule0 => "schedule.0",
         ActuatedId::Schedule1 => "schedule.1",
+        // PR-keep-batteries-charged.
+        ActuatedId::EssStateTarget => "ess.state.target",
     }
 }
 

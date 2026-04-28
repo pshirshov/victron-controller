@@ -77,6 +77,22 @@ writes_enabled = false
 # Each provider is optional; when its required fields are empty the
 # provider task isn't spawned and no events are emitted.
 
+# =============================================================================
+# Site location — single source of truth for latitude/longitude. Drives
+# every coord-consuming scheduler (Forecast.Solar, Open-Meteo,
+# Open-Meteo current-weather, baseline, sunrise/sunset). With this
+# section absent (or both coords zero), all of those schedulers stay
+# dormant, sunrise/sunset stay None, and the keep-batteries-charged
+# override controller bias-to-safety branches kick in.
+# =============================================================================
+[location]
+# Replace with your site coordinates.
+latitude  = 55.9
+longitude = -3.2
+# Sunrise/sunset recompute cadence. The celestial values move slowly so
+# 15 min is fine; longer is also fine. Default 15 min.
+# cadence   = "15m"
+
 [forecast]
 # Site timezone for solar-boundary bucketing; do not rely on machine TZ.
 # Venus OS defaults to TZ=UTC, but Open-Meteo's `timezone=auto` returns
@@ -92,9 +108,8 @@ timezone = "Europe/London"
 cadence    = "2h"   # free tier: 10 calls/day/site
 
 [forecast.forecast_solar]
-# No API key required for the free tier.
-# latitude  = 55.9
-# longitude = -3.2
+# No API key required for the free tier. Latitude / longitude come
+# from `[location]` above — single source of truth.
 # Representative planes — user configures up to a handful. Each plane
 # costs one API call per refresh so keep the list short on free tier.
 # Azimuth follows the compass convention: 0 = N, 90 = E, 180 = S, 270 = W.
@@ -105,9 +120,8 @@ cadence    = "2h"   # free tier: 10 calls/day/site
 cadence     = "1h"
 
 [forecast.open_meteo]
-# No key. Free. No rate limit on sensible cadences.
-# latitude  = 55.9
-# longitude = -3.2
+# No key. Free. No rate limit on sensible cadences. Latitude /
+# longitude come from `[location]`.
 # planes    = [
 #   { tilt_deg = 35, azimuth_deg = 180, kwp = 2.0 },
 # ]
@@ -118,10 +132,8 @@ cadence     = "30m"
 # last-resort fallback when every cloud provider is stale. Install-time
 # inputs only — winter range and per-hour Wh constants are runtime knobs
 # (`forecast.baseline.*` topics on MQTT, "baseline.*" rows on the
-# dashboard knobs panel).
+# dashboard knobs panel). Latitude / longitude come from `[location]`.
 # enabled   = true
-# latitude  = 55.9
-# longitude = -3.2
 # cadence   = "1h"
 
 # =============================================================================
@@ -320,20 +332,4 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # --- PR-keep-batteries-charged ---
 # keep_batteries_charged_during_full_charge = false
 # sunrise_sunset_offset_min                  = 60
-
-# =============================================================================
-# Site location — drives the always-on sunrise/sunset scheduler that the
-# keep-batteries-charged override consults. Independent of
-# [forecast.baseline] (which retains its own latitude/longitude). When
-# this section is omitted (or both coords are 0), the sunrise/sunset
-# scheduler does not start; the override controller bias-to-safety
-# branches kick in (no write).
-#
-# Timezone used to convert UTC sunrise/sunset to local time comes from
-# [forecast].timezone above — single source of truth.
-# =============================================================================
-# [location]
-# latitude  = 51.5
-# longitude = -0.13
-# cadence   = "15m"
 

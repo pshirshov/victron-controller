@@ -405,6 +405,13 @@ async fn main() -> Result<()> {
         .forecast
         .parse_timezone()
         .expect("forecast timezone validated at config load");
+    // Single source of truth for site lat/lon — every coord-driven
+    // scheduler reads from here. `(0, 0)` means "operator hasn't
+    // configured `[location]`" and disables Open-Meteo / Forecast.Solar
+    // / baseline / sunrise-sunset uniformly.
+    let site_lat = cfg.location.latitude;
+    let site_lon = cfg.location.longitude;
+    let location_configured = cfg.location.is_configured();
     let mut forecast_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let solcast = SolcastClient::new(
         http.clone(),
@@ -432,17 +439,21 @@ async fn main() -> Result<()> {
         .collect();
     let fs_client = ForecastSolarClient::new(
         http.clone(),
-        cfg.forecast.forecast_solar.latitude,
-        cfg.forecast.forecast_solar.longitude,
+        site_lat,
+        site_lon,
         fs_planes,
         forecast_tz,
     );
-    if fs_client.is_configured() {
+    if location_configured && fs_client.is_configured() {
         let tx_f = tx.clone();
         let cadence = cfg.forecast.forecast_solar.cadence;
         forecast_tasks.push(tokio::spawn(async move {
             let _ = forecast::run_scheduler(Box::new(fs_client), cadence, tx_f).await;
         }));
+    } else if !location_configured && !cfg.forecast.forecast_solar.planes.is_empty() {
+        info!(
+            "forecast: Forecast.Solar disabled (planes configured but [location] is not — set latitude/longitude)"
+        );
     } else {
         info!("forecast: Forecast.Solar disabled (no planes configured)");
     }
@@ -455,22 +466,24 @@ async fn main() -> Result<()> {
         .copied()
         .map(Into::into)
         .collect();
-    let om_lat = cfg.forecast.open_meteo.latitude;
-    let om_lon = cfg.forecast.open_meteo.longitude;
     let om_cadence = cfg.forecast.open_meteo.cadence;
     let om_client = OpenMeteoClient::new(
         http.clone(),
-        om_lat,
-        om_lon,
+        site_lat,
+        site_lon,
         om_planes,
         cfg.forecast.open_meteo.system_efficiency,
         forecast_tz,
     );
-    if om_client.is_configured() {
+    if location_configured && om_client.is_configured() {
         let tx_f = tx.clone();
         forecast_tasks.push(tokio::spawn(async move {
             let _ = forecast::run_scheduler(Box::new(om_client), om_cadence, tx_f).await;
         }));
+    } else if !location_configured && !cfg.forecast.open_meteo.planes.is_empty() {
+        info!(
+            "forecast: Open-Meteo disabled (planes configured but [location] is not — set latitude/longitude)"
+        );
     } else {
         info!("forecast: Open-Meteo disabled (no planes configured)");
     }
@@ -481,12 +494,11 @@ async fn main() -> Result<()> {
     // operator having configured `[location]`. Without it, the
     // ESS-state override controller bias-to-safety branches kick in
     // (no override, no write).
-    if cfg.location.is_configured() {
-        let location = cfg.location.clone();
+    if location_configured {
         let params = forecast::sunrise_sunset::SunriseSunsetParams {
-            latitude: location.latitude,
-            longitude: location.longitude,
-            cadence: location.cadence,
+            latitude: site_lat,
+            longitude: site_lon,
+            cadence: cfg.location.cadence,
             tz: forecast_tz,
         };
         let tx_l = tx.clone();
@@ -500,15 +512,13 @@ async fn main() -> Result<()> {
         );
     }
 
-    // PR-baseline-forecast: locally-computed last-resort fallback. Spun
-    // up only when the operator has supplied both a site location and at
-    // least one non-zero per-hour Wh constant.
-    if cfg.forecast.baseline.is_configured() {
-        let baseline = cfg.forecast.baseline.clone();
+    // PR-baseline-forecast: locally-computed last-resort fallback. Needs
+    // both `[forecast.baseline] enabled = true` AND `[location]` for coords.
+    if location_configured && cfg.forecast.baseline.is_configured() {
         let params = forecast::baseline::BaselineParams {
-            latitude: baseline.latitude,
-            longitude: baseline.longitude,
-            cadence: baseline.cadence,
+            latitude: site_lat,
+            longitude: site_lon,
+            cadence: cfg.forecast.baseline.cadence,
             tz: forecast_tz,
         };
         let tx_b = tx.clone();
@@ -516,25 +526,29 @@ async fn main() -> Result<()> {
         forecast_tasks.push(tokio::spawn(async move {
             let _ = forecast::baseline::run_baseline_scheduler(params, world_b, tx_b).await;
         }));
+    } else if !location_configured && cfg.forecast.baseline.enabled {
+        info!(
+            "forecast: baseline disabled ([forecast.baseline] enabled but [location] is not — set latitude/longitude)"
+        );
     } else {
         info!("forecast: baseline disabled (set [forecast.baseline] enabled = true to enable)");
     }
 
-    // Outdoor temperature from Open-Meteo. Runs whenever Open-Meteo has
-    // valid coordinates, independent of plane config — this is the
+    // Outdoor temperature from Open-Meteo. Runs whenever `[location]`
+    // is configured, independent of plane config — this is the
     // placeholder source for `outdoor_temperature` until the MQTT
     // weather-sensor binding (SPEC §10.2) is wired up.
-    if om_lat != 0.0 || om_lon != 0.0 {
+    if location_configured {
         let tx_t = tx.clone();
         let http_t = http;
         forecast_tasks.push(tokio::spawn(async move {
             let _ = forecast::current_weather::run_open_meteo_temperature(
-                http_t, om_lat, om_lon, om_cadence, forecast_tz, tx_t,
+                http_t, site_lat, site_lon, om_cadence, forecast_tz, tx_t,
             )
             .await;
         }));
     } else {
-        info!("weather: Open-Meteo temperature poller disabled (no coordinates)");
+        info!("weather: Open-Meteo temperature poller disabled (set [location] to enable)");
     }
 
     // NB: rumqttc's EventLoop is !Send on some feature configs, so the

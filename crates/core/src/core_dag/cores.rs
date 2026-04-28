@@ -708,11 +708,23 @@ impl Core for EssStateOverrideCore {
         let Some(target) = out.target else {
             return;
         };
-        // Only emit when the live readback disagrees with the desired
-        // value — avoids re-asserting state 9 every tick.
-        if current_ess_state == Some(target) {
+        let now = clock.monotonic();
+        // Mirrors `setpoint::set_grid_setpoint`: propose_target
+        // unconditionally so the dashboard's actuated phase reflects the
+        // controller's intent even in observer mode; gate WriteDbus +
+        // mark_commanded on writes_enabled.
+        let changed = world.ess_state_target.propose_target(
+            target,
+            crate::Owner::EssStateOverrideController,
+            now,
+        );
+        if !changed {
             return;
         }
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: crate::types::ActuatedId::EssStateTarget,
+            phase: world.ess_state_target.target.phase,
+        }));
         if !world.knobs.writes_enabled {
             effects.push(Effect::Log {
                 level: LogLevel::Info,
@@ -727,6 +739,11 @@ impl Core for EssStateOverrideCore {
             target: DbusTarget::EssState,
             value: DbusValue::Int(target),
         });
+        world.ess_state_target.mark_commanded(now);
+        effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+            id: crate::types::ActuatedId::EssStateTarget,
+            phase: world.ess_state_target.target.phase,
+        }));
     }
 
     fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {

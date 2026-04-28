@@ -30,4 +30,7 @@ pub enum Owner {
     EddiController,
     /// Sunday 17:00 full-charge rollover.
     FullChargeScheduler,
+    /// PR-keep-batteries-charged: daytime ESS-state override
+    /// (`evaluate_ess_state_override`).
+    EssStateOverrideController,
 }

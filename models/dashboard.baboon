@@ -11,7 +11,39 @@ version "0.3.0"
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner }
+
+// PR-keep-batteries-charged: extend `Owner` with the new
+// EssStateOverrideController so the dashboard's actuated-table "Owner"
+// column can label rows whose target was set by that controller.
+enum Owner {
+  Unset
+  System
+  Dashboard
+  HaMqtt
+  WeatherSocPlanner
+  SetpointController
+  CurrentLimitController
+  ScheduleController
+  ZappiController
+  EddiController
+  FullChargeScheduler
+  EssStateOverrideController
+}
+
+// PR-keep-batteries-charged: add `ess_state_target: ActuatedI32` so the
+// daytime ESS-state override has full TASS phase tracking on the
+// dashboard's actuated table (target/owner/phase + actual readback +
+// confirm_if). Same shape as `grid_setpoint`.
+data Actuated {
+  grid_setpoint: ActuatedI32
+  input_current_limit: ActuatedF64
+  zappi_mode: ActuatedEnumName
+  eddi_mode: ActuatedEnumName
+  schedule_0: ActuatedSchedule
+  schedule_1: ActuatedSchedule
+  ess_state_target: ActuatedI32
+}
 
 // PR-baseline-forecast: extend `Forecasts` with the locally-computed
 // baseline provider so the dashboard can render it alongside the three

@@ -80,6 +80,9 @@ const DISPLAY_NAMES: Record<string, string> = {
   baseline_winter_end_mm_dd: "forecast.baseline.winter.end.mmdd",
   baseline_wh_per_hour_winter: "forecast.baseline.wh-per-hour.winter",
   baseline_wh_per_hour_summer: "forecast.baseline.wh-per-hour.summer",
+  // PR-keep-batteries-charged.
+  keep_batteries_charged_during_full_charge: "ess.full-charge.keep-batteries-charged",
+  sunrise_sunset_offset_min: "ess.full-charge.sunrise-sunset-offset-min",
 
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",

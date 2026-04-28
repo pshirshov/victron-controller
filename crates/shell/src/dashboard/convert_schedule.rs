@@ -62,9 +62,83 @@ pub fn compute_scheduled_actions(world: &World, now_ms: i64) -> WireActions {
     entries.extend(next_full_charge_action(world, tz, now_ms));
     entries.extend(weather_soc_action(now_local));
     entries.extend(zappi_actions(world, now_local));
+    entries.extend(keep_batteries_charged_actions(world, tz, now_ms));
 
     entries.sort_by_key(|e| e.next_fire_epoch_ms);
     WireActions { entries }
+}
+
+/// PR-keep-batteries-charged: surface the daytime override window edges
+/// — one entry for "ESS → KeepBatteriesCharged" at `sunrise + offset`,
+/// one for "ESS → restore prev_ess_state" at `sunset - offset`. Emitted
+/// only when the operator-knob is enabled AND `world.sunrise` /
+/// `world.sunset` are present (the controller's bias-to-safety branch
+/// suppresses the write itself when sunrise/sunset go stale, but the
+/// scheduled-action surface ignores the freshness window — the entries
+/// document operator intent, not actuation guarantees).
+fn keep_batteries_charged_actions(
+    world: &World,
+    tz: Tz,
+    now_ms: i64,
+) -> Vec<WireAction> {
+    if !world.knobs.keep_batteries_charged_during_full_charge {
+        return Vec::new();
+    }
+    let (Some(sunrise_local), Some(sunset_local)) = (world.sunrise, world.sunset) else {
+        return Vec::new();
+    };
+    let offset = ChronoDuration::minutes(i64::from(world.knobs.sunrise_sunset_offset_min));
+    let open = sunrise_local + offset;
+    let close = sunset_local - offset;
+    if close <= open {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut emit = |label: String, source: String, local: chrono::NaiveDateTime| {
+        let dt = match tz.from_local_datetime(&local) {
+            chrono::LocalResult::Single(dt) => dt,
+            chrono::LocalResult::Ambiguous(early, _late) => early,
+            chrono::LocalResult::None => return,
+        };
+        let mut next_fire_epoch_ms = dt.timestamp_millis();
+        // Walk forward to tomorrow if today's edge has already passed —
+        // sunrise/sunset shift slightly day-to-day; using +1 day as an
+        // approximation is fine for the dashboard surface (the
+        // sunrise/sunset scheduler reseeds every 15 min so the figure
+        // stays close).
+        if next_fire_epoch_ms < now_ms {
+            next_fire_epoch_ms += DAY_MS;
+        }
+        out.push(WireAction {
+            label,
+            source,
+            next_fire_epoch_ms,
+            period_ms: Some(DAY_MS),
+        });
+    };
+    emit(
+        format!(
+            "ESS → KeepBatteriesCharged ({:02}:{:02})",
+            open.time().hour(),
+            open.time().minute()
+        ),
+        "ess.state.override.open".to_string(),
+        open,
+    );
+    emit(
+        format!(
+            "ESS → restore (prev={}, {:02}:{:02})",
+            world
+                .bookkeeping
+                .prev_ess_state
+                .map_or("?".to_string(), |v| v.to_string()),
+            close.time().hour(),
+            close.time().minute()
+        ),
+        "ess.state.override.close".to_string(),
+        close,
+    );
+    out
 }
 
 /// Resolve a local-clock `(date, h, m)` to its UTC epoch-ms in `tz`,

@@ -77,7 +77,7 @@ export class ActuatedI32 implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return ActuatedI32.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return ActuatedI32.BaboonSameInVersions
     }
