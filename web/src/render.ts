@@ -613,13 +613,19 @@ export function renderDecisions(snap: WorldSnapshot) {
         const valHtml = maybeBoolBadge(f.value) ?? esc(f.value);
         return `<span class="factor"><b>${esc(f.name)}</b>=${valHtml}</span>`;
       })
-      .join(" ");
+      .join("");
     return {
       key: name,
       cells: [
         { cls: "mono", html: entityLink(name, "decision") },
         { html: esc(dec.summary as string) },
-        { cls: "factors", html: factors },
+        // Wrap the pill list in a flex-wrap container so the column's
+        // `max-content` width collapses to the longest pill instead of
+        // the (un-wrapped) sum of all pills. Without this the table's
+        // `min-width: max-content` blows the column up far past the
+        // viewport, forcing desktop horizontal scroll and mobile
+        // clipping (body has `overflow-x: hidden`).
+        { cls: "factors", html: `<div class="factor-list">${factors}</div>` },
       ],
     };
   });

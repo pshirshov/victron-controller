@@ -115,13 +115,22 @@ td.phase-Confirmed {
 .mono { font-family: ui-monospace, monospace; }
 
 .factors { font-size: 11px; color: var(--muted); }
+/* Inner wrapper for the pill list. Flex-wrap collapses the cell's
+ * `max-content` to a single pill's width, so the table column doesn't
+ * blow up to the (un-wrapped) sum of all pills under
+ * `min-width: max-content` (see `.table-wrap > table` rule above). */
+.factor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  align-items: baseline;
+}
 .factor {
   display: inline-block;
   background: rgba(128, 128, 128, 0.08);
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 6px;
-  margin: 1px 3px 1px 0;
   font-family: ui-monospace, monospace;
   white-space: nowrap;
 }
@@ -861,6 +870,41 @@ footer {
   #knobs-config-table tbody tr td:nth-of-type(3)::before { content: "Default"; }
   #knobs-operator-table tbody tr td:nth-of-type(4)::before,
   #knobs-config-table tbody tr td:nth-of-type(4)::before { content: "Set"; }
+
+  /* Reset the desktop column-width pins for the knob tables — those
+   * `width: 90/110/260px` rules use ID-specificity so they outrank the
+   * generic `.table-wrap > table > tbody > tr > td { width: auto }`
+   * mobile reset above and would otherwise cap each cell at the
+   * desktop pixel width. With the `::before` label already claiming
+   * 6.5em + `flex-shrink: 0`, that left near-zero room for the value /
+   * default text and `overflow-wrap: anywhere` (line ~835) broke even
+   * a 2-digit "80" into "8 / 0". */
+  #knobs-operator-table tbody td:nth-child(2),
+  #knobs-config-table tbody td:nth-child(2),
+  #knobs-operator-table tbody td:nth-child(3),
+  #knobs-config-table tbody td:nth-child(3),
+  #knobs-operator-table tbody td:nth-child(4),
+  #knobs-config-table tbody td:nth-child(4) {
+    width: auto;
+    min-width: 0;
+  }
+  /* And let the Set-cell input shrink instead of staying rigid at
+   * 200px — on a narrow card the input + button can otherwise overflow
+   * horizontally and the button gets clipped. */
+  #knobs-operator-table tbody td:nth-child(4) > input[type=number],
+  #knobs-operator-table tbody td:nth-child(4) > select,
+  #knobs-config-table tbody td:nth-child(4) > input[type=number],
+  #knobs-config-table tbody td:nth-child(4) > select {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  /* Buttons must never break their label across lines: combined with
+   * the row-level `overflow-wrap: anywhere` above, "set" / "toggle" /
+   * "Disable writes" would otherwise wrap character-by-character if a
+   * sibling element claimed the available width. */
+  button {
+    white-space: nowrap;
+  }
 
   /* Subsection-header rows render as a single full-width band — drop
    * the row-as-card chrome and the field-label gutter that the rest
