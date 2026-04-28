@@ -761,6 +761,15 @@ footer {
    * it — the wrapper's overflow-x handles the visual scroll. */
   min-width: max-content;
 }
+/* Decisions table opts out of `min-width: max-content`: the Factors
+ * cell hosts a flex-wrap pill list whose intrinsic max-content equals
+ * the un-wrapped sum of all pills, which would otherwise force the
+ * column (and thus the page) into horizontal overflow. With min-width:0
+ * the table fits the wrapper and the flex-wrap container wraps pills
+ * onto multiple lines. */
+.table-wrap > #decisions-table {
+  min-width: 0;
+}
 
 /* PR-pinned-registers: status pill on the per-register table.
  * Mirrors the `.bk-tag` pill shape; colour codes match the rest of
