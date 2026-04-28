@@ -468,6 +468,8 @@ export function renderActuated(snap: WorldSnapshot) {
   const em: ActuatedEnumName = a.eddi_mode;
   const s0: ActuatedSchedule = a.schedule_0;
   const s1: ActuatedSchedule = a.schedule_1;
+  // PR-keep-batteries-charged.
+  const ess: ActuatedI32 = a.ess_state_target;
 
   const rows: KeyedRow[] = [
     mkRow(
@@ -523,6 +525,15 @@ export function renderActuated(snap: WorldSnapshot) {
       fmtSchedule(s1.actual),
       String(s1.actual_freshness),
       s1.actual_since_epoch_ms as unknown as number,
+    ),
+    mkRow(
+      "ess_state_target",
+      ess.target_value === null ? "—" : String(ess.target_value),
+      String(ess.target_owner),
+      String(ess.target_phase),
+      ess.actual.value === null ? "—" : String(ess.actual.value),
+      String(ess.actual.freshness),
+      ess.actual.since_epoch_ms as unknown as number,
     ),
   ];
   rows.sort((a, b) => displayNameOfTyped(a.key, "actuated").localeCompare(displayNameOfTyped(b.key, "actuated")));

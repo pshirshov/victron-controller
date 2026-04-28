@@ -163,6 +163,10 @@ export const entityDescriptions: Record<string, string> = {
   "forecast.baseline.wh-per-hour.summer":
     "Average per-daylight-hour Wh during summer. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
 
+  // --- Actuated (PR-keep-batteries-charged) ---
+  "ess.state.target":
+    "Target Victron ESS state (`/Settings/CGwacs/BatteryLife/State`). Set to 9 (KeepBatteriesCharged) by the daytime ESS-state override on full-charge days inside the [sunrise+offset, sunset-offset] window; restored to bookkeeping.prev_ess_state on exit.",
+
   // --- Knobs (PR-keep-batteries-charged) ---
   "ess.full-charge.keep-batteries-charged":
     "When true and bookkeeping.charge_to_full_required is set, the shell forces ESS state 9 (KeepBatteriesCharged) inside the daylight window [sunrise + offset, sunset - offset] and restores the captured pre-override state on exit.",

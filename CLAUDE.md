@@ -117,7 +117,16 @@ The full registration:
    block of the snapshot. Add the `Owner` mapping if step 3 applied.
 9. **MQTT actuated_name** — `crates/shell/src/mqtt/serialize.rs`
    `actuated_name`: dotted name for the new `ActuatedId`.
-10. **Scheduled actions** — if the actuator fires on a predictable
+10. **Web — actuated table** — `web/src/render.ts` `renderActuated`
+   builds a hardcoded `rows: KeyedRow[]`; add an `mkRow(...)` entry
+   matching the wire shape (`ActuatedI32` / `ActuatedF64` /
+   `ActuatedSchedule` / `ActuatedEnumName`). Adding the field to the
+   baboon model alone doesn't auto-surface it.
+11. **Web — display name + description** —
+   `web/src/displayNames.ts` `DISPLAY_NAMES` (snake_case → dotted) and
+   `web/src/descriptions.ts` (dotted → human prose for the entity
+   inspector popup).
+12. **Scheduled actions** — if the actuator fires on a predictable
     cadence (sunrise/sunset, time-of-day), add an entry-emitter to
     `crates/shell/src/dashboard/convert_schedule.rs` so the dashboard's
     "Scheduled actions" section surfaces the next fire. Otherwise the

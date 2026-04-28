@@ -103,13 +103,15 @@ const DISPLAY_NAMES: Record<string, string> = {
   auto_extended_today: "evcharger.extended.auto.today",
   auto_extended_today_date_iso: "evcharger.extended.auto.today.date",
 
-  // --- Actuated (6) — `.target` distinguishes from same-named decisions. ---
+  // --- Actuated (7) — `.target` distinguishes from same-named decisions. ---
   grid_setpoint: "grid.setpoint",
   input_current_limit: "inverter.input.current-limit",
   zappi_mode: "evcharger.mode.target",
   eddi_mode: "eddi.mode.target",
   schedule_0: "schedule.0",
   schedule_1: "schedule.1",
+  // PR-keep-batteries-charged.
+  ess_state_target: "ess.state.target",
 
   // --- Decisions (7) — keys collide with actuated/cores (zappi_mode,
   // eddi_mode, weather_soc, grid_setpoint, input_current_limit, schedule_*).
