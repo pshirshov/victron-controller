@@ -776,6 +776,18 @@ pub enum KnobId {
     /// Inclusive max weekday for snap-back in the SoC ≥ 99.99 rollover.
     /// Range 1..=5; default 3.
     FullChargeSnapBackMaxWeekday,
+    // PR-ZD-2: compensated battery-drain feedback loop knobs.
+    /// Compensated drain threshold (W). Default 1000.
+    ZappiBatteryDrainThresholdW,
+    /// Setpoint-relax step (W/tick). Default 100.
+    ZappiBatteryDrainRelaxStepW,
+    /// Proportional gain on the drain controller. Default 1.0.
+    ZappiBatteryDrainKp,
+    /// Reserved reference for a future PI extension (W). Routes via
+    /// `KnobValue::Float` (no Int32 variant). Default 0.
+    ZappiBatteryDrainTargetW,
+    /// Fast-mode hard-clamp threshold (W). Default 200.
+    ZappiBatteryDrainHardClampW,
 }
 
 /// Forecast providers.

@@ -932,6 +932,13 @@ pub struct KnobsDefaultsConfig {
 
     pub full_charge_defer_to_next_sunday: Option<bool>,
     pub full_charge_snap_back_max_weekday: Option<u32>,
+
+    // --- PR-ZD-2: compensated battery-drain feedback loop ---
+    pub zappi_battery_drain_threshold_w: Option<u32>,
+    pub zappi_battery_drain_relax_step_w: Option<u32>,
+    pub zappi_battery_drain_kp: Option<f64>,
+    pub zappi_battery_drain_target_w: Option<i32>,
+    pub zappi_battery_drain_hard_clamp_w: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -1001,6 +1008,13 @@ impl KnobsDefaultsConfig {
 
         set!(full_charge_defer_to_next_sunday);
         set!(full_charge_snap_back_max_weekday);
+
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        set!(zappi_battery_drain_threshold_w);
+        set!(zappi_battery_drain_relax_step_w);
+        set!(zappi_battery_drain_kp);
+        set!(zappi_battery_drain_target_w);
+        set!(zappi_battery_drain_hard_clamp_w);
     }
 }
 

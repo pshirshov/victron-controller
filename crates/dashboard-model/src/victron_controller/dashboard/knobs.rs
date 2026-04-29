@@ -49,6 +49,11 @@ pub struct Knobs {
     pub sunrise_sunset_offset_min: i32,
     pub full_charge_defer_to_next_sunday: bool,
     pub full_charge_snap_back_max_weekday: i32,
+    pub zappi_battery_drain_threshold_w: i32,
+    pub zappi_battery_drain_relax_step_w: i32,
+    pub zappi_battery_drain_kp: f64,
+    pub zappi_battery_drain_target_w: i32,
+    pub zappi_battery_drain_hard_clamp_w: i32,
 }
 
 impl PartialEq for Knobs {
@@ -235,6 +240,26 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.zappi_battery_drain_threshold_w.cmp(&other.zappi_battery_drain_threshold_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.zappi_battery_drain_relax_step_w.cmp(&other.zappi_battery_drain_relax_step_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.zappi_battery_drain_kp.total_cmp(&other.zappi_battery_drain_kp) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.zappi_battery_drain_target_w.cmp(&other.zappi_battery_drain_target_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.zappi_battery_drain_hard_clamp_w.cmp(&other.zappi_battery_drain_hard_clamp_w) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -293,6 +318,11 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.sunrise_sunset_offset_min.encode_ueba(ctx, &mut buffer)?;
             value.full_charge_defer_to_next_sunday.encode_ueba(ctx, &mut buffer)?;
             value.full_charge_snap_back_max_weekday.encode_ueba(ctx, &mut buffer)?;
+            value.zappi_battery_drain_threshold_w.encode_ueba(ctx, &mut buffer)?;
+            value.zappi_battery_drain_relax_step_w.encode_ueba(ctx, &mut buffer)?;
+            value.zappi_battery_drain_kp.encode_ueba(ctx, &mut buffer)?;
+            value.zappi_battery_drain_target_w.encode_ueba(ctx, &mut buffer)?;
+            value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -338,6 +368,11 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.sunrise_sunset_offset_min.encode_ueba(ctx, writer)?;
             value.full_charge_defer_to_next_sunday.encode_ueba(ctx, writer)?;
             value.full_charge_snap_back_max_weekday.encode_ueba(ctx, writer)?;
+            value.zappi_battery_drain_threshold_w.encode_ueba(ctx, writer)?;
+            value.zappi_battery_drain_relax_step_w.encode_ueba(ctx, writer)?;
+            value.zappi_battery_drain_kp.encode_ueba(ctx, writer)?;
+            value.zappi_battery_drain_target_w.encode_ueba(ctx, writer)?;
+            value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -391,6 +426,11 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let sunrise_sunset_offset_min = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let full_charge_defer_to_next_sunday = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let full_charge_snap_back_max_weekday = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let zappi_battery_drain_threshold_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let zappi_battery_drain_relax_step_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let zappi_battery_drain_kp = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let zappi_battery_drain_target_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let zappi_battery_drain_hard_clamp_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -434,6 +474,11 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             sunrise_sunset_offset_min,
             full_charge_defer_to_next_sunday,
             full_charge_snap_back_max_weekday,
+            zappi_battery_drain_threshold_w,
+            zappi_battery_drain_relax_step_w,
+            zappi_battery_drain_kp,
+            zappi_battery_drain_target_w,
+            zappi_battery_drain_hard_clamp_w,
         })
     }
 }

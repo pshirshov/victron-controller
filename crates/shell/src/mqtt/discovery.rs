@@ -488,6 +488,13 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         ),
         number_knob(KnobId::FullChargeSnapBackMaxWeekday, 1.0, None),
 
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        number_knob(KnobId::ZappiBatteryDrainThresholdW, 50.0, Some("W")),
+        number_knob(KnobId::ZappiBatteryDrainRelaxStepW, 25.0, Some("W")),
+        number_knob(KnobId::ZappiBatteryDrainKp, 0.05, None),
+        number_knob(KnobId::ZappiBatteryDrainTargetW, 25.0, Some("W")),
+        number_knob(KnobId::ZappiBatteryDrainHardClampW, 25.0, Some("W")),
+
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),
         (
@@ -525,4 +532,32 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             json!({"options": ["weather", "forced"]}),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use victron_controller_core::types::KnobId;
+
+    /// PR-ZD-2: all five compensated-drain knobs must appear in
+    /// `knob_schemas()` with a non-empty component type. The test
+    /// mirrors what `publish_knobs` does at runtime — if a KnobId is
+    /// missing here HA would never see a discovery payload for it.
+    #[test]
+    fn discovery_includes_zappi_drain_knobs() {
+        let schemas = knob_schemas();
+        let ids_to_check = [
+            KnobId::ZappiBatteryDrainThresholdW,
+            KnobId::ZappiBatteryDrainRelaxStepW,
+            KnobId::ZappiBatteryDrainKp,
+            KnobId::ZappiBatteryDrainTargetW,
+            KnobId::ZappiBatteryDrainHardClampW,
+        ];
+        for id in ids_to_check {
+            let found = schemas.iter().any(|(schema_id, component, _)| {
+                *schema_id == id && !component.is_empty()
+            });
+            assert!(found, "knob_schemas() missing entry for {id:?}");
+        }
+    }
 }

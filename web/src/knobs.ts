@@ -209,6 +209,13 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "eddi.soc.disable": { kind: "float", min: 50, max: 100, step: 1, default: 94, category: "config", group: "Eddi" },
   "eddi.dwell.seconds": { kind: "int", min: 0, max: 3600, step: 5, default: 60, category: "config", group: "Eddi" },
 
+  // --- Config: Zappi compensated drain (PR-ZD-2) ---
+  "zappi.battery-drain.threshold-w": { kind: "int", min: 0, max: 10000, step: 50, default: 1000, category: "config", group: "Zappi compensated drain" },
+  "zappi.battery-drain.relax-step-w": { kind: "int", min: 0, max: 5000, step: 25, default: 100, category: "config", group: "Zappi compensated drain" },
+  "zappi.battery-drain.kp": { kind: "float", min: 0, max: 50, step: 0.05, default: 1.0, category: "config", group: "Zappi compensated drain" },
+  "zappi.battery-drain.target-w": { kind: "float", min: -5000, max: 5000, step: 25, default: 0, category: "config", group: "Zappi compensated drain" },
+  "zappi.battery-drain.hard-clamp-w": { kind: "int", min: 0, max: 10000, step: 25, default: 200, category: "config", group: "Zappi compensated drain" },
+
   // --- Config: Zappi calibration ---
   "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5, category: "config", group: "Zappi calibration" },
 

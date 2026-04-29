@@ -871,6 +871,15 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
         full_charge_snap_back_max_weekday: i32::try_from(k.full_charge_snap_back_max_weekday)
             .unwrap_or(i32::MAX),
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        zappi_battery_drain_threshold_w: i32::try_from(k.zappi_battery_drain_threshold_w)
+            .unwrap_or(i32::MAX),
+        zappi_battery_drain_relax_step_w: i32::try_from(k.zappi_battery_drain_relax_step_w)
+            .unwrap_or(i32::MAX),
+        zappi_battery_drain_kp: k.zappi_battery_drain_kp,
+        zappi_battery_drain_target_w: k.zappi_battery_drain_target_w,
+        zappi_battery_drain_hard_clamp_w: i32::try_from(k.zappi_battery_drain_hard_clamp_w)
+            .unwrap_or(i32::MAX),
     }
 }
 
@@ -1092,6 +1101,12 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "sunrise_sunset_offset_min" => KnobId::SunriseSunsetOffsetMin,
         "full_charge_defer_to_next_sunday" => KnobId::FullChargeDeferToNextSunday,
         "full_charge_snap_back_max_weekday" => KnobId::FullChargeSnapBackMaxWeekday,
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        "zappi_battery_drain_threshold_w" => KnobId::ZappiBatteryDrainThresholdW,
+        "zappi_battery_drain_relax_step_w" => KnobId::ZappiBatteryDrainRelaxStepW,
+        "zappi_battery_drain_kp" => KnobId::ZappiBatteryDrainKp,
+        "zappi_battery_drain_target_w" => KnobId::ZappiBatteryDrainTargetW,
+        "zappi_battery_drain_hard_clamp_w" => KnobId::ZappiBatteryDrainHardClampW,
         _ => return None,
     })
 }

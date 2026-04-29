@@ -313,7 +313,7 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
   full sensor pipeline (SensorId + world + ingestion + dashboard). No
   control-loop coupling. ≥ 10 new tests covering parse / fresh-stale
   transitions / dashboard surfacing.
-- [ ] **PR-ZD-2 — Knobs.** Add five knobs through the 11-step CLAUDE.md
+- [x] **PR-ZD-2 — Knobs.** Add five knobs through the 11-step CLAUDE.md
   registration: `zappi_battery_drain_threshold_w` (default 1000),
   `…_relax_step_w` (default 100), `…_kp` (default 1.0), `…_target_w`
   (default 0, reserved for future PI extension; routes via
@@ -396,6 +396,57 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 ---
 
 ## Completed
+
+- **PR-ZD-2 — Knobs** (M-ZAPPI-DRAIN, 2026-04-29) — Five new knobs
+  registered through all 11 CLAUDE.md layers. All `category =
+  "config"`, `group = "Zappi compensated drain"`. Inert until PR-ZD-3
+  reads them.
+  Defaults: `zappi_battery_drain_threshold_w = 1000`,
+  `zappi_battery_drain_relax_step_w = 100`,
+  `zappi_battery_drain_kp = 1.0`, `zappi_battery_drain_target_w = 0`,
+  `zappi_battery_drain_hard_clamp_w = 200`. Dotted MQTT names:
+  `zappi.battery-drain.{threshold-w,relax-step-w,kp,target-w,hard-clamp-w}`.
+  Wire-format choice: `target_w` is signed (i32) but `KnobValue` has
+  no `Int32` variant, so it routes via `KnobValue::Float` (additive,
+  no wire-format variant change). `apply_knob` casts back via
+  `v.round() as i32` (rounds half-away-from-zero, correct for negative
+  references). The other three `_w` knobs use `KnobValue::Uint32`;
+  `kp` uses `Float`.
+  Adversarial review: zero defects on round 1 — full 5×11 layer
+  matrix verified populated, including the easiest-to-forget
+  `web/src/displayNames.ts` mapping.
+  Verification: `cargo test --workspace` → 529 passed (318 core + 10
+  dashboard-model + 201 shell, +8 vs PR-ZD-1 baseline 521); `cargo
+  clippy --workspace --all-targets -- -D warnings` clean; `cd web &&
+  ./node_modules/.bin/tsc --noEmit -p .` clean; `cargo build --target
+  armv7-unknown-linux-gnueabihf --release` green (1m 12s).
+  Notes / surprises:
+  - `parse_knob_value` merged the `Kp` and `TargetW` Float arms via
+    `|` to satisfy `clippy::match_same_arms`. `apply_knob` keeps
+    them as separate arms (different field-routing logic) — clippy
+    only complained about the parse layer where the shape is
+    identical.
+  - Discovery test added a new `#[cfg(test)]` module to
+    `crates/shell/src/mqtt/discovery.rs` (the file had none
+    previously). The new `discovery_includes_zappi_drain_knobs` test
+    iterates the 5 IDs and asserts each gets a non-empty schema.
+  - `knob_range` exhaustive-match property of the existing pattern
+    means a missing arm would fail to compile — partial registration
+    can't slip through this layer.
+  - `safe_defaults_match_spec_7` extended in-place AND a dedicated
+    `safe_defaults_match_spec_zappi_drain` added as a sibling; the
+    duplicate-coverage is intentional (the canonical spec test is
+    where future maintainers look first).
+  Constraints future work must respect:
+  - The five knobs are inert in this PR. PR-ZD-3 will read them in
+    `evaluate_setpoint`'s Zappi branch; PR-ZD-4 will read
+    `hard_clamp_w` in the post-`evaluate_setpoint` Fast-mode clamp.
+    Do not introduce reads from any other controller without
+    relitigating the design.
+  - `target_w` is exposed but documented as inert — the math uses
+    `threshold_w` as reference. Reserved for future PI extension.
+    Do not "improve" the loop to use `target_w` without confirming
+    with the operator first.
 
 - **PR-ZD-1 — Sensors** (M-ZAPPI-DRAIN, 2026-04-29) — Plumbing-only PR
   wiring four new sensors through the full pipeline: `HeatPumpPower`

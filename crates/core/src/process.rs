@@ -772,6 +772,24 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::FullChargeSnapBackMaxWeekday, KnobValue::Uint32(v)) => {
             replace(&mut k.full_charge_snap_back_max_weekday, v) != v
         }
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        // `target_w` is i32 but routes via Float because KnobValue has
+        // no Int32 variant; the controller rounds to nearest W on read.
+        (KnobId::ZappiBatteryDrainThresholdW, KnobValue::Uint32(v)) => {
+            replace(&mut k.zappi_battery_drain_threshold_w, v) != v
+        }
+        (KnobId::ZappiBatteryDrainRelaxStepW, KnobValue::Uint32(v)) => {
+            replace(&mut k.zappi_battery_drain_relax_step_w, v) != v
+        }
+        (KnobId::ZappiBatteryDrainHardClampW, KnobValue::Uint32(v)) => {
+            replace(&mut k.zappi_battery_drain_hard_clamp_w, v) != v
+        }
+        (KnobId::ZappiBatteryDrainKp, KnobValue::Float(v)) => {
+            replace(&mut k.zappi_battery_drain_kp, v) != v
+        }
+        (KnobId::ZappiBatteryDrainTargetW, KnobValue::Float(v)) => {
+            replace(&mut k.zappi_battery_drain_target_w, v.round() as i32) != v.round() as i32
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -909,6 +927,27 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::FullChargeSnapBackMaxWeekday,
             value: V::Uint32(k.full_charge_snap_back_max_weekday),
+        },
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainThresholdW,
+            value: V::Uint32(k.zappi_battery_drain_threshold_w),
+        },
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainRelaxStepW,
+            value: V::Uint32(k.zappi_battery_drain_relax_step_w),
+        },
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainKp,
+            value: V::Float(k.zappi_battery_drain_kp),
+        },
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainTargetW,
+            value: V::Float(f64::from(k.zappi_battery_drain_target_w)),
+        },
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainHardClampW,
+            value: V::Uint32(k.zappi_battery_drain_hard_clamp_w),
         },
     ]
 }
@@ -4540,5 +4579,64 @@ mod tests {
         let entity = world.pinned_registers.get(&key).unwrap();
         assert_eq!(entity.status, PinnedStatus::Confirmed);
         assert_eq!(entity.drift_count, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-2: apply_knob routing for the five compensated-drain knobs
+    // ------------------------------------------------------------------
+
+    fn send_knob(world: &mut World, id: KnobId, value: KnobValue) {
+        let c = clock_at(12, 0);
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob { id, value },
+                owner: Owner::HaMqtt,
+                at: c.monotonic,
+            },
+            world,
+            &c,
+            &Topology::defaults(),
+        );
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_threshold_w_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::ZappiBatteryDrainThresholdW, KnobValue::Uint32(2500));
+        assert_eq!(world.knobs.zappi_battery_drain_threshold_w, 2500);
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_relax_step_w_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::ZappiBatteryDrainRelaxStepW, KnobValue::Uint32(250));
+        assert_eq!(world.knobs.zappi_battery_drain_relax_step_w, 250);
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_kp_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::ZappiBatteryDrainKp, KnobValue::Float(0.5));
+        assert!((world.knobs.zappi_battery_drain_kp - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_target_w_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // target_w routes via Float (no KnobValue::Int32); controller rounds.
+        send_knob(&mut world, KnobId::ZappiBatteryDrainTargetW, KnobValue::Float(-300.0));
+        assert_eq!(world.knobs.zappi_battery_drain_target_w, -300);
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_hard_clamp_w_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::ZappiBatteryDrainHardClampW, KnobValue::Uint32(500));
+        assert_eq!(world.knobs.zappi_battery_drain_hard_clamp_w, 500);
     }
 }

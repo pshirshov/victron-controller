@@ -213,6 +213,29 @@ pub struct Knobs {
     /// snap back; Thu/Fri/Sat push forward). Ignored when
     /// `full_charge_defer_to_next_sunday` is on.
     pub full_charge_snap_back_max_weekday: u32,
+
+    // --- PR-ZD-2: compensated battery-drain feedback loop knobs ---
+    /// Compensated drain threshold (W). When
+    /// `compensated_drain = max(0, -battery_dc_power - heat_pump - cooker)`
+    /// exceeds this value while Zappi is active and
+    /// `allow_battery_to_car=false`, the controller tightens the
+    /// grid setpoint to halt battery discharge into the EV.
+    pub zappi_battery_drain_threshold_w: u32,
+    /// Setpoint-relax step (W per controller tick). When compensated
+    /// drain is below the threshold, the controller relaxes the grid
+    /// setpoint toward `-solar_export` at this step size per tick.
+    pub zappi_battery_drain_relax_step_w: u32,
+    /// Proportional gain on the compensated-drain controller.
+    pub zappi_battery_drain_kp: f64,
+    /// Reference for the compensated-drain controller (W). Reserved
+    /// for a future PI extension; inert in the current soft loop.
+    /// Routes via `KnobValue::Float` because no `Int32` variant exists.
+    pub zappi_battery_drain_target_w: i32,
+    /// Fast-mode hard-clamp threshold (W). When Zappi is in Fast mode
+    /// and `allow_battery_to_car=false`, if compensated drain exceeds
+    /// this value, the controller raises the proposed setpoint by the
+    /// excess as a belt-and-suspenders safety net.
+    pub zappi_battery_drain_hard_clamp_w: u32,
 }
 
 impl Knobs {
@@ -315,6 +338,14 @@ impl Knobs {
             // Default 3 (Wednesday) preserves legacy behaviour: dow ≤ 3
             // → snap back; dow > 3 → push forward.
             full_charge_snap_back_max_weekday: 3,
+            // PR-ZD-2: compensated battery-drain feedback loop knobs.
+            // All are install-time config; operators reach them via
+            // [knobs] in config.toml or the HA entity inspector.
+            zappi_battery_drain_threshold_w: 1000,
+            zappi_battery_drain_relax_step_w: 100,
+            zappi_battery_drain_kp: 1.0,
+            zappi_battery_drain_target_w: 0,
+            zappi_battery_drain_hard_clamp_w: 200,
         }
     }
 }
@@ -358,6 +389,12 @@ mod tests {
         // (full `inverter_max_discharge_w` discharge); user can flip on
         // affected MultiPlus firmware.
         assert!(!k.inverter_safe_discharge_enable);
+        // PR-ZD-2: compensated battery-drain feedback loop knob defaults.
+        assert_eq!(k.zappi_battery_drain_threshold_w, 1000);
+        assert_eq!(k.zappi_battery_drain_relax_step_w, 100);
+        assert!((k.zappi_battery_drain_kp - 1.0).abs() < f64::EPSILON);
+        assert_eq!(k.zappi_battery_drain_target_w, 0);
+        assert_eq!(k.zappi_battery_drain_hard_clamp_w, 200);
     }
 
     #[test]
@@ -372,5 +409,18 @@ mod tests {
     fn auto_extended_default_mode_is_auto() {
         let k = Knobs::safe_defaults();
         assert_eq!(k.charge_car_extended_mode, ExtendedChargeMode::Auto);
+    }
+
+    /// PR-ZD-2: dedicated test for the five compensated-drain defaults so
+    /// the reviewer can confirm each value without inspecting the larger
+    /// `safe_defaults_match_spec_7` test.
+    #[test]
+    fn safe_defaults_match_spec_zappi_drain() {
+        let k = Knobs::safe_defaults();
+        assert_eq!(k.zappi_battery_drain_threshold_w, 1000, "threshold_w");
+        assert_eq!(k.zappi_battery_drain_relax_step_w, 100, "relax_step_w");
+        assert!((k.zappi_battery_drain_kp - 1.0).abs() < f64::EPSILON, "kp");
+        assert_eq!(k.zappi_battery_drain_target_w, 0, "target_w");
+        assert_eq!(k.zappi_battery_drain_hard_clamp_w, 200, "hard_clamp_w");
     }
 }

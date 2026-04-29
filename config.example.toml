@@ -360,3 +360,18 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # is true.
 # full_charge_snap_back_max_weekday         = 3
 
+# --- PR-ZD-2: compensated battery-drain feedback loop (all "config" category) ---
+# Compensated drain threshold (W). Controller tightens setpoint when
+# max(0, -battery_dc_power - heat_pump - cooker) exceeds this value
+# while Zappi is active and allow_battery_to_car = false.
+# zappi_battery_drain_threshold_w          = 1000
+# Setpoint-relax step (W/tick) when drain is below threshold.
+# zappi_battery_drain_relax_step_w         = 100
+# Proportional gain on the drain controller (dimensionless).
+# zappi_battery_drain_kp                   = 1.0
+# Reserved reference for future PI extension (W); inert in current loop.
+# zappi_battery_drain_target_w             = 0
+# Fast-mode hard-clamp threshold (W). Belt-and-suspenders safety net
+# that runs after the soft loop when Zappi is in Fast mode.
+# zappi_battery_drain_hard_clamp_w         = 200
+

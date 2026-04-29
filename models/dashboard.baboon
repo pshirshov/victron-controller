@@ -150,6 +150,13 @@ data Knobs {
   // (Mon/Tue/Wed snap back, Thu/Fri/Sat push forward). Ignored when
   // `full_charge_defer_to_next_sunday` is on.
   full_charge_snap_back_max_weekday: i32
+  // PR-ZD-2: five new knobs for the compensated battery-drain feedback
+  // loop. All are `category = "config"` (install-time tuning).
+  zappi_battery_drain_threshold_w: i32
+  zappi_battery_drain_relax_step_w: i32
+  zappi_battery_drain_kp: f64
+  zappi_battery_drain_target_w: i32
+  zappi_battery_drain_hard_clamp_w: i32
 }
 
 // 0.3.0 redefinition of `Bookkeeping` — `prev_ess_state` removed.

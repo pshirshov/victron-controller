@@ -352,6 +352,12 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min",
         KnobId::FullChargeDeferToNextSunday => "full-charge.defer-to-next-sunday",
         KnobId::FullChargeSnapBackMaxWeekday => "full-charge.snap-back-max-weekday",
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        KnobId::ZappiBatteryDrainThresholdW => "zappi.battery-drain.threshold-w",
+        KnobId::ZappiBatteryDrainRelaxStepW => "zappi.battery-drain.relax-step-w",
+        KnobId::ZappiBatteryDrainKp => "zappi.battery-drain.kp",
+        KnobId::ZappiBatteryDrainTargetW => "zappi.battery-drain.target-w",
+        KnobId::ZappiBatteryDrainHardClampW => "zappi.battery-drain.hard-clamp-w",
     }
 }
 
@@ -402,6 +408,12 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "ess.full-charge.sunrise-sunset-offset-min" => KnobId::SunriseSunsetOffsetMin,
         "full-charge.defer-to-next-sunday" => KnobId::FullChargeDeferToNextSunday,
         "full-charge.snap-back-max-weekday" => KnobId::FullChargeSnapBackMaxWeekday,
+        // PR-ZD-2: compensated battery-drain feedback loop.
+        "zappi.battery-drain.threshold-w" => KnobId::ZappiBatteryDrainThresholdW,
+        "zappi.battery-drain.relax-step-w" => KnobId::ZappiBatteryDrainRelaxStepW,
+        "zappi.battery-drain.kp" => KnobId::ZappiBatteryDrainKp,
+        "zappi.battery-drain.target-w" => KnobId::ZappiBatteryDrainTargetW,
+        "zappi.battery-drain.hard-clamp-w" => KnobId::ZappiBatteryDrainHardClampW,
         _ => return None,
     })
 }
@@ -613,6 +625,14 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // Multiplier
         KnobId::PessimismMultiplierModifier => (0.0, 2.0),
 
+        // PR-ZD-2: compensated battery-drain feedback loop ranges.
+        KnobId::ZappiBatteryDrainThresholdW => (0.0, 10000.0),
+        KnobId::ZappiBatteryDrainRelaxStepW => (0.0, 5000.0),
+        KnobId::ZappiBatteryDrainKp => (0.0, 50.0),
+        // target_w is signed; routes via Float. Range ±5000 W.
+        KnobId::ZappiBatteryDrainTargetW => (-5000.0, 5000.0),
+        KnobId::ZappiBatteryDrainHardClampW => (0.0, 10000.0),
+
         // Enums + bools don't use this table.
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
@@ -720,7 +740,11 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::WeathersocTooMuchEnergyThreshold
         // PR-baseline-forecast: per-hour Wh constants are floats.
         | KnobId::BaselineWhPerHourWinter
-        | KnobId::BaselineWhPerHourSummer => {
+        | KnobId::BaselineWhPerHourSummer
+        // PR-ZD-2: kp and target_w route via Float (no KnobValue::Int32
+        // variant; the controller rounds target_w on read).
+        | KnobId::ZappiBatteryDrainKp
+        | KnobId::ZappiBatteryDrainTargetW => {
             parse_ranged_float(id, body).map(KnobValue::Float)
         }
         KnobId::GridExportLimitW
@@ -731,7 +755,11 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::BaselineWinterEndMmDd
         // PR-keep-batteries-charged — minutes encoded as Uint32.
         | KnobId::SunriseSunsetOffsetMin
-        | KnobId::FullChargeSnapBackMaxWeekday => {
+        | KnobId::FullChargeSnapBackMaxWeekday
+        // PR-ZD-2: three u32 drain knobs.
+        | KnobId::ZappiBatteryDrainThresholdW
+        | KnobId::ZappiBatteryDrainRelaxStepW
+        | KnobId::ZappiBatteryDrainHardClampW => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {
@@ -1557,5 +1585,28 @@ mod tests {
         // Not even valid JSON.
         let garbage = b"not-json";
         assert_eq!(parse_zigbee2mqtt_power_body(garbage), None);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-2: name round-trip test for the five drain knobs
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn mqtt_knob_name_round_trip_zappi_drain() {
+        let ids = [
+            KnobId::ZappiBatteryDrainThresholdW,
+            KnobId::ZappiBatteryDrainRelaxStepW,
+            KnobId::ZappiBatteryDrainKp,
+            KnobId::ZappiBatteryDrainTargetW,
+            KnobId::ZappiBatteryDrainHardClampW,
+        ];
+        for id in ids {
+            let name = knob_name(id);
+            assert_eq!(
+                knob_id_from_name(name),
+                Some(id),
+                "round-trip failed for {id:?}: name={name:?}"
+            );
+        }
     }
 }

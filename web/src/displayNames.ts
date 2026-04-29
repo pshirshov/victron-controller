@@ -90,6 +90,12 @@ const DISPLAY_NAMES: Record<string, string> = {
   sunrise_sunset_offset_min: "ess.full-charge.sunrise-sunset-offset-min",
   full_charge_defer_to_next_sunday: "full-charge.defer-to-next-sunday",
   full_charge_snap_back_max_weekday: "full-charge.snap-back-max-weekday",
+  // PR-ZD-2: compensated battery-drain feedback loop.
+  zappi_battery_drain_threshold_w: "zappi.battery-drain.threshold-w",
+  zappi_battery_drain_relax_step_w: "zappi.battery-drain.relax-step-w",
+  zappi_battery_drain_kp: "zappi.battery-drain.kp",
+  zappi_battery_drain_target_w: "zappi.battery-drain.target-w",
+  zappi_battery_drain_hard_clamp_w: "zappi.battery-drain.hard-clamp-w",
 
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",

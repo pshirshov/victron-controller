@@ -186,6 +186,18 @@ export const entityDescriptions: Record<string, string> = {
   "full-charge.snap-back-max-weekday":
     "Inclusive weekday cap (Sun=0, Mon=1, ..., Sat=6) for the snap-back branch of the SoC ≥ 99.99 rollover. When the resulting weekday ≤ cap, the date snaps to this week's Sunday; otherwise it pushes to next Sunday. Range 1..=5; default 3 means Mon/Tue/Wed snap back and Thu/Fri/Sat push forward. Ignored when defer-to-next-sunday is on.",
 
+  // PR-ZD-2: compensated battery-drain feedback loop knobs.
+  "zappi.battery-drain.threshold-w":
+    "Compensated battery-drain threshold (W). When `compensated_drain = max(0, -battery_dc_power - heat_pump - cooker)` exceeds this value while Zappi is active and `allow_battery_to_car=false`, the controller tightens the grid setpoint to halt battery discharge into the EV. Higher values allow sub-threshold transients through; lower values produce a more aggressive response.",
+  "zappi.battery-drain.relax-step-w":
+    "Setpoint-relax step (W per controller tick). When compensated drain is below the threshold, the controller relaxes the grid setpoint toward `-solar_export` at this step size per tick. Smaller values produce slower convergence to the export-friendly setpoint.",
+  "zappi.battery-drain.kp":
+    "Proportional gain on the compensated-drain controller. The controller raises the setpoint by `kp * (drain - threshold)` per tick when drain exceeds threshold. Default 1.0; lower (e.g. 0.3) for a softer response, higher for snappier reaction.",
+  "zappi.battery-drain.target-w":
+    "Reference for the compensated-drain controller (W). Currently inert — the math uses `threshold` as reference. Reserved for a future PI extension.",
+  "zappi.battery-drain.hard-clamp-w":
+    "Fast-mode hard-clamp threshold (W). When Zappi is in Fast mode and `allow_battery_to_car=false`, if compensated drain exceeds this value, the controller raises the proposed setpoint by the excess as a separate safety net on top of the soft loop. Defaults to 200 W. Eco / Eco+ / Off modes bypass this clamp.",
+
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:
     "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",
