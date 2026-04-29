@@ -83,6 +83,8 @@ const DISPLAY_NAMES: Record<string, string> = {
   // PR-keep-batteries-charged.
   keep_batteries_charged_during_full_charge: "ess.full-charge.keep-batteries-charged",
   sunrise_sunset_offset_min: "ess.full-charge.sunrise-sunset-offset-min",
+  full_charge_defer_to_next_sunday: "full-charge.defer-to-next-sunday",
+  full_charge_snap_back_max_weekday: "full-charge.snap-back-max-weekday",
 
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",

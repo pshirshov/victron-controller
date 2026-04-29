@@ -480,6 +480,12 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             json!({"payload_on": "true", "payload_off": "false"}),
         ),
         number_knob(KnobId::SunriseSunsetOffsetMin, 5.0, Some("min")),
+        (
+            KnobId::FullChargeDeferToNextSunday,
+            "switch",
+            json!({"payload_on": "true", "payload_off": "false"}),
+        ),
+        number_knob(KnobId::FullChargeSnapBackMaxWeekday, 1.0, None),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),

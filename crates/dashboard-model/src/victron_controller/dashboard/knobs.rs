@@ -47,6 +47,8 @@ pub struct Knobs {
     pub baseline_wh_per_hour_summer: f64,
     pub keep_batteries_charged_during_full_charge: bool,
     pub sunrise_sunset_offset_min: i32,
+    pub full_charge_defer_to_next_sunday: bool,
+    pub full_charge_snap_back_max_weekday: i32,
 }
 
 impl PartialEq for Knobs {
@@ -225,6 +227,14 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.full_charge_defer_to_next_sunday.cmp(&other.full_charge_defer_to_next_sunday) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.full_charge_snap_back_max_weekday.cmp(&other.full_charge_snap_back_max_weekday) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -281,6 +291,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, &mut buffer)?;
             value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, &mut buffer)?;
             value.sunrise_sunset_offset_min.encode_ueba(ctx, &mut buffer)?;
+            value.full_charge_defer_to_next_sunday.encode_ueba(ctx, &mut buffer)?;
+            value.full_charge_snap_back_max_weekday.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -324,6 +336,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, writer)?;
             value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, writer)?;
             value.sunrise_sunset_offset_min.encode_ueba(ctx, writer)?;
+            value.full_charge_defer_to_next_sunday.encode_ueba(ctx, writer)?;
+            value.full_charge_snap_back_max_weekday.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -375,6 +389,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let baseline_wh_per_hour_summer = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let keep_batteries_charged_during_full_charge = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let sunrise_sunset_offset_min = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let full_charge_defer_to_next_sunday = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let full_charge_snap_back_max_weekday = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -416,6 +432,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             baseline_wh_per_hour_summer,
             keep_batteries_charged_during_full_charge,
             sunrise_sunset_offset_min,
+            full_charge_defer_to_next_sunday,
+            full_charge_snap_back_max_weekday,
         })
     }
 }

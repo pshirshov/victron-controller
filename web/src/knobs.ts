@@ -195,6 +195,14 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     kind: "int", min: 0, max: 480, step: 5, default: 60,
     category: "operator", group: "Schedule overrides",
   },
+  "full-charge.defer-to-next-sunday": {
+    kind: "bool", default: false,
+    category: "operator", group: "Schedule overrides",
+  },
+  "full-charge.snap-back-max-weekday": {
+    kind: "int", min: 1, max: 5, step: 1, default: 3,
+    category: "operator", group: "Schedule overrides",
+  },
 
   // --- Config: Eddi ---
   "eddi.soc.enable": { kind: "float", min: 50, max: 100, step: 1, default: 96, category: "config", group: "Eddi" },

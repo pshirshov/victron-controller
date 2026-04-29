@@ -899,6 +899,9 @@ pub struct KnobsDefaultsConfig {
     // --- PR-keep-batteries-charged ---
     pub keep_batteries_charged_during_full_charge: Option<bool>,
     pub sunrise_sunset_offset_min: Option<u32>,
+
+    pub full_charge_defer_to_next_sunday: Option<bool>,
+    pub full_charge_snap_back_max_weekday: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -965,6 +968,9 @@ impl KnobsDefaultsConfig {
 
         set!(keep_batteries_charged_during_full_charge);
         set!(sunrise_sunset_offset_min);
+
+        set!(full_charge_defer_to_next_sunday);
+        set!(full_charge_snap_back_max_weekday);
     }
 }
 

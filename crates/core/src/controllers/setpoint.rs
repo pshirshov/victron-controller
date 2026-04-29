@@ -72,6 +72,18 @@ pub struct SetpointInputGlobals {
     /// discharge" glitch, so the margin is OFF by default; affected
     /// firmware users can flip the knob to `true`.
     pub inverter_safe_discharge_enable: bool,
+    /// When `true`, the SoC ≥ 99.99 weekly rollover always lands on
+    /// the Sunday at-or-after `now + 7d` (never snaps back to the
+    /// current week's Sunday). Default `false` preserves legacy
+    /// behaviour. Only consulted by the SoC-100 rollover call site;
+    /// manually-edited `next_full_charge` values are not retroactively
+    /// reinterpreted.
+    pub full_charge_defer_to_next_sunday: bool,
+    /// Inclusive max weekday (Sun=0, Mon=1, ..., Sat=6) for the
+    /// snap-back branch. Replaces the legacy hard-coded `3`. Range
+    /// validated upstream; the helper clamps defensively. Only
+    /// applies when `full_charge_defer_to_next_sunday` is `false`.
+    pub full_charge_snap_back_max_weekday: u32,
 }
 
 /// Full output of the setpoint controller. The shell turns this into a
@@ -476,7 +488,14 @@ pub fn evaluate_setpoint(
 
     let mut next_full_charge = g
         .next_full_charge
-        .unwrap_or_else(|| get_next_charge_date_to_sunday_5pm(now, 0, false));
+        // Seed for the local; only the SoC ≥ 99.99 branch below
+        // consults the defer-to-next-sunday knob. The seed preserves
+        // legacy behaviour (snap to this week's Sunday) so a `None`
+        // bookkeeping value isn't retroactively reinterpreted. Pass
+        // the legacy threshold (3) — `defined=false` means the
+        // snap-back branch is taken regardless of `dow`, so the
+        // threshold value is inert here.
+        .unwrap_or_else(|| get_next_charge_date_to_sunday_5pm(now, 0, false, false, 3));
 
     let charge_to_full_required = match g.debug_full_charge {
         DebugFullCharge::Forbid => false,
@@ -560,7 +579,13 @@ pub fn evaluate_setpoint(
     // weekly rollover. 99.99 keeps the "we hit full" semantic without
     // the equality risk.
     if battery_soc >= 99.99 {
-        next_full_charge = get_next_charge_date_to_sunday_5pm(now, 1, next_full_charge_defined);
+        next_full_charge = get_next_charge_date_to_sunday_5pm(
+            now,
+            1,
+            next_full_charge_defined,
+            g.full_charge_defer_to_next_sunday,
+            g.full_charge_snap_back_max_weekday,
+        );
     }
 
     let hour = now.hour();
@@ -898,18 +923,36 @@ pub fn prepare_setpoint(max_discharge: f64, setpoint_target: f64, idle_setpoint_
 ///   current weekday is Thu/Fri/Sat, push to next week's Sunday;
 /// - otherwise land on this week's Sunday.
 /// - if the result is before `now`, push forward one week.
+///
+/// `defer_to_next_sunday` (knob `full-charge.defer-to-next-sunday`):
+/// when `true`, override the snap-back branch — for any non-Sunday
+/// `dow`, push forward to the Sunday at-or-after `now + weeks*7d`
+/// rather than dropping back to the prior Sunday.
+///
+/// `snap_back_max_weekday` (knob `full-charge.snap-back-max-weekday`,
+/// range 1..=5, default 3): inclusive cap on the snap-back branch.
+/// `dow <= snap_back_max_weekday` snaps to this week's Sunday;
+/// `dow > snap_back_max_weekday` pushes forward. The helper clamps
+/// defensively to [1, 5] so an out-of-range retained value never
+/// produces nonsense (e.g. 0 would force every weekday to push;
+/// 6 would suppress the push branch entirely).
 fn get_next_charge_date_to_sunday_5pm(
     now: NaiveDateTime,
     weeks: i64,
     next_full_charge_defined: bool,
+    defer_to_next_sunday: bool,
+    snap_back_max_weekday: u32,
 ) -> NaiveDateTime {
+    let threshold = i64::from(snap_back_max_weekday.clamp(1, 5));
     let mut d = now + TimeDelta::days(weeks * 7);
     d = d
         .date()
         .and_hms_opt(17, 0, 0)
         .expect("hms constants are always valid");
     let dow = i64::from(d.weekday().num_days_from_sunday()); // 0 = Sunday
-    if dow > 3 && next_full_charge_defined {
+    let push_forward =
+        (dow > threshold && next_full_charge_defined) || (dow > 0 && defer_to_next_sunday);
+    if push_forward {
         d += TimeDelta::days(7 - dow);
     } else {
         d -= TimeDelta::days(dow);
@@ -956,6 +999,8 @@ mod tests {
                 // legacy safety/discharge-cap/max_discharge behaviour
                 // override this to `true` per their globals literal.
                 inverter_safe_discharge_enable: false,
+                full_charge_defer_to_next_sunday: false,
+                full_charge_snap_back_max_weekday: 3,
             },
             power_consumption: 1500.0,
             battery_soc: 80.0,
@@ -1662,7 +1707,7 @@ mod tests {
             .unwrap()
             .and_hms_opt(10, 0, 0)
             .unwrap();
-        let d = get_next_charge_date_to_sunday_5pm(now, 0, false);
+        let d = get_next_charge_date_to_sunday_5pm(now, 0, false, false, 3);
         assert_eq!(d.weekday().num_days_from_sunday(), 0);
         assert_eq!(d.hour(), 17);
         assert!(d >= now);
@@ -1676,7 +1721,7 @@ mod tests {
             .unwrap()
             .and_hms_opt(10, 0, 0)
             .unwrap();
-        let d = get_next_charge_date_to_sunday_5pm(now, 0, true);
+        let d = get_next_charge_date_to_sunday_5pm(now, 0, true, false, 3);
         assert_eq!(d.weekday().num_days_from_sunday(), 0);
         assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
         assert_eq!(d.hour(), 17);
@@ -1689,9 +1734,150 @@ mod tests {
             .unwrap()
             .and_hms_opt(10, 0, 0)
             .unwrap();
-        let d = get_next_charge_date_to_sunday_5pm(now, 1, true);
+        let d = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
         assert_eq!(d.weekday().num_days_from_sunday(), 0);
         assert_eq!(d.hour(), 17);
+    }
+
+    /// `full_charge_defer_to_next_sunday=true` overrides the snap-back
+    /// branch for Mon/Tue/Wed: with `weeks=1`, `now+7d` is Mon/Tue/Wed
+    /// — legacy snaps back to that week's Sunday (≈4-6 days out); the
+    /// knob pushes to the Sunday after instead (≈8-10 days out).
+    #[test]
+    fn defer_to_next_sunday_pushes_forward_from_monday_seed() {
+        // 2026-04-20 Monday 10:00 → now+7d = 2026-04-27 Monday → legacy
+        // snaps back to 2026-04-26 Sunday; knob ON pushes to 2026-05-03.
+        let now = NaiveDate::from_ymd_opt(2026, 4, 20)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let legacy = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
+        let deferred = get_next_charge_date_to_sunday_5pm(now, 1, true, true, 3);
+        assert_eq!(legacy.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+        assert_eq!(deferred.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+        assert_eq!(legacy.hour(), 17);
+        assert_eq!(deferred.hour(), 17);
+    }
+
+    /// On a Sunday seed (`now+7d` lands on Sunday), the knob is a no-op
+    /// — both paths return that Sunday at 17:00.
+    #[test]
+    fn defer_to_next_sunday_no_op_when_seed_already_sunday() {
+        // 2026-04-19 Sunday 10:00 → now+7d = 2026-04-26 Sunday → both
+        // legacy and deferred return 2026-04-26 17:00.
+        let now = NaiveDate::from_ymd_opt(2026, 4, 19)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let legacy = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
+        let deferred = get_next_charge_date_to_sunday_5pm(now, 1, true, true, 3);
+        assert_eq!(legacy, deferred);
+        assert_eq!(legacy.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+    }
+
+    /// On Thu/Fri/Sat seeds the legacy branch already pushes forward
+    /// when `defined=true`, so the knob is also a no-op there.
+    #[test]
+    fn defer_to_next_sunday_matches_legacy_push_branch() {
+        // 2026-04-24 Friday 10:00 → now+7d = 2026-05-01 Friday (dow=5).
+        // Legacy with defined=true pushes to 2026-05-03; knob ON should
+        // produce the same.
+        let now = NaiveDate::from_ymd_opt(2026, 4, 24)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let legacy = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
+        let deferred = get_next_charge_date_to_sunday_5pm(now, 1, true, true, 3);
+        assert_eq!(legacy, deferred);
+        assert_eq!(legacy.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+    }
+
+    /// With `defined=false`, legacy *always* snaps back regardless of
+    /// dow. Knob ON instead pushes to the upcoming Sunday for any
+    /// non-Sunday seed.
+    #[test]
+    fn defer_to_next_sunday_overrides_undefined_snapback() {
+        // 2026-04-24 Friday 10:00 (dow=5 of seed). Legacy with
+        // defined=false → snap back to this week's Sunday 2026-04-19
+        // (in the past) → +7d safety push → 2026-04-26.
+        // Knob ON with defined=false → push forward → 2026-04-26 (same
+        // result here because the safety net rescued the past date).
+        // Use weeks=1 to avoid the safety net interfering: seed
+        // 2026-04-24 Friday with weeks=1 = 2026-05-01 Friday (dow=5),
+        // legacy snap-back = 2026-04-26, knob ON push = 2026-05-03.
+        let now = NaiveDate::from_ymd_opt(2026, 4, 24)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let legacy = get_next_charge_date_to_sunday_5pm(now, 1, false, false, 3);
+        let deferred = get_next_charge_date_to_sunday_5pm(now, 1, false, true, 3);
+        assert_eq!(legacy.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+        assert_eq!(deferred.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+    }
+
+    /// Lowering `snap_back_max_weekday` to 1 (Mon) makes Tue/Wed
+    /// also push forward — the threshold replaces the legacy hard-
+    /// coded `> 3`. Seed Tuesday 2026-04-21, weeks=1 → now+7d =
+    /// Tuesday 2026-04-28 (dow=2). With cap=3 (legacy), dow ≤ 3
+    /// → snap-back to 2026-04-26. With cap=1, dow > 1 → push to
+    /// 2026-05-03.
+    #[test]
+    fn snap_back_threshold_lowered_pushes_tuesday_forward() {
+        let now = NaiveDate::from_ymd_opt(2026, 4, 21)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let with_legacy_cap = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
+        let with_low_cap = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 1);
+        assert_eq!(with_legacy_cap.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+        assert_eq!(with_low_cap.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+    }
+
+    /// Raising `snap_back_max_weekday` to 5 (Fri) makes Thursday
+    /// snap back instead of pushing forward. Seed 2026-04-23
+    /// Thursday → now+7d = 2026-04-30 Thursday (dow=4). With
+    /// cap=3 (legacy), dow > 3 → push to 2026-05-03. With cap=5,
+    /// dow ≤ 5 → snap back to this week's Sunday 2026-04-26.
+    #[test]
+    fn snap_back_threshold_raised_snaps_thursday_back() {
+        let now = NaiveDate::from_ymd_opt(2026, 4, 23)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let with_legacy_cap = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 3);
+        let with_high_cap = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 5);
+        assert_eq!(with_legacy_cap.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+        assert_eq!(with_high_cap.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+    }
+
+    /// `defer_to_next_sunday=true` overrides the threshold entirely
+    /// — even with cap=5 (which would normally snap back), defer
+    /// pushes for any non-Sunday `dow`.
+    #[test]
+    fn defer_overrides_threshold() {
+        let now = NaiveDate::from_ymd_opt(2026, 4, 21)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let d = get_next_charge_date_to_sunday_5pm(now, 1, true, true, 5);
+        assert_eq!(d.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+    }
+
+    /// Out-of-range threshold (0 or > 5) is clamped to [1, 5].
+    /// Threshold 0 would otherwise push every weekday; clamping to
+    /// 1 preserves Mon snap-back. Threshold 99 clamps to 5.
+    #[test]
+    fn snap_back_threshold_clamps_out_of_range() {
+        let now = NaiveDate::from_ymd_opt(2026, 4, 20)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let clamped_low = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 0);
+        let clamped_low_ref = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 1);
+        assert_eq!(clamped_low, clamped_low_ref);
+        let clamped_high = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 99);
+        let clamped_high_ref = get_next_charge_date_to_sunday_5pm(now, 1, true, false, 5);
+        assert_eq!(clamped_high, clamped_high_ref);
     }
 
     // ------------------------------------------------------------------

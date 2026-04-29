@@ -172,6 +172,10 @@ export const entityDescriptions: Record<string, string> = {
     "When true and bookkeeping.charge_to_full_required is set, the shell forces ESS state 9 (KeepBatteriesCharged) inside the daylight window [sunrise + offset, sunset - offset] and restores the captured pre-override state on exit.",
   "ess.full-charge.sunrise-sunset-offset-min":
     "Symmetric inset (minutes) applied to local sunrise and sunset to delimit the keep-batteries-charged override window. Default 60.",
+  "full-charge.defer-to-next-sunday":
+    "When on, the SoC ≥ 99.99 weekly rollover always lands on the Sunday at-or-after now+7 days — never snaps back to the current week's Sunday. Default off (legacy: Mon/Tue/Wed snap back). Manual edits to the next-full-charge bookkeeping value are not retroactively reinterpreted.",
+  "full-charge.snap-back-max-weekday":
+    "Inclusive weekday cap (Sun=0, Mon=1, ..., Sat=6) for the snap-back branch of the SoC ≥ 99.99 rollover. When the resulting weekday ≤ cap, the date snaps to this week's Sunday; otherwise it pushes to next Sunday. Range 1..=5; default 3 means Mon/Tue/Wed snap back and Thu/Fri/Sat push forward. Ignored when defer-to-next-sunday is on.",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

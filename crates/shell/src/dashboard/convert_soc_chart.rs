@@ -274,6 +274,8 @@ fn build_setpoint_template_for_projection(
             pessimism_multiplier_modifier: k.pessimism_multiplier_modifier,
             next_full_charge: bk.next_full_charge,
             inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
+            full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
+            full_charge_snap_back_max_weekday: k.full_charge_snap_back_max_weekday,
         },
         // Use the live consumption when known so the
         // `preserve_battery` evening-discharge clamp uses a realistic

@@ -329,6 +329,8 @@ pub fn knob_name(id: KnobId) -> &'static str {
         // PR-keep-batteries-charged.
         KnobId::KeepBatteriesChargedDuringFullCharge => "ess.full-charge.keep-batteries-charged",
         KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min",
+        KnobId::FullChargeDeferToNextSunday => "full-charge.defer-to-next-sunday",
+        KnobId::FullChargeSnapBackMaxWeekday => "full-charge.snap-back-max-weekday",
     }
 }
 
@@ -377,6 +379,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         // PR-keep-batteries-charged.
         "ess.full-charge.keep-batteries-charged" => KnobId::KeepBatteriesChargedDuringFullCharge,
         "ess.full-charge.sunrise-sunset-offset-min" => KnobId::SunriseSunsetOffsetMin,
+        "full-charge.defer-to-next-sunday" => KnobId::FullChargeDeferToNextSunday,
+        "full-charge.snap-back-max-weekday" => KnobId::FullChargeSnapBackMaxWeekday,
         _ => return None,
     })
 }
@@ -562,6 +566,12 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // pathological.
         KnobId::SunriseSunsetOffsetMin => (0.0, 480.0),
 
+        // Snap-back weekday cap: range 1 (Mon) .. 5 (Fri). Sunday (0)
+        // and Saturday (6) are excluded by spec (the helper clamps any
+        // out-of-range retained value, but the HA slider never offers
+        // them).
+        KnobId::FullChargeSnapBackMaxWeekday => (1.0, 5.0),
+
         // PR-baseline-forecast: MMDD-encoded dates. Range covers any
         // legal MMDD literal (101 = Jan 1, 1231 = Dec 31). Day-of-month
         // legality (e.g. rejecting 230 / 431) is enforced at use-site
@@ -597,7 +607,8 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // bool — no range
         | KnobId::InverterSafeDischargeEnable
         // PR-keep-batteries-charged — bool, no range.
-        | KnobId::KeepBatteriesChargedDuringFullCharge => return None,
+        | KnobId::KeepBatteriesChargedDuringFullCharge
+        | KnobId::FullChargeDeferToNextSunday => return None,
     })
 }
 
@@ -664,7 +675,8 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::AllowBatteryToCar
         | KnobId::InverterSafeDischargeEnable
         // PR-keep-batteries-charged — bool.
-        | KnobId::KeepBatteriesChargedDuringFullCharge => parse_bool(body).map(KnobValue::Bool),
+        | KnobId::KeepBatteriesChargedDuringFullCharge
+        | KnobId::FullChargeDeferToNextSunday => parse_bool(body).map(KnobValue::Bool),
         KnobId::ExportSocThreshold
         | KnobId::DischargeSocTarget
         | KnobId::BatterySocTarget
@@ -693,7 +705,8 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::BaselineWinterStartMmDd
         | KnobId::BaselineWinterEndMmDd
         // PR-keep-batteries-charged — minutes encoded as Uint32.
-        | KnobId::SunriseSunsetOffsetMin => {
+        | KnobId::SunriseSunsetOffsetMin
+        | KnobId::FullChargeSnapBackMaxWeekday => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {

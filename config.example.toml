@@ -333,3 +333,14 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # keep_batteries_charged_during_full_charge = false
 # sunrise_sunset_offset_min                  = 60
 
+# When true, the SoC ≥ 99.99 weekly rollover always lands on the
+# Sunday at-or-after now+7d (never snaps back to the current week's
+# Sunday). Default false preserves the legacy snap-back behaviour.
+# full_charge_defer_to_next_sunday          = false
+# Inclusive weekday cap (Sun=0, Mon=1, ..., Sat=6) for the snap-back
+# branch. dow <= cap snaps to this week's Sunday; dow > cap pushes
+# to next Sunday. Range 1..=5; default 3 (legacy: Mon/Tue/Wed snap;
+# Thu/Fri/Sat push). Ignored when full_charge_defer_to_next_sunday
+# is true.
+# full_charge_snap_back_max_weekday         = 3
+

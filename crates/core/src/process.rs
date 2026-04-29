@@ -733,6 +733,12 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::SunriseSunsetOffsetMin, KnobValue::Uint32(v)) => {
             replace(&mut k.sunrise_sunset_offset_min, v) != v
         }
+        (KnobId::FullChargeDeferToNextSunday, KnobValue::Bool(v)) => {
+            replace(&mut k.full_charge_defer_to_next_sunday, v) != v
+        }
+        (KnobId::FullChargeSnapBackMaxWeekday, KnobValue::Uint32(v)) => {
+            replace(&mut k.full_charge_snap_back_max_weekday, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -862,6 +868,14 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::BaselineWhPerHourSummer,
             value: V::Float(k.baseline_wh_per_hour_summer),
+        },
+        PublishPayload::Knob {
+            id: I::FullChargeDeferToNextSunday,
+            value: V::Bool(k.full_charge_defer_to_next_sunday),
+        },
+        PublishPayload::Knob {
+            id: I::FullChargeSnapBackMaxWeekday,
+            value: V::Uint32(k.full_charge_snap_back_max_weekday),
         },
     ]
 }
@@ -1137,6 +1151,8 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
             next_full_charge: bk.next_full_charge,
             // PR-inverter-safe-discharge-knob.
             inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
+            full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
+            full_charge_snap_back_max_weekday: k.full_charge_snap_back_max_weekday,
         },
         power_consumption: world.sensors.power_consumption.value.unwrap(),
         battery_soc: world.sensors.battery_soc.value.unwrap(),

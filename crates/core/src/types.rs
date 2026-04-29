@@ -719,6 +719,12 @@ pub enum KnobId {
     // daytime ESS-state override (state 9, KeepBatteriesCharged).
     KeepBatteriesChargedDuringFullCharge,
     SunriseSunsetOffsetMin,
+    /// When true, SoC ≥ 99.99 rollover always lands on the Sunday
+    /// at-or-after `now + 7d`. Steers `get_next_charge_date_to_sunday_5pm`.
+    FullChargeDeferToNextSunday,
+    /// Inclusive max weekday for snap-back in the SoC ≥ 99.99 rollover.
+    /// Range 1..=5; default 3.
+    FullChargeSnapBackMaxWeekday,
 }
 
 /// Forecast providers.

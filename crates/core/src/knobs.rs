@@ -197,6 +197,21 @@ pub struct Knobs {
     /// sunset to delimit the override window. Default 60 keeps the
     /// override well clear of dawn/dusk shoulder periods.
     pub sunrise_sunset_offset_min: u32,
+
+    /// When true, the SoC ≥ 99.99 weekly rollover always lands on the
+    /// Sunday at-or-after `now + 7d`, never snapping back to the
+    /// current week's Sunday. Default `false` preserves legacy
+    /// behaviour (Mon/Tue/Wed snap back to this week's Sunday).
+    pub full_charge_defer_to_next_sunday: bool,
+
+    /// Inclusive weekday cap for the snap-back branch of the SoC ≥
+    /// 99.99 rollover. With `num_days_from_sunday` encoding (Sun=0,
+    /// Mon=1, ..., Sat=6), snap-back fires when the resulting `dow
+    /// <= cap`; otherwise the date is pushed forward to the next
+    /// Sunday. Range 1..=5; default 3 preserves legacy (Mon/Tue/Wed
+    /// snap back; Thu/Fri/Sat push forward). Ignored when
+    /// `full_charge_defer_to_next_sunday` is on.
+    pub full_charge_snap_back_max_weekday: u32,
 }
 
 impl Knobs {
@@ -293,6 +308,12 @@ impl Knobs {
             // around sunrise/sunset where the sun crate's accuracy
             // matters less — and matches the user-stated default.
             sunrise_sunset_offset_min: 60,
+            // Default off — preserve the legacy Mon/Tue/Wed snap-back
+            // to the current week's Sunday.
+            full_charge_defer_to_next_sunday: false,
+            // Default 3 (Wednesday) preserves legacy behaviour: dow ≤ 3
+            // → snap back; dow > 3 → push forward.
+            full_charge_snap_back_max_weekday: 3,
         }
     }
 }

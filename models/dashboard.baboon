@@ -105,6 +105,16 @@ data Knobs {
   // delimiting the override window. Single value applied symmetrically:
   // window = [sunrise + offset, sunset - offset].
   sunrise_sunset_offset_min: i32
+  // When true, the SoC ≥ 99.99 rollover always lands on the Sunday at
+  // or after now+7d (never snaps back to the current week's Sunday).
+  full_charge_defer_to_next_sunday: bit
+  // Inclusive weekday cap for the snap-back branch. With Sunday = 0,
+  // Monday = 1 ... Saturday = 6, the rollover snaps to this week's
+  // Sunday when `dow <= cap` and pushes to the following Sunday
+  // when `dow > cap`. Range 1..=5; default 3 preserves legacy
+  // (Mon/Tue/Wed snap back, Thu/Fri/Sat push forward). Ignored when
+  // `full_charge_defer_to_next_sunday` is on.
+  full_charge_snap_back_max_weekday: i32
 }
 
 // One row per configured (path, type, value) triplet. The shell reads

@@ -819,6 +819,9 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         keep_batteries_charged_during_full_charge: k.keep_batteries_charged_during_full_charge,
         sunrise_sunset_offset_min: i32::try_from(k.sunrise_sunset_offset_min)
             .unwrap_or(i32::MAX),
+        full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
+        full_charge_snap_back_max_weekday: i32::try_from(k.full_charge_snap_back_max_weekday)
+            .unwrap_or(i32::MAX),
     }
 }
 
@@ -1039,6 +1042,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
             KnobId::KeepBatteriesChargedDuringFullCharge
         }
         "sunrise_sunset_offset_min" => KnobId::SunriseSunsetOffsetMin,
+        "full_charge_defer_to_next_sunday" => KnobId::FullChargeDeferToNextSunday,
+        "full_charge_snap_back_max_weekday" => KnobId::FullChargeSnapBackMaxWeekday,
         _ => return None,
     })
 }
