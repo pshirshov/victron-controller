@@ -38,7 +38,7 @@ use crate::controllers::schedules::{
     ScheduleSpec, SchedulesInput, SchedulesInputGlobals, evaluate_schedules,
 };
 use crate::controllers::setpoint::{
-    SetpointInput, SetpointInputGlobals, evaluate_setpoint,
+    SetpointInput, SetpointInputGlobals, compute_compensated_drain, evaluate_setpoint,
 };
 use crate::controllers::weather_soc::{
     WeatherSocInput, WeatherSocInputGlobals, evaluate_weather_soc,
@@ -47,7 +47,7 @@ use crate::controllers::zappi_mode::{
     ZappiModeInput, ZappiModeInputGlobals, evaluate_zappi_mode,
 };
 use crate::controllers::zappi_mode::ZappiModeAction;
-use crate::myenergi::EddiMode;
+use crate::myenergi::{EddiMode, ZappiMode};
 use crate::owner::Owner;
 use crate::topology::{ControllerParams, Topology};
 use crate::types::{
@@ -1142,6 +1142,27 @@ pub fn effective_charge_car_extended(world: &World) -> bool {
     }
 }
 
+/// PR-ZD-4: world-level wrapper for the compensated-drain formula used by
+/// both the soft loop (PR-ZD-3, in `evaluate_setpoint`) and the Fast-mode
+/// hard clamp (PR-ZD-4, in `run_setpoint`).
+///
+/// Formula: `max(0, -battery_dc_power - heat_pump_w - cooker_w)`.
+/// See `compute_compensated_drain` in `controllers::setpoint` for the
+/// canonical definition.
+///
+/// Stale HP/cooker sensors return `None` from `.value`; treated as 0 W
+/// (conservative — clamps tighter on a dead bridge, never looser).
+/// `battery_dc_power` uses `.unwrap_or(0.0)` defensively; in
+/// production this path runs after `build_setpoint_input` confirms
+/// usability, so `unwrap()` would also be safe.
+#[must_use]
+pub(crate) fn compensated_drain_w(world: &World) -> f64 {
+    let battery = world.sensors.battery_dc_power.value.unwrap_or(0.0);
+    let hp = world.sensors.heat_pump_power.value.unwrap_or(0.0);
+    let cooker = world.sensors.cooker_power.value.unwrap_or(0.0);
+    compute_compensated_drain(battery, hp, cooker)
+}
+
 /// PR-auto-extended-charge: at the daily 04:30 boundary, when
 /// `charge_car_extended_mode = Auto`, decide whether to enable extended
 /// charge for the upcoming NightExtended (05:00–08:00) window. The
@@ -1288,6 +1309,34 @@ pub(crate) fn run_setpoint(
 
     let out = evaluate_setpoint(&input, clock, &topology.hardware);
 
+    // PR-ZD-4: Fast-mode hard clamp — independent safety net on top of the
+    // soft loop. Only fires in Fast mode because Eco/Eco+ self-modulate via
+    // Zappi's CT clamp; in those modes the soft loop is sufficient. Fast mode
+    // pulls regardless of CT.
+    //
+    // Reads `world.zappi_mode.target.value` (the commanded mode, not the
+    // readback) — predictive arming: the moment the controller commits to Fast,
+    // the clamp arms without waiting for the next myenergi poll.
+    let zappi_fast = matches!(
+        world.zappi_mode.target.value,
+        Some(ZappiMode::Fast)
+    );
+    let hard_clamp_drain_w = compensated_drain_w(world);
+    let hard_clamp_w = f64::from(world.knobs.zappi_battery_drain_hard_clamp_w);
+
+    let (hard_clamped_target, hard_clamp_engaged, hard_clamp_excess) =
+        if zappi_fast
+            && !world.knobs.allow_battery_to_car
+            && world.derived.zappi_active
+            && hard_clamp_drain_w > hard_clamp_w
+        {
+            let excess = hard_clamp_drain_w - hard_clamp_w;
+            let raised = (f64::from(out.setpoint_target) + excess).round() as i32;
+            (raised, true, excess)
+        } else {
+            (out.setpoint_target, false, 0.0)
+        };
+
     // SPEC §5.11: grid-side hard cap — two-sided clamp.
     // PR-hardware-config: split the former single SAFE_MAX_GRID_LIMIT_W
     // = 10_000 into two per-direction ceilings sourced from
@@ -1310,7 +1359,10 @@ pub(crate) fn run_setpoint(
             .min(topology.hardware.grid_import_knob_max_w),
     )
     .expect("grid_import_knob_max_w fits in i32");
-    let pre_clamp = out.setpoint_target;
+    // PR-ZD-4: feed `hard_clamped_target` (post-hard-clamp) into the grid-cap
+    // clamp. The grid_import_limit_w / grid_export_limit_w are the final
+    // ceiling; the hard clamp adds to the soft-loop output, then grid-cap clips.
+    let pre_clamp = hard_clamped_target;
     let clamped = pre_clamp.clamp(-export_cap, import_cap);
     // A-10: re-assert the idle-bleed invariant AFTER the clamp. With
     // grid_export_limit_w = 0 the clamp bounds become [-0, +import_cap],
@@ -1335,11 +1387,37 @@ pub(crate) fn run_setpoint(
     // pre_clamp_setpoint_W factor — they operate at different layers:
     // the core clamps at max_discharge semantics; the wrapper below
     // clamps at the user-configurable grid-side export/import caps.
-    let decision = if pre_clamp == capped {
-        out.decision.clone()
-    } else {
+    //
+    // PR-ZD-4: hard-clamp factors are prepended (only when engaged) so
+    // they appear near the top of the decision panel alongside the
+    // soft-loop factors that precede the grid-cap factors.
+    let base_decision = if hard_clamp_engaged {
         out.decision
             .clone()
+            .with_factor("hard_clamp_engaged", "true".to_string())
+            .with_factor(
+                "hard_clamp_excess_W",
+                format!("{hard_clamp_excess:.0}"),
+            )
+            .with_factor(
+                "hard_clamp_threshold_W",
+                format!("{hard_clamp_w:.0}"),
+            )
+            .with_factor(
+                "hard_clamp_pre_W",
+                format!("{}", out.setpoint_target),
+            )
+            .with_factor(
+                "hard_clamp_post_W",
+                format!("{hard_clamped_target}"),
+            )
+    } else {
+        out.decision.clone()
+    };
+    let decision = if pre_clamp == capped {
+        base_decision
+    } else {
+        base_decision
             .with_factor("grid_cap_pre_W", format!("{pre_clamp}"))
             .with_factor(
                 "grid_cap_bounds_W",
@@ -4926,5 +5004,351 @@ mod tests {
         let _ = process(&Event::Tick { at: t1.monotonic }, &mut world, &t1, &Topology::defaults());
         let setpoint_1 = world.grid_setpoint.target.value.expect("setpoint set after tick 1");
         assert_eq!(setpoint_1, -200, "tick 1: prev=-100, step DOWN, expected -200, got {setpoint_1}");
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-4: Fast-mode hard clamp tests (tests 27–33)
+    // ------------------------------------------------------------------
+
+    /// Set up world for hard-clamp tests: required sensors seeded, Zappi
+    /// actively charging (typed state = Eco/Charging/DivertingOrCharging so
+    /// ZappiActiveCore derives `zappi_active = true`), battery draining at
+    /// `battery_drain_w`.
+    fn seed_hard_clamp_scenario(
+        world: &mut World,
+        at: Instant,
+        battery_drain_w: f64,
+    ) {
+        world.knobs.writes_enabled = true;
+        world.knobs.allow_battery_to_car = false;
+        world.knobs.zappi_battery_drain_hard_clamp_w = 200;
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_relax_step_w = 100;
+        world.knobs.zappi_battery_drain_kp = 1.0;
+        world.knobs.grid_import_limit_w = 5000;
+
+        let ss = &mut world.sensors;
+        ss.battery_soc.on_reading(80.0, at);
+        ss.battery_soh.on_reading(95.0, at);
+        ss.battery_installed_capacity.on_reading(100.0, at);
+        ss.battery_dc_power.on_reading(-battery_drain_w, at); // negative = discharging
+        ss.mppt_power_0.on_reading(0.0, at);
+        ss.mppt_power_1.on_reading(0.0, at);
+        ss.soltaro_power.on_reading(0.0, at);
+        ss.power_consumption.on_reading(1200.0, at);
+        ss.grid_power.on_reading(0.0, at);
+        ss.grid_voltage.on_reading(230.0, at);
+        ss.grid_current.on_reading(0.0, at);
+        ss.consumption_current.on_reading(5.0, at);
+        ss.offgrid_power.on_reading(0.0, at);
+        ss.offgrid_current.on_reading(0.0, at);
+        ss.vebus_input_current.on_reading(0.0, at);
+        ss.evcharger_ac_power.on_reading(0.0, at);
+        ss.evcharger_ac_current.on_reading(0.0, at);
+        ss.ess_state.on_reading(10.0, at);
+        ss.outdoor_temperature.on_reading(15.0, at);
+
+        // Typed Zappi state: Eco + Charging + DivertingOrCharging
+        // → ZappiActiveCore derives `zappi_active = true`.
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Eco,
+                zappi_plug_state: ZappiPlugState::Charging,
+                zappi_status: ZappiStatus::DivertingOrCharging,
+                zappi_last_change_signature: at,
+                session_kwh: 0.0,
+            },
+            at,
+        );
+    }
+
+    /// Decode the `hard_clamp_engaged` decision factor if present.
+    fn hard_clamp_engaged_factor(world: &World) -> Option<&str> {
+        world
+            .decisions
+            .grid_setpoint
+            .as_ref()
+            .and_then(|d| d.factors.iter().find(|f| f.name == "hard_clamp_engaged"))
+            .map(|f| f.value.as_str())
+    }
+
+    /// Decode the `hard_clamp_excess_W` decision factor if present.
+    fn hard_clamp_excess_factor(world: &World) -> Option<&str> {
+        world
+            .decisions
+            .grid_setpoint
+            .as_ref()
+            .and_then(|d| d.factors.iter().find(|f| f.name == "hard_clamp_excess_W"))
+            .map(|f| f.value.as_str())
+    }
+
+    /// Test 27: Fast target + !allow + zappi_active + drain(500) > hard_clamp(200)
+    /// → clamp fires, setpoint raised by 300 W vs evaluate_setpoint output.
+    ///
+    /// Setup: prev=-3000 (seeded). Soft loop: drain=500 < threshold=1000 →
+    /// relax: prev=-3000 < target=0 → (-3000+100).min(0) = -2900.
+    /// prepare_setpoint rounds: -2900/50=-58 → -2900. Output: -2900.
+    /// Hard clamp: excess=500-200=300, raised=-2900+300=-2600.
+    /// Grid cap (import=5000): -2600 within [-5000, 5000] → -2600.
+    #[test]
+    fn hard_clamp_engages_in_fast_mode_when_drain_exceeds_threshold() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+
+        // Target = Fast (predictive arming — clamp reads target, not actual).
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        // Seed initial setpoint for the soft loop's recurrence base.
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint = world.grid_setpoint.target.value.expect("setpoint set");
+
+        // Soft loop: drain=500 < threshold=1000, relax: -3000 < 0 →
+        // (-3000+100).min(0)=-2900; prepare: -2900.
+        // Hard clamp: excess=300, raised=-2900+300=-2600.
+        assert_eq!(
+            setpoint, -2600,
+            "hard clamp should raise setpoint by 300 W: expected -2600, got {setpoint}"
+        );
+        assert_eq!(
+            hard_clamp_engaged_factor(&world),
+            Some("true"),
+            "hard_clamp_engaged should be 'true' in decision factors"
+        );
+        assert_eq!(
+            hard_clamp_excess_factor(&world),
+            Some("300"),
+            "hard_clamp_excess_W should be '300' in decision factors"
+        );
+    }
+
+    /// Test 28: Eco target — hard clamp must NOT fire regardless of drain.
+    ///
+    /// zappi_active=true, drain=500 > hard_clamp=200, BUT target=Eco → bypass.
+    /// Soft loop fires (relax branch from -3000).
+    #[test]
+    fn hard_clamp_disengaged_in_eco_mode() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+
+        // Target = Eco (not Fast) → hard clamp does not arm.
+        world.zappi_mode.propose_target(ZappiMode::Eco, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint = world.grid_setpoint.target.value.expect("setpoint set");
+
+        // Soft loop relax only (no hard clamp): -2900.
+        assert_eq!(
+            setpoint, -2900,
+            "Eco mode: no hard clamp, soft relax only; expected -2900, got {setpoint}"
+        );
+        assert!(
+            hard_clamp_engaged_factor(&world).is_none(),
+            "hard_clamp_engaged must not appear in decision factors for Eco mode"
+        );
+    }
+
+    /// Test 29: Off target — hard clamp must NOT fire.
+    #[test]
+    fn hard_clamp_disengaged_in_off_mode() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+
+        // Target = Off → hard clamp does not arm.
+        world.zappi_mode.propose_target(ZappiMode::Off, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        assert!(
+            hard_clamp_engaged_factor(&world).is_none(),
+            "hard_clamp_engaged must not appear in decision factors for Off target"
+        );
+    }
+
+    /// Test 30: Fast target but allow_battery_to_car=true — hard clamp must NOT fire.
+    #[test]
+    fn hard_clamp_disengaged_when_allow_battery_to_car_true() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+
+        // Operator opted in.
+        world.knobs.allow_battery_to_car = true;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        assert!(
+            hard_clamp_engaged_factor(&world).is_none(),
+            "hard_clamp_engaged must not appear when allow_battery_to_car=true"
+        );
+    }
+
+    /// Test 31: Fast target, drain=100 < hard_clamp=200 — clamp does NOT fire.
+    #[test]
+    fn hard_clamp_disengaged_when_drain_below_clamp_threshold() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // drain=100, well below hard_clamp=200
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 100.0);
+
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        assert!(
+            hard_clamp_engaged_factor(&world).is_none(),
+            "hard_clamp_engaged must not appear when drain(100) < hard_clamp(200)"
+        );
+    }
+
+    /// Test 32: Fast + drain=2000 + threshold=1000 + kp=1.0 + hard_clamp=200.
+    ///
+    /// Soft loop: drain=2000 > threshold=1000, excess=1000.
+    ///   prev=-3000, new=-3000+1.0*1000=-2000.
+    ///   prepare_setpoint: -2000/50=-40 → -2000. Output=-2000.
+    /// Hard clamp: excess=2000-200=1800, raised=-2000+1800=-200.
+    /// Grid cap (5000): -200 within bounds → -200.
+    /// Combined raise relative to prev: +2800 W. Both clamps engaged.
+    #[test]
+    fn hard_clamp_combines_with_soft_loop() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2000.0);
+
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_kp = 1.0;
+        world.knobs.zappi_battery_drain_hard_clamp_w = 200;
+
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint = world.grid_setpoint.target.value.expect("setpoint set");
+
+        // Soft: -3000 + 1000 = -2000. Hard: -2000 + 1800 = -200.
+        assert_eq!(
+            setpoint, -200,
+            "soft + hard combined raise of +2800: expected -200, got {setpoint}"
+        );
+        assert_eq!(
+            hard_clamp_engaged_factor(&world),
+            Some("true"),
+            "hard_clamp_engaged should be 'true'"
+        );
+        assert_eq!(
+            hard_clamp_excess_factor(&world),
+            Some("1800"),
+            "hard_clamp_excess_W should be '1800'"
+        );
+    }
+
+    /// Test 33: Fast + drain=20000 + hard_clamp=200 + grid_import_limit_w=5000.
+    ///
+    /// Soft loop: drain=20000 > threshold=1000, excess=19000.
+    ///   prev=10 (cold boot), new=10+1.0*19000=19010.
+    ///   prepare_setpoint: >= 0 → returns idle (10).
+    /// Hard clamp: excess=20000-200=19800, raised=10+19800=19810.
+    /// Grid cap (import=5000): 19810.clamp(-5000, 5000)=5000.
+    /// Final setpoint: 5000. Decision has hard_clamp_engaged + grid_cap factors.
+    #[test]
+    fn hard_clamp_respects_grid_import_cap() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 20000.0);
+
+        world.knobs.zappi_battery_drain_hard_clamp_w = 200;
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_kp = 1.0;
+        world.knobs.grid_import_limit_w = 5000;
+
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        // Do NOT seed a prior setpoint — starts from cold-boot idle (10 W).
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint = world.grid_setpoint.target.value.expect("setpoint set");
+
+        // Grid cap clips at +5000.
+        assert_eq!(
+            setpoint, 5000,
+            "grid_import_cap should clip to 5000: got {setpoint}"
+        );
+        assert_eq!(
+            hard_clamp_engaged_factor(&world),
+            Some("true"),
+            "hard_clamp_engaged should be 'true'"
+        );
+        // Verify grid-cap factors also present.
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision present");
+        assert!(
+            decision.factors.iter().any(|f| f.name == "grid_cap_pre_W"),
+            "grid_cap_pre_W should be present when grid cap fired: {decision:#?}"
+        );
+    }
+
+    /// Test 34: Fast target + !allow + drain(500) > hard_clamp(200), BUT
+    /// `zappi_active = false` (EV disconnected) → hard clamp must NOT fire.
+    ///
+    /// This covers the `world.derived.zappi_active` branch of the gate:
+    ///   `target=Fast && !allow && zappi_active && drain > hard_clamp`
+    /// Setting `ZappiPlugState::EvDisconnected` causes `classify_zappi_active`
+    /// to return `false`, so `world.derived.zappi_active` is written as `false`
+    /// on the tick, and the clamp condition short-circuits.
+    ///
+    /// When `zappi_active=false`, `evaluate_setpoint` also bypasses the
+    /// Zappi drain-control branch, so the setpoint falls through to idle (10 W).
+    /// The battery-drain reading still exceeds the hard-clamp threshold, but the
+    /// gate rejects it because the Zappi is not the source of the draw.
+    #[test]
+    fn hard_clamp_disengaged_when_zappi_active_false() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+
+        // Override the typed Zappi state: EV disconnected → zappi_active = false.
+        // `classify_zappi_active` returns false immediately on EvDisconnected
+        // (crates/core/src/controllers/zappi_active.rs line ~57-61).
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Fast,
+                zappi_plug_state: ZappiPlugState::EvDisconnected,
+                zappi_status: ZappiStatus::DivertingOrCharging,
+                zappi_last_change_signature: c.monotonic,
+                session_kwh: 0.0,
+            },
+            c.monotonic,
+        );
+        // evcharger_ac_power was seeded at 0.0 W by seed_hard_clamp_scenario —
+        // well below the 500 W power-based fallback, so the power path also
+        // classifies as inactive.
+
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint = world.grid_setpoint.target.value.expect("setpoint set");
+
+        // zappi_active=false → evaluate_setpoint falls through to idle (10 W).
+        // Hard clamp also does not fire (zappi_active gate is false).
+        assert_eq!(
+            setpoint, 10,
+            "zappi_active=false: no zappi branch, idle setpoint; expected 10, got {setpoint}"
+        );
+        assert!(
+            hard_clamp_engaged_factor(&world).is_none(),
+            "hard_clamp_engaged must not appear in decision factors when zappi_active=false"
+        );
     }
 }

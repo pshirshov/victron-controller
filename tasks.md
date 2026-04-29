@@ -324,7 +324,7 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
   `(2..8)` Soltaro carve-out (folded into the unified loop). 23:55
   protection window unchanged. Add `battery_dc_power` to setpoint's
   required-fresh set. ≥ 8 new tests.
-- [ ] **PR-ZD-4 — Hard clamp.** Post-`evaluate_setpoint()` Fast-mode
+- [x] **PR-ZD-4 — Hard clamp.** Post-`evaluate_setpoint()` Fast-mode
   safety net in `run_setpoint`: when `zappi_mode.target == Fast` AND
   `!allow_battery_to_car` AND `compensated_drain > hard_clamp_w`, raise
   the proposed setpoint by the excess. ≥ 4 new tests covering Fast vs
@@ -396,6 +396,75 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 ---
 
 ## Completed
+
+- **PR-ZD-4 — Hard clamp** (M-ZAPPI-DRAIN, 2026-04-29) — Fast-mode-only
+  hard clamp as a separate post-`evaluate_setpoint()` step in
+  `run_setpoint`. Fires only when ALL of: `world.zappi_mode.target.value
+  == Some(ZappiMode::Fast)` (commanded target, predictive arming —
+  not the readback), `!allow_battery_to_car`, `world.derived.zappi_active`,
+  AND `compensated_drain > zappi_battery_drain_hard_clamp_w` (default
+  200 W). Raises the proposed setpoint by `(drain - hard_clamp_w)`
+  BEFORE the existing `grid_export_limit_w / grid_import_limit_w`
+  clamp; the grid-cap acts as the final ceiling. Eco / Eco+ / Off
+  bypass entirely (those modes self-modulate via Zappi's CT clamp +
+  the soft loop is sufficient).
+  Centralised the compensated-drain formula: new
+  `compute_compensated_drain(battery, hp, cooker)` pure helper in
+  `crates/core/src/controllers/setpoint.rs`; new wrapper
+  `compensated_drain_w(&World)` in `crates/core/src/process.rs`. The
+  PR-ZD-3 soft-loop call site refactored to call the helper —
+  behaviour identical, purely deduplication. All PR-ZD-3 tests pass
+  with unchanged expected values.
+  Decision factors only emitted when clamp engaged (mirrors PR-09a-D02
+  pattern): `hard_clamp_engaged: "true"`, `hard_clamp_excess_W`,
+  `hard_clamp_threshold_W`, `hard_clamp_pre_W`, `hard_clamp_post_W`.
+  Adversarial review: 4 defects (1 minor coverage gap, 3 nits). All
+  closed. Round-2 review skipped (single low-risk test addition).
+  Verification: `cargo test --workspace` → 551 passed (340 core + 10
+  dashboard-model + 201 shell, +8 vs PR-ZD-3 baseline 543); `cargo
+  clippy --workspace --all-targets -- -D warnings` clean; `cd web &&
+  ./node_modules/.bin/tsc --noEmit -p .` clean; `cargo build --target
+  armv7-unknown-linux-gnueabihf --release` green.
+  Defects (4 filed, all closed):
+  - D01 (minor) — no test for `zappi_active=false` bypass → added
+    `hard_clamp_disengaged_when_zappi_active_false`. Surface
+    clarification: with `zappi_active=false`, `evaluate_setpoint`
+    itself returns idle (10 W) — soft loop and hard clamp both
+    bypassed at that level. Test asserts both setpoint=10 AND
+    `hard_clamp_engaged` factor absent.
+  - D02 (nit) — placement-rationale doc claim of "circular dep" was
+    inaccurate (the claim was in the executor's report only, not in
+    code) → resolved note-only.
+  - D03 (nit) — redundant `.clone()` on `out.decision` → deferred,
+    preserves existing PR-09a-D02 idiom.
+  - D04 (nit) — `compensated_drain_w` recomputed when gate cannot
+    fire → deferred, cost negligible.
+  Notes / surprises:
+  - Helper placement: pure formula sits in `setpoint.rs` (with the
+    controller that defines its semantics); `&World` wrapper in
+    `process.rs` (where the runtime aggregate is consumed). No
+    actual circular dep prevented either direction; placement is
+    by-domain.
+  - When `zappi_active=false`, `evaluate_setpoint` bypasses the
+    Zappi soft-loop branch entirely (the existing `if g.zappi_active
+    && !g.allow_battery_to_car` gate). The hard clamp's same gate
+    therefore acts as a defence-in-depth: even if a future refactor
+    accidentally let the soft-loop branch run with `zappi_active=false`,
+    the hard clamp would still gate correctly.
+  - Test 32 verifies the additive interaction: drain=2000,
+    threshold=1000, kp=1.0, hard_clamp=200 → soft adds +1000, hard
+    adds +1800 (drain - hard_clamp), grid-cap clips. Combined raise
+    is the user-intended belt-and-suspenders.
+  Constraints future work must respect:
+  - Hard clamp ONLY in Fast mode by design. Eco/Eco+ rely on Zappi's
+    CT self-modulation. Do not extend the clamp to other modes
+    without explicit operator input.
+  - `world.zappi_mode.target.value` (commanded target), NOT
+    `world.typed_sensors.zappi_state.value.zappi_mode` (readback).
+    Predictive arming is the locked decision.
+  - The shared `compute_compensated_drain` helper is the single
+    source of truth. Future changes to the formula must update the
+    helper, not duplicate inline.
 
 - **PR-ZD-3 — Soft loop** (M-ZAPPI-DRAIN, 2026-04-29) — Replaced the
   PV-only Zappi-active export clamp at

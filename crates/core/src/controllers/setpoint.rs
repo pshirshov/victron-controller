@@ -494,6 +494,26 @@ pub fn compute_battery_balance(
 }
 
 // -----------------------------------------------------------------------------
+// Shared formula helpers
+// -----------------------------------------------------------------------------
+
+/// PR-ZD-3/ZD-4: shared formula for the soft loop (in `evaluate_setpoint`)
+/// and the Fast-mode hard clamp (in `process::run_setpoint`).
+///
+/// Returns the portion of battery discharge NOT explained by the two
+/// metered grid-side loads the operator excluded on purpose:
+///
+///   max(0, -battery_dc_power - heat_pump_w - cooker_w)
+///
+/// Sign convention: `battery_dc_power > 0` = charging, `< 0` = discharging.
+/// Stale HP/cooker are represented as `0.0` by the caller (conservative:
+/// clamps tighter on a dead bridge, never looser).
+#[must_use]
+pub(crate) fn compute_compensated_drain(battery_dc_power: f64, heat_pump_w: f64, cooker_w: f64) -> f64 {
+    (0.0_f64).max(-battery_dc_power - heat_pump_w - cooker_w)
+}
+
+// -----------------------------------------------------------------------------
 // Main controller
 // -----------------------------------------------------------------------------
 
@@ -658,10 +678,11 @@ pub fn evaluate_setpoint(
         // — discharges that are NOT explained by the two metered grid-side
         // loads the operator excluded on purpose. Stale HP/cooker = 0 W
         // (conservative — clamps tighter, never looser on a dead bridge).
+        // PR-ZD-4: formula centralised in `compute_compensated_drain`.
         let hp_w = input.heat_pump_power;
         let cooker_w = input.cooker_power;
         let compensated_drain_w =
-            (0.0_f64).max(-input.battery_dc_power - hp_w - cooker_w);
+            compute_compensated_drain(input.battery_dc_power, hp_w, cooker_w);
 
         let prev = f64::from(input.setpoint_target_prev);
         let threshold = f64::from(g.zappi_drain_threshold_w);

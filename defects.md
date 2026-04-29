@@ -1599,3 +1599,35 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/controllers/setpoint.rs:1259-1284` (test 16)
 **Description:** Test 16 asserts decision summary contains "relaxing", which is true regardless of whether the clamp fires (charging=2000 → un-clamped drain=-2000 → still < 1000 → still relaxes). Removing `max(0, ...)` wouldn't fail the test.
 **Fix:** Extended `compensated_drain_clamped_zero_when_battery_charging` test in `crates/core/src/controllers/setpoint.rs` to assert the `compensated_drain_W` factor value is exactly `"0"` (would fail if the `max(0, ...)` clamp were removed).
+
+---
+
+## PR-ZD-4 (M-ZAPPI-DRAIN hard clamp)
+
+### [PR-ZD-4-D01] No coverage for `world.derived.zappi_active=false` bypass
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs::tests` (around lines 5005–5300)
+**Description:** Tests 27–33 cover the four-AND gate for target / allow / drain conditions individually, but no test exercises the case `target=Fast` AND `!allow_battery_to_car` AND `drain > hard_clamp_w` AND `world.derived.zappi_active = false`. The gate is correctly ANDed in code, but a future refactor that drops or inverts the `zappi_active` term would slip past the test suite. With Zappi physically disconnected (e.g. car unplugged) but the operator having previously commanded `Fast`, target.value remains `Some(Fast)`; the controller must not start raising the import setpoint.
+**Fix:** Added `hard_clamp_disengaged_when_zappi_active_false` at `crates/core/src/process.rs:5312`. After `seed_hard_clamp_scenario` (which seeds `ZappiPlugState::Charging` → zappi_active=true), the test overwrites `world.typed_sensors.zappi_state` with `ZappiPlugState::EvDisconnected` (which `classify_zappi_active` unconditionally returns false for). EvchargerAcPower is at 0 W so the power-based fallback also returns false. Asserts `hard_clamp_engaged_factor(&world).is_none()`. Surface clarification: when `zappi_active=false`, `evaluate_setpoint` itself bypasses the Zappi drain branch and returns idle (10 W) — the test asserts setpoint=10 (soft loop also bypassed), with the primary coverage target being the absence of the hard-clamp factor.
+
+### [PR-ZD-4-D02] Helper-placement rationale claimed circular dep that doesn't exist
+**Status:** resolved (note-only; placement is fine, rationale is post-hoc)
+**Severity:** nit
+**Location:** Executor's return report; the actual code/doc-comments don't make the claim
+**Description:** Fix subagent's report cited a circular dependency as the reason for placing `compute_compensated_drain` in `setpoint.rs` rather than `process.rs`. Inspection: `setpoint.rs` imports only `chrono`, `crate::Clock`, `crate::knobs`, `crate::topology`, `crate::types::Decision` — none transitively involve `process.rs`. No actual circular dep. The split is still defensible by-domain (helper near its primary caller).
+**Fix:** Closed note-only. The committed code/doc-comments don't actually claim "circular dep" verbatim — that was only in the executor's return report. Placement is justified by-domain: the pure helper sits with the controller that defines its semantics; the `&World` wrapper sits in `process.rs` where the runtime aggregate is consumed.
+
+### [PR-ZD-4-D03] Redundant `.clone()` on `out.decision`
+**Status:** resolved (deferred; preserves existing PR-09a-D02 idiom)
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:1394–1416`
+**Description:** `base_decision = out.decision.clone()` could be elided by destructuring `out` and consuming `out.decision`. Cost is small (5 extra `(name, value)` factor pairs when the hard clamp engages).
+**Fix:** Closed deferred. Preserves the existing PR-09a-D02 idiom unchanged. A future cleanup pass can sweep this across all setpoint-clamp call sites consistently.
+
+### [PR-ZD-4-D04] `compensated_drain_w` recomputed even when hard-clamp gate cannot fire
+**Status:** resolved (deferred; cost negligible)
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:1320–1338`
+**Description:** `hard_clamp_drain_w = compensated_drain_w(world)` runs unconditionally on every tick. The function reads three `Actual<f64>::value` fields and does three subtractions — negligible cost, no correctness issue.
+**Fix:** Closed deferred. The flat structure is more readable than a nested gate. Micro-optimisation; reconsider if the per-tick cost ever shows up in profiling.
