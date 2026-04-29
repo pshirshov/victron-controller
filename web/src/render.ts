@@ -312,6 +312,37 @@ function fmtDurationMs(totalMs: number): string {
   return s;
 }
 
+// --- per-sensor formatters -----------------------------------------------
+
+// MPPT operation mode codes per Victron VE.Direct documentation:
+//   0 = Off
+//   1 = Voltage-or-current-limited  (curtailed by the inverter)
+//   2 = MPPT-tracking               (running unconstrained — the normal state)
+// Out-of-range codes fall back to String(code) so future firmware drift
+// degrades visibly rather than silently mis-rendering.
+const MPPT_OP_MODES: Record<number, string> = {
+  0: "Off",
+  1: "Voltage-or-current-limited",
+  2: "MPPT-tracking",
+};
+
+export function fmtMpptOperationMode(value: number): string {
+  const code = Math.round(value);
+  return MPPT_OP_MODES[code] ?? String(code);
+}
+
+// Sensor names that use a custom formatter instead of the generic fmtNum.
+const MPPT_OP_MODE_NAMES = new Set([
+  "mppt_0_operation_mode",
+  "mppt_1_operation_mode",
+]);
+
+// Dispatch per-sensor formatting. Returns null when no override applies.
+export function fmtSensorValue(name: string, value: number): string | null {
+  if (MPPT_OP_MODE_NAMES.has(name)) return fmtMpptOperationMode(value);
+  return null;
+}
+
 // --- table renderers -----------------------------------------------------
 
 export function renderSensors(snap: WorldSnapshot) {
@@ -329,7 +360,11 @@ export function renderSensors(snap: WorldSnapshot) {
   >;
   const rows: KeyedRow[] = entries.map(([name, a]) => {
     const act = a as ActualF64;
-    const valText = act.value === null ? "—" : fmtNum(act.value, 2);
+    const v = act.value;
+    const valText =
+      v == null
+        ? "—"
+        : (fmtSensorValue(name, v) ?? fmtNum(v, 2));
     const mm = meta[name];
     const origin = mm ? esc(mm.origin) : `<span class="dim">—</span>`;
     const cadence = mm ? fmtDurationMs(mm.cadence_ms) : `<span class="dim">—</span>`;

@@ -33,7 +33,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
   PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
   switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
-- [~] **M-ZAPPI-DRAIN** — Replace the PV-only Zappi-active export
+- [x] **M-ZAPPI-DRAIN** — Replace the PV-only Zappi-active export
   clamp with a closed-loop controller using compensated battery drain
   (`max(0, -battery_dc_power - heat_pump - cooker)`) as the feedback
   signal. Adds 4 sensors (HP/cooker via zigbee2mqtt MQTT, two MPPT
@@ -329,7 +329,7 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
   `!allow_battery_to_car` AND `compensated_drain > hard_clamp_w`, raise
   the proposed setpoint by the excess. ≥ 4 new tests covering Fast vs
   Eco vs Off vs `allow_battery_to_car=true`.
-- [ ] **PR-ZD-5 — Dashboard MPPT-mode display.** Frontend-only: render
+- [x] **PR-ZD-5 — Dashboard MPPT-mode display.** Frontend-only: render
   the two `Mppt*OperationMode` sensors as human-readable strings ("Off",
   "Voltage-or-current-limited", "MPPT-tracking"). 1 web test.
 
@@ -396,6 +396,33 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 ---
 
 ## Completed
+
+- **PR-ZD-5 — Dashboard MPPT-mode display** (M-ZAPPI-DRAIN, 2026-04-29)
+  — Frontend-only. Renders the two `Mppt*OperationMode` sensors as
+  human-readable strings instead of raw `0`/`1`/`2` numbers:
+  `0 → "Off"`, `1 → "Voltage-or-current-limited"`,
+  `2 → "MPPT-tracking"`. Out-of-range / float-drift / NaN / Infinity
+  fall back to `String(value)` so future firmware drift degrades
+  visibly. PR-ZD-1's descriptions for these sensors are already
+  accurate (corrected by PR-ZD-1-D05); no change needed.
+  New helpers in `web/src/render.ts`: `MPPT_OP_MODES` lookup table,
+  `fmtMpptOperationMode(value: number): string`,
+  `fmtSensorValue(name, value): string | null` dispatcher. The
+  `renderSensors` valText assignment routes through `fmtSensorValue`
+  before falling back to `fmtNum`. Side-fix: `act.value === null`
+  → `v == null` (covers `null` AND `undefined`; behavioural no-op
+  because `fmtNum` already handles both, but tighter contract).
+  No test framework in `web/`; added a standalone smoke-check
+  `web/src/render.test.ts` with 8 assertions runnable via esbuild
+  bundle + node, type-checked by `tsc --noEmit`.
+  Adversarial review: zero defects. Two informational notes (N01
+  about the side-fix being behaviourally a no-op; N02 noting six
+  other call sites with the same `=== null` pattern that PR-ZD-5
+  did not touch — out of scope).
+  Verification: `cargo test --workspace` → 551 passed (no backend
+  changes, count unchanged); `cargo clippy --workspace --all-targets
+  -- -D warnings` clean; `cd web && ./node_modules/.bin/tsc --noEmit
+  -p .` clean. Smoke-check assertions pass when run.
 
 - **PR-ZD-4 — Hard clamp** (M-ZAPPI-DRAIN, 2026-04-29) — Fast-mode-only
   hard clamp as a separate post-`evaluate_setpoint()` step in
