@@ -658,14 +658,12 @@ impl Core for WeatherSocCore {
 /// world.sunrise/sunset, evaluates the pure
 /// [`evaluate_ess_state_override`] controller, writes the resulting
 /// Decision to `world.decisions.ess_state_override`, and (when the
-/// target differs from the live readback AND `writes_enabled`) emits a
-/// `WriteDbus(EssState, Int(target))` effect.
+/// target differs from the proposed value) emits a
+/// `WriteDbus(EssState, Int(target))` effect under `writes_enabled`.
 ///
-/// Depends on `CurrentLimit` because that core writes
-/// `bookkeeping.prev_ess_state` from the just-observed sensor reading;
-/// reading the *same-tick* value avoids a one-tick latency hazard
-/// (override flaps when prev was last refreshed against a stale
-/// readback).
+/// Depends on `Setpoint` because that core writes
+/// `bookkeeping.charge_to_full_required`, which gates the 9-vs-10
+/// branch.
 pub(crate) struct EssStateOverrideCore;
 impl Core for EssStateOverrideCore {
     fn id(&self) -> CoreId {
@@ -673,8 +671,8 @@ impl Core for EssStateOverrideCore {
     }
     fn depends_on(&self) -> &'static [DepEdge] {
         &[DepEdge {
-            from: CoreId::CurrentLimit,
-            fields: &["bookkeeping.prev_ess_state"],
+            from: CoreId::Setpoint,
+            fields: &["bookkeeping.charge_to_full_required"],
         }]
     }
     fn run(
@@ -685,12 +683,6 @@ impl Core for EssStateOverrideCore {
         effects: &mut Vec<Effect>,
     ) {
         let k = &world.knobs;
-        #[allow(clippy::cast_possible_truncation)]
-        let current_ess_state = if world.sensors.ess_state.is_usable() {
-            world.sensors.ess_state.value.map(|v| v as i32)
-        } else {
-            None
-        };
         let input = EssStateOverrideInput {
             knob_enabled: k.keep_batteries_charged_during_full_charge,
             offset_min: k.sunrise_sunset_offset_min,
@@ -699,20 +691,12 @@ impl Core for EssStateOverrideCore {
             sunset_local: world.sunset,
             sunrise_sunset_updated_at: world.sunrise_sunset_updated_at,
             freshness_threshold: SUNRISE_SUNSET_FRESHNESS,
-            prev_ess_state: world.bookkeeping.prev_ess_state,
-            current_ess_state,
             now_local: clock.naive(),
         };
         let out = evaluate_ess_state_override(&input);
         world.decisions.ess_state_override = Some(out.decision);
-        let Some(target) = out.target else {
-            return;
-        };
+        let target = out.target;
         let now = clock.monotonic();
-        // Mirrors `setpoint::set_grid_setpoint`: propose_target
-        // unconditionally so the dashboard's actuated phase reflects the
-        // controller's intent even in observer mode; gate WriteDbus +
-        // mark_commanded on writes_enabled.
         let changed = world.ess_state_target.propose_target(
             target,
             crate::Owner::EssStateOverrideController,
@@ -726,6 +710,12 @@ impl Core for EssStateOverrideCore {
             phase: world.ess_state_target.target.phase,
         }));
         if !world.knobs.writes_enabled {
+            #[allow(clippy::cast_possible_truncation)]
+            let current_ess_state = if world.sensors.ess_state.is_usable() {
+                world.sensors.ess_state.value.map(|v| v as i32)
+            } else {
+                None
+            };
             effects.push(Effect::Log {
                 level: LogLevel::Info,
                 source: "observer",
@@ -769,13 +759,6 @@ impl Core for EssStateOverrideCore {
                 format!("{}", world.bookkeeping.charge_to_full_required),
             ),
             factor("ess_state", current),
-            factor(
-                "prev_ess_state",
-                world
-                    .bookkeeping
-                    .prev_ess_state
-                    .map_or("—".to_string(), |v| v.to_string()),
-            ),
             factor(
                 "sunrise_local",
                 world

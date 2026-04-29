@@ -72,8 +72,9 @@ const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
     CoreId::WeatherSoc,
     CoreId::Schedules,
     CoreId::CurrentLimit,
-    // PR-keep-batteries-charged: depends on `CurrentLimit`
-    // (`bookkeeping.prev_ess_state`); slots in after it.
+    // Depends on `Setpoint` (`bookkeeping.charge_to_full_required`);
+    // Kahn's keeps it at the tail because everything before it has
+    // its in-degree-zero spot earlier.
     CoreId::EssStateOverride,
     CoreId::SensorBroadcast,
 ];

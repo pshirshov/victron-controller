@@ -188,10 +188,11 @@ pub struct Knobs {
 
     // --- PR-keep-batteries-charged ---
     /// Gate the daytime ESS-state override on full-charge days. When
-    /// `true` AND `bookkeeping.charge_to_full_required` is set, the
-    /// shell forces ESS state 9 (KeepBatteriesCharged) inside the
-    /// daylight window `[sunrise + offset, sunset - offset]` and
-    /// restores `bookkeeping.prev_ess_state` outside it.
+    /// `true` AND `bookkeeping.charge_to_full_required` AND `now ∈
+    /// [sunrise + offset, sunset - offset]`, the controller writes
+    /// ESS state 9 (KeepBatteriesCharged); otherwise it writes 10
+    /// (Optimized). The knob being `false` is equivalent to "always
+    /// write 10".
     pub keep_batteries_charged_during_full_charge: bool,
     /// Inset (minutes) applied symmetrically to local sunrise and
     /// sunset to delimit the override window. Default 60 keeps the

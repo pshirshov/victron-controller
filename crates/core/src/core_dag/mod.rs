@@ -35,10 +35,11 @@ pub enum CoreId {
     ZappiMode,
     EddiMode,
     WeatherSoc,
-    /// PR-keep-batteries-charged: daytime ESS-state override (writes
-    /// `/Settings/CGwacs/BatteryLife/State` = 9 inside the configured
-    /// daylight window on full-charge days; restores
-    /// `bookkeeping.prev_ess_state` outside).
+    /// Daytime ESS-state controller. Writes
+    /// `/Settings/CGwacs/BatteryLife/State` = 9 (KeepBatteriesCharged)
+    /// when the operator knob is on AND `charge_to_full_required` AND
+    /// `now ∈ [sunrise+offset, sunset-offset]`; otherwise writes 10
+    /// (Optimized).
     EssStateOverride,
 
     // Observability — must run AFTER every actuator core so the
