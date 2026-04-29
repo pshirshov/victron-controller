@@ -46,12 +46,12 @@
 //!   vebus_input_current, evcharger_ac_power, evcharger_ac_current,
 //!   ess_state, outdoor_temperature, session_kwh }
 //!
-//! ### NEW — Numeric bookkeeping (4 ids)
+//! ### NEW — Numeric bookkeeping (3 ids)
 //! - Discovery: `homeassistant/sensor/victron_controller/bookkeeping_<name>/config`
 //! - State:     `<topic_root>/bookkeeping/<name>/state`     (retained, numeric string)
 //!
 //!   `<name>` ∈ { soc_end_of_day_target, effective_export_soc_threshold,
-//!   battery_selected_soc_target, prev_ess_state }
+//!   battery_selected_soc_target }
 //!
 //! ### NEW — Boolean bookkeeping (3 ids)
 //! - Discovery: `homeassistant/binary_sensor/victron_controller/bookkeeping_<name>/config`
@@ -268,10 +268,9 @@ async fn publish_sensors(client: &AsyncClient, topic_root: &str) -> Result<usize
     Ok(count)
 }
 
-/// PR-ha-discovery-expand: discovery configs for the seven controller-
-/// relevant bookkeeping fields. Booleans go to `binary_sensor`; numerics
-/// to `sensor`. SoC fields carry `unit_of_measurement = "%"`;
-/// `prev_ess_state` is unitless.
+/// PR-ha-discovery-expand: discovery configs for the controller-relevant
+/// bookkeeping fields. Booleans go to `binary_sensor`; numerics to
+/// `sensor`. SoC fields carry `unit_of_measurement = "%"`.
 async fn publish_bookkeeping(client: &AsyncClient, topic_root: &str) -> Result<usize> {
     let mut count = 0;
 
@@ -300,10 +299,7 @@ async fn publish_bookkeeping(client: &AsyncClient, topic_root: &str) -> Result<u
         count += 1;
     }
 
-    // Numerics. PR-ha-discovery-D01: `prev_ess_state` is intentionally
-    // skipped here — its retained topic is owned by the persistence
-    // path, which writes a "null"/int body for restore semantics. A
-    // second writer with a numeric body would clobber that.
+    // Numerics.
     for (id, unit) in [
         (BookkeepingId::SocEndOfDayTarget, Some("%")),
         (BookkeepingId::EffectiveExportSocThreshold, Some("%")),

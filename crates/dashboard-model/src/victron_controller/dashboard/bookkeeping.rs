@@ -4,7 +4,6 @@
 pub struct Bookkeeping {
     pub next_full_charge_iso: Option<String>,
     pub above_soc_date_iso: Option<String>,
-    pub prev_ess_state: Option<i32>,
     pub zappi_active: bool,
     pub charge_to_full_required: bool,
     pub soc_end_of_day_target: f64,
@@ -41,10 +40,6 @@ impl Ord for Bookkeeping {
             ord => return ord,
         }
         match self.above_soc_date_iso.cmp(&other.above_soc_date_iso) {
-            std::cmp::Ordering::Equal => {},
-            ord => return ord,
-        }
-        match self.prev_ess_state.cmp(&other.prev_ess_state) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
@@ -106,7 +101,7 @@ impl Ord for Bookkeeping {
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Bookkeeping {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        5
+        4
     }
 }
 
@@ -134,20 +129,6 @@ impl crate::baboon_runtime::BaboonBinEncode for Bookkeeping {
                 let before = buffer.len();
                 crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
                 match &value.above_soc_date_iso {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
-            }
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.prev_ess_state {
                 None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
                 Some(v) => {
                     crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
@@ -214,13 +195,6 @@ impl crate::baboon_runtime::BaboonBinEncode for Bookkeeping {
                     v.encode_ueba(ctx, writer)?;
                 }
             }
-            match &value.prev_ess_state {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
-            }
             value.zappi_active.encode_ueba(ctx, writer)?;
             value.charge_to_full_required.encode_ueba(ctx, writer)?;
             value.soc_end_of_day_target.encode_ueba(ctx, writer)?;
@@ -265,10 +239,6 @@ impl crate::baboon_runtime::BaboonBinDecode for Bookkeeping {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
-        let prev_ess_state = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_i32(reader)?) }
-        };
         let zappi_active = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let charge_to_full_required = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let soc_end_of_day_target = crate::baboon_runtime::bin_tools::read_f64(reader)?;
@@ -291,7 +261,6 @@ impl crate::baboon_runtime::BaboonBinDecode for Bookkeeping {
         Ok(Bookkeeping {
             next_full_charge_iso,
             above_soc_date_iso,
-            prev_ess_state,
             zappi_active,
             charge_to_full_required,
             soc_end_of_day_target,

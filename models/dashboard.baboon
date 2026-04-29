@@ -1,17 +1,21 @@
 model victron_controller.dashboard
 version "0.3.0"
 
+// 0.3.0: drops `prev_ess_state` from `Bookkeeping` and the matching
+// `PrevEssState` enum case. The ESS-state controller no longer needs
+// a captured "pre-override" value (it always writes 9 inside the
+// override window or 10 outside), so the field is dead.
+//
 // PR-pinned-registers (0.3.0): persistent enforcement of selected
 // Victron D-Bus settings. Wire-format change is additive — a new
 // `PinnedRegister` data type plus a `pinned_registers: lst[PinnedRegister]`
-// field on `WorldSnapshot`. Every other 0.2.0 type is inherited
-// untouched.
+// field on `WorldSnapshot`.
 //
 // PR-baseline-forecast (in-place additive): two new `opt[str]` fields
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey }
 
 // PR-keep-batteries-charged: extend `Owner` with the new
 // EssStateOverrideController so the dashboard's actuated-table "Owner"
@@ -115,6 +119,31 @@ data Knobs {
   // (Mon/Tue/Wed snap back, Thu/Fri/Sat push forward). Ignored when
   // `full_charge_defer_to_next_sunday` is on.
   full_charge_snap_back_max_weekday: i32
+}
+
+// 0.3.0 redefinition of `Bookkeeping` — `prev_ess_state` removed.
+data Bookkeeping {
+  next_full_charge_iso: opt[str]
+  above_soc_date_iso: opt[str]
+  zappi_active: bit
+  charge_to_full_required: bit
+  soc_end_of_day_target: f64
+  effective_export_soc_threshold: f64
+  battery_selected_soc_target: f64
+  charge_battery_extended_today: bit
+  charge_battery_extended_today_date_iso: opt[str]
+  weather_soc_export_soc_threshold: f64
+  weather_soc_discharge_soc_target: f64
+  weather_soc_battery_soc_target: f64
+  weather_soc_disable_night_grid_discharge: bit
+  auto_extended_today: bit
+  auto_extended_today_date_iso: opt[str]
+}
+
+// 0.3.0 redefinition of `BookkeepingKey` — `PrevEssState` removed.
+enum BookkeepingKey {
+  NextFullCharge
+  AboveSocDate
 }
 
 // One row per configured (path, type, value) triplet. The shell reads

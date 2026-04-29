@@ -93,7 +93,6 @@ pub struct CurrentLimitInputGlobals {
     pub extended_charge_required: bool,
     pub disable_night_grid_discharge: bool,
     pub battery_soc_target: f64,
-    pub prev_ess_state: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +100,6 @@ pub struct CurrentLimitOutput {
     /// Target value to write to `/Ac/In/1/CurrentLimit`.
     pub input_current_limit: f64,
     pub debug: CurrentLimitDebug,
-    pub bookkeeping: CurrentLimitBookkeeping,
     pub decision: Decision,
 }
 
@@ -125,14 +123,7 @@ pub struct CurrentLimitDebug {
     pub gridside_consumption_no_zappi: f64,
     pub fitted_target: f64,
     pub max_system_current: f64,
-    pub prev_ess_state: Option<i32>,
     pub ess_state: i32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CurrentLimitBookkeeping {
-    /// Updated prev_ess_state (unchanged unless ess_state != 9 and changed).
-    pub prev_ess_state: Option<i32>,
 }
 
 /// Round a value to 2 decimal places — matches the legacy `tools.round2`.
@@ -157,16 +148,7 @@ pub fn evaluate_current_limit(
     let mppt_power = input.mppt_power_0 + input.mppt_power_1;
     let soltaro_power = input.soltaro_power;
     let zappi_amps = input.zappi_current;
-
-    // prev_ess_state update. Legacy: only update when ess_state changed AND
-    // the new state isn't 9 (KeepBatteriesCharged — this is the state we'd
-    // have forced, so don't "remember" it as the pre-override state).
     let ess_state = input.ess_state;
-    let prev_ess_state = if Some(ess_state) != g.prev_ess_state && ess_state != 9 {
-        Some(ess_state)
-    } else {
-        g.prev_ess_state
-    };
 
     let battery_soc = input.battery_soc;
     let battery_charging = input.battery_power > 0.0;
@@ -307,11 +289,7 @@ pub fn evaluate_current_limit(
             gridside_consumption_no_zappi,
             fitted_target,
             max_system_current,
-            prev_ess_state,
             ess_state,
-        },
-        bookkeeping: CurrentLimitBookkeeping {
-            prev_ess_state,
         },
         decision,
     }
@@ -412,7 +390,6 @@ mod tests {
                 extended_charge_required: false,
                 disable_night_grid_discharge: false,
                 battery_soc_target: 80.0,
-                prev_ess_state: Some(10),
             },
             consumption_power: 500.0,
             offgrid_power: 500.0,
@@ -565,27 +542,6 @@ mod tests {
         let out = evaluate_current_limit(&input, &clock_at(6, 0), &hw());
         assert!(out.input_current_limit >= 0.0);
         assert!(out.input_current_limit <= MAX_GRID_CURRENT_A);
-    }
-
-    #[test]
-    fn prev_ess_state_updates_on_change_ignoring_9() {
-        let mut input = base_input();
-        // First call: ess_state moves from 10 → 10 (no change, keeps prev 10)
-        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
-        assert_eq!(out.bookkeeping.prev_ess_state, Some(10));
-
-        // Second call: ess_state moves 10 → 9 (override state — ignored,
-        // prev should stay at 10)
-        input.ess_state = 9;
-        input.globals.prev_ess_state = Some(10);
-        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
-        assert_eq!(out.bookkeeping.prev_ess_state, Some(10));
-
-        // Third call: ess_state moves 9 → 5 (new non-9 value captured)
-        input.ess_state = 5;
-        input.globals.prev_ess_state = Some(10);
-        let out = evaluate_current_limit(&input, &clock_at(12, 0), &hw());
-        assert_eq!(out.bookkeeping.prev_ess_state, Some(5));
     }
 
     #[test]

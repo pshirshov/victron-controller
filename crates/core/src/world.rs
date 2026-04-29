@@ -214,7 +214,6 @@ impl TypedSensors {
 pub struct Bookkeeping {
     pub next_full_charge: Option<NaiveDateTime>,
     pub above_soc_date: Option<NaiveDate>,
-    pub prev_ess_state: Option<i32>,
     pub charge_to_full_required: bool,
     pub soc_end_of_day_target: f64,
     /// Effective export SoC threshold (charge-to-full overrides when active).
@@ -265,7 +264,6 @@ impl Bookkeeping {
         Self {
             next_full_charge: None,
             above_soc_date: None,
-            prev_ess_state: None,
             charge_to_full_required: false,
             soc_end_of_day_target: 80.0,
             effective_export_soc_threshold: 80.0,
@@ -362,8 +360,8 @@ pub struct Decisions {
     pub zappi_mode: Option<Decision>,
     pub eddi_mode: Option<Decision>,
     pub weather_soc: Option<Decision>,
-    /// PR-keep-batteries-charged: target ESS state decision. Owns the
-    /// `world.bookkeeping.prev_ess_state` restore + `state 9` override.
+    /// Target ESS state decision (9 inside the override window on
+    /// full-charge days, 10 otherwise).
     pub ess_state_override: Option<Decision>,
 }
 

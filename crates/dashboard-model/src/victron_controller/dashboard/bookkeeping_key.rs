@@ -4,7 +4,6 @@
 pub enum BookkeepingKey {
     NextFullCharge,
     AboveSocDate,
-    PrevEssState,
 }
 
 impl BookkeepingKey {
@@ -12,7 +11,6 @@ impl BookkeepingKey {
         match s {
             "NextFullCharge" => Ok(BookkeepingKey::NextFullCharge),
             "AboveSocDate" => Ok(BookkeepingKey::AboveSocDate),
-            "PrevEssState" => Ok(BookkeepingKey::PrevEssState),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -21,7 +19,6 @@ impl BookkeepingKey {
         vec![
             BookkeepingKey::NextFullCharge,
             BookkeepingKey::AboveSocDate,
-            BookkeepingKey::PrevEssState,
         ]
     }
 }
@@ -31,7 +28,6 @@ impl std::fmt::Display for BookkeepingKey {
         match self {
             BookkeepingKey::NextFullCharge => write!(f, "NextFullCharge"),
             BookkeepingKey::AboveSocDate => write!(f, "AboveSocDate"),
-            BookkeepingKey::PrevEssState => write!(f, "PrevEssState"),
         }
     }
 }
@@ -54,7 +50,6 @@ impl crate::baboon_runtime::BaboonBinEncode for BookkeepingKey {
         match self {
             BookkeepingKey::NextFullCharge => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
             BookkeepingKey::AboveSocDate => crate::baboon_runtime::bin_tools::write_byte(writer, 1)?,
-            BookkeepingKey::PrevEssState => crate::baboon_runtime::bin_tools::write_byte(writer, 2)?,
         }
         Ok(())
     }
@@ -66,7 +61,6 @@ impl crate::baboon_runtime::BaboonBinDecode for BookkeepingKey {
         match tag {
             0 => Ok(BookkeepingKey::NextFullCharge),
             1 => Ok(BookkeepingKey::AboveSocDate),
-            2 => Ok(BookkeepingKey::PrevEssState),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

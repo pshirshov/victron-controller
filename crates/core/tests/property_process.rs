@@ -503,8 +503,7 @@ proptest! {
         month in 1u32..12,
         day in 1u32..28,
         hour in 0u32..23,
-        ess_state in -1000i32..1000,
-        pick in 0usize..3,
+        pick in 0usize..2,
     ) {
         use victron_controller_core::types::{BookkeepingKey, BookkeepingValue, Command};
 
@@ -519,14 +518,10 @@ proptest! {
                     .and_hms_opt(hour, 0, 0).unwrap();
                 (BookkeepingKey::NextFullCharge, BookkeepingValue::NaiveDateTime(dt))
             }
-            1 => {
+            _ => {
                 let d = chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
                 (BookkeepingKey::AboveSocDate, BookkeepingValue::NaiveDate(d))
             }
-            _ => (
-                BookkeepingKey::PrevEssState,
-                BookkeepingValue::OptionalInt(Some(ess_state)),
-            ),
         };
 
         let _ = process(
@@ -540,35 +535,12 @@ proptest! {
             &topo,
         );
 
-        // The targeted field must reflect the restoration. (Other
-        // bookkeeping fields may or may not have changed; the setpoint
-        // and current-limit controllers also modify bookkeeping as a
-        // side-effect of running on every event.)
         match (key, value) {
             (BookkeepingKey::NextFullCharge, BookkeepingValue::NaiveDateTime(expected)) => {
-                // Can be overwritten by the setpoint controller if
-                // battery_soc==100 triggers rollover — in seeded_world
-                // SoC is 75 so this shouldn't happen; assert equality.
                 prop_assert_eq!(world.bookkeeping.next_full_charge, Some(expected));
             }
             (BookkeepingKey::AboveSocDate, BookkeepingValue::NaiveDate(expected)) => {
-                // Schedules controller could overwrite on the "above
-                // soc during extended" latch, but our seeded_world has
-                // charge_battery_extended=false so that doesn't fire.
                 prop_assert_eq!(world.bookkeeping.above_soc_date, Some(expected));
-            }
-            (BookkeepingKey::PrevEssState, BookkeepingValue::OptionalInt(Some(expected))) => {
-                // Current-limit controller updates prev_ess_state on
-                // every evaluation. seeded_world's ess_state is 10, so
-                // if expected != 10 and != 9 (the skip-value), the
-                // controller's write of Some(10) clobbers our restore.
-                // Assert the final state is *either* our restore or the
-                // controller's observation.
-                let final_ = world.bookkeeping.prev_ess_state;
-                prop_assert!(
-                    final_ == Some(expected) || final_ == Some(10),
-                    "expected Some({expected}) or Some(10), got {final_:?}"
-                );
             }
             _ => unreachable!("type mismatch in match arms"),
         }

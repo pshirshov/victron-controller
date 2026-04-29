@@ -9,7 +9,7 @@ export const WsClientMessage = {
     BaboonDomainVersion: '0.2.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#WsClientMessage',
-    BaboonSameInVersions: ["0.2.0", "0.3.0"],
+    BaboonSameInVersions: ["0.2.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#WsClientMessage',
     binCodec(): WsClientMessage_UEBACodec {
         return WsClientMessage_UEBACodec.instance
@@ -181,7 +181,7 @@ export class SendCommand implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return SendCommand.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0"]
     public baboonSameInVersions() {
         return SendCommand.BaboonSameInVersions
     }

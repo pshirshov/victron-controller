@@ -89,7 +89,6 @@ const DISPLAY_NAMES: Record<string, string> = {
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",
   above_soc_date_iso: "battery.soc.above-threshold.date",
-  prev_ess_state: "inverter.ess.state.previous",
   zappi_active: "evcharger.active",
   charge_to_full_required: "schedule.full-charge.required",
   soc_end_of_day_target: "battery.soc.target.end-of-day",

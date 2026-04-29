@@ -542,14 +542,13 @@ export function renderActuated(snap: WorldSnapshot) {
 
 // Snapshot field names that round-trip through retained MQTT and seed
 // at boot — the `BookkeepingKey` variants in `crates/core/src/types.rs`
-// (`NextFullCharge`, `AboveSocDate`, `PrevEssState`). Everything else
-// in `world.bookkeeping` is recomputed every tick from sensors / knobs
-// / forecast and is effectively a derivation surfaced through the
+// (`NextFullCharge`, `AboveSocDate`). Everything else in
+// `world.bookkeeping` is recomputed every tick from sensors / knobs /
+// forecast and is effectively a derivation surfaced through the
 // bookkeeping struct rather than persistent state.
 const BK_PERSISTED_FIELDS: ReadonlySet<string> = new Set([
   "next_full_charge_iso",
   "above_soc_date_iso",
-  "prev_ess_state",
 ]);
 
 function bkPersistenceTag(name: string): string {
@@ -1429,8 +1428,6 @@ function bookkeepingKeyToWire(name: string): string | null {
       return "NextFullCharge";
     case "above_soc_date":
       return "AboveSocDate";
-    case "prev_ess_state":
-      return "PrevEssState";
     default:
       return null;
   }

@@ -15,7 +15,7 @@ export const Command = {
     BaboonDomainVersion: '0.3.0',
     BaboonDomainIdentifier: 'victron_controller.dashboard',
     BaboonTypeIdentifier: 'victron_controller.dashboard/:#Command',
-    BaboonSameInVersions: ["0.2.0", "0.3.0"],
+    BaboonSameInVersions: ["0.3.0"],
     BaboonAdtTypeIdentifier: 'victron_controller.dashboard/:#Command',
     binCodec(): Command_UEBACodec {
         return Command_UEBACodec.instance
@@ -1295,7 +1295,7 @@ export class SetBookkeeping implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return SetBookkeeping.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return SetBookkeeping.BaboonSameInVersions
     }

@@ -68,20 +68,23 @@ pub fn compute_scheduled_actions(world: &World, now_ms: i64) -> WireActions {
     WireActions { entries }
 }
 
-/// PR-keep-batteries-charged: surface the daytime override window edges
-/// — one entry for "ESS → KeepBatteriesCharged" at `sunrise + offset`,
-/// one for "ESS → restore prev_ess_state" at `sunset - offset`. Emitted
-/// only when the operator-knob is enabled AND `world.sunrise` /
-/// `world.sunset` are present (the controller's bias-to-safety branch
-/// suppresses the write itself when sunrise/sunset go stale, but the
-/// scheduled-action surface ignores the freshness window — the entries
-/// document operator intent, not actuation guarantees).
+/// Surface the daytime ESS-state-9 override window edges. Emitted only
+/// when the operator knob is on AND today is a full-charge day
+/// (`bookkeeping.charge_to_full_required`) AND `world.sunrise` /
+/// `world.sunset` are present. Skipping the entries on non-full-charge
+/// days matches the controller's actual behaviour: outside a
+/// full-charge day, the controller writes 10 every tick — the window
+/// edges are no-ops, so surfacing them as "scheduled actions" misleads
+/// the operator about what's coming.
 fn keep_batteries_charged_actions(
     world: &World,
     tz: Tz,
     now_ms: i64,
 ) -> Vec<WireAction> {
     if !world.knobs.keep_batteries_charged_during_full_charge {
+        return Vec::new();
+    }
+    if !world.bookkeeping.charge_to_full_required {
         return Vec::new();
     }
     let (Some(sunrise_local), Some(sunset_local)) = (world.sunrise, world.sunset) else {
@@ -127,11 +130,7 @@ fn keep_batteries_charged_actions(
     );
     emit(
         format!(
-            "ESS → restore (prev={}, {:02}:{:02})",
-            world
-                .bookkeeping
-                .prev_ess_state
-                .map_or("?".to_string(), |v| v.to_string()),
+            "ESS → Optimized ({:02}:{:02})",
             close.time().hour(),
             close.time().minute()
         ),

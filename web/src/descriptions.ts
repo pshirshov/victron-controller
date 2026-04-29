@@ -163,13 +163,13 @@ export const entityDescriptions: Record<string, string> = {
   "forecast.baseline.wh-per-hour.summer":
     "Average per-daylight-hour Wh during summer. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
 
-  // --- Actuated (PR-keep-batteries-charged) ---
+  // --- Actuated (ESS state) ---
   "ess.state.target":
-    "Target Victron ESS state (`/Settings/CGwacs/BatteryLife/State`). Set to 9 (KeepBatteriesCharged) by the daytime ESS-state override on full-charge days inside the [sunrise+offset, sunset-offset] window; restored to bookkeeping.prev_ess_state on exit.",
+    "Target Victron ESS state (`/Settings/CGwacs/BatteryLife/State`). 9 (KeepBatteriesCharged) on full-charge days inside the [sunrise+offset, sunset-offset] window; 10 (Optimized) at all other times.",
 
-  // --- Knobs (PR-keep-batteries-charged) ---
+  // --- Knobs (ESS state) ---
   "ess.full-charge.keep-batteries-charged":
-    "When true and bookkeeping.charge_to_full_required is set, the shell forces ESS state 9 (KeepBatteriesCharged) inside the daylight window [sunrise + offset, sunset - offset] and restores the captured pre-override state on exit.",
+    "When true and bookkeeping.charge_to_full_required is set, the controller writes ESS state 9 (KeepBatteriesCharged) inside the daylight window [sunrise + offset, sunset - offset]. Outside the window — or whenever this knob is off, or it's not a full-charge day — the controller writes 10 (Optimized).",
   "ess.full-charge.sunrise-sunset-offset-min":
     "Symmetric inset (minutes) applied to local sunrise and sunset to delimit the keep-batteries-charged override window. Default 60.",
   "full-charge.defer-to-next-sunday":

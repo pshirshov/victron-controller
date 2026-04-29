@@ -615,12 +615,6 @@ fn apply_bookkeeping(
         (BookkeepingKey::AboveSocDate, BookkeepingValue::Cleared) => {
             bk.above_soc_date = None;
         }
-        (BookkeepingKey::PrevEssState, BookkeepingValue::OptionalInt(v)) => {
-            bk.prev_ess_state = v;
-        }
-        (BookkeepingKey::PrevEssState, BookkeepingValue::Cleared) => {
-            bk.prev_ess_state = None;
-        }
         _ => {
             // Type mismatch — retained payload shape doesn't match the
             // key's expected shape. Silently drop; the controllers will
@@ -1458,7 +1452,6 @@ pub(crate) fn build_current_limit_input(world: &World) -> Option<CurrentLimitInp
             // PR-gamma-hold-redesign: dispatch on `*_mode`.
             disable_night_grid_discharge: effective_disable_night_grid_discharge(world),
             battery_soc_target: bk.battery_selected_soc_target,
-            prev_ess_state: bk.prev_ess_state,
         },
         consumption_power: s.power_consumption.value.unwrap(),
         offgrid_power: s.offgrid_power.value.unwrap(),
@@ -1489,14 +1482,6 @@ pub(crate) fn run_current_limit(
     let out = evaluate_current_limit(&input, clock, &topology.hardware);
     world.decisions.input_current_limit = Some(out.decision.clone());
 
-    // Bookkeeping exports.
-    if world.bookkeeping.prev_ess_state != out.bookkeeping.prev_ess_state {
-        world.bookkeeping.prev_ess_state = out.bookkeeping.prev_ess_state;
-        effects.push(Effect::Publish(PublishPayload::Bookkeeping(
-            BookkeepingKey::PrevEssState,
-            BookkeepingValue::OptionalInt(out.bookkeeping.prev_ess_state),
-        )));
-    }
     // Propose target.
     let value = out.input_current_limit;
     let now = clock.monotonic();
@@ -3086,21 +3071,6 @@ mod tests {
             &Topology::defaults(),
         );
         assert_eq!(world.bookkeeping.above_soc_date, Some(restored_date));
-
-        let _ = process(
-            &Event::Command {
-                command: Command::Bookkeeping {
-                    key: BookkeepingKey::PrevEssState,
-                    value: BookkeepingValue::OptionalInt(Some(9)),
-                },
-                owner: Owner::System,
-                at: c.monotonic,
-            },
-            &mut world,
-            &c,
-            &Topology::defaults(),
-        );
-        assert_eq!(world.bookkeeping.prev_ess_state, Some(9));
 
         // Cleared variant resets to None.
         let _ = process(

@@ -4,7 +4,6 @@ pub fn convert__bookkeeping__from__0_2_0(from: &crate::victron_controller::dashb
     crate::victron_controller::dashboard::bookkeeping::Bookkeeping {
         next_full_charge_iso: from.next_full_charge_iso.clone(),
         above_soc_date_iso: from.above_soc_date_iso.clone(),
-        prev_ess_state: from.prev_ess_state.clone(),
         zappi_active: from.zappi_active.clone(),
         charge_to_full_required: from.charge_to_full_required.clone(),
         soc_end_of_day_target: from.soc_end_of_day_target.clone(),

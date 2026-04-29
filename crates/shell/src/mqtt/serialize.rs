@@ -252,7 +252,6 @@ fn bookkeeping_key_from_name(name: &str) -> Option<BookkeepingKey> {
     Some(match name {
         "schedule.full-charge.next" => BookkeepingKey::NextFullCharge,
         "battery.soc.above-threshold.date" => BookkeepingKey::AboveSocDate,
-        "inverter.ess.state.previous" => BookkeepingKey::PrevEssState,
         _ => return None,
     })
 }
@@ -271,10 +270,6 @@ fn parse_bookkeeping_value(key: BookkeepingKey, body: &str) -> Option<Bookkeepin
         BookkeepingKey::AboveSocDate => chrono::NaiveDate::parse_from_str(body, "%Y-%m-%d")
             .ok()
             .map(BookkeepingValue::NaiveDate),
-        BookkeepingKey::PrevEssState => body
-            .parse::<i32>()
-            .ok()
-            .map(|n| BookkeepingValue::OptionalInt(Some(n))),
     }
 }
 
@@ -402,7 +397,6 @@ fn bookkeeping_name(k: BookkeepingKey) -> &'static str {
     match k {
         BookkeepingKey::NextFullCharge => "schedule.full-charge.next",
         BookkeepingKey::AboveSocDate => "battery.soc.above-threshold.date",
-        BookkeepingKey::PrevEssState => "inverter.ess.state.previous",
     }
 }
 
@@ -787,8 +781,7 @@ fn encode_bookkeeping_value(v: BookkeepingValue) -> String {
     match v {
         BookkeepingValue::NaiveDateTime(dt) => dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
         BookkeepingValue::NaiveDate(d) => d.format("%Y-%m-%d").to_string(),
-        BookkeepingValue::OptionalInt(None) | BookkeepingValue::Cleared => "null".to_string(),
-        BookkeepingValue::OptionalInt(Some(n)) => n.to_string(),
+        BookkeepingValue::Cleared => "null".to_string(),
     }
 }
 
@@ -1073,26 +1066,6 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
-    }
-
-    #[test]
-    fn decode_bookkeeping_prev_ess_state_int() {
-        let e = decode_state_message(
-            "victron-controller",
-            "victron-controller/bookkeeping/inverter.ess.state.previous/state",
-            b"10",
-        )
-        .unwrap();
-        assert!(matches!(
-            e,
-            Event::Command {
-                command: Command::Bookkeeping {
-                    key: BookkeepingKey::PrevEssState,
-                    value: BookkeepingValue::OptionalInt(Some(10)),
-                },
-                ..
-            }
-        ));
     }
 
     #[test]

@@ -280,10 +280,6 @@ impl Core for CurrentLimitCore {
                         format!("{}", g.disable_night_grid_discharge),
                     ),
                     factor("battery_soc_target_pct", format!("{:.2}", g.battery_soc_target)),
-                    factor(
-                        "prev_ess_state",
-                        g.prev_ess_state.map_or("—".to_string(), |v| format!("{v}")),
-                    ),
                     factor("consumption_power_W", format!("{:.2}", i.consumption_power)),
                     factor("offgrid_power_W", format!("{:.2}", i.offgrid_power)),
                     factor("offgrid_current_A", format!("{:.2}", i.offgrid_current)),
@@ -307,14 +303,7 @@ impl Core for CurrentLimitCore {
             .target
             .value
             .map_or("—".to_string(), |v| format!("{v:.2} A"));
-        let bk = &world.bookkeeping;
-        vec![
-            factor("input_current_limit_A", target),
-            factor(
-                "prev_ess_state",
-                bk.prev_ess_state.map_or("—".to_string(), |v| format!("{v}")),
-            ),
-        ]
+        vec![factor("input_current_limit_A", target)]
     }
 }
 
@@ -898,12 +887,6 @@ impl Core for SensorBroadcastCore {
         }
 
         // ----- Bookkeeping numerics -----
-        // PR-ha-discovery-D01: `prev_ess_state` is intentionally NOT
-        // surfaced here — its `bookkeeping/prev_ess_state/state` topic
-        // is owned by the persistence path (`PublishPayload::Bookkeeping
-        // (BookkeepingKey::PrevEssState, ...)`), which writes the
-        // canonical `null`/int body for restore. Two writers on the
-        // same retained topic would clobber.
         let nums: [(BookkeepingId, f64); 3] = [
             (
                 BookkeepingId::SocEndOfDayTarget,

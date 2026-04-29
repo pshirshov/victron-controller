@@ -1075,10 +1075,10 @@ pub enum DbusTarget {
         index: u8,
         field: ScheduleField,
     },
-    /// PR-keep-batteries-charged: `/Settings/CGwacs/BatteryLife/State`
-    /// on `com.victronenergy.settings`. Written by the ESS-state
-    /// override controller as an `i32` (9 = KeepBatteriesCharged on the
-    /// way in, the prior `bookkeeping.prev_ess_state` on the way out).
+    /// `/Settings/CGwacs/BatteryLife/State` on
+    /// `com.victronenergy.settings`. Written by the ESS-state
+    /// controller as an `i32`: 9 (KeepBatteriesCharged) inside the
+    /// override window on a full-charge day, 10 (Optimized) otherwise.
     EssState,
 }
 
@@ -1151,13 +1151,6 @@ pub enum BookkeepingId {
     EffectiveExportSocThreshold,
     /// %. `world.bookkeeping.battery_selected_soc_target`.
     BatterySelectedSocTarget,
-    // PR-ha-discovery-D01 (resolved): `prev_ess_state` was originally
-    // surfaced here too, but `BookkeepingKey::PrevEssState` already owns
-    // `bookkeeping/prev_ess_state/state` for the persistence path. Two
-    // writers on the same retained topic with different body formats
-    // (canonical "null"/int vs plain f64) would scramble restore. The
-    // ESS state code is also low-value as an HA entity. Skip HA exposure
-    // entirely and let the persistence path remain the sole writer.
 }
 
 impl BookkeepingId {
@@ -1205,14 +1198,12 @@ pub fn encode_sensor_body(value: Option<f64>, freshness: Freshness) -> String {
 pub enum BookkeepingKey {
     NextFullCharge,
     AboveSocDate,
-    PrevEssState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BookkeepingValue {
     NaiveDateTime(chrono::NaiveDateTime),
     NaiveDate(chrono::NaiveDate),
-    OptionalInt(Option<i32>),
     Cleared,
 }
 

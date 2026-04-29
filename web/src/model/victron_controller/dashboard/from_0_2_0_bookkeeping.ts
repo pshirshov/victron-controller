@@ -6,7 +6,6 @@ export function convert__bookkeeping__from__0_2_0(from: v0_2_0_Bookkeeping): das
     return new dashboard_Bookkeeping (
         from.next_full_charge_iso,
         from.above_soc_date_iso,
-        from.prev_ess_state,
         from.zappi_active,
         from.charge_to_full_required,
         from.soc_end_of_day_target,

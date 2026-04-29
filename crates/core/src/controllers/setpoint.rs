@@ -484,18 +484,24 @@ pub fn evaluate_setpoint(
     let g = &input.globals;
     let now = clock.naive();
 
-    let next_full_charge_defined = g.next_full_charge.is_some();
-
     let mut next_full_charge = g
         .next_full_charge
-        // Seed for the local; only the SoC ≥ 99.99 branch below
-        // consults the defer-to-next-sunday knob. The seed preserves
-        // legacy behaviour (snap to this week's Sunday) so a `None`
-        // bookkeeping value isn't retroactively reinterpreted. Pass
-        // the legacy threshold (3) — `defined=false` means the
-        // snap-back branch is taken regardless of `dow`, so the
-        // threshold value is inert here.
-        .unwrap_or_else(|| get_next_charge_date_to_sunday_5pm(now, 0, false, false, 3));
+        // Seed for the local when bookkeeping is `None`. With
+        // `defined=false`, the snap-back branch fires regardless of
+        // the threshold value (the `(dow > t && false)` subterm is
+        // dead). Pass the live knob value anyway so the call site is
+        // syntactically uniform with the SoC-100 branch — if a future
+        // change ever flips `defined=true` here, the threshold will
+        // Just Work.
+        .unwrap_or_else(|| {
+            get_next_charge_date_to_sunday_5pm(
+                now,
+                0,
+                false,
+                false,
+                g.full_charge_snap_back_max_weekday,
+            )
+        });
 
     let charge_to_full_required = match g.debug_full_charge {
         DebugFullCharge::Forbid => false,
@@ -579,10 +585,17 @@ pub fn evaluate_setpoint(
     // weekly rollover. 99.99 keeps the "we hit full" semantic without
     // the equality risk.
     if battery_soc >= 99.99 {
+        // SoC-100 rollover always defines a fresh `next_full_charge`,
+        // so pass `defined=true` regardless of whether bookkeeping
+        // entered this tick as `None` (cleared by the operator) or
+        // `Some(past_dt)`. This makes the threshold knob load-bearing
+        // for both paths — pre-fix, `defined=false` short-circuited
+        // the threshold subterm and silently snap-backed regardless
+        // of the operator's chosen weekday cap.
         next_full_charge = get_next_charge_date_to_sunday_5pm(
             now,
             1,
-            next_full_charge_defined,
+            true,
             g.full_charge_defer_to_next_sunday,
             g.full_charge_snap_back_max_weekday,
         );
@@ -1474,6 +1487,80 @@ mod tests {
         assert_eq!(next.minute(), 0);
         // Sunday = 0 in num_days_from_sunday
         assert_eq!(next.weekday().num_days_from_sunday(), 0);
+    }
+
+    /// Regression for the seed-unwrap gap: when `next_full_charge` is
+    /// `None` at SoC ≥ 99.99, the SoC-100 rollover used to ignore
+    /// `full_charge_snap_back_max_weekday` because `defined=false`
+    /// short-circuited the threshold subterm. The fix passes
+    /// `defined=true` at the SoC-100 site so the knob governs both
+    /// the cleared-bookkeeping and past-datetime paths identically.
+    #[test]
+    fn soc_100_with_cleared_bookkeeping_honors_snap_back_threshold() {
+        // 2026-04-21 Tuesday 10:00 → now+7d = 2026-04-28 Tuesday
+        // (dow=2). With cap=3 (legacy default), dow ≤ 3 → snap back
+        // to 2026-04-26. With cap=1, dow > 1 → push to 2026-05-03.
+        // Both globals set `next_full_charge: None`.
+        let with_legacy_cap = SetpointInput {
+            battery_soc: 100.0,
+            globals: SetpointInputGlobals {
+                next_full_charge: None,
+                full_charge_snap_back_max_weekday: 3,
+                ..base_input().globals
+            },
+            ..base_input()
+        };
+        let with_low_cap = SetpointInput {
+            battery_soc: 100.0,
+            globals: SetpointInputGlobals {
+                next_full_charge: None,
+                full_charge_snap_back_max_weekday: 1,
+                ..base_input().globals
+            },
+            ..base_input()
+        };
+        let c = clock_at(2026, 4, 21, 10, 0);
+        let legacy = evaluate_setpoint(&with_legacy_cap, &c, &hw())
+            .debug
+            .next_full_charge;
+        let low = evaluate_setpoint(&with_low_cap, &c, &hw())
+            .debug
+            .next_full_charge;
+        assert_eq!(legacy.date(), NaiveDate::from_ymd_opt(2026, 4, 26).unwrap());
+        assert_eq!(low.date(), NaiveDate::from_ymd_opt(2026, 5, 3).unwrap());
+    }
+
+    /// Companion: setting bookkeeping to a past datetime produces the
+    /// SAME rollover destination as clearing it does — the threshold
+    /// is consulted in both cases. Pre-fix these would diverge.
+    #[test]
+    fn soc_100_rollover_destination_independent_of_seed_definedness() {
+        let past = NaiveDate::from_ymd_opt(2025, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let cleared = SetpointInput {
+            battery_soc: 100.0,
+            globals: SetpointInputGlobals {
+                next_full_charge: None,
+                full_charge_snap_back_max_weekday: 1,
+                ..base_input().globals
+            },
+            ..base_input()
+        };
+        let with_past = SetpointInput {
+            battery_soc: 100.0,
+            globals: SetpointInputGlobals {
+                next_full_charge: Some(past),
+                full_charge_snap_back_max_weekday: 1,
+                ..base_input().globals
+            },
+            ..base_input()
+        };
+        let c = clock_at(2026, 4, 21, 10, 0);
+        let cleared_next = evaluate_setpoint(&cleared, &c, &hw()).debug.next_full_charge;
+        let past_next = evaluate_setpoint(&with_past, &c, &hw()).debug.next_full_charge;
+        assert_eq!(cleared_next, past_next);
     }
 
     #[test]
