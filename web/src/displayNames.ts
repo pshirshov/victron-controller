@@ -39,6 +39,11 @@ const DISPLAY_NAMES: Record<string, string> = {
   session_kwh: "evcharger.session.energy",
   ev_soc: "ev.soc",
   ev_charge_target: "ev.charge.target",
+  // PR-ZD-1: zigbee2mqtt power sensors and MPPT operation modes.
+  heat_pump_power: "house.heat-pump.power",
+  cooker_power: "house.cooker.power",
+  mppt_0_operation_mode: "solar.mppt.0.mode.operation",
+  mppt_1_operation_mode: "solar.mppt.1.mode.operation",
 
   // --- Knobs (33) ---
   force_disable_export: "grid.export.force-disable",

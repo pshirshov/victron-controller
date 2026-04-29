@@ -53,7 +53,7 @@ use victron_controller_core::types::{
     TimerStatus,
 };
 
-use crate::config::{EvConfig, MqttConfig, OutdoorTemperatureLocalConfig};
+use crate::config::{EvConfig, MqttConfig, OutdoorTemperatureLocalConfig, Zigbee2MqttConfig};
 use crate::dashboard::SocHistoryStore;
 use std::sync::Arc;
 
@@ -100,6 +100,9 @@ impl Publisher {
 /// `outdoor_temp` (optional) wires a Matter MQTT bridge feeding
 /// `SensorId::OutdoorTemperature` — see PR-matter-outdoor-temp.
 ///
+/// `z2m` (optional) wires zigbee2mqtt topics feeding
+/// `SensorId::HeatPumpPower` and `SensorId::CookerPower` — see PR-ZD-1.
+///
 /// `soc_history` is the in-memory ring that gets seeded from the
 /// retained `<topic_root>/state/soc_history` payload during bootstrap
 /// (PR-soc-history-persist).
@@ -108,6 +111,7 @@ pub async fn connect(
     config: &MqttConfig,
     outdoor_temp: &OutdoorTemperatureLocalConfig,
     ev: &EvConfig,
+    z2m: &Zigbee2MqttConfig,
     soc_history: Arc<SocHistoryStore>,
 ) -> Result<Option<(Publisher, Subscriber)>> {
     if config.host.is_empty() {
@@ -178,6 +182,19 @@ pub async fn connect(
     let ev_soc_topic_validated = validate_topic(ev.soc_topic.as_deref(), "ev.soc_topic");
     let ev_charge_target_topic_validated =
         validate_topic(ev.charge_target_topic.as_deref(), "ev.charge_target_topic");
+    // PR-ZD-1: validate zigbee2mqtt topics.
+    let heat_pump_topic_validated =
+        validate_topic(z2m.heat_pump_topic.as_deref(), "zigbee2mqtt.heat_pump_topic");
+    let heat_pump_availability_topic_validated = validate_topic(
+        z2m.heat_pump_availability_topic.as_deref(),
+        "zigbee2mqtt.heat_pump_availability_topic",
+    );
+    let cooker_topic_validated =
+        validate_topic(z2m.cooker_topic.as_deref(), "zigbee2mqtt.cooker_topic");
+    let cooker_availability_topic_validated = validate_topic(
+        z2m.cooker_availability_topic.as_deref(),
+        "zigbee2mqtt.cooker_availability_topic",
+    );
 
     let subscriber = Subscriber {
         client,
@@ -195,6 +212,13 @@ pub async fn connect(
         ev_charge_target_state_topic: None,
         ev_charge_target_value_field: None,
         ev_charge_target_last_parse_warn: None,
+        // PR-ZD-1.
+        heat_pump_topic: heat_pump_topic_validated,
+        heat_pump_availability_topic: heat_pump_availability_topic_validated,
+        heat_pump_last_parse_warn: None,
+        cooker_topic: cooker_topic_validated,
+        cooker_availability_topic: cooker_availability_topic_validated,
+        cooker_last_parse_warn: None,
     };
     Ok(Some((publisher, subscriber)))
 }
@@ -424,6 +448,20 @@ pub struct Subscriber {
     /// PR-auto-extended-charge: rate-limit handle, mirrors
     /// `ev_soc_last_parse_warn`.
     ev_charge_target_last_parse_warn: Option<Instant>,
+    /// PR-ZD-1: zigbee2mqtt value topic for heat pump power. When `Some`,
+    /// subscribe and emit `SensorId::HeatPumpPower` on parse success.
+    /// Availability topic subscribed separately (informational only).
+    heat_pump_topic: Option<String>,
+    /// PR-ZD-1: availability topic for the heat pump meter.
+    heat_pump_availability_topic: Option<String>,
+    /// PR-ZD-1: rate-limit handle for heat pump parse-failure warnings.
+    heat_pump_last_parse_warn: Option<Instant>,
+    /// PR-ZD-1: zigbee2mqtt value topic for cooker power.
+    cooker_topic: Option<String>,
+    /// PR-ZD-1: availability topic for the cooker meter.
+    cooker_availability_topic: Option<String>,
+    /// PR-ZD-1: rate-limit handle for cooker parse-failure warnings.
+    cooker_last_parse_warn: Option<Instant>,
 }
 
 impl std::fmt::Debug for Subscriber {
@@ -457,6 +495,18 @@ impl std::fmt::Debug for Subscriber {
                 "ev_charge_target_last_parse_warn",
                 &self.ev_charge_target_last_parse_warn,
             )
+            .field("heat_pump_topic", &self.heat_pump_topic)
+            .field(
+                "heat_pump_availability_topic",
+                &self.heat_pump_availability_topic,
+            )
+            .field("heat_pump_last_parse_warn", &self.heat_pump_last_parse_warn)
+            .field("cooker_topic", &self.cooker_topic)
+            .field(
+                "cooker_availability_topic",
+                &self.cooker_availability_topic,
+            )
+            .field("cooker_last_parse_warn", &self.cooker_last_parse_warn)
             .finish()
     }
 }
@@ -643,6 +693,8 @@ impl Subscriber {
         if let Some(state_topic) = self.ev_charge_target_state_topic.clone() {
             self.subscribe_ev_charge_target_state(&state_topic).await;
         }
+        // PR-ZD-1: zigbee2mqtt power sensor topics.
+        self.subscribe_z2m_topics().await;
 
         // PR-matter-outdoor-temp: rate-limit the out-of-range warn to
         // once per 60 s. Genuine sensor failures stay visible without
@@ -670,6 +722,7 @@ impl Subscriber {
                     if let Some(t) = self.ev_charge_target_state_topic.clone() {
                         self.subscribe_ev_charge_target_state(&t).await;
                     }
+                    self.subscribe_z2m_topics().await;
                     continue;
                 }
             };
@@ -688,6 +741,7 @@ impl Subscriber {
                     if let Some(t) = self.ev_charge_target_state_topic.clone() {
                         self.subscribe_ev_charge_target_state(&t).await;
                     }
+                    self.subscribe_z2m_topics().await;
                 }
                 MqttEvent::Incoming(Packet::Publish(publish)) => {
                     // PR-matter-outdoor-temp: exact-match against the
@@ -971,6 +1025,128 @@ impl Subscriber {
                         }
                         continue;
                     }
+                    // PR-ZD-1: zigbee2mqtt heat pump power.
+                    if self
+                        .heat_pump_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        let now = Instant::now();
+                        match handle_zigbee2mqtt_power_payload(
+                            SensorId::HeatPumpPower,
+                            &publish.payload,
+                            now,
+                        ) {
+                            Some(event) => {
+                                if let Err(e) = tx.try_send(event) {
+                                    use tokio::sync::mpsc::error::TrySendError;
+                                    match e {
+                                        TrySendError::Full(_) => {
+                                            warn!("heat_pump_power: event channel full; dropped reading");
+                                        }
+                                        TrySendError::Closed(_) => {
+                                            info!("runtime receiver closed; mqtt subscriber exiting");
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                let should_warn = self
+                                    .heat_pump_last_parse_warn
+                                    .is_none_or(|t| {
+                                        now.duration_since(t) >= Duration::from_secs(60)
+                                    });
+                                if should_warn {
+                                    warn!(
+                                        topic = %publish.topic,
+                                        body_len = publish.payload.len(),
+                                        "heat_pump_power: body unparseable/out-of-range; dropped (rate-limited 60s)"
+                                    );
+                                    self.heat_pump_last_parse_warn = Some(now);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    // PR-ZD-1: heat pump availability — informational only.
+                    if self
+                        .heat_pump_availability_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        let payload_str = std::str::from_utf8(&publish.payload)
+                            .unwrap_or("<non-utf8>")
+                            .trim();
+                        debug!(
+                            topic = %publish.topic,
+                            status = %payload_str,
+                            "heat_pump availability: {} (informational; freshness window handles disconnect)",
+                            payload_str,
+                        );
+                        continue;
+                    }
+                    // PR-ZD-1: zigbee2mqtt cooker power.
+                    if self
+                        .cooker_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        let now = Instant::now();
+                        match handle_zigbee2mqtt_power_payload(
+                            SensorId::CookerPower,
+                            &publish.payload,
+                            now,
+                        ) {
+                            Some(event) => {
+                                if let Err(e) = tx.try_send(event) {
+                                    use tokio::sync::mpsc::error::TrySendError;
+                                    match e {
+                                        TrySendError::Full(_) => {
+                                            warn!("cooker_power: event channel full; dropped reading");
+                                        }
+                                        TrySendError::Closed(_) => {
+                                            info!("runtime receiver closed; mqtt subscriber exiting");
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                let should_warn = self
+                                    .cooker_last_parse_warn
+                                    .is_none_or(|t| {
+                                        now.duration_since(t) >= Duration::from_secs(60)
+                                    });
+                                if should_warn {
+                                    warn!(
+                                        topic = %publish.topic,
+                                        body_len = publish.payload.len(),
+                                        "cooker_power: body unparseable/out-of-range; dropped (rate-limited 60s)"
+                                    );
+                                    self.cooker_last_parse_warn = Some(now);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    // PR-ZD-1: cooker availability — informational only.
+                    if self
+                        .cooker_availability_topic
+                        .as_deref()
+                        .is_some_and(|t| t == publish.topic)
+                    {
+                        let payload_str = std::str::from_utf8(&publish.payload)
+                            .unwrap_or("<non-utf8>")
+                            .trim();
+                        debug!(
+                            topic = %publish.topic,
+                            status = %payload_str,
+                            "cooker availability: {} (informational; freshness window handles disconnect)",
+                            payload_str,
+                        );
+                        continue;
+                    }
                     if let Some(event) = serialize::decode_knob_set(
                         &self.topic_root,
                         &publish.topic,
@@ -1075,13 +1251,59 @@ impl Subscriber {
             }
         }
     }
+
+    /// PR-ZD-1: subscribe to all configured zigbee2mqtt topics (value +
+    /// availability for heat pump and cooker). Each is individually
+    /// optional; missing topics are silently skipped. Non-fatal on
+    /// subscribe failure — the bridge is optional.
+    async fn subscribe_z2m_topics(&self) {
+        for topic_opt in [
+            self.heat_pump_topic.as_deref(),
+            self.heat_pump_availability_topic.as_deref(),
+            self.cooker_topic.as_deref(),
+            self.cooker_availability_topic.as_deref(),
+        ] {
+            let Some(topic) = topic_opt else { continue };
+            match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+                Ok(()) => {
+                    info!(%topic, "zigbee2mqtt topic subscribed: {topic}");
+                }
+                Err(e) => {
+                    warn!(error = %e, %topic, "zigbee2mqtt topic subscribe failed");
+                }
+            }
+        }
+    }
+}
+
+/// PR-ZD-1 / D06: pure dispatch helper for a zigbee2mqtt power payload.
+///
+/// Parses `payload` with [`serialize::parse_zigbee2mqtt_power_body`] and, on
+/// success, wraps the value in an `Event::Sensor` for `sensor_id`. Returns
+/// `None` if the payload is unparseable, negative, non-finite, or
+/// out-of-range — the caller must not emit any sensor update in that case.
+///
+/// Extracted as a free function so it can be unit-tested without going
+/// through the async MQTT loop.
+fn handle_zigbee2mqtt_power_payload(
+    sensor_id: SensorId,
+    payload: &[u8],
+    at: Instant,
+) -> Option<Event> {
+    serialize::parse_zigbee2mqtt_power_body(payload).map(|value| {
+        Event::Sensor(SensorReading {
+            id: sensor_id,
+            value,
+            at,
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_discovery, parse_discovery_state_topic, parse_ev_soc_state_value,
-        parse_ev_soc_state_value_with_field,
+        handle_zigbee2mqtt_power_payload, parse_discovery, parse_discovery_state_topic,
+        parse_ev_soc_state_value, parse_ev_soc_state_value_with_field,
     };
 
     // ------------------------------------------------------------------
@@ -1227,5 +1449,54 @@ mod tests {
         // only the fallback.
         let v = parse_ev_soc_state_value_with_field(b"50.0", Some("value"));
         assert_eq!(v, Some(50.0));
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-1 / D06: handle_zigbee2mqtt_power_payload
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn handle_zigbee2mqtt_power_payload_drops_negative() {
+        let now = std::time::Instant::now();
+        assert!(
+            handle_zigbee2mqtt_power_payload(
+                victron_controller_core::types::SensorId::HeatPumpPower,
+                br#"{"power":-50}"#,
+                now,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn handle_zigbee2mqtt_power_payload_drops_overflow() {
+        let now = std::time::Instant::now();
+        assert!(
+            handle_zigbee2mqtt_power_payload(
+                victron_controller_core::types::SensorId::HeatPumpPower,
+                br#"{"power":1e400}"#,
+                now,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn handle_zigbee2mqtt_power_payload_emits_event_on_valid() {
+        use victron_controller_core::types::{Event, SensorId};
+        let now = std::time::Instant::now();
+        let evt = handle_zigbee2mqtt_power_payload(
+            SensorId::HeatPumpPower,
+            br#"{"power":1500}"#,
+            now,
+        )
+        .expect("expected Some(Event)");
+        match evt {
+            Event::Sensor(r) => {
+                assert_eq!(r.id, SensorId::HeatPumpPower);
+                assert!((r.value - 1500.0).abs() < 1e-9);
+            }
+            _ => panic!("expected Event::Sensor"),
+        }
     }
 }

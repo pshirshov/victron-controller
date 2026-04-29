@@ -33,6 +33,13 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
   PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
   switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
+- [~] **M-ZAPPI-DRAIN** — Replace the PV-only Zappi-active export
+  clamp with a closed-loop controller using compensated battery drain
+  (`max(0, -battery_dc_power - heat_pump - cooker)`) as the feedback
+  signal. Adds 4 sensors (HP/cooker via zigbee2mqtt MQTT, two MPPT
+  op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
+  step, kp, target, hard-clamp). Plan in
+  `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
 
 ---
 
@@ -294,6 +301,60 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 
 ---
 
+## Milestone M-ZAPPI-DRAIN — PR breakdown
+
+Detail in `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`. Five PRs;
+sequenced so PR-ZD-1 + PR-ZD-2 are pure plumbing (zero behaviour change),
+PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
+
+- [x] **PR-ZD-1 — Sensors.** Wire `HeatPumpPower` + `CookerPower`
+  (zigbee2mqtt MQTT, JSON `.power` field) and `Mppt0OperationMode` +
+  `Mppt1OperationMode` (Victron D-Bus `/MppOperationMode`) through the
+  full sensor pipeline (SensorId + world + ingestion + dashboard). No
+  control-loop coupling. ≥ 10 new tests covering parse / fresh-stale
+  transitions / dashboard surfacing.
+- [ ] **PR-ZD-2 — Knobs.** Add five knobs through the 11-step CLAUDE.md
+  registration: `zappi_battery_drain_threshold_w` (default 1000),
+  `…_relax_step_w` (default 100), `…_kp` (default 1.0), `…_target_w`
+  (default 0, reserved for future PI extension; routes via
+  `KnobValue::Float`), `…_hard_clamp_w` (default 200). All
+  `category = "config"`. ≥ 4 new tests.
+- [ ] **PR-ZD-3 — Soft loop.** Replace lines 617–637 in
+  `evaluate_setpoint()` with the compensated-drain control law. Drop the
+  `(2..8)` Soltaro carve-out (folded into the unified loop). 23:55
+  protection window unchanged. Add `battery_dc_power` to setpoint's
+  required-fresh set. ≥ 8 new tests.
+- [ ] **PR-ZD-4 — Hard clamp.** Post-`evaluate_setpoint()` Fast-mode
+  safety net in `run_setpoint`: when `zappi_mode.target == Fast` AND
+  `!allow_battery_to_car` AND `compensated_drain > hard_clamp_w`, raise
+  the proposed setpoint by the excess. ≥ 4 new tests covering Fast vs
+  Eco vs Off vs `allow_battery_to_car=true`.
+- [ ] **PR-ZD-5 — Dashboard MPPT-mode display.** Frontend-only: render
+  the two `Mppt*OperationMode` sensors as human-readable strings ("Off",
+  "Voltage-or-current-limited", "MPPT-tracking"). 1 web test.
+
+### Cross-cutting (M-ZAPPI-DRAIN)
+
+- Compensated drain definition (locked):
+  `compensated_drain = max(0, -battery_dc_power - heat_pump - cooker)`.
+  Stale HP / cooker contribute `0` (conservative; tighter clamp).
+- MPPT op-mode coupling (locked): observability only, no control-loop
+  read. May feed future SoC-chart or forecast-view annotations.
+- Hard-clamp scope (locked): only fires when the Zappi *target* (not
+  *actual*) is `Fast`, AND `!allow_battery_to_car`, AND
+  `world.derived.zappi_active`. Eco / Eco+ / Off bypass entirely.
+- Stale-meter semantics (locked): for HP / cooker, stale → 0 W. For
+  `battery_dc_power`, stale → `build_setpoint_input` returns `None`
+  → safety fallback (idle 10 W).
+- Knob category (locked): all 5 new knobs are `"config"` (install-time
+  tuning, not daily-use operator).
+- MPPT op-mode index orientation (locked): `Mppt0OperationMode` ↔
+  `mppt_0` = `ttyUSB1` (DI 289); `Mppt1OperationMode` ↔ `mppt_1` =
+  `ttyS2` (DI 274) — matches existing `MpptPower0`/`MpptPower1`
+  numbering.
+
+---
+
 ## Cross-cutting architectural notes (locked)
 
 - [x] **ET112 grid current sensor is not trusted — derive `grid_current` from
@@ -335,6 +396,83 @@ Detail per PR in `./docs/drafts/YYYYMMDD-HHMM-m-audit-2-<name>.md`
 ---
 
 ## Completed
+
+- **PR-ZD-1 — Sensors** (M-ZAPPI-DRAIN, 2026-04-29) — Plumbing-only PR
+  wiring four new sensors through the full pipeline: `HeatPumpPower`
+  and `CookerPower` (zigbee2mqtt MQTT, JSON `.power` field; topics
+  `zigbee2mqtt/nodon-mtr-heat-pump` / `zigbee2mqtt/nodon-mtr-stove`
+  configured via a new `[zigbee2mqtt]` config section), plus
+  `Mppt0OperationMode` and `Mppt1OperationMode` (Victron D-Bus path
+  `/MppOperationMode` on `mppt_0` / `mppt_1` services). Index
+  orientation locked to existing power-sensor numbering: op-mode 0 ↔
+  `mppt_0` ↔ `ttyUSB1` (DI 289); op-mode 1 ↔ `mppt_1` ↔ `ttyS2`
+  (DI 274). All four sensors flow into `world.sensors`, decay via
+  `apply_tick`, surface on the dashboard sensor table, and have
+  human-readable descriptions in `web/src/descriptions.ts`. **Zero
+  control-loop coupling** — the four sensors are read by the soft
+  loop in PR-ZD-3 and the hard clamp in PR-ZD-4. Two adversarial
+  review rounds; round 1 surfaced 9 defects (D01-D09) and round 2
+  verified clean.
+  Verification: `cargo test --workspace` → 521 passed (312 core + 10
+  dashboard-model + 199 shell, +18 vs pre-PR baseline 503); `cargo
+  clippy --workspace --all-targets -- -D warnings` clean; `cd web &&
+  ./node_modules/.bin/tsc --noEmit -p .` clean.
+  Defects (all closed):
+  - D01 (major) — MPPT op-mode `[0, 5]` range guard missing →
+    `mppt_operation_mode_in_range(v: f64) -> bool` helper added in
+    `crates/core/src/process.rs`; out-of-range readings emit
+    `Effect::Log{Warn}` and skip `on_reading`, leaving the slot
+    Unknown so freshness expires. New test
+    `mppt_operation_mode_out_of_enum_range_is_dropped`.
+  - D02 (major) — `dashboard_snapshot_surfaces_new_sensors` test
+    missing → added `mod snapshot_new_sensors_tests` with two tests
+    covering the four-sensor wire-format mapping + the `sensors_meta`
+    omit-when-untopiced negative case.
+  - D03 (minor) — `_rejects_non_finite` test misnamed → renamed to
+    `_rejects_null_power`; new `_rejects_overflow_power` exercises
+    `1e400 → INFINITY` against the `is_finite()` guard.
+  - D04 (minor) — orchestrator-side ledger checkbox.
+  - D05 (minor) — wrong MPPT op-mode descriptions (Volt/Var,
+    PowerCtrl, Remote, Ext) → corrected to documented Victron enum
+    (0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking).
+  - D06 (minor) — no dispatch-level negative-rejection test →
+    extracted `handle_zigbee2mqtt_power_payload` pure helper; both
+    HP/cooker dispatch arms call it; 3 new tests
+    (`_drops_negative`, `_drops_overflow`, `_emits_event_on_valid`).
+  - D07 (minor) — test value 3.0 → 2.0; aligned with D01's clamp.
+  - D08 (nit) — closed deferred (cosmetic; `-1.0` and `-50` exercise
+    identical guard arm).
+  - D09 (nit) — closed note-only (project convention: baboon
+    migration stubs are auto-emitted with `todo!()` and never called).
+  Notes / surprises:
+  - The core crate has no `tracing` dependency, so D01's warn path
+    uses `Effect::Log { level: Warn }` (the existing in-process
+    logging effect) rather than `warn!()`.
+  - Per-service min cadence on solarcharger services unaffected by
+    adding `/MppOperationMode` (15 s reseed; `MpptPower*` already
+    drives the per-service min at 5 s). New regression test
+    `mpp_operation_mode_does_not_shorten_mppt_service_cadence`.
+  - Availability topic (zigbee2mqtt `online`/`offline`) treated as
+    informational only — no synthetic stale events; relies on
+    freshness window. Decision documented in code per round-1
+    review.
+  - `EXPECTED_FIRST_RUN_EFFECTS` bumped 28 → 32 in
+    `crates/core/src/core_dag/tests.rs` to account for the four new
+    sensors' boot-time logging.
+  - `discover-victron.sh` extended with a focused MPPT-mode probe
+    section (the artefact that drove the D-Bus-path discovery).
+  Constraints future work must respect:
+  - The four sensor slots are now load-bearing for PR-ZD-3 (soft
+    loop reads `heat_pump_power` / `cooker_power` / `battery_dc_power`)
+    and PR-ZD-4 (hard clamp reads same set). Stale → 0 contribution
+    is the locked semantic; do not "improve" by reading last value.
+  - MPPT op-mode is observability-only by design. Do not couple it
+    into any controller until a follow-up explicitly relitigates
+    that decision (the operator wanted observability first to gather
+    data before any closed-loop coupling).
+  - The `[zigbee2mqtt]` config section is now part of `Config`;
+    operators with existing `config.toml` files do not need to add
+    it (all four fields are `Option<String>` defaulting to `None`).
 
 - **PR-zappi-schedule-stop** (2026-04-27) — Field regression: last night
   the user had `charge_car_boost = false` and `charge_car_extended =

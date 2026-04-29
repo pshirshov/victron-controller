@@ -25,8 +25,12 @@ export class Sensors implements BaboonGeneratedLatest {
     private readonly _session_kwh: ActualF64;
     private readonly _ev_soc: ActualF64;
     private readonly _ev_charge_target: ActualF64;
+    private readonly _heat_pump_power: ActualF64;
+    private readonly _cooker_power: ActualF64;
+    private readonly _mppt_0_operation_mode: ActualF64;
+    private readonly _mppt_1_operation_mode: ActualF64;
 
-    constructor(battery_soc: ActualF64, battery_soh: ActualF64, battery_installed_capacity: ActualF64, battery_dc_power: ActualF64, mppt_power_0: ActualF64, mppt_power_1: ActualF64, soltaro_power: ActualF64, power_consumption: ActualF64, grid_power: ActualF64, grid_voltage: ActualF64, grid_current: ActualF64, consumption_current: ActualF64, offgrid_power: ActualF64, offgrid_current: ActualF64, vebus_input_current: ActualF64, evcharger_ac_power: ActualF64, evcharger_ac_current: ActualF64, ess_state: ActualF64, outdoor_temperature: ActualF64, session_kwh: ActualF64, ev_soc: ActualF64, ev_charge_target: ActualF64) {
+    constructor(battery_soc: ActualF64, battery_soh: ActualF64, battery_installed_capacity: ActualF64, battery_dc_power: ActualF64, mppt_power_0: ActualF64, mppt_power_1: ActualF64, soltaro_power: ActualF64, power_consumption: ActualF64, grid_power: ActualF64, grid_voltage: ActualF64, grid_current: ActualF64, consumption_current: ActualF64, offgrid_power: ActualF64, offgrid_current: ActualF64, vebus_input_current: ActualF64, evcharger_ac_power: ActualF64, evcharger_ac_current: ActualF64, ess_state: ActualF64, outdoor_temperature: ActualF64, session_kwh: ActualF64, ev_soc: ActualF64, ev_charge_target: ActualF64, heat_pump_power: ActualF64, cooker_power: ActualF64, mppt_0_operation_mode: ActualF64, mppt_1_operation_mode: ActualF64) {
         this._battery_soc = battery_soc
         this._battery_soh = battery_soh
         this._battery_installed_capacity = battery_installed_capacity
@@ -49,6 +53,10 @@ export class Sensors implements BaboonGeneratedLatest {
         this._session_kwh = session_kwh
         this._ev_soc = ev_soc
         this._ev_charge_target = ev_charge_target
+        this._heat_pump_power = heat_pump_power
+        this._cooker_power = cooker_power
+        this._mppt_0_operation_mode = mppt_0_operation_mode
+        this._mppt_1_operation_mode = mppt_1_operation_mode
     }
 
     public get battery_soc(): ActualF64 {
@@ -117,6 +125,18 @@ export class Sensors implements BaboonGeneratedLatest {
     public get ev_charge_target(): ActualF64 {
         return this._ev_charge_target;
     }
+    public get heat_pump_power(): ActualF64 {
+        return this._heat_pump_power;
+    }
+    public get cooker_power(): ActualF64 {
+        return this._cooker_power;
+    }
+    public get mppt_0_operation_mode(): ActualF64 {
+        return this._mppt_0_operation_mode;
+    }
+    public get mppt_1_operation_mode(): ActualF64 {
+        return this._mppt_1_operation_mode;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -141,11 +161,15 @@ export class Sensors implements BaboonGeneratedLatest {
             outdoor_temperature: this._outdoor_temperature,
             session_kwh: this._session_kwh,
             ev_soc: this._ev_soc,
-            ev_charge_target: this._ev_charge_target
+            ev_charge_target: this._ev_charge_target,
+            heat_pump_power: this._heat_pump_power,
+            cooker_power: this._cooker_power,
+            mppt_0_operation_mode: this._mppt_0_operation_mode,
+            mppt_1_operation_mode: this._mppt_1_operation_mode
         };
     }
 
-    public with(overrides: {battery_soc?: ActualF64; battery_soh?: ActualF64; battery_installed_capacity?: ActualF64; battery_dc_power?: ActualF64; mppt_power_0?: ActualF64; mppt_power_1?: ActualF64; soltaro_power?: ActualF64; power_consumption?: ActualF64; grid_power?: ActualF64; grid_voltage?: ActualF64; grid_current?: ActualF64; consumption_current?: ActualF64; offgrid_power?: ActualF64; offgrid_current?: ActualF64; vebus_input_current?: ActualF64; evcharger_ac_power?: ActualF64; evcharger_ac_current?: ActualF64; ess_state?: ActualF64; outdoor_temperature?: ActualF64; session_kwh?: ActualF64; ev_soc?: ActualF64; ev_charge_target?: ActualF64}): Sensors {
+    public with(overrides: {battery_soc?: ActualF64; battery_soh?: ActualF64; battery_installed_capacity?: ActualF64; battery_dc_power?: ActualF64; mppt_power_0?: ActualF64; mppt_power_1?: ActualF64; soltaro_power?: ActualF64; power_consumption?: ActualF64; grid_power?: ActualF64; grid_voltage?: ActualF64; grid_current?: ActualF64; consumption_current?: ActualF64; offgrid_power?: ActualF64; offgrid_current?: ActualF64; vebus_input_current?: ActualF64; evcharger_ac_power?: ActualF64; evcharger_ac_current?: ActualF64; ess_state?: ActualF64; outdoor_temperature?: ActualF64; session_kwh?: ActualF64; ev_soc?: ActualF64; ev_charge_target?: ActualF64; heat_pump_power?: ActualF64; cooker_power?: ActualF64; mppt_0_operation_mode?: ActualF64; mppt_1_operation_mode?: ActualF64}): Sensors {
         return new Sensors(
             'battery_soc' in overrides ? overrides.battery_soc! : this._battery_soc,
             'battery_soh' in overrides ? overrides.battery_soh! : this._battery_soh,
@@ -168,11 +192,15 @@ export class Sensors implements BaboonGeneratedLatest {
             'outdoor_temperature' in overrides ? overrides.outdoor_temperature! : this._outdoor_temperature,
             'session_kwh' in overrides ? overrides.session_kwh! : this._session_kwh,
             'ev_soc' in overrides ? overrides.ev_soc! : this._ev_soc,
-            'ev_charge_target' in overrides ? overrides.ev_charge_target! : this._ev_charge_target
+            'ev_charge_target' in overrides ? overrides.ev_charge_target! : this._ev_charge_target,
+            'heat_pump_power' in overrides ? overrides.heat_pump_power! : this._heat_pump_power,
+            'cooker_power' in overrides ? overrides.cooker_power! : this._cooker_power,
+            'mppt_0_operation_mode' in overrides ? overrides.mppt_0_operation_mode! : this._mppt_0_operation_mode,
+            'mppt_1_operation_mode' in overrides ? overrides.mppt_1_operation_mode! : this._mppt_1_operation_mode
         );
     }
 
-    public static fromPlain(obj: {battery_soc: ActualF64; battery_soh: ActualF64; battery_installed_capacity: ActualF64; battery_dc_power: ActualF64; mppt_power_0: ActualF64; mppt_power_1: ActualF64; soltaro_power: ActualF64; power_consumption: ActualF64; grid_power: ActualF64; grid_voltage: ActualF64; grid_current: ActualF64; consumption_current: ActualF64; offgrid_power: ActualF64; offgrid_current: ActualF64; vebus_input_current: ActualF64; evcharger_ac_power: ActualF64; evcharger_ac_current: ActualF64; ess_state: ActualF64; outdoor_temperature: ActualF64; session_kwh: ActualF64; ev_soc: ActualF64; ev_charge_target: ActualF64}): Sensors {
+    public static fromPlain(obj: {battery_soc: ActualF64; battery_soh: ActualF64; battery_installed_capacity: ActualF64; battery_dc_power: ActualF64; mppt_power_0: ActualF64; mppt_power_1: ActualF64; soltaro_power: ActualF64; power_consumption: ActualF64; grid_power: ActualF64; grid_voltage: ActualF64; grid_current: ActualF64; consumption_current: ActualF64; offgrid_power: ActualF64; offgrid_current: ActualF64; vebus_input_current: ActualF64; evcharger_ac_power: ActualF64; evcharger_ac_current: ActualF64; ess_state: ActualF64; outdoor_temperature: ActualF64; session_kwh: ActualF64; ev_soc: ActualF64; ev_charge_target: ActualF64; heat_pump_power: ActualF64; cooker_power: ActualF64; mppt_0_operation_mode: ActualF64; mppt_1_operation_mode: ActualF64}): Sensors {
         return new Sensors(
             obj.battery_soc,
             obj.battery_soh,
@@ -195,7 +223,11 @@ export class Sensors implements BaboonGeneratedLatest {
             obj.outdoor_temperature,
             obj.session_kwh,
             obj.ev_soc,
-            obj.ev_charge_target
+            obj.ev_charge_target,
+            obj.heat_pump_power,
+            obj.cooker_power,
+            obj.mppt_0_operation_mode,
+            obj.mppt_1_operation_mode
         );
     }
 
@@ -211,7 +243,7 @@ export class Sensors implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Sensors.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return Sensors.BaboonSameInVersions
     }
@@ -383,6 +415,34 @@ export class Sensors_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActualF64_UEBACodec.instance.encode(ctx, value.heat_pump_power, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActualF64_UEBACodec.instance.encode(ctx, value.cooker_power, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActualF64_UEBACodec.instance.encode(ctx, value.mppt_0_operation_mode, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActualF64_UEBACodec.instance.encode(ctx, value.mppt_1_operation_mode, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -408,6 +468,10 @@ export class Sensors_UEBACodec {
             ActualF64_UEBACodec.instance.encode(ctx, value.session_kwh, writer);
             ActualF64_UEBACodec.instance.encode(ctx, value.ev_soc, writer);
             ActualF64_UEBACodec.instance.encode(ctx, value.ev_charge_target, writer);
+            ActualF64_UEBACodec.instance.encode(ctx, value.heat_pump_power, writer);
+            ActualF64_UEBACodec.instance.encode(ctx, value.cooker_power, writer);
+            ActualF64_UEBACodec.instance.encode(ctx, value.mppt_0_operation_mode, writer);
+            ActualF64_UEBACodec.instance.encode(ctx, value.mppt_1_operation_mode, writer);
         }
     }
     
@@ -419,7 +483,7 @@ export class Sensors_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 22; i++) {
+            for (let i = 0; i < 26; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -446,6 +510,10 @@ export class Sensors_UEBACodec {
         const session_kwh = ActualF64_UEBACodec.instance.decode(ctx, reader);
         const ev_soc = ActualF64_UEBACodec.instance.decode(ctx, reader);
         const ev_charge_target = ActualF64_UEBACodec.instance.decode(ctx, reader);
+        const heat_pump_power = ActualF64_UEBACodec.instance.decode(ctx, reader);
+        const cooker_power = ActualF64_UEBACodec.instance.decode(ctx, reader);
+        const mppt_0_operation_mode = ActualF64_UEBACodec.instance.decode(ctx, reader);
+        const mppt_1_operation_mode = ActualF64_UEBACodec.instance.decode(ctx, reader);
         return new Sensors(
             battery_soc,
             battery_soh,
@@ -469,6 +537,10 @@ export class Sensors_UEBACodec {
             session_kwh,
             ev_soc,
             ev_charge_target,
+            heat_pump_power,
+            cooker_power,
+            mppt_0_operation_mode,
+            mppt_1_operation_mode,
         );
     }
 

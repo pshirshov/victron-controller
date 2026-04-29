@@ -211,7 +211,7 @@ export class Sensors implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Sensors.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.2.0"]
     public baboonSameInVersions() {
         return Sensors.BaboonSameInVersions
     }

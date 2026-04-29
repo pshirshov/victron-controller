@@ -113,6 +113,22 @@ pub enum SensorId {
     /// sourced from the same external publisher as `EvSoc`. Read by the
     /// 04:30 auto-extended-charge evaluation in `Auto` mode.
     EvChargeTarget,
+    /// PR-ZD-1: AC power draw of the metered heat pump (W). Sourced from
+    /// zigbee2mqtt push (nodon-mtr-heat-pump), JSON `.power` field.
+    /// Observability + compensated-drain feedback (PR-ZD-3).
+    HeatPumpPower,
+    /// PR-ZD-1: AC power draw of the metered cooker/stove (W). Sourced from
+    /// zigbee2mqtt push (nodon-mtr-stove), JSON `.power` field. Same shape
+    /// as `HeatPumpPower`.
+    CookerPower,
+    /// PR-ZD-1: Operation mode of MPPT charger 0 (ttyUSB1, DI 289).
+    /// 0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking.
+    /// Observability only — not coupled into the control loop.
+    Mppt0OperationMode,
+    /// PR-ZD-1: Operation mode of MPPT charger 1 (ttyS2, DI 274).
+    /// 0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking.
+    /// Observability only — not coupled into the control loop.
+    Mppt1OperationMode,
 }
 
 impl SensorId {
@@ -189,6 +205,13 @@ impl SensorId {
             // PR-auto-extended-charge: `EvChargeTarget` shares the same
             // gateway and the same 60 min cadence; identical 12 h window.
             Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(12 * 3600),
+            // PR-ZD-1: 30 s freshness for all four new sensors.
+            // HP/cooker are zigbee2mqtt push (15 s reseed → 2× = 30 s).
+            // MPPT op-modes are D-Bus reseed-driven (15 s reseed → 30 s).
+            Self::HeatPumpPower
+            | Self::CookerPower
+            | Self::Mppt0OperationMode
+            | Self::Mppt1OperationMode => Duration::from_secs(30),
         }
     }
 }
@@ -259,6 +282,11 @@ impl SensorId {
         SensorId::EvSoc,
         // PR-auto-extended-charge.
         SensorId::EvChargeTarget,
+        // PR-ZD-1.
+        SensorId::HeatPumpPower,
+        SensorId::CookerPower,
+        SensorId::Mppt0OperationMode,
+        SensorId::Mppt1OperationMode,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -299,7 +327,11 @@ impl SensorId {
             // current-limit readback paths follow their fast-organic
             // neighbours on the same service.
             | Self::GridSetpointActual
-            | Self::InputCurrentLimitActual => FreshnessRegime::SlowSignalled,
+            | Self::InputCurrentLimitActual
+            // PR-ZD-1: HP/cooker are zigbee2mqtt push-on-change (organic
+            // signal from the appliance meter plus 15 s reseed safety net).
+            | Self::HeatPumpPower
+            | Self::CookerPower => FreshnessRegime::SlowSignalled,
             // Reseed-driven — value moves on minutes-to-hours timescales,
             // organic signals essentially never fire.
             // `SessionKwh` is sourced from the myenergi cloud poll, not
@@ -328,7 +360,11 @@ impl SensorId {
             // the car reports a new SoC.
             | Self::EvSoc
             // PR-auto-extended-charge: same gateway as `EvSoc`.
-            | Self::EvChargeTarget => FreshnessRegime::ReseedDriven,
+            | Self::EvChargeTarget
+            // PR-ZD-1: MPPT op-modes are reseed-driven (value changes
+            // only on inverter mode transitions; no organic signal).
+            | Self::Mppt0OperationMode
+            | Self::Mppt1OperationMode => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -411,6 +447,16 @@ impl SensorId {
             // (below) stays generous because real gateway gaps (car
             // asleep) span hours.
             Self::EvSoc | Self::EvChargeTarget => Duration::from_secs(10 * 60),
+            // PR-ZD-1: 15 s for all four new sensors.
+            // HP/cooker: zigbee2mqtt push — 15 s reseed gives a 30 s
+            // staleness floor (satisfies 2× cadence).
+            // MPPT op-modes: D-Bus reseed — 15 s cadence on the same
+            // solarcharger service, no impact on per-service min (5 s
+            // already wins via MpptPower0/1).
+            Self::HeatPumpPower
+            | Self::CookerPower
+            | Self::Mppt0OperationMode
+            | Self::Mppt1OperationMode => Duration::from_secs(15),
         }
     }
 
@@ -478,7 +524,12 @@ impl SensorId {
             // PR-ev-soc-sensor.
             | Self::EvSoc
             // PR-auto-extended-charge.
-            | Self::EvChargeTarget => None,
+            | Self::EvChargeTarget
+            // PR-ZD-1: plain sensors, not actuated mirrors.
+            | Self::HeatPumpPower
+            | Self::CookerPower
+            | Self::Mppt0OperationMode
+            | Self::Mppt1OperationMode => None,
         }
     }
 }
@@ -1312,6 +1363,11 @@ mod tests {
                 // to 10 min — MQTT receive is cheap and we want a
                 // prompt Stale signal when the gateway stops publishing.
                 SensorId::EvSoc | SensorId::EvChargeTarget => Duration::from_secs(10 * 60),
+                // PR-ZD-1: 15 s for all four new sensors.
+                SensorId::HeatPumpPower
+                | SensorId::CookerPower
+                | SensorId::Mppt0OperationMode
+                | SensorId::Mppt1OperationMode => Duration::from_secs(15),
             };
             assert_eq!(
                 id.reseed_cadence(),
@@ -1362,7 +1418,12 @@ mod tests {
                 // PR-ev-soc-sensor.
                 | SensorId::EvSoc
                 // PR-auto-extended-charge.
-                | SensorId::EvChargeTarget => FreshnessRegime::ReseedDriven,
+                | SensorId::EvChargeTarget
+                // PR-ZD-1: MPPT op-modes are reseed-driven.
+                | SensorId::Mppt0OperationMode
+                | SensorId::Mppt1OperationMode => FreshnessRegime::ReseedDriven,
+                // PR-ZD-1: HP/cooker are SlowSignalled (z2m push on change).
+                SensorId::HeatPumpPower | SensorId::CookerPower => FreshnessRegime::SlowSignalled,
             };
             assert_eq!(
                 id.regime(),
@@ -1441,7 +1502,12 @@ mod tests {
                 // PR-ev-soc-sensor.
                 | SensorId::EvSoc
                 // PR-auto-extended-charge.
-                | SensorId::EvChargeTarget => None,
+                | SensorId::EvChargeTarget
+                // PR-ZD-1.
+                | SensorId::HeatPumpPower
+                | SensorId::CookerPower
+                | SensorId::Mppt0OperationMode
+                | SensorId::Mppt1OperationMode => None,
             };
             assert_eq!(
                 id.actuated_id(),

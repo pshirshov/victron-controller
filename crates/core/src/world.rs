@@ -48,6 +48,18 @@ pub struct Sensors {
     /// sourced from the same gateway as `ev_soc`. Read by the 04:30
     /// auto-extended-charge evaluation; pure observability otherwise.
     pub ev_charge_target: Actual<f64>,
+    /// PR-ZD-1: AC power draw of the metered heat pump (W). Sourced from
+    /// zigbee2mqtt push (nodon-mtr-heat-pump), JSON `.power` field.
+    pub heat_pump_power: Actual<f64>,
+    /// PR-ZD-1: AC power draw of the metered cooker/stove (W). Sourced
+    /// from zigbee2mqtt push (nodon-mtr-stove), JSON `.power` field.
+    pub cooker_power: Actual<f64>,
+    /// PR-ZD-1: Operation mode of MPPT charger 0 (ttyUSB1, DI 289).
+    /// 0=Off, 1=V/I-limited, 2=MPPT-tracking. Observability only.
+    pub mppt_0_operation_mode: Actual<f64>,
+    /// PR-ZD-1: Operation mode of MPPT charger 1 (ttyS2, DI 274).
+    /// 0=Off, 1=V/I-limited, 2=MPPT-tracking. Observability only.
+    pub mppt_1_operation_mode: Actual<f64>,
 }
 
 impl Sensors {
@@ -83,6 +95,11 @@ impl Sensors {
             SensorId::EvSoc => self.ev_soc,
             // PR-auto-extended-charge.
             SensorId::EvChargeTarget => self.ev_charge_target,
+            // PR-ZD-1.
+            SensorId::HeatPumpPower => self.heat_pump_power,
+            SensorId::CookerPower => self.cooker_power,
+            SensorId::Mppt0OperationMode => self.mppt_0_operation_mode,
+            SensorId::Mppt1OperationMode => self.mppt_1_operation_mode,
             // PR-actuated-as-sensors: the actuated-mirror sensor
             // variants don't have dedicated storage on `Sensors`. Their
             // storage of truth is `world.<entity>.actual`; the post-
@@ -134,6 +151,11 @@ impl Sensors {
             session_kwh: Actual::unknown(now),
             ev_soc: Actual::unknown(now),
             ev_charge_target: Actual::unknown(now),
+            // PR-ZD-1.
+            heat_pump_power: Actual::unknown(now),
+            cooker_power: Actual::unknown(now),
+            mppt_0_operation_mode: Actual::unknown(now),
+            mppt_1_operation_mode: Actual::unknown(now),
         }
     }
 }

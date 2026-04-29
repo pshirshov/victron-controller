@@ -15,7 +15,38 @@ version "0.3.0"
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors }
+
+// PR-ZD-1: extend `Sensors` with the four new sensors.
+data Sensors {
+  battery_soc: ActualF64
+  battery_soh: ActualF64
+  battery_installed_capacity: ActualF64
+  battery_dc_power: ActualF64
+  mppt_power_0: ActualF64
+  mppt_power_1: ActualF64
+  soltaro_power: ActualF64
+  power_consumption: ActualF64
+  grid_power: ActualF64
+  grid_voltage: ActualF64
+  grid_current: ActualF64
+  consumption_current: ActualF64
+  offgrid_power: ActualF64
+  offgrid_current: ActualF64
+  vebus_input_current: ActualF64
+  evcharger_ac_power: ActualF64
+  evcharger_ac_current: ActualF64
+  ess_state: ActualF64
+  outdoor_temperature: ActualF64
+  session_kwh: ActualF64
+  ev_soc: ActualF64
+  ev_charge_target: ActualF64
+  // PR-ZD-1: four new sensors added at the end (additive, no version bump).
+  heat_pump_power: ActualF64
+  cooker_power: ActualF64
+  mppt_0_operation_mode: ActualF64
+  mppt_1_operation_mode: ActualF64
+}
 
 // PR-keep-batteries-charged: extend `Owner` with the new
 // EssStateOverrideController so the dashboard's actuated-table "Owner"

@@ -44,6 +44,10 @@ pub struct Config {
     /// optional — the bridge stays dormant for whichever is None.
     #[serde(default)]
     pub ev: EvConfig,
+    /// PR-ZD-1: optional zigbee2mqtt bridge for house appliance power
+    /// sensors (heat pump + cooker). Each topic is independently optional.
+    #[serde(default)]
+    pub zigbee2mqtt: Zigbee2MqttConfig,
     /// PR-pinned-registers: list of (path, type, value) triplets the
     /// shell re-asserts on a 1 h cadence. Any register listed here is
     /// read once an hour; if the bus value differs from the configured
@@ -547,6 +551,32 @@ pub struct EvConfig {
     /// of `evcharger.extended`.
     #[serde(default)]
     pub charge_target_topic: Option<String>,
+}
+
+/// PR-ZD-1: optional zigbee2mqtt bridge for house appliance power
+/// sensors. Body shape: JSON object with a `.power` field (W).
+/// Availability topics are subscribed but informational only — the
+/// freshness-window handles disconnects; no synthetic stale events.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Zigbee2MqttConfig {
+    /// Value topic for the heat pump energy meter
+    /// (e.g. `zigbee2mqtt/nodon-mtr-heat-pump`). None = bridge dormant.
+    #[serde(default)]
+    pub heat_pump_topic: Option<String>,
+    /// Availability topic for the heat pump meter
+    /// (e.g. `zigbee2mqtt/nodon-mtr-heat-pump/availability`).
+    /// Subscribed but informational only. None = not subscribed.
+    #[serde(default)]
+    pub heat_pump_availability_topic: Option<String>,
+    /// Value topic for the cooker/stove energy meter
+    /// (e.g. `zigbee2mqtt/nodon-mtr-stove`). None = bridge dormant.
+    #[serde(default)]
+    pub cooker_topic: Option<String>,
+    /// Availability topic for the cooker meter
+    /// (e.g. `zigbee2mqtt/nodon-mtr-stove/availability`).
+    /// Subscribed but informational only. None = not subscribed.
+    #[serde(default)]
+    pub cooker_availability_topic: Option<String>,
 }
 
 /// PR-pinned-registers: one (path, type, value) triplet the shell will
@@ -1260,6 +1290,7 @@ impl Default for Config {
             outdoor_temperature_local: OutdoorTemperatureLocalConfig::default(),
             hardware: HardwareConfig::default(),
             ev: EvConfig::default(),
+            zigbee2mqtt: Zigbee2MqttConfig::default(),
             dbus_pinned_registers: Vec::new(),
             knobs: KnobsDefaultsConfig::default(),
             location: LocationConfig::default(),

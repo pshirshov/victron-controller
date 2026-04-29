@@ -42,6 +42,15 @@ export const entityDescriptions: Record<string, string> = {
     "Outdoor temperature (°C) sourced from Open-Meteo current weather. Reseed-driven (~30 min).",
   "evcharger.session.energy":
     "Cumulative energy delivered to the EV in the current Zappi session (kWh). Sourced from myenergi 'che' field; resets when the session ends.",
+  // PR-ZD-1: zigbee2mqtt power sensors and MPPT operation modes.
+  "house.heat-pump.power":
+    "Heat pump instantaneous power (W). Sourced from zigbee2mqtt (nodon-mtr-heat-pump). Stale if the device is unavailable or the topic is unconfigured.",
+  "house.cooker.power":
+    "Cooker/stove instantaneous power (W). Sourced from zigbee2mqtt (nodon-mtr-stove). Stale if the device is unavailable or the topic is unconfigured.",
+  "solar.mppt.0.mode.operation":
+    "Operation mode of MPPT charger 0 (com.victronenergy.solarcharger.ttyUSB1, DI 289). 0=Off, 1=Voltage-or-current-limited (curtailed by inverter), 2=MPPT-tracking (running unconstrained). Observability only — not coupled into the control loop.",
+  "solar.mppt.1.mode.operation":
+    "Operation mode of MPPT charger 1 (com.victronenergy.solarcharger.ttyS2, DI 274). 0=Off, 1=Voltage-or-current-limited (curtailed by inverter), 2=MPPT-tracking (running unconstrained). Observability only — not coupled into the control loop.",
 
   // --- Actuated entities ---
   "grid.setpoint":

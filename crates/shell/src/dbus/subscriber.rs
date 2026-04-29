@@ -164,6 +164,10 @@ fn routing_table(s: &DbusServices) -> HashMap<(String, String), Route> {
     // MPPTs
     add(&mut r, &s.mppt_0, "/Yield/Power", Route::Sensor(MpptPower0));
     add(&mut r, &s.mppt_1, "/Yield/Power", Route::Sensor(MpptPower1));
+    // PR-ZD-1: MPPT operation modes. Shares the same services as the
+    // power sensors; mppt_0=ttyUSB1 (DI 289), mppt_1=ttyS2 (DI 274).
+    add(&mut r, &s.mppt_0, "/MppOperationMode", Route::Sensor(Mppt0OperationMode));
+    add(&mut r, &s.mppt_1, "/MppOperationMode", Route::Sensor(Mppt1OperationMode));
 
     // Soltaro pvinverter
     add(&mut r, &s.pvinverter_soltaro, "/Ac/Power", Route::Sensor(SoltaroPower));
@@ -1845,6 +1849,46 @@ mod tests {
             }
             other => panic!("expected Event::Timezone, got {other:?}"),
         }
+    }
+
+    /// PR-ZD-1: both solarcharger services route `/MppOperationMode` to
+    /// the correct `Mppt{0,1}OperationMode` SensorId variants.
+    #[test]
+    fn routing_table_includes_mpp_operation_mode() {
+        let (services, routes) = canonical_routes();
+        let key0 = (services.mppt_0.clone(), "/MppOperationMode".to_string());
+        assert_eq!(
+            route_sensor_id(&routes, &key0),
+            SensorId::Mppt0OperationMode,
+            "mppt_0 (ttyUSB1) should route /MppOperationMode to Mppt0OperationMode",
+        );
+        let key1 = (services.mppt_1.clone(), "/MppOperationMode".to_string());
+        assert_eq!(
+            route_sensor_id(&routes, &key1),
+            SensorId::Mppt1OperationMode,
+            "mppt_1 (ttyS2) should route /MppOperationMode to Mppt1OperationMode",
+        );
+    }
+
+    /// PR-ZD-1: adding /MppOperationMode (15 s reseed) to solarcharger
+    /// services that already carry /Yield/Power (5 s) must NOT change
+    /// the per-service cadence — the 5 s minimum still wins.
+    #[test]
+    fn mpp_operation_mode_does_not_shorten_mppt_service_cadence() {
+        let services = DbusServices::default_venus_3_70();
+        let routes = routing_table(&services);
+        let service_set: HashSet<String> = routes.keys().map(|(s, _)| s.clone()).collect();
+        let cadence = compute_service_cadence(&routes, &service_set);
+        assert_eq!(
+            cadence.get(&services.mppt_0).copied(),
+            Some(Duration::from_secs(5)),
+            "mppt_0 (ttyUSB1) cadence must remain 5 s after adding /MppOperationMode",
+        );
+        assert_eq!(
+            cadence.get(&services.mppt_1).copied(),
+            Some(Duration::from_secs(5)),
+            "mppt_1 (ttyS2) cadence must remain 5 s after adding /MppOperationMode",
+        );
     }
 
     #[test]

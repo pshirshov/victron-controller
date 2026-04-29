@@ -286,6 +286,13 @@ fn apply_pinned_register_reading(
     });
 }
 
+/// PR-ZD-1 / D01: validate a Victron `/MppOperationMode` reading.
+/// The documented enum is 0–5 and always integral. Non-finite, out-of-range,
+/// or fractional values indicate a D-Bus decode error and must be dropped.
+fn mppt_operation_mode_in_range(v: f64) -> bool {
+    v.is_finite() && (0.0..=5.0).contains(&v) && (v - v.round()).abs() < 1e-6
+}
+
 fn apply_sensor_reading(
     r: SensorReading,
     world: &mut World,
@@ -340,6 +347,38 @@ fn apply_sensor_reading(
         SensorId::EvSoc => world.sensors.ev_soc.on_reading(v, at),
         // PR-auto-extended-charge.
         SensorId::EvChargeTarget => world.sensors.ev_charge_target.on_reading(v, at),
+        // PR-ZD-1.
+        SensorId::HeatPumpPower => world.sensors.heat_pump_power.on_reading(v, at),
+        SensorId::CookerPower => world.sensors.cooker_power.on_reading(v, at),
+        // PR-ZD-1 / D01: drop readings outside the documented [0, 5] integer enum.
+        // Corrupt values are ignored so the freshness window expires the slot
+        // (signalling Stale to the dashboard) rather than overwriting with garbage.
+        SensorId::Mppt0OperationMode => {
+            if mppt_operation_mode_in_range(v) {
+                world.sensors.mppt_0_operation_mode.on_reading(v, at);
+            } else {
+                effects.push(Effect::Log {
+                    level: LogLevel::Warn,
+                    source: "apply_sensor_reading",
+                    message: format!(
+                        "Mppt0OperationMode reading out of expected enum range [0, 5]: {v}; dropping"
+                    ),
+                });
+            }
+        }
+        SensorId::Mppt1OperationMode => {
+            if mppt_operation_mode_in_range(v) {
+                world.sensors.mppt_1_operation_mode.on_reading(v, at);
+            } else {
+                effects.push(Effect::Log {
+                    level: LogLevel::Warn,
+                    source: "apply_sensor_reading",
+                    message: format!(
+                        "Mppt1OperationMode reading out of expected enum range [0, 5]: {v}; dropping"
+                    ),
+                });
+            }
+        }
         // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
         // variants don't have dedicated `world.sensors.<field>` slots —
         // their storage of truth is `world.<entity>.actual`, driven by
@@ -917,6 +956,15 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     // PR-auto-extended-charge.
     ss.ev_charge_target
         .tick(at, SensorId::EvChargeTarget.freshness_threshold());
+    // PR-ZD-1.
+    ss.heat_pump_power
+        .tick(at, SensorId::HeatPumpPower.freshness_threshold());
+    ss.cooker_power
+        .tick(at, SensorId::CookerPower.freshness_threshold());
+    ss.mppt_0_operation_mode
+        .tick(at, SensorId::Mppt0OperationMode.freshness_threshold());
+    ss.mppt_1_operation_mode
+        .tick(at, SensorId::Mppt1OperationMode.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
@@ -4355,6 +4403,106 @@ mod tests {
                 )),
             "unknown path must produce a Warn log: {effects:#?}",
         );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-1: dispatch tests for the four new sensors.
+    // ------------------------------------------------------------------
+
+    /// PR-ZD-1: `Event::Sensor(HeatPumpPower, ...)` lands on
+    /// `world.sensors.heat_pump_power` and the slot becomes `Fresh`.
+    #[test]
+    fn apply_sensor_reading_heat_pump_power_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::HeatPumpPower,
+            value: 1200.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.heat_pump_power.value, Some(1200.0));
+        assert_eq!(world.sensors.heat_pump_power.freshness, Freshness::Fresh);
+    }
+
+    /// PR-ZD-1: `Event::Sensor(CookerPower, ...)` lands on
+    /// `world.sensors.cooker_power` and the slot becomes `Fresh`.
+    #[test]
+    fn apply_sensor_reading_cooker_power_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::CookerPower,
+            value: 2500.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.cooker_power.value, Some(2500.0));
+        assert_eq!(world.sensors.cooker_power.freshness, Freshness::Fresh);
+    }
+
+    /// PR-ZD-1: `Event::Sensor(Mppt0OperationMode, ...)` lands on
+    /// `world.sensors.mppt_0_operation_mode` and the slot becomes `Fresh`.
+    #[test]
+    fn apply_sensor_reading_mppt_0_operation_mode_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::Mppt0OperationMode,
+            value: 2.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.mppt_0_operation_mode.value, Some(2.0));
+        assert_eq!(world.sensors.mppt_0_operation_mode.freshness, Freshness::Fresh);
+    }
+
+    /// PR-ZD-1: `Event::Sensor(Mppt1OperationMode, ...)` lands on
+    /// `world.sensors.mppt_1_operation_mode` and the slot becomes `Fresh`.
+    #[test]
+    fn apply_sensor_reading_mppt_1_operation_mode_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::Mppt1OperationMode,
+            value: 2.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.mppt_1_operation_mode.value, Some(2.0));
+        assert_eq!(world.sensors.mppt_1_operation_mode.freshness, Freshness::Fresh);
+    }
+
+    /// PR-ZD-1 / D01: out-of-enum-range readings must be dropped; the slot
+    /// stays Unknown (value == None) because `on_reading` is never called.
+    #[test]
+    fn mppt_operation_mode_out_of_enum_range_is_dropped() {
+        for bad_value in [99.0_f64, -1.0, f64::NAN, f64::INFINITY, 5.5] {
+            let c = clock_at(12, 0);
+            let mut world = World::fresh_boot(c.monotonic);
+
+            let event0 = Event::Sensor(SensorReading {
+                id: SensorId::Mppt0OperationMode,
+                value: bad_value,
+                at: c.monotonic,
+            });
+            let _ = process(&event0, &mut world, &c, &Topology::defaults());
+            assert!(
+                world.sensors.mppt_0_operation_mode.value.is_none(),
+                "Mppt0OperationMode: expected slot to remain None for value={bad_value}",
+            );
+
+            let event1 = Event::Sensor(SensorReading {
+                id: SensorId::Mppt1OperationMode,
+                value: bad_value,
+                at: c.monotonic,
+            });
+            let _ = process(&event1, &mut world, &c, &Topology::defaults());
+            assert!(
+                world.sensors.mppt_1_operation_mode.value.is_none(),
+                "Mppt1OperationMode: expected slot to remain None for value={bad_value}",
+            );
+        }
     }
 
     #[test]

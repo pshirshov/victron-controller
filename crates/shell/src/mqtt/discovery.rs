@@ -368,8 +368,11 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             device_class: None,
             state_class: "measurement",
         },
+        // PR-ZD-1: HeatPumpPower and CookerPower are W / power sensors,
+        // merged with the existing instantaneous-power arm.
         BatteryDcPower | MpptPower0 | MpptPower1 | SoltaroPower | PowerConsumption
-        | GridPower | OffgridPower | EvchargerAcPower => SensorMeta {
+        | GridPower | OffgridPower | EvchargerAcPower
+        | HeatPumpPower | CookerPower => SensorMeta {
             unit: Some("W"),
             device_class: Some("power"),
             state_class: "measurement",
@@ -390,7 +393,9 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             device_class: Some("temperature"),
             state_class: "measurement",
         },
-        EssState => SensorMeta {
+        // PR-ZD-1: MPPT operation-mode codes are dimensionless integer
+        // enums — merged with EssState (also dimensionless) per clippy.
+        EssState | Mppt0OperationMode | Mppt1OperationMode => SensorMeta {
             unit: None,
             device_class: None,
             state_class: "measurement",

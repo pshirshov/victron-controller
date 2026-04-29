@@ -181,6 +181,32 @@ pub fn matter_outdoor_temp_event(celsius: f64, at: Instant) -> Event {
     })
 }
 
+// -----------------------------------------------------------------------------
+// PR-ZD-1: zigbee2mqtt power body parser
+// -----------------------------------------------------------------------------
+
+/// Maximum believable power reading from a zigbee2mqtt appliance meter (W).
+/// Values above this are almost certainly firmware drift / bit errors.
+pub const MAX_SANITY_W: f64 = 30_000.0;
+
+/// Parse a zigbee2mqtt JSON body and extract the `.power` field (W).
+///
+/// Accepts any JSON object that has a numeric `power` key. Rejects:
+/// - non-finite values (NaN, Infinity)
+/// - negative values (meter should never produce them)
+/// - values above [`MAX_SANITY_W`] (firmware drift)
+///
+/// Returns `Some(watts)` only on a clean, in-range reading.
+#[must_use]
+pub fn parse_zigbee2mqtt_power_body(payload: &[u8]) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let power = v.get("power").and_then(|p| p.as_f64())?;
+    if !power.is_finite() || !(0.0..=MAX_SANITY_W).contains(&power) {
+        return None;
+    }
+    Some(power)
+}
+
 /// Decode an incoming MQTT `<root>/knob/<name>/set` or
 /// `<root>/writes_enabled/set` message into a core Event::Command.
 #[must_use]
@@ -430,6 +456,11 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         SensorId::EvSoc => "ev.soc",
         // PR-auto-extended-charge.
         SensorId::EvChargeTarget => "ev.charge.target",
+        // PR-ZD-1: zigbee2mqtt power sensors and MPPT operation modes.
+        SensorId::HeatPumpPower => "house.heat-pump.power",
+        SensorId::CookerPower => "house.cooker.power",
+        SensorId::Mppt0OperationMode => "solar.mppt.0.mode.operation",
+        SensorId::Mppt1OperationMode => "solar.mppt.1.mode.operation",
         // PR-AS-C: actuated-mirror SensorId variants do not have a
         // sensor wire surface — they are surfaced via the actuated
         // entity table (`PublishPayload::ActuatedPhase`). Both call
@@ -1467,5 +1498,64 @@ mod tests {
             parse_knob_value(KnobId::DischargeTime, "23:00"),
             Some(KnobValue::DischargeTime(DischargeTime::At2300))
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZD-1: parse_zigbee2mqtt_power_body
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_extracts_power_field() {
+        // Happy path: well-formed zigbee2mqtt JSON with a `.power` field.
+        let payload = br#"{"power":1234.5,"voltage":230.1,"current":5.4}"#;
+        let result = parse_zigbee2mqtt_power_body(payload);
+        assert!(result.is_some());
+        let v = result.unwrap();
+        assert!((v - 1234.5).abs() < 1e-9, "expected 1234.5, got {v}");
+    }
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_rejects_negative() {
+        // Appliance meters must never produce negative readings.
+        let payload = br#"{"power":-1.0}"#;
+        assert_eq!(parse_zigbee2mqtt_power_body(payload), None);
+    }
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_rejects_null_power() {
+        // NaN encoded as JSON null (serde_json can't round-trip NaN
+        // through JSON, but as_f64() on a JSON null returns None, so
+        // the function returns None rather than producing a NaN).
+        let payload = br#"{"power":null}"#;
+        assert_eq!(parse_zigbee2mqtt_power_body(payload), None);
+    }
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_rejects_overflow_power() {
+        // 1e400 overflows to f64::INFINITY during JSON parse; the
+        // is_finite() guard must reject it.
+        let payload = br#"{"power":1e400}"#;
+        assert_eq!(parse_zigbee2mqtt_power_body(payload), None);
+    }
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_rejects_out_of_range() {
+        // MAX_SANITY_W + 1 must be rejected.
+        let over = MAX_SANITY_W + 1.0;
+        let payload = format!(r#"{{"power":{over}}}"#);
+        assert_eq!(parse_zigbee2mqtt_power_body(payload.as_bytes()), None);
+        // Exactly at boundary must be accepted.
+        let at_max = format!(r#"{{"power":{MAX_SANITY_W}}}"#);
+        assert!(parse_zigbee2mqtt_power_body(at_max.as_bytes()).is_some());
+    }
+
+    #[test]
+    fn parse_zigbee2mqtt_power_body_rejects_missing_field() {
+        // JSON object but no `power` key.
+        let payload = br#"{"voltage":230.0,"current":1.0}"#;
+        assert_eq!(parse_zigbee2mqtt_power_body(payload), None);
+        // Not even valid JSON.
+        let garbage = b"not-json";
+        assert_eq!(parse_zigbee2mqtt_power_body(garbage), None);
     }
 }

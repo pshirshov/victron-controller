@@ -1436,3 +1436,71 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/shell/src/dashboard/convert_schedule.rs` test `zappi_actions_label_reflects_knob_state`
 **Description:** The two existing dashboard tests pinned `ExtendedChargeMode::Disabled` (short-circuit false) and `ExtendedChargeMode::Forced` (short-circuit true). The production-default `Auto` branch reads `bookkeeping.auto_extended_today` (verified pure passthrough at `crates/core/src/process.rs:975-982`), which is the case the field actually runs.
 **Fix:** Added `zappi_actions_label_auto_mode_tracks_bookkeeping`. Pins `ExtendedChargeMode::Auto`, toggles `world.bookkeeping.auto_extended_today` true/false, asserts the 05:00 label flips between `"Zappi 05:00 → Fast"` and `"Zappi 05:00 → Off"`.
+
+
+---
+
+## PR-ZD-1 (M-ZAPPI-DRAIN sensors)
+
+### [PR-ZD-1-D01] MPPT op-mode integer code range guard `[0, 5]` missing — firmware drift / corrupt readings flow straight into world.sensors
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dbus/subscriber.rs:165–170` (routing); `crates/core/src/process.rs:346–347` (apply_sensor_reading arms)
+**Description:** Locked decision (plan §3.1 + plan-execution prompt) says MPPT op-mode parse must clamp/reject codes outside `[0, 5]`. The shipped pipeline accepts any f64: the route is plain `Route::Sensor(Mppt0OperationMode)`, the generic `extract_scalar` path coerces I32/U32/I64/U64/F64 with no per-sensor range guard, and `apply_sensor_reading` forwards `v` directly to `on_reading`. A Venus that publishes `/MppOperationMode = 99` (firmware drift / corrupt frame) gets stored unchanged. Test `apply_sensor_reading_mppt_1_operation_mode_writes_field` (process.rs:4438) asserts `Some(3.0)` flows through — encoding the wrong contract.
+**Fix:** Added `mppt_operation_mode_in_range(v: f64) -> bool` helper in `crates/core/src/process.rs` (checks `is_finite`, `0.0..=5.0`, integral within 1e-6); both `Mppt0OperationMode` / `Mppt1OperationMode` arms in `apply_sensor_reading` gate on the helper. Out-of-range readings emit `Effect::Log { level: Warn }` (the core crate has no `tracing` dep) and skip `on_reading`, leaving the slot Unknown so the freshness window expires it. New test `mppt_operation_mode_out_of_enum_range_is_dropped` iterates over `[99.0, -1.0, f64::NAN, f64::INFINITY, 5.5]` for both SensorIds.
+
+### [PR-ZD-1-D02] `dashboard_snapshot_surfaces_new_sensors` integration test missing — wire-format mapping unverified
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dashboard/convert.rs:1099–1193`
+**Description:** Plan §3.1 test 10 explicitly required: "extend the existing `world_to_snapshot_*` test to assert all four rows appear in `WorldSnapshot.sensors`". `grep` for `dashboard_snapshot_surfaces_new_sensors`, `world_to_snapshot.*heat_pump`, `world_to_snapshot.*cooker` returns zero hits. The four `actual_f64` mappings on convert.rs:362–365 and the four `sensors_meta` entries on convert.rs:750–788 are unexercised. A typo (e.g. `s.heat_pump_power` mapped to wire `cooker_power`, or omitted `m.insert` for one sensor) would silently drop a sensor with no test failure.
+**Fix:** Added `mod snapshot_new_sensors_tests` in `crates/shell/src/dashboard/convert.rs:1099–1193` with two tests: `dashboard_snapshot_surfaces_new_sensors` (asserts all four sensor values land in the snapshot and appear in `sensors_meta` with correct topic identifier for HP/cooker) and `dashboard_snapshot_omits_unconfigured_z2m_sensors_meta` (asserts HP/cooker absent from `sensors_meta` when topics are `None`).
+
+### [PR-ZD-1-D03] `parse_zigbee2mqtt_power_body_rejects_non_finite` test does not exercise non-finite values
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs:1524–1543`
+**Description:** Test name promises non-finite coverage but only payload is `{"power":null}` — exercises the missing-field path, not the `is_finite()` guard. JSON spec rejects `Infinity`/`NaN` literals at parse time; the only path to non-finite f64 is overflow during number parsing (e.g. `1e400` → `INFINITY`). Test does not cover that, nor `{"power":"NaN"}` (string) or `{"power":"Infinity"}`.
+**Fix:** Renamed `parse_zigbee2mqtt_power_body_rejects_non_finite` → `parse_zigbee2mqtt_power_body_rejects_null_power` (matches what it tests). Added new `parse_zigbee2mqtt_power_body_rejects_overflow_power` with payload `b"{\"power\":1e400}"` which overflows to `f64::INFINITY` and genuinely exercises the `is_finite()` guard.
+
+### [PR-ZD-1-D04] tasks.md PR-ZD-1 checkbox not updated to in-progress while review is open
+**Status:** resolved
+**Severity:** minor
+**Location:** `tasks.md` (PR-ZD-1 line in M-ZAPPI-DRAIN section)
+**Description:** Milestone header is `[~]` but PR-ZD-1's per-PR checkbox is still `[ ]` (planned). Should be `[~]` while review is open and `[x]` after it concludes.
+**Fix:** Orchestrator flipped checkbox to `[~]` after review opened; will flip to `[x]` on milestone close after the final commit.
+
+### [PR-ZD-1-D05] MPPT op-mode descriptions in web/src/descriptions.ts use wrong labels (Volt/Var, MPP, PowerCtrl, Remote, Ext)
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/descriptions.ts:50–53`
+**Description:** Plan documents the enum as `0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking`. Shipped descriptions say `0=Off · 1=Volt/Var · 2=MPP · 3=PowerCtrl · 4=Remote · 5=Ext`. "Volt/Var" is a power-quality term unrelated to MPPT mode; per Victron's `/MppOperationMode` enum (venus-dbus wiki), `1` is "Voltage/current limited". Codes 3–5 may not be standard `/MppOperationMode` values. PR-ZD-5 will surface these as dashboard strings — fixing now avoids cascading error.
+**Fix:** Replaced both `solar.mppt.0.mode.operation` and `solar.mppt.1.mode.operation` entries in `web/src/descriptions.ts` with descriptions faithful to the documented Victron enum (0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking). Removed Volt/Var, PowerCtrl, Remote, Ext labels; included D-Bus service name + DI; noted observability-only status.
+
+### [PR-ZD-1-D06] No dispatch-level test covers HP/cooker negative-rejection path through the live MQTT loop
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/mod.rs` (heat-pump and cooker dispatch arms)
+**Description:** `parse_zigbee2mqtt_power_body_rejects_negative` confirms parser returns `None` on negative input. It does NOT confirm dispatch-loop behaviour: `None` from parser must increment `heat_pump_last_parse_warn`, fire rate-limited `warn!`, and crucially NOT emit `Event::Sensor`. An accidental `unwrap_or(0.0)` refactor would produce a defect (negative reading → 0.0 emitted, looks real) that no test would catch.
+**Fix:** Extracted `handle_zigbee2mqtt_power_payload(sensor_id, payload, at) -> Option<Event>` as a free function in `crates/shell/src/mqtt/mod.rs`; both heat-pump and cooker dispatch arms now call it. Added three tests: `handle_zigbee2mqtt_power_payload_drops_negative`, `_drops_overflow`, `_emits_event_on_valid` covering the dispatch-side contract.
+
+### [PR-ZD-1-D07] `apply_sensor_reading_mppt_1_operation_mode_writes_field` test asserts `Some(3.0)` — out-of-documented-enum value silently accepted
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:4434–4449`
+**Description:** Test feeds `value: 3.0` and asserts `Some(3.0)` flows through. Per documented enum (0/1/2), `3` is invalid. Test is consistent with current accept-anything code (which D01 will fix) but encodes the wrong expectation. After D01 lands, this test must change to use an in-range value (e.g. `2.0`).
+**Fix:** Changed the test's input value from `3.0` to `2.0` (well-documented Victron enum value) so the test aligns with D01's range guard. Separate `mppt_operation_mode_out_of_enum_range_is_dropped` test added under D01.
+
+### [PR-ZD-1-D08] Test `parse_zigbee2mqtt_power_body_rejects_negative` uses `-1.0` instead of plan-suggested `-50`
+**Status:** resolved (deferred; cosmetic only)
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:1520`
+**Description:** Plan suggested `-50` (more representative of a firmware bug — unsigned-to-signed parse error). Shipped uses `-1.0`. Functionally identical (both fail the `0.0..=MAX_SANITY_W` contains check); cosmetic.
+**Fix:** Closed without code change. Both `-1.0` and `-50` exercise the identical guard arm (`!(0.0..=MAX_SANITY_W).contains(&v)`); no functional gap. The fix subagent did not retouch the test for D08; orchestrator closes as cosmetic.
+
+### [PR-ZD-1-D09] Web v0_2_0 conversion stub left as comment-only file (per project convention)
+**Status:** resolved (note-only; no functional change per project convention)
+**Severity:** nit
+**Location:** `crates/dashboard-model/src/victron_controller/dashboard/from_0_2_0_sensors.rs`; `web/src/model/victron_controller/dashboard/from_0_2_0_sensors.ts`
+**Description:** Per CLAUDE.md "Deployment topology", manual `convert__<type>__from__0_X_0` stubs are intentionally not implemented (single-client, never called at runtime). Regen output is comment-only. Consistent with project convention but flagging as a potential trap.
+**Fix:** Closed as note-only. CLAUDE.md "Deployment topology" explicitly states baboon migration stubs are auto-emitted with `todo!()` bodies and never called at runtime — the comment-only output matches the project's documented expectation. No functional change required.

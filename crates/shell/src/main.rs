@@ -173,6 +173,7 @@ async fn main() -> Result<()> {
             &cfg.mqtt,
             &cfg.outdoor_temperature_local,
             &cfg.ev,
+            &cfg.zigbee2mqtt,
             Arc::clone(&soc_history),
         )
         .await?
@@ -207,6 +208,8 @@ async fn main() -> Result<()> {
         matter_outdoor_topic: cfg.outdoor_temperature_local.mqtt_topic.clone(),
         ev_soc_discovery_topic: cfg.ev.soc_topic.clone(),
         ev_charge_target_discovery_topic: cfg.ev.charge_target_topic.clone(),
+        heat_pump_topic: cfg.zigbee2mqtt.heat_pump_topic.clone(),
+        cooker_topic: cfg.zigbee2mqtt.cooker_topic.clone(),
         soc_history: Arc::clone(&soc_history),
         hardware: topology.hardware,
     };

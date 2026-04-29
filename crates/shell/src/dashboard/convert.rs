@@ -59,6 +59,11 @@ pub struct MetaContext {
     /// PR-auto-extended-charge: same shape as `ev_soc_discovery_topic`,
     /// for the EV's configured charge-target sensor.
     pub ev_charge_target_discovery_topic: Option<String>,
+    /// PR-ZD-1: configured zigbee2mqtt topic for the heat pump power
+    /// sensor. Surfaced on the dashboard sensor meta row.
+    pub heat_pump_topic: Option<String>,
+    /// PR-ZD-1: configured zigbee2mqtt topic for the cooker power sensor.
+    pub cooker_topic: Option<String>,
     /// PR-soc-chart: shared in-memory ring of recent SoC samples.
     /// `world_to_snapshot` reads from this synchronously to populate
     /// `soc_chart.history`.
@@ -353,6 +358,11 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             session_kwh: actual_f64(&s.session_kwh),
             ev_soc: actual_f64(&s.ev_soc),
             ev_charge_target: actual_f64(&s.ev_charge_target),
+            // PR-ZD-1.
+            heat_pump_power: actual_f64(&s.heat_pump_power),
+            cooker_power: actual_f64(&s.cooker_power),
+            mppt_0_operation_mode: actual_f64(&s.mppt_0_operation_mode),
+            mppt_1_operation_mode: actual_f64(&s.mppt_1_operation_mode),
         },
         sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
@@ -736,6 +746,46 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             },
         );
     }
+    // PR-ZD-1: zigbee2mqtt push sensors. Surfaced only when configured.
+    if let Some(topic) = &ctx.heat_pump_topic {
+        m.insert(
+            "heat_pump_power".into(),
+            ModelSensorMeta {
+                origin: "zigbee2mqtt".to_string(),
+                identifier: topic.clone(),
+                cadence_ms: SensorId::HeatPumpPower
+                    .reseed_cadence()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(i64::MAX),
+                staleness_ms: staleness_ms(SensorId::HeatPumpPower),
+            },
+        );
+    }
+    if let Some(topic) = &ctx.cooker_topic {
+        m.insert(
+            "cooker_power".into(),
+            ModelSensorMeta {
+                origin: "zigbee2mqtt".to_string(),
+                identifier: topic.clone(),
+                cadence_ms: SensorId::CookerPower
+                    .reseed_cadence()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(i64::MAX),
+                staleness_ms: staleness_ms(SensorId::CookerPower),
+            },
+        );
+    }
+    // PR-ZD-1: MPPT op-mode — D-Bus, provenance from routing table.
+    m.insert(
+        "mppt_0_operation_mode".into(),
+        dbus(&s.mppt_0, "/MppOperationMode", SensorId::Mppt0OperationMode),
+    );
+    m.insert(
+        "mppt_1_operation_mode".into(),
+        dbus(&s.mppt_1, "/MppOperationMode", SensorId::Mppt1OperationMode),
+    );
     m
 }
 
@@ -1044,6 +1094,101 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "full_charge_snap_back_max_weekday" => KnobId::FullChargeSnapBackMaxWeekday,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod snapshot_new_sensors_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use victron_controller_core::topology::{ControllerParams, HardwareParams};
+    use victron_controller_core::world::World;
+
+    fn test_meta(heat_pump_topic: Option<&str>, cooker_topic: Option<&str>) -> MetaContext {
+        MetaContext {
+            services: crate::config::DbusServices::default_venus_3_70(),
+            open_meteo_cadence: Duration::from_secs(1800),
+            controller_params: ControllerParams::defaults(),
+            matter_outdoor_topic: None,
+            ev_soc_discovery_topic: None,
+            ev_charge_target_discovery_topic: None,
+            heat_pump_topic: heat_pump_topic.map(str::to_owned),
+            cooker_topic: cooker_topic.map(str::to_owned),
+            soc_history: crate::dashboard::soc_history::SocHistoryStore::new(),
+            hardware: HardwareParams::defaults(),
+        }
+    }
+
+    /// PR-ZD-1 / D02: world_to_snapshot surfaces heat_pump_power,
+    /// cooker_power, mppt_0_operation_mode, and mppt_1_operation_mode
+    /// including their sensors_meta entries.
+    #[test]
+    fn dashboard_snapshot_surfaces_new_sensors() {
+        let now = Instant::now();
+        let mut world = World::fresh_boot(now);
+
+        world.sensors.heat_pump_power.on_reading(1234.5, now);
+        world.sensors.cooker_power.on_reading(789.0, now);
+        world.sensors.mppt_0_operation_mode.on_reading(2.0, now);
+        world.sensors.mppt_1_operation_mode.on_reading(1.0, now);
+
+        let meta = test_meta(
+            Some("zigbee2mqtt/nodon-mtr-heat-pump"),
+            Some("zigbee2mqtt/nodon-mtr-stove"),
+        );
+        let snap = world_to_snapshot(&world, &meta);
+
+        assert_eq!(snap.sensors.heat_pump_power.value, Some(1234.5));
+        assert_eq!(snap.sensors.cooker_power.value, Some(789.0));
+        assert_eq!(snap.sensors.mppt_0_operation_mode.value, Some(2.0));
+        assert_eq!(snap.sensors.mppt_1_operation_mode.value, Some(1.0));
+
+        // All four must appear in sensors_meta.
+        assert!(
+            snap.sensors_meta.contains_key("heat_pump_power"),
+            "heat_pump_power missing from sensors_meta"
+        );
+        assert!(
+            snap.sensors_meta.contains_key("cooker_power"),
+            "cooker_power missing from sensors_meta"
+        );
+        assert!(
+            snap.sensors_meta.contains_key("mppt_0_operation_mode"),
+            "mppt_0_operation_mode missing from sensors_meta"
+        );
+        assert!(
+            snap.sensors_meta.contains_key("mppt_1_operation_mode"),
+            "mppt_1_operation_mode missing from sensors_meta"
+        );
+
+        // HP/cooker provenance must reference the configured topic.
+        let hp_meta = &snap.sensors_meta["heat_pump_power"];
+        assert!(
+            hp_meta.identifier.contains("nodon-mtr-heat-pump"),
+            "heat_pump_power identifier={:?} does not contain 'nodon-mtr-heat-pump'",
+            hp_meta.identifier,
+        );
+    }
+
+    /// When heat_pump_topic / cooker_topic are None (unconfigured), the
+    /// corresponding sensors_meta entries must be absent.
+    #[test]
+    fn dashboard_snapshot_omits_unconfigured_z2m_sensors_meta() {
+        let now = Instant::now();
+        let world = World::fresh_boot(now);
+        let meta = test_meta(None, None);
+        let snap = world_to_snapshot(&world, &meta);
+        assert!(
+            !snap.sensors_meta.contains_key("heat_pump_power"),
+            "heat_pump_power should be absent when topic is None"
+        );
+        assert!(
+            !snap.sensors_meta.contains_key("cooker_power"),
+            "cooker_power should be absent when topic is None"
+        );
+        // MPPT op-mode entries are always present (D-Bus, unconditional).
+        assert!(snap.sensors_meta.contains_key("mppt_0_operation_mode"));
+        assert!(snap.sensors_meta.contains_key("mppt_1_operation_mode"));
+    }
 }
 
 #[cfg(test)]

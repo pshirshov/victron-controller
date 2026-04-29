@@ -137,6 +137,45 @@ for svc in $SERVICES; do
   echo
 done
 
+# Focused MPPT operation-mode probe. The full GetItems dump above already
+# contains every path, but Victron firmware varies in where the MPP-state
+# field lives (and what its enum values are). This section probes the
+# common candidate paths explicitly per solarcharger service so we can
+# identify the right SensorId path without grepping through full dumps.
+echo "=== MPPT OPERATION-MODE PROBE ==="
+SOLAR_SERVICES=$(printf "%s\n" "$SERVICES" | grep -E "^com\.victronenergy\.solarcharger" || true)
+if [ -z "$SOLAR_SERVICES" ]; then
+  echo "(no com.victronenergy.solarcharger.* services found)"
+else
+  for svc in $SOLAR_SERVICES; do
+    echo "--- $svc ---"
+    echo "DeviceInstance:  $(get_value "$svc" /DeviceInstance)"
+    echo "ProductName:     $(get_value "$svc" /ProductName)"
+    # Candidate paths across firmware revisions. Most paths return "" if
+    # absent; we print the path : value pair regardless so empty rows
+    # confirm the path was probed.
+    for path in \
+      /MppOperationMode \
+      /Mpp/Operation/Mode \
+      /State \
+      /ErrorCode \
+      /Yield/Power \
+      /Pv/V \
+      /Pv/I \
+      /Dc/0/Voltage \
+      /Dc/0/Current \
+      /Settings/ChargerMode \
+      /Settings/BmsPresent \
+      /Mode
+    do
+      echo "  $path = $(get_value "$svc" "$path")"
+    done
+    echo
+  done
+fi
+echo "=== /MPPT OPERATION-MODE PROBE ==="
+echo
+
 log "done"
 '
 

@@ -179,6 +179,22 @@ bind = "0.0.0.0"
 # charge_target_topic = "homeassistant/number/example_ev_vin_mg/example_ev_vin_target_soc/config"
 
 # =============================================================================
+# zigbee2mqtt appliance power sensors (PR-ZD-1)
+# =============================================================================
+# Optional bridge for house appliance power meters published by zigbee2mqtt.
+# Body shape: JSON object with a `.power` field (W), e.g.
+#   {"power":1234.5,"voltage":230,"current":5.36,...}
+# The controller extracts `.power` and ignores other fields.
+# Availability topics are subscribed but informational only — the freshness
+# window handles disconnects; no synthetic stale events are emitted.
+#
+# [zigbee2mqtt]
+# heat_pump_topic              = "zigbee2mqtt/nodon-mtr-heat-pump"
+# heat_pump_availability_topic = "zigbee2mqtt/nodon-mtr-heat-pump/availability"
+# cooker_topic                 = "zigbee2mqtt/nodon-mtr-stove"
+# cooker_availability_topic    = "zigbee2mqtt/nodon-mtr-stove/availability"
+
+# =============================================================================
 # Runtime tuning
 # =============================================================================
 [tuning]
