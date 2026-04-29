@@ -319,7 +319,7 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
   (default 0, reserved for future PI extension; routes via
   `KnobValue::Float`), `…_hard_clamp_w` (default 200). All
   `category = "config"`. ≥ 4 new tests.
-- [ ] **PR-ZD-3 — Soft loop.** Replace lines 617–637 in
+- [x] **PR-ZD-3 — Soft loop.** Replace lines 617–637 in
   `evaluate_setpoint()` with the compensated-drain control law. Drop the
   `(2..8)` Soltaro carve-out (folded into the unified loop). 23:55
   protection window unchanged. Add `battery_dc_power` to setpoint's
@@ -396,6 +396,98 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 ---
 
 ## Completed
+
+- **PR-ZD-3 — Soft loop** (M-ZAPPI-DRAIN, 2026-04-29) — Replaced the
+  PV-only Zappi-active export clamp at
+  `crates/core/src/controllers/setpoint.rs:617-637` (both `(2..8)`
+  Soltaro carve-out and the daytime `-solar_export` else) with a
+  unified compensated-drain control law. The loop now uses
+  `compensated_drain = max(0, -battery_dc_power - heat_pump - cooker)`
+  as feedback. When drain exceeds `threshold_w`, tightens setpoint by
+  `kp × (drain - threshold)`. When drain is below threshold, walks
+  setpoint **bidirectionally** toward `-solar_export` at
+  `relax_step_w` per tick. The early-morning Soltaro carve-out is
+  folded into the unified loop (Soltaro AC export naturally registers
+  in the battery power balance). The 23:55-00:00 protection window
+  stays untouched.
+  Wiring: `SetpointInput` extended with `battery_dc_power`,
+  `heat_pump_power`, `cooker_power`, `setpoint_target_prev`.
+  `SetpointInputGlobals` extended with the four soft-loop knobs
+  (`zappi_drain_threshold_w`, `relax_step_w`, `kp`, `target_w` —
+  `target_w` reserved inert for future PI extension; `hard_clamp_w`
+  not read here, that's PR-ZD-4). `build_setpoint_input` requires
+  `battery_dc_power` Fresh; HP/cooker stale → `0.0`
+  (`unwrap_or(0.0)`, locked semantic — clamps tighter on dead bridge).
+  `compute_battery_balance::PreserveForZappi` updated to
+  `net_battery_w = 0.0` for the Zappi branch (projection
+  approximation; cannot replay recurrence dynamics).
+  Adversarial review found a **major control-law bug** on round 1:
+  the original plan formula `(prev + relax_step).max(-solar_export)`
+  is direction-asymmetric — only converges from below. After a single
+  tighten cycle that drove setpoint to idle (10 W), the relax branch
+  would walk the setpoint AWAY from `-solar_export` indefinitely,
+  permanently disabling solar export. **The bug was in the plan**;
+  the executor implemented it faithfully. Round-1 review caught it.
+  Replaced with bidirectional step-toward construction:
+  `if prev < target { (prev + step).min(target) } else { (prev -
+  step).max(target) }`. Three existing tests (15, 18, 21) had
+  expected values updated to match the corrected gradual walk.
+  Verification: `cargo test --workspace` → 543 passed (332 core +
+  10 dashboard-model + 201 shell, +14 vs PR-ZD-2 baseline 529);
+  `cargo clippy --workspace --all-targets -- -D warnings` clean;
+  `cd web && ./node_modules/.bin/tsc --noEmit -p .` clean.
+  Defects (13 filed, all closed):
+  - D01 (major) — relax-branch direction asymmetry → bidirectional
+    step-toward construction.
+  - D02 (major) — no multi-tick integration test → added two tests
+    (`zappi_active_loop_multi_tick_trajectory`,
+    `zappi_active_relax_walks_toward_minus_solar_export`).
+  - D03 (minor) — kp=1.0 in every test → added `tighten_scales_with_kp`
+    with kp=0.3.
+  - D04 (minor) — magic constant `10` instead of `idle_setpoint_w`
+    → threaded as parameter through `build_setpoint_input`.
+  - D05 (minor) — stale-substitution path untested → resolved
+    subsumed by D02.
+  - D06 (minor) — windup-clamp untested → resolved subsumed by D02.
+  - D07 (minor) — bookkeeping test only relax → added
+    `bookkeeping_unchanged_in_tighten_branch`.
+  - D08 (minor) — factor names tested not values → added
+    `zappi_active_decision_factor_values_correct`.
+  - D09 (minor) — early-morning tighten untested → added
+    `early_morning_zappi_tightens_when_battery_draining`.
+  - D10 (minor) — deadband-stall test → deferred (cross-cutting).
+  - D11 (nit) — test 25 breadcrumb → deferred cosmetic.
+  - D12 (nit) — target_w inert guard → note-only.
+  - D13 (nit) — clamp value not asserted → extended test 16.
+  Notes / surprises:
+  - The plan's relax formula was wrong. The reviewer caught it on
+    round 1 specifically because of the bidirectional-direction
+    edge case (post-tighten state with prev ≥ -solar_export). Future
+    control-law plans should specify the formula AND its convergence
+    behaviour from every initial-condition region.
+  - `prepare_setpoint`'s `/50` rounding interacts with the relax
+    walk: raw step from prev=10, step=100 produces -90, which
+    rounds to -100 (and prepare_setpoint's positive-promotion fires
+    only on ≥0, so -90 stays as -100 via rounding).
+  - `EXPECTED_FIRST_RUN_EFFECTS` count unchanged (the new sensor
+    publishes from PR-ZD-1 already accounted for).
+  - `cores.rs::SetpointCore::last_inputs` (display-only) reads
+    `HardwareParams::defaults().idle_setpoint_w` because `Topology`
+    is not in scope at the `Core` trait method. Acceptable: this
+    path is debug/inspection, not actuation; the live actuation
+    path in `run_setpoint` reads the actual topology.
+  Constraints future work must respect:
+  - The bidirectional step-toward formula is the canonical relax
+    behaviour. Do not "simplify" back to one-direction max() — that's
+    the original bug.
+  - `setpoint_target_prev` = `world.grid_setpoint.target.value`
+    (the *commanded* target, not the *actual* readback). Reading
+    actual would couple the loop to MQTT roundtrip latency.
+  - HP/cooker stale → 0 W in the loop. Do not change to "use last
+    value" — failing toward conservative is the locked semantic.
+  - The 23:55-00:00 Soltaro protection window MUST stay untouched.
+    Field-tested protection against a grid quirk; not part of this
+    redesign.
 
 - **PR-ZD-2 — Knobs** (M-ZAPPI-DRAIN, 2026-04-29) — Five new knobs
   registered through all 11 CLAUDE.md layers. All `category =

@@ -248,7 +248,9 @@ fn build_setpoint_template_for_projection(
     world: &World,
     hardware: HardwareParams,
 ) -> SetpointInput {
-    let _ = hardware; // capacity is read from sensors, not hardware.
+    // Note: `hardware.idle_setpoint_w` is used below as the cold-boot
+    // fallback for `setpoint_target_prev`; other hardware fields are not
+    // consulted here (capacity is read from sensors).
     let k = &world.knobs;
     let bk = &world.bookkeeping;
 
@@ -276,6 +278,13 @@ fn build_setpoint_template_for_projection(
             inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
             full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
             full_charge_snap_back_max_weekday: k.full_charge_snap_back_max_weekday,
+            // PR-ZD-3: compensated-drain knobs. Only consulted by
+            // `evaluate_setpoint`, not by `compute_battery_balance`;
+            // thread live values for completeness.
+            zappi_drain_threshold_w: k.zappi_battery_drain_threshold_w,
+            zappi_drain_relax_step_w: k.zappi_battery_drain_relax_step_w,
+            zappi_drain_kp: k.zappi_battery_drain_kp,
+            zappi_drain_target_w: k.zappi_battery_drain_target_w,
         },
         // Use the live consumption when known so the
         // `preserve_battery` evening-discharge clamp uses a realistic
@@ -299,6 +308,17 @@ fn build_setpoint_template_for_projection(
             .battery_installed_capacity
             .value
             .unwrap_or(0.0),
+        // PR-ZD-3: battery_dc_power / heat_pump_power / cooker_power are
+        // only used by evaluate_setpoint (the soft-loop branch). The SoC
+        // chart projection uses compute_battery_balance which doesn't
+        // read these fields; zero is safe here.
+        battery_dc_power: world.sensors.battery_dc_power.value.unwrap_or(0.0),
+        heat_pump_power: world.sensors.heat_pump_power.value.unwrap_or(0.0),
+        cooker_power: world.sensors.cooker_power.value.unwrap_or(0.0),
+        // PR-ZD-3: recurrence prev-setpoint. The projection only calls
+        // compute_battery_balance (no recurrence), so this is inert; falls
+        // back to idle_setpoint_w on cold boot.
+        setpoint_target_prev: world.grid_setpoint.target.value.unwrap_or(hardware.idle_setpoint_w as i32),
     }
 }
 

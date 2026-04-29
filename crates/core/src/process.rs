@@ -1197,8 +1197,18 @@ pub(crate) fn maybe_evaluate_auto_extended(world: &mut World, clock: &dyn Clock)
 /// run on. PR-core-io-popups: shared between `run_setpoint` and the
 /// dashboard's `SetpointCore::last_inputs` so the popup shows exactly
 /// the values the controller saw.
+///
+/// `idle_setpoint_w`: deploy-time idle setpoint from `topology.hardware`.
+/// Used as the cold-boot fallback for `setpoint_target_prev` when no
+/// prior setpoint has been commanded. Callers that do not have topology
+/// in scope (e.g. `CoreId::Setpoint::last_inputs`) should pass
+/// `HardwareParams::defaults().idle_setpoint_w as i32`.
 #[must_use]
-pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
+pub(crate) fn build_setpoint_input(world: &World, idle_setpoint_w: i32) -> Option<SetpointInput> {
+    // PR-ZD-3: battery_dc_power added to the required-fresh set. A
+    // momentary battery-service hiccup falls through to
+    // `apply_setpoint_safety` (idle 10 W) — conservative posture
+    // matches the safety-first design intent.
     if !world.sensors.battery_soc.is_usable()
         || !world.sensors.battery_soh.is_usable()
         || !world.sensors.battery_installed_capacity.is_usable()
@@ -1207,6 +1217,7 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
         || !world.sensors.soltaro_power.is_usable()
         || !world.sensors.power_consumption.is_usable()
         || !world.sensors.evcharger_ac_power.is_usable()
+        || !world.sensors.battery_dc_power.is_usable()
     {
         return None;
     }
@@ -1234,6 +1245,11 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
             inverter_safe_discharge_enable: k.inverter_safe_discharge_enable,
             full_charge_defer_to_next_sunday: k.full_charge_defer_to_next_sunday,
             full_charge_snap_back_max_weekday: k.full_charge_snap_back_max_weekday,
+            // PR-ZD-3: compensated-drain soft-loop knobs.
+            zappi_drain_threshold_w: k.zappi_battery_drain_threshold_w,
+            zappi_drain_relax_step_w: k.zappi_battery_drain_relax_step_w,
+            zappi_drain_kp: k.zappi_battery_drain_kp,
+            zappi_drain_target_w: k.zappi_battery_drain_target_w,
         },
         power_consumption: world.sensors.power_consumption.value.unwrap(),
         battery_soc: world.sensors.battery_soc.value.unwrap(),
@@ -1243,6 +1259,14 @@ pub(crate) fn build_setpoint_input(world: &World) -> Option<SetpointInput> {
         soltaro_power: world.sensors.soltaro_power.value.unwrap(),
         evcharger_ac_power: world.sensors.evcharger_ac_power.value.unwrap(),
         capacity: world.sensors.battery_installed_capacity.value.unwrap(),
+        // PR-ZD-3: required-fresh (guarded above).
+        battery_dc_power: world.sensors.battery_dc_power.value.unwrap(),
+        // PR-ZD-3: stale HP/cooker → 0.0 (tighter clamp; see plan §4).
+        heat_pump_power: world.sensors.heat_pump_power.value.unwrap_or(0.0),
+        cooker_power: world.sensors.cooker_power.value.unwrap_or(0.0),
+        // PR-ZD-3: recurrence base for the soft loop.
+        // Falls back to idle_setpoint_w on cold boot (no prior setpoint commanded).
+        setpoint_target_prev: world.grid_setpoint.target.value.unwrap_or(idle_setpoint_w),
     })
 }
 
@@ -1255,7 +1279,7 @@ pub(crate) fn run_setpoint(
     // Required Fresh sensors. A-17: evcharger_ac_power joins the
     // required set — the Hoymiles export term in solar_export depends
     // on the EV-branch CT reading.
-    let Some(input) = build_setpoint_input(world) else {
+    let Some(input) = build_setpoint_input(world, topology.hardware.idle_setpoint_w as i32) else {
         apply_setpoint_safety(world, clock, topology, effects);
         return;
     };
@@ -1395,6 +1419,10 @@ fn missing_required_setpoint_sensors(world: &World) -> String {
     }
     if !world.sensors.evcharger_ac_power.is_usable() {
         missing.push("evcharger_ac_power");
+    }
+    // PR-ZD-3: battery_dc_power is required for the compensated-drain loop.
+    if !world.sensors.battery_dc_power.is_usable() {
+        missing.push("battery_dc_power");
     }
     if missing.is_empty() {
         "<none — safety fallback fired despite all sensors usable; bug>".to_string()
@@ -2233,6 +2261,67 @@ mod tests {
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
         assert_eq!(world.grid_setpoint.target.value, Some(10));
         assert_eq!(world.grid_setpoint.target.owner, Owner::System);
+    }
+
+    /// Test 25 (PR-ZD-3): stale `battery_dc_power` triggers the safety
+    /// fallback — `build_setpoint_input` returns `None`, `apply_setpoint_safety`
+    /// posts idle 10 W, owner=System. HP and cooker stale is acceptable
+    /// (treated as 0 W); battery_dc_power is required-fresh.
+    #[test]
+    fn setpoint_safety_fallback_fires_when_battery_dc_power_stale() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        // Age battery_dc_power past its freshness threshold (120 s for
+        // SensorId::BatteryDcPower, matching the D-Bus sensor cadence).
+        // The sensor was seeded with `on_reading(0.0, at)` in
+        // `seed_required_sensors`; advancing 130 s past seed makes it Stale.
+        let later = FixedClock::new(c.monotonic + StdDuration::from_secs(130), naive(12, 2));
+        // Re-feed all other required sensors at `later` so only
+        // battery_dc_power ages out.
+        {
+            let ss = &mut world.sensors;
+            ss.battery_soc.on_reading(75.0, later.monotonic);
+            ss.battery_soh.on_reading(95.0, later.monotonic);
+            ss.battery_installed_capacity.on_reading(100.0, later.monotonic);
+            ss.mppt_power_0.on_reading(1500.0, later.monotonic);
+            ss.mppt_power_1.on_reading(1000.0, later.monotonic);
+            ss.soltaro_power.on_reading(500.0, later.monotonic);
+            ss.power_consumption.on_reading(1200.0, later.monotonic);
+            ss.evcharger_ac_power.on_reading(0.0, later.monotonic);
+            // battery_dc_power intentionally NOT refreshed — it ages out.
+        }
+        let _ = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
+
+        assert_eq!(
+            world.sensors.battery_dc_power.freshness,
+            Freshness::Stale,
+            "battery_dc_power must be Stale"
+        );
+        // Safety fallback must have fired: setpoint = 10 W, owner = System.
+        assert_eq!(
+            world.grid_setpoint.target.value,
+            Some(10),
+            "stale battery_dc_power → safety fallback → setpoint 10 W"
+        );
+        assert_eq!(
+            world.grid_setpoint.target.owner,
+            Owner::System,
+            "safety fallback owner must be System"
+        );
+        // Decision must mention the missing sensor.
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
+        assert!(
+            decision.summary.contains("Safety fallback"),
+            "decision summary should indicate safety fallback, got: {}",
+            decision.summary
+        );
+        let missing_factor = decision.factors.iter().find(|f| f.name == "missing_sensors");
+        assert!(
+            missing_factor.is_some_and(|f| f.value.contains("battery_dc_power")),
+            "missing_sensors factor must name battery_dc_power"
+        );
     }
 
     #[test]
@@ -4638,5 +4727,204 @@ mod tests {
         let mut world = World::fresh_boot(c.monotonic);
         send_knob(&mut world, KnobId::ZappiBatteryDrainHardClampW, KnobValue::Uint32(500));
         assert_eq!(world.knobs.zappi_battery_drain_hard_clamp_w, 500);
+    }
+
+    // ------------------------------------------------------------------
+    // D02: multi-tick integration tests for the compensated-drain loop
+    // ------------------------------------------------------------------
+
+    /// Seed required sensors for a Zappi-active, battery-draining scenario
+    /// at a given `Instant`. All other sensors stay at safe defaults.
+    fn seed_zappi_drain_sensors(world: &mut World, at: Instant, battery_drain_w: f64) {
+        // Re-feed all required sensors so none go stale.
+        let ss = &mut world.sensors;
+        ss.battery_soc.on_reading(90.0, at);
+        ss.battery_soh.on_reading(95.0, at);
+        ss.battery_installed_capacity.on_reading(100.0, at);
+        ss.battery_dc_power.on_reading(-battery_drain_w, at); // negative = discharging
+        ss.mppt_power_0.on_reading(0.0, at);
+        ss.mppt_power_1.on_reading(0.0, at);
+        ss.soltaro_power.on_reading(0.0, at);
+        ss.power_consumption.on_reading(1200.0, at);
+        ss.grid_power.on_reading(0.0, at);
+        ss.grid_voltage.on_reading(230.0, at);
+        ss.grid_current.on_reading(0.0, at);
+        ss.consumption_current.on_reading(5.0, at);
+        ss.offgrid_power.on_reading(0.0, at);
+        ss.offgrid_current.on_reading(0.0, at);
+        ss.vebus_input_current.on_reading(0.0, at);
+        ss.evcharger_ac_power.on_reading(0.0, at);
+        ss.evcharger_ac_current.on_reading(0.0, at);
+        ss.ess_state.on_reading(10.0, at);
+        ss.outdoor_temperature.on_reading(15.0, at);
+    }
+
+    /// D02: tighten trajectory — Zappi active, battery draining 2 kW (above
+    /// threshold=1000 W), kp=1.0. Initial setpoint seeded at -3000 W (exporting).
+    ///
+    /// Expected per-tick setpoint trajectory (prev → raw new → prepare → actual):
+    ///   tick 0: prev=-3000, drain=2000, excess=1000, new=-2000 → prepare: -2000
+    ///   tick 1: prev=-2000, drain=2000, excess=1000, new=-1000 → prepare: -1000
+    ///   tick 2: prev=-1000, drain=2000, excess=1000, new=0 → prepare promotes to 10
+    ///   tick 3: prev=10, drain=2000, excess=1000, new=1010 → prepare promotes to 10
+    ///   (stable at 10 W import once setpoint crosses zero)
+    #[test]
+    fn zappi_active_loop_multi_tick_trajectory() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        // Enable writes and set knobs.
+        world.knobs.writes_enabled = true;
+        world.knobs.allow_battery_to_car = false;
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_relax_step_w = 100;
+        world.knobs.zappi_battery_drain_kp = 1.0;
+        world.knobs.grid_import_limit_w = 5000;
+
+        // Seed an initial setpoint of -3000 W so the loop starts from an
+        // exporting position. Use Owner::SetpointController to match the live path.
+        world.grid_setpoint.propose_target(-3000, Owner::SetpointController, c.monotonic);
+
+        // Zappi charging actively (Eco mode + DivertingOrCharging).
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Eco,
+                zappi_plug_state: ZappiPlugState::Charging,
+                zappi_status: ZappiStatus::DivertingOrCharging,
+                zappi_last_change_signature: c.monotonic,
+                session_kwh: 0.0,
+            },
+            c.monotonic,
+        );
+
+        // Tick 0: prev=-3000, drain=2000, excess=1000. new=-2000.
+        seed_zappi_drain_sensors(&mut world, c.monotonic, 2000.0);
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let setpoint_0 = world.grid_setpoint.target.value.expect("setpoint set after tick 0");
+        assert_eq!(setpoint_0, -2000, "tick 0: expected -2000, got {setpoint_0}");
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
+        assert!(
+            decision.summary.contains("tightening"),
+            "tick 0 decision should say tightening, got: {}",
+            decision.summary
+        );
+
+        // Tick 1: prev=-2000, drain=2000, excess=1000. new=-1000.
+        let t1 = FixedClock::new(c.monotonic + StdDuration::from_secs(5), c.naive);
+        seed_zappi_drain_sensors(&mut world, t1.monotonic, 2000.0);
+        let _ = process(&Event::Tick { at: t1.monotonic }, &mut world, &t1, &Topology::defaults());
+        let setpoint_1 = world.grid_setpoint.target.value.expect("setpoint set after tick 1");
+        assert_eq!(setpoint_1, -1000, "tick 1: expected -1000, got {setpoint_1}");
+
+        // Tick 2: prev=-1000, drain=2000, excess=1000. raw new=0 → prepare: 10.
+        let t2 = FixedClock::new(c.monotonic + StdDuration::from_secs(10), c.naive);
+        seed_zappi_drain_sensors(&mut world, t2.monotonic, 2000.0);
+        let _ = process(&Event::Tick { at: t2.monotonic }, &mut world, &t2, &Topology::defaults());
+        let setpoint_2 = world.grid_setpoint.target.value.expect("setpoint set after tick 2");
+        assert_eq!(setpoint_2, 10, "tick 2: raw 0 promoted to idle 10, got {setpoint_2}");
+    }
+
+    /// D02: relax trajectory — Zappi active, battery drain BELOW threshold.
+    /// prev starts at -100 (above target=-solar_export=0, since no PV at night).
+    /// With relax_step=100, target=0: prev=-100 > target=0? No: -100 < 0.
+    /// Wait — target=-solar_export. If mppt=0, target=0. prev=-100 < target=0 →
+    /// step UP: (-100+100).min(0) = 0. Reaches target in one step.
+    ///
+    /// Use a daytime scenario with some PV to make the walk longer:
+    /// mppt=2000 → target=-2000. prev=-100: prev > target → step DOWN.
+    /// But mppt sensors need to be seeded per-tick too.
+    #[test]
+    fn zappi_active_relax_walks_toward_minus_solar_export() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        world.knobs.writes_enabled = true;
+        world.knobs.allow_battery_to_car = false;
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_relax_step_w = 100;
+        world.knobs.zappi_battery_drain_kp = 1.0;
+        world.knobs.grid_import_limit_w = 5000;
+
+        // Zappi active.
+        world.typed_sensors.zappi_state.on_reading(
+            ZappiState {
+                zappi_mode: ZappiMode::Eco,
+                zappi_plug_state: ZappiPlugState::Charging,
+                zappi_status: ZappiStatus::DivertingOrCharging,
+                zappi_last_change_signature: c.monotonic,
+                session_kwh: 0.0,
+            },
+            c.monotonic,
+        );
+
+        // Seed: battery drain = 500 W (below threshold=1000), mppt=2000 → solar_export=2000.
+        // prev starts at 10 (idle_setpoint_w cold boot).
+        // target = -solar_export = -2000. prev=10 > target=-2000 → step DOWN:
+        //   (10 - 100).max(-2000) = -90
+        // After tick 0: setpoint ≈ -100 (rounded to nearest 50 by prepare_setpoint → -100)
+        {
+            let ss = &mut world.sensors;
+            ss.battery_soc.on_reading(90.0, c.monotonic);
+            ss.battery_soh.on_reading(95.0, c.monotonic);
+            ss.battery_installed_capacity.on_reading(100.0, c.monotonic);
+            ss.battery_dc_power.on_reading(-500.0, c.monotonic);  // 500 W drain (below threshold)
+            ss.mppt_power_0.on_reading(2000.0, c.monotonic);
+            ss.mppt_power_1.on_reading(0.0, c.monotonic);
+            ss.soltaro_power.on_reading(0.0, c.monotonic);
+            ss.power_consumption.on_reading(1200.0, c.monotonic);
+            ss.grid_power.on_reading(0.0, c.monotonic);
+            ss.grid_voltage.on_reading(230.0, c.monotonic);
+            ss.grid_current.on_reading(0.0, c.monotonic);
+            ss.consumption_current.on_reading(5.0, c.monotonic);
+            ss.offgrid_power.on_reading(0.0, c.monotonic);
+            ss.offgrid_current.on_reading(0.0, c.monotonic);
+            ss.vebus_input_current.on_reading(0.0, c.monotonic);
+            ss.evcharger_ac_power.on_reading(0.0, c.monotonic);
+            ss.evcharger_ac_current.on_reading(0.0, c.monotonic);
+            ss.ess_state.on_reading(10.0, c.monotonic);
+            ss.outdoor_temperature.on_reading(15.0, c.monotonic);
+        }
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let setpoint_0 = world.grid_setpoint.target.value.expect("setpoint set");
+        // prev=10 > target=-2000 → (10-100).max(-2000) = -90 → prepare: -100
+        assert_eq!(setpoint_0, -100, "tick 0: prev=10, step DOWN, expected -100, got {setpoint_0}");
+
+        // Confirm relaxing direction.
+        let decision = world.decisions.grid_setpoint.as_ref().expect("decision set");
+        assert!(
+            decision.summary.contains("relaxing"),
+            "tick 0 should say relaxing, got: {}",
+            decision.summary
+        );
+
+        // Tick 1: prev=-100, target=-2000 → (-100-100).max(-2000) = -200 → prepare: -200
+        let t1 = FixedClock::new(c.monotonic + StdDuration::from_secs(5), c.naive);
+        {
+            let ss = &mut world.sensors;
+            ss.battery_soc.on_reading(90.0, t1.monotonic);
+            ss.battery_soh.on_reading(95.0, t1.monotonic);
+            ss.battery_installed_capacity.on_reading(100.0, t1.monotonic);
+            ss.battery_dc_power.on_reading(-500.0, t1.monotonic);
+            ss.mppt_power_0.on_reading(2000.0, t1.monotonic);
+            ss.mppt_power_1.on_reading(0.0, t1.monotonic);
+            ss.soltaro_power.on_reading(0.0, t1.monotonic);
+            ss.power_consumption.on_reading(1200.0, t1.monotonic);
+            ss.grid_power.on_reading(0.0, t1.monotonic);
+            ss.grid_voltage.on_reading(230.0, t1.monotonic);
+            ss.grid_current.on_reading(0.0, t1.monotonic);
+            ss.consumption_current.on_reading(5.0, t1.monotonic);
+            ss.offgrid_power.on_reading(0.0, t1.monotonic);
+            ss.offgrid_current.on_reading(0.0, t1.monotonic);
+            ss.vebus_input_current.on_reading(0.0, t1.monotonic);
+            ss.evcharger_ac_power.on_reading(0.0, t1.monotonic);
+            ss.evcharger_ac_current.on_reading(0.0, t1.monotonic);
+            ss.ess_state.on_reading(10.0, t1.monotonic);
+            ss.outdoor_temperature.on_reading(15.0, t1.monotonic);
+        }
+        let _ = process(&Event::Tick { at: t1.monotonic }, &mut world, &t1, &Topology::defaults());
+        let setpoint_1 = world.grid_setpoint.target.value.expect("setpoint set after tick 1");
+        assert_eq!(setpoint_1, -200, "tick 1: prev=-100, step DOWN, expected -200, got {setpoint_1}");
     }
 }

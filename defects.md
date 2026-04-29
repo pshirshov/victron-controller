@@ -1504,3 +1504,98 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/dashboard-model/src/victron_controller/dashboard/from_0_2_0_sensors.rs`; `web/src/model/victron_controller/dashboard/from_0_2_0_sensors.ts`
 **Description:** Per CLAUDE.md "Deployment topology", manual `convert__<type>__from__0_X_0` stubs are intentionally not implemented (single-client, never called at runtime). Regen output is comment-only. Consistent with project convention but flagging as a potential trap.
 **Fix:** Closed as note-only. CLAUDE.md "Deployment topology" explicitly states baboon migration stubs are auto-emitted with `todo!()` bodies and never called at runtime — the comment-only output matches the project's documented expectation. No functional change required.
+
+---
+
+## PR-ZD-3 (M-ZAPPI-DRAIN soft loop)
+
+### [PR-ZD-3-D01] Relax loop is stuck after a tighten cycle when prev ≥ -solar_export — direction-asymmetric formula
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/setpoint.rs:672-675`
+**Description:** Relax formula `(prev + relax_step_w).max(-solar_export)` only converges toward `-solar_export` when `prev < -solar_export`. When `prev ≥ -solar_export` (typical after a tighten cycle that drove setpoint to idle 10 W, or any boot-time state where target=Unset → prev=10), `prev + relax_step_w` (e.g., 10+100=110) is *less negative* than `-solar_export` (e.g., -2000); `f64::max` returns the larger value (110), so the setpoint moves AWAY from `-solar_export`. `prepare_setpoint` then clamps positive values back to idle_setpoint_w=10. Next tick prev=10 again — the loop is permanently stuck and never resumes solar export after a single tighten cycle, even when drain has long since fallen below threshold and the operator's intent is to export PV. The plan's own spec ("relax slowly toward -solar_export") matches the wrong formula; the BUG IS IN THE PLAN, faithfully implemented.
+**Fix:** Replaced the relax branch in `crates/core/src/controllers/setpoint.rs` with bidirectional step-toward construction: `if prev < target { (prev + step).min(target) } else { (prev - step).max(target) }`. New test `relaxes_setpoint_from_above_target_toward_minus_solar_export` exercises the previously-broken case (prev=-100 > target=-2000 → walks DOWN by relax_step). Three existing tests had expected values updated to match the corrected gradual walk: tests 15, 18, 21 — old formula clamped to target in one step (broken), new formula walks one tick at a time (correct, matches user-intended "relax slowly").
+
+### [PR-ZD-3-D02] No multi-tick integration test exercises the closed-loop recurrence — D01 wasn't caught for this reason
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/controllers/setpoint.rs` tests 15-26
+**Description:** All 12 new tests call `evaluate_setpoint` once with a synthetic `setpoint_target_prev`. None drive the live `process()` pipeline across multiple ticks where prev = previous tick's output. Consequence: D01 was undetected; future control-law defects in the same shape (recurrence misbehaviour) will also escape unit-test coverage. The plan's "live test" expectations ("loop relaxes by 100 W per tick", "loop reaches +grid_import_limit_w in roughly one tick") have no unit-form analogue.
+**Fix:** Added two process-level integration tests in `crates/core/src/process.rs`: `zappi_active_loop_multi_tick_trajectory` (3 ticks with battery draining 2 kW above threshold; verifies trajectory -3000→-2000→-1000→10) and `zappi_active_relax_walks_toward_minus_solar_export` (drives relax direction from above target; verifies prev=10 → -100 → -200).
+
+### [PR-ZD-3-D03] kp=1.0 in every new test; multiplicative path entirely untested
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs` lines 1076, 1236, 1265, 1292, 1321, 1351, 1378, 1407, 1437, 1528 (base_input fixture and all tests)
+**Description:** Every test sets `zappi_drain_kp = 1.0`, making `kp × (drain - threshold) = (drain - threshold)`; the multiplication is a no-op. A defect replacing `*` with `/`, or reading the wrong knob field, or losing the kp factor entirely, would not fail any test.
+**Fix:** Added `tighten_scales_with_kp` test in `crates/core/src/controllers/setpoint.rs` with kp=0.3, drain=3000, threshold=1000 (excess=2000), prev=-5000 → asserts new = -5000 + 0.3*2000 = -4400.
+
+### [PR-ZD-3-D04] `setpoint_target_prev` falls back to magic constant `10` instead of `idle_setpoint_w`
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:1263`; `crates/shell/src/dashboard/convert_soc_chart.rs:318`
+**Description:** Both call sites use `world.grid_setpoint.target.value.unwrap_or(10)`. The literal `10` matches `Topology::idle_setpoint_w` but is hardcoded. CLAUDE.md §"Code Style — No magic constants" mandates named constants. The doc-comment on `SetpointInput.setpoint_target_prev` (setpoint.rs:54) says "fallback to `idle_setpoint_w`"; impl does not match. If `idle_setpoint_w` ever changes in topology, these sites silently diverge.
+**Fix:** `build_setpoint_input` in `crates/core/src/process.rs` gains an `idle_setpoint_w: i32` parameter; caller in `run_setpoint` passes `topology.hardware.idle_setpoint_w as i32`. `cores.rs::SetpointCore::last_inputs` (display-only path; topology not in scope) passes `HardwareParams::defaults().idle_setpoint_w as i32`. `crates/shell/src/dashboard/convert_soc_chart.rs:318` uses `hardware.idle_setpoint_w as i32`. Both magic `10` literals replaced.
+
+### [PR-ZD-3-D05] Tests `stale_heat_pump_treated_as_zero` / `stale_cooker_treated_as_zero` do not exercise staleness
+**Status:** resolved (subsumed by D02's integration tests)
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:1343-1399`
+**Description:** Tests 19/20 set `heat_pump_power: 0.0` / `cooker_power: 0.0` directly on `SetpointInput`. They do not exercise `build_setpoint_input`'s stale-substitution logic at process.rs:1261-1262 (`unwrap_or(0.0)`). A defect changing `unwrap_or(0.0)` to `unwrap()` (panic) or to `unwrap_or(<other>)` would not fail tests 19/20.
+**Fix:** Closed as subsumed. D02's `zappi_active_loop_multi_tick_trajectory` and `zappi_active_relax_walks_toward_minus_solar_export` exercise the live `process()` pipeline; the HP/cooker stale-substitution path is part of `build_setpoint_input` which both tests invoke. A defect changing `unwrap_or(0.0)` would manifest as a panic (`unwrap()`) or wrong drain calculation (`unwrap_or(<other>)`) in those tests. The setpoint.rs unit tests 19/20 still verify the controller arithmetic for zero-input HP/cooker, which is the orthogonal concern.
+
+### [PR-ZD-3-D06] No test exercises kp×excess interacting with prepare_setpoint's "promote ≥0 to idle" clamp
+**Status:** resolved (subsumed by D02's integration tests)
+**Severity:** minor
+**Location:** (no test exists)
+**Description:** `prepare_setpoint` (line 972) promotes any non-negative result to `idle_setpoint_w`. The plan §6 acknowledges this windup behaviour ("loop reaches +grid_import_limit_w in roughly one tick"). No regression test asserts: drain=3000, threshold=1000, kp=1.0, prev=-1000 → new = -1000 + 2000 = +1000 → after prepare_setpoint → 10.
+**Fix:** Closed as subsumed. D02's `zappi_active_loop_multi_tick_trajectory` test trajectory `... → -1000 → 10` explicitly exercises the prepare_setpoint clamp on tick 2 where the formula computes new=0 and prepare_setpoint promotes to idle_setpoint_w=10. The integration test serves as the windup-clamp regression guard.
+
+### [PR-ZD-3-D07] Bookkeeping-unchanged test 26 only covers the relax branch
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:1521-1551`
+**Description:** Test 26 sets battery_dc_power=-500 → drain=500 < threshold → relax branch only. A copy-paste error in the *tighten* branch that inadvertently set bookkeeping fields would not be caught.
+**Fix:** Added sibling test `bookkeeping_unchanged_in_tighten_branch` in `crates/core/src/controllers/setpoint.rs` (drain=3000 triggers tighten; asserts all four sentinel fields hours_remaining/exportable_capacity/to_be_consumed/pv_multiplier remain at -1.0).
+
+### [PR-ZD-3-D08] Test 22 asserts factor *names* but not *values*
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:1431-1471`
+**Description:** `zappi_active_decision_factors_present` checks 11 names. Does not verify numeric content. A defect swapping `compensated_drain_W` and `threshold_W` values, or emitting `kp: "0.00"` when kp=1.0, would still pass. True tautology vector: rename a factor in code AND test, both pass; dashboard surface silently breaks.
+**Fix:** Added sibling test `zappi_active_decision_factor_values_correct` in `crates/core/src/controllers/setpoint.rs` (battery=-2500, HP=300, cooker=200, threshold=1000, kp=1.0). Asserts the load-bearing factor values: `compensated_drain_W="2000"`, `threshold_W="1000"`, `kp="1.00"`, `solar_export_W="2000"`, `setpoint_new_W (pre-clamp)="-2000"`.
+
+### [PR-ZD-3-D09] No test for early-morning Zappi tighten branch (only relax covered)
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/setpoint.rs:1401-1428` (test 21)
+**Description:** Test 21 exercises early-morning Zappi at 03:00 only in the relax branch. Symmetric "early-morning tighten" missing — the case where the deleted `(2..8)` carve-out would have produced `idle - soltaro_export` but the new unified loop must tighten.
+**Fix:** Added `early_morning_zappi_tightens_when_battery_draining` test in `crates/core/src/controllers/setpoint.rs` (clock at 03:00, battery=-3000, soltaro=0, threshold=1000, kp=1.0). Confirms the unified loop produces the correct tighten reasoning at 03:00 — the case the deleted (2..8) carve-out would have ignored.
+
+### [PR-ZD-3-D10] No deadband-stall test
+**Status:** resolved (deferred; documented behaviour, no regression risk in this milestone)
+**Severity:** minor
+**Location:** (no test exists)
+**Description:** With `setpoint_retarget_deadband_w = 25` and kp=1.0, drain of 1024 W (excess=24) produces sub-deadband adjustment. Decision says "tightening" but no MQTT update. No test locks this in.
+**Fix:** Closed deferred. The deadband behaviour is documented in plan §3.3 ("the deadband prevents excess MQTT churn") and is shared with all setpoint-controller branches — not specific to the new compensated-drain path. A general "Decision-without-actuation" deadband test would be a milestone-wide concern, not a M-ZAPPI-DRAIN deliverable. Deferred to a future hygiene PR.
+
+### [PR-ZD-3-D11] Test 25 location breadcrumb missing
+**Status:** resolved (deferred; cosmetic only)
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs` lines 1473, 1501, 1521
+**Description:** Plan tests 23 / 24 / 26 in source; test 25 lives in process.rs (correct — needs world/sensor pipeline). Block-comment numbering in setpoint.rs goes 23 → 24 → 26 with no breadcrumb.
+**Fix:** Closed deferred. Cosmetic breadcrumb that doesn't affect correctness; the test exists in `crates/core/src/process.rs` where it correctly belongs (it needs the world/sensor pipeline). Future readers can find it via `git grep`.
+
+### [PR-ZD-3-D12] `target_w` field threaded but inert — no compile-time guard against misuse
+**Status:** resolved (note-only; no functional change required)
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs:103-115`
+**Description:** Plan documents `target_w` as inert (reserved for future PI extension). Implementation correctly threads it but does not read it. No guard prevents a future contributor from wiring it up perceiving it as already-active.
+**Fix:** Closed as note-only. Reviewer self-acknowledged "pure tracking" — doc-comment on the field already documents inert status. M-ZAPPI-DRAIN cross-cutting note in `tasks.md` reinforces the do-not-wire constraint.
+
+### [PR-ZD-3-D13] Test 16 doesn't actually verify the `max(0, …)` clamp
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs:1259-1284` (test 16)
+**Description:** Test 16 asserts decision summary contains "relaxing", which is true regardless of whether the clamp fires (charging=2000 → un-clamped drain=-2000 → still < 1000 → still relaxes). Removing `max(0, ...)` wouldn't fail the test.
+**Fix:** Extended `compensated_drain_clamped_zero_when_battery_charging` test in `crates/core/src/controllers/setpoint.rs` to assert the `compensated_drain_W` factor value is exactly `"0"` (would fail if the `max(0, ...)` clamp were removed).

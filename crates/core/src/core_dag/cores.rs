@@ -35,7 +35,7 @@ use crate::process::{
     run_eddi_mode, run_schedules, run_setpoint, run_weather_soc, run_zappi_mode,
 };
 use crate::tass::Actual;
-use crate::topology::Topology;
+use crate::topology::{HardwareParams, Topology};
 use crate::types::{
     BookkeepingId, DbusTarget, DbusValue, Effect, ForecastProvider, LogLevel,
     PublishPayload, SensorId, encode_sensor_body,
@@ -158,7 +158,7 @@ impl Core for SetpointCore {
     /// idle target). `last_outputs` surfaces the actuated target plus
     /// the bookkeeping the controller wrote on the last successful tick.
     fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
-        match build_setpoint_input(world) {
+        match build_setpoint_input(world, HardwareParams::defaults().idle_setpoint_w as i32) {
             None => vec![factor("status", "safety fallback (required sensors not usable)")],
             Some(i) => {
                 let g = &i.globals;

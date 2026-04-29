@@ -38,6 +38,22 @@ pub struct SetpointInput {
     /// §5.8.
     pub evcharger_ac_power: f64,
     pub capacity: f64,
+    /// DC battery power (W). Sign convention: positive = charging,
+    /// negative = discharging. Required-fresh — stale battery DC power
+    /// triggers `apply_setpoint_safety` (idle 10 W). PR-ZD-3.
+    pub battery_dc_power: f64,
+    /// AC power draw of the heat-pump grid-side load (W). Excluded from
+    /// the compensated-drain feedback signal. Caller passes `0.0` when
+    /// the sensor is stale (conservative: clamps tighter). PR-ZD-3.
+    pub heat_pump_power: f64,
+    /// AC power draw of the cooker grid-side load (W). Same stale
+    /// semantics as `heat_pump_power`. PR-ZD-3.
+    pub cooker_power: f64,
+    /// Previously-commanded grid setpoint (W). Used as the recurrence
+    /// base for the compensated-drain soft loop. Sourced from
+    /// `world.grid_setpoint.target.value.unwrap_or(idle_setpoint_w)`.
+    /// PR-ZD-3.
+    pub setpoint_target_prev: i32,
 }
 
 /// Subset of the world consumed by the setpoint controller that comes from
@@ -84,6 +100,19 @@ pub struct SetpointInputGlobals {
     /// validated upstream; the helper clamps defensively. Only
     /// applies when `full_charge_defer_to_next_sunday` is `false`.
     pub full_charge_snap_back_max_weekday: u32,
+    /// Compensated drain threshold (W). When
+    /// `compensated_drain > zappi_drain_threshold_w`, the loop
+    /// tightens the setpoint. PR-ZD-3.
+    pub zappi_drain_threshold_w: u32,
+    /// Relax step (W) per tick when compensated drain is below threshold.
+    /// The setpoint relaxes by this amount toward `-solar_export`. PR-ZD-3.
+    pub zappi_drain_relax_step_w: u32,
+    /// Proportional gain for the compensated-drain controller. PR-ZD-3.
+    pub zappi_drain_kp: f64,
+    /// Reference target for the drain controller (W). Reserved for a
+    /// future PI extension; currently inert — the loop uses
+    /// `zappi_drain_threshold_w` as its reference. PR-ZD-3.
+    pub zappi_drain_target_w: i32,
 }
 
 /// Full output of the setpoint controller. The shell turns this into a
@@ -284,13 +313,17 @@ pub fn compute_battery_balance(
 
     // 2. zappi_active && !allow_battery_to_car.
     if g.zappi_active && !g.allow_battery_to_car {
-        // Early-morning carve-out: setpoint pinned to idle (minus
-        // soltaro_export); battery preserved.
-        // Daytime: setpoint = -solar_export so MPPT surplus exports
-        // and battery is held flat.
+        // PR-ZD-3: the live controller now runs a compensated-drain
+        // feedback loop (recurrence on the previous setpoint). The loop's
+        // intent is to hold battery drain at zero, so `net_battery_w = 0`
+        // remains the correct approximation for the SoC-chart projection.
+        //
+        // Projection-vs-live mismatch: the projection cannot replay the
+        // recurrence dynamics (it has no prev-setpoint history), so the
+        // chart approximates the Zappi-active window as "battery flat".
+        // Chart-parity with the loop is a follow-up, not M-ZAPPI-DRAIN
+        // scope. See plan §2 "Out-of-scope".
         return BatteryBalance {
-            // Held near zero (carve-out preserves the battery; whatever
-            // tiny drift exists isn't worth modelling on the chart).
             net_battery_w: 0.0,
             branch: BatteryBalanceBranch::PreserveForZappi,
         };
@@ -615,26 +648,64 @@ pub fn evaluate_setpoint(
         decision = Decision::new("Export killed by force_disable_export → idle 10 W")
             .with_factor("force_disable_export", "true");
     } else if g.zappi_active && !g.allow_battery_to_car {
-        if (2..8).contains(&hour) {
-            setpoint_target = idle_setpoint_w - soltaro_export;
-            decision = Decision::new(
-                "Zappi active in early-morning window — dump Soltaro surplus only, preserve battery"
-            )
-            .with_factor("hour", format!("{hour:02}:{minute:02}"))
-            .with_factor("zappi_active", "true")
-            .with_factor("allow_battery_to_car", "false")
-            .with_factor("soltaro_power_W", format!("{soltaro_power:.0}"))
-            .with_factor("soltaro_export_W", format!("{soltaro_export:.0}"));
+        // PR-ZD-3: unified compensated-drain feedback loop. Replaces the
+        // PV-only clamp (which had a separate early-morning Soltaro carve-out
+        // for (2..8) h). Soltaro AC export registers in the battery power
+        // balance, so the unified loop handles early-morning surplus without
+        // a separate time-of-day branch.
+        //
+        // compensated_drain = max(0, -battery_dc_power - hp_w - cooker_w)
+        // — discharges that are NOT explained by the two metered grid-side
+        // loads the operator excluded on purpose. Stale HP/cooker = 0 W
+        // (conservative — clamps tighter, never looser on a dead bridge).
+        let hp_w = input.heat_pump_power;
+        let cooker_w = input.cooker_power;
+        let compensated_drain_w =
+            (0.0_f64).max(-input.battery_dc_power - hp_w - cooker_w);
+
+        let prev = f64::from(input.setpoint_target_prev);
+        let threshold = f64::from(g.zappi_drain_threshold_w);
+
+        let new_setpoint = if compensated_drain_w > threshold {
+            // Tighten — raise (less negative) by kp × excess drain.
+            prev + g.zappi_drain_kp * (compensated_drain_w - threshold)
         } else {
-            setpoint_target = -solar_export;
-            decision = Decision::new(
-                "Zappi active during the day — export PV only, do not discharge battery into car",
-            )
-            .with_factor("zappi_active", "true")
-            .with_factor("allow_battery_to_car", "false")
-            .with_factor("solar_export_W", format!("{solar_export:.0}"))
-            .with_factor("setpoint_W (pre-clamp)", format!("{setpoint_target:.0}"));
-        }
+            // Relax — step toward -solar_export at relax_step_w per tick
+            // from any direction.
+            //
+            // prev < target means prev < -solar_export, i.e. exporting
+            // more than full PV (battery draining into grid). Step UP
+            // (less negative), clamped at target from above.
+            //
+            // prev > target means prev > -solar_export, i.e. exporting
+            // less than full PV or importing. Step DOWN (more negative),
+            // clamped at target from below.
+            let target = -solar_export;
+            let step = f64::from(g.zappi_drain_relax_step_w);
+            if prev < target {
+                (prev + step).min(target)
+            } else {
+                (prev - step).max(target)
+            }
+        };
+
+        setpoint_target = new_setpoint;
+        decision = Decision::new(if compensated_drain_w > threshold {
+            "Zappi active — tightening setpoint to halt battery drain into EV"
+        } else {
+            "Zappi active — relaxing setpoint toward solar-only export"
+        })
+        .with_factor("zappi_active", "true")
+        .with_factor("allow_battery_to_car", "false")
+        .with_factor("battery_dc_power_W", format!("{:.0}", input.battery_dc_power))
+        .with_factor("heat_pump_W", format!("{hp_w:.0}"))
+        .with_factor("cooker_W", format!("{cooker_w:.0}"))
+        .with_factor("compensated_drain_W", format!("{compensated_drain_w:.0}"))
+        .with_factor("threshold_W", format!("{threshold:.0}"))
+        .with_factor("kp", format!("{:.2}", g.zappi_drain_kp))
+        .with_factor("solar_export_W", format!("{solar_export:.0}"))
+        .with_factor("setpoint_prev_W", format!("{prev:.0}"))
+        .with_factor("setpoint_new_W (pre-clamp)", format!("{new_setpoint:.0}"));
     } else if hour == 23 && minute >= 55 {
         // "qendercore protection window" — avoid feeding Soltaro during the
         // 23:59–00:00 grid quirk; start 5 min early for export rampdown.
@@ -1014,6 +1085,11 @@ mod tests {
                 inverter_safe_discharge_enable: false,
                 full_charge_defer_to_next_sunday: false,
                 full_charge_snap_back_max_weekday: 3,
+                // PR-ZD-3: safe defaults matching knob safe_defaults().
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_target_w: 0,
             },
             power_consumption: 1500.0,
             battery_soc: 80.0,
@@ -1026,6 +1102,16 @@ mod tests {
             // term override with a negative value (export).
             evcharger_ac_power: 0.0,
             capacity: 100.0,
+            // PR-ZD-3: battery DC power. Sign: positive = charging,
+            // negative = discharging. 0.0 in the base fixture (battery flat).
+            battery_dc_power: 0.0,
+            // PR-ZD-3: grid-side loads (W). 0.0 = no metered load.
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            // PR-ZD-3: previously-commanded setpoint (W). Default to
+            // idle (10 W) so the relax branch stays near zero in tests
+            // that don't exercise the Zappi soft loop.
+            setpoint_target_prev: 10,
         }
     }
 
@@ -1148,38 +1234,406 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Zappi branches
+    // PR-ZD-3: Zappi compensated-drain soft loop
     // ------------------------------------------------------------------
 
+    // Test 15: battery=-1500, HP=1000, cooker=500 →
+    // compensated_drain = max(0, 1500-1000-500) = 0; relax branch fires.
     #[test]
-    fn zappi_active_before_8am_uses_soltaro_export() {
+    fn compensated_drain_zero_when_loads_explain_battery_flow() {
+        // Battery discharging 1500 W; HP+cooker explain it entirely.
         let input = SetpointInput {
             globals: SetpointInputGlobals {
                 zappi_active: true,
+                // threshold=1000; drain=0 < 1000 → relax branch
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
                 ..base_input().globals
             },
-            soltaro_power: 600.0,
-            power_consumption: 1200.0,
+            battery_dc_power: -1500.0,
+            heat_pump_power: 1000.0,
+            cooker_power: 500.0,
+            setpoint_target_prev: -3000,
+            // solar_export = mppt0+mppt1+soltaro = 4000
+            mppt_power_0: 2000.0,
+            mppt_power_1: 1500.0,
+            soltaro_power: 500.0,
             ..base_input()
         };
-        let c = clock_at(2026, 1, 15, 5, 30);
+        let c = clock_at(2026, 1, 15, 14, 30);
         let out = evaluate_setpoint(&input, &c, &hw());
-        // soltaro_export = max(10 + 600 - 1200, 0) = 0
-        // setpoint = 10 - 0 = 10 → after rounding/≥0 rule → 10
-        assert_eq!(out.setpoint_target, 10);
+        // Relax: prev=-3000 > target=-4000 → step DOWN:
+        //   (prev - step).max(target) = (-3000-100).max(-4000) = -3100
+        // prepare_setpoint: max(-5000, floor(-3100)) = -3100; /50=-62; *50=-3100
+        assert_eq!(out.setpoint_target, -3100);
+        assert!(out.decision.summary.contains("relaxing"));
     }
 
+    // Test 16: battery=+2000 (charging) → compensated_drain = max(0,-2000)=0; relax.
+    #[test]
+    fn compensated_drain_clamped_zero_when_battery_charging() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: 2000.0, // charging
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -3000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 1500.0,
+            soltaro_power: 500.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // compensated_drain = max(0, -2000 - 0 - 0) = 0 < 1000 → relax
+        assert!(out.decision.summary.contains("relaxing"));
+        // D13: verify the clamp to zero specifically — if clamp is removed the
+        // factor would be negative (reflecting the charging value).
+        let drain_factor = out.decision.factors.iter()
+            .find(|f| f.name == "compensated_drain_W")
+            .expect("compensated_drain_W factor must be present");
+        assert_eq!(drain_factor.value, "0", "compensated_drain_W must be clamped to 0 when battery is charging");
+    }
+
+    // Test 17: battery=-2500, HP=0, cooker=0, threshold=1000, kp=1.0, prev=-3000
+    // → drain=2500, excess=1500, new = -3000+1500 = -1500.
+    #[test]
+    fn tightens_setpoint_when_drain_exceeds_threshold() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -2500.0, // discharging 2500 W
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -3000,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // new_setpoint = -3000 + 1.0 * (2500 - 1000) = -1500
+        // prepare_setpoint: max(-5000, floor(-1500)) = -1500; /50 = -30; *50 = -1500
+        assert_eq!(out.setpoint_target, -1500);
+        assert!(out.decision.summary.contains("tightening"));
+    }
+
+    // D03 new test: kp ≠ 1.0 — verifies the multiplication scales correctly.
+    #[test]
+    fn tighten_scales_with_kp() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 0.3, // ≠ 1.0 — exercises the multiplication
+                ..base_input().globals
+            },
+            battery_dc_power: -3000.0, // drain = 3000
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -5000,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // new = -5000 + 0.3 * (3000 - 1000) = -5000 + 600 = -4400
+        // prepare_setpoint: floor(-4400) = -4400; /50 = -88; *50 = -4400
+        assert_eq!(out.setpoint_target, -4400);
+        assert!(out.decision.summary.contains("tightening"));
+    }
+
+    // Test 18: battery=-500, threshold=1000, prev=-3000, solar=2000, relax_step=100
+    // → target = -2000. prev(-3000) < target(-2000) → step UP:
+    //   (prev + step).min(target) = (-3000+100).min(-2000) = -2900.
+    // The new bidirectional formula walks one step per tick, not jumping
+    // to the target in one go (the old buggy formula used .max which
+    // clamped to -2000 immediately from below).
+    #[test]
+    fn relaxes_setpoint_toward_minus_solar_export_when_drain_below_threshold() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -500.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -3000,
+            // solar_export = 2000, so target = -2000
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // prev=-3000 < target=-2000 → step UP: (-3000+100).min(-2000) = -2900
+        assert_eq!(out.setpoint_target, -2900);
+        assert!(out.decision.summary.contains("relaxing"));
+    }
+
+    // D01 new test: prev=-100 (above target=-2000), drain < threshold → relax DOWN.
+    // Verifies the bidirectional relax works from a setpoint that is above the target
+    // (e.g. after boot or after a tighten cycle produced a less-negative value).
+    #[test]
+    fn relaxes_setpoint_from_above_target_toward_minus_solar_export() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            // drain = max(0, -0 - 0 - 0) = 0 < 1000 → relax branch
+            battery_dc_power: 0.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -100,
+            // solar_export = 2000, so target = -2000
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // prev=-100 > target=-2000 → step DOWN: (-100-100).max(-2000) = -200
+        assert_eq!(out.setpoint_target, -200);
+        assert!(out.decision.summary.contains("relaxing"));
+    }
+
+    // Test 19: stale HP treated as 0.0 by caller (verify arithmetic; no safety fallback).
+    #[test]
+    fn stale_heat_pump_treated_as_zero() {
+        // HP stale → caller passes 0.0. Battery discharging 2000 W;
+        // no other loads. drain = max(0, 2000-0-0) = 2000 > threshold → tighten.
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -2000.0,
+            heat_pump_power: 0.0, // stale HP → 0
+            cooker_power: 0.0,
+            setpoint_target_prev: -4000,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // new = -4000 + 1.0*(2000-1000) = -3000
+        assert_eq!(out.setpoint_target, -3000);
+        assert!(out.decision.summary.contains("tightening"));
+    }
+
+    // Test 20: stale cooker treated as 0.0 (symmetric to test 19).
+    #[test]
+    fn stale_cooker_treated_as_zero() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -2000.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0, // stale cooker → 0
+            setpoint_target_prev: -4000,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // new = -4000 + 1.0*(2000-1000) = -3000
+        assert_eq!(out.setpoint_target, -3000);
+        assert!(out.decision.summary.contains("tightening"));
+    }
+
+    // D09 new test: 03:00, Zappi active, battery draining hard → tighten fires.
+    // Confirms the unified loop handles early-morning battery drain that the
+    // deleted (2..8) Soltaro-only branch could not address.
+    #[test]
+    fn early_morning_zappi_tightens_when_battery_draining() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -3000.0, // 3 kW drain
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            soltaro_power: 0.0, // no Soltaro export (deleted branch's trigger)
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            setpoint_target_prev: -2000,
+            ..base_input()
+        };
+        // 03:00 — formerly inside the (2..8) time-of-day carve-out
+        let c = clock_at(2026, 1, 15, 3, 0);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // drain=3000 > threshold=1000 → tighten.
+        // new = -2000 + 1.0*(3000-1000) = 0; prepare_setpoint promotes to 10.
+        assert_eq!(out.setpoint_target, 10);
+        assert!(out.decision.summary.contains("tightening"));
+    }
+
+    // Test 21: clock at 03:00 (inside old (2..8) carve-out), Zappi active,
+    // soltaro=2000, battery=-100, HP=0, cooker=0 → drain=100 < 1000 → relax.
+    // Confirms the deleted early-morning (2..8) branch is no longer needed.
+    #[test]
+    fn early_morning_zappi_handled_by_unified_loop() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -100.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            soltaro_power: 2000.0,
+            // solar_export = 2000 (soltaro only; mppts produce 0 at 03:00)
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            setpoint_target_prev: -4000,
+            ..base_input()
+        };
+        // 03:00 — previously the (2..8) carve-out fired here
+        let c = clock_at(2026, 1, 15, 3, 0);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // drain = max(0, 100) = 100 < 1000 → relax toward target=-solar_export=-2000
+        // prev=-4000 < target=-2000 → step UP: (-4000+100).min(-2000) = -3900
+        assert_eq!(out.setpoint_target, -3900);
+        assert!(out.decision.summary.contains("relaxing"));
+    }
+
+    // Test 22: assert all 11 decision factors are populated.
+    #[test]
+    fn zappi_active_decision_factors_present() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -2000.0,
+            heat_pump_power: 500.0,
+            cooker_power: 300.0,
+            setpoint_target_prev: -3000,
+            mppt_power_0: 1500.0,
+            mppt_power_1: 500.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        let factors = &out.decision.factors;
+        // Verify all 11 required factors are present.
+        let factor_keys: Vec<&str> = factors.iter().map(|f| f.name.as_str()).collect();
+        assert!(factor_keys.contains(&"zappi_active"), "missing zappi_active");
+        assert!(factor_keys.contains(&"allow_battery_to_car"), "missing allow_battery_to_car");
+        assert!(factor_keys.contains(&"battery_dc_power_W"), "missing battery_dc_power_W");
+        assert!(factor_keys.contains(&"heat_pump_W"), "missing heat_pump_W");
+        assert!(factor_keys.contains(&"cooker_W"), "missing cooker_W");
+        assert!(factor_keys.contains(&"compensated_drain_W"), "missing compensated_drain_W");
+        assert!(factor_keys.contains(&"threshold_W"), "missing threshold_W");
+        assert!(factor_keys.contains(&"kp"), "missing kp");
+        assert!(factor_keys.contains(&"solar_export_W"), "missing solar_export_W");
+        assert!(factor_keys.contains(&"setpoint_prev_W"), "missing setpoint_prev_W");
+        assert!(factor_keys.contains(&"setpoint_new_W (pre-clamp)"), "missing setpoint_new_W (pre-clamp)");
+    }
+
+    // D08 new test: verify load-bearing factor VALUES are correct (not just names).
+    #[test]
+    fn zappi_active_decision_factor_values_correct() {
+        // battery=-2500, HP=300, cooker=200, threshold=1000, kp=1.0
+        // compensated_drain = max(0, 2500-300-200) = 2000 > 1000 → tighten
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -2500.0,
+            heat_pump_power: 300.0,
+            cooker_power: 200.0,
+            setpoint_target_prev: -3000,
+            // solar_export = mppt0+mppt1 = 2000
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        let factors = &out.decision.factors;
+        let get = |name: &str| {
+            factors
+                .iter()
+                .find(|f| f.name == name)
+                .map_or("(missing)", |f| f.value.as_str())
+        };
+        // compensated_drain = max(0, 2500-300-200) = 2000
+        assert_eq!(get("compensated_drain_W"), "2000");
+        assert_eq!(get("threshold_W"), "1000");
+        assert_eq!(get("kp"), "1.00");
+        assert_eq!(get("solar_export_W"), "2000");
+        // setpoint_new = -3000 + 1.0*(2000-1000) = -2000
+        assert_eq!(get("setpoint_new_W (pre-clamp)"), "-2000");
+    }
+
+    // Test 23: allow_battery_to_car=true → Zappi branch skipped; evening branch runs.
     // ------------------------------------------------------------------
     // allow_battery_to_car toggle — SPEC §5.9
     // ------------------------------------------------------------------
 
     #[test]
-    fn allow_battery_to_car_bypasses_zappi_night_branch() {
+    fn zappi_branch_bypassed_when_allow_battery_to_car_true() {
         // Evening time, zappi active, allow_battery_to_car=true — the
         // Zappi-specific branch is bypassed and the evening discharge
         // controller runs. We don't assert a specific setpoint value,
-        // just that it's NOT the `10 - soltaro_export` or `-solar_export`
-        // form the zappi branch would produce.
+        // just that it's NOT the zappi branch (which would not set
+        // hours_remaining).
         let input = SetpointInput {
             globals: SetpointInputGlobals {
                 zappi_active: true,
@@ -1200,53 +1654,42 @@ mod tests {
         assert!(out.debug.hours_remaining > 0.0);
     }
 
+    // Test 24: force_disable_export=true short-circuits zappi branch → idle 10 W.
     #[test]
-    fn allow_battery_to_car_false_keeps_zappi_clamp() {
-        // Same inputs, knob off — verify we still take the Zappi branch
-        // and produce `-solar_export`.
-        let input = SetpointInput {
-            globals: SetpointInputGlobals {
-                zappi_active: true,
-                allow_battery_to_car: false,
-                ..base_input().globals
-            },
-            mppt_power_0: 2000.0,
-            mppt_power_1: 1500.0,
-            soltaro_power: 500.0,
-            ..base_input()
-        };
-        let c = clock_at(2026, 1, 15, 20, 30); // evening
-        let out = evaluate_setpoint(&input, &c, &hw());
-        let expected_solar_export = (3500.0_f64.max(0.0) + 500.0_f64.max(0.0)).floor();
-        assert_eq!(out.setpoint_target, -(expected_solar_export as i32));
-        // hours_remaining stays at its -1 sentinel — evening branch did NOT run.
-        assert!((out.debug.hours_remaining + 1.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn force_disable_export_overrides_allow_battery_to_car() {
+    fn force_disable_export_takes_priority_over_zappi_branch() {
         // Kill switch still wins.
         let input = SetpointInput {
             globals: SetpointInputGlobals {
                 force_disable_export: true,
                 zappi_active: true,
-                allow_battery_to_car: true,
+                allow_battery_to_car: false,
                 ..base_input().globals
             },
+            battery_dc_power: -2000.0,
             ..base_input()
         };
-        let c = clock_at(2026, 1, 15, 20, 30);
+        let c = clock_at(2026, 1, 15, 14, 30);
         let out = evaluate_setpoint(&input, &c, &hw());
         assert_eq!(out.setpoint_target, 10);
     }
 
+    // Test 26: bookkeeping fields not disturbed by unified Zappi branch.
+    // hours_remaining stays at sentinel (-1) since the Zappi branch fires.
     #[test]
-    fn zappi_active_daytime_uses_solar_export() {
+    fn bookkeeping_unchanged_for_unified_zappi_branch() {
         let input = SetpointInput {
             globals: SetpointInputGlobals {
                 zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
                 ..base_input().globals
             },
+            battery_dc_power: -500.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -3000,
             mppt_power_0: 2000.0,
             mppt_power_1: 1500.0,
             soltaro_power: 500.0,
@@ -1254,12 +1697,50 @@ mod tests {
         };
         let c = clock_at(2026, 1, 15, 14, 30);
         let out = evaluate_setpoint(&input, &c, &hw());
-        let expected_solar_export = (3500.0_f64.max(0.0) + 500.0_f64.max(0.0)).floor(); // 4000
-        // raw target = -4000; no clamp (max_discharge = -5000 - 4020 - 4000 capped at -5000)
-        // Actually max_discharge = max(-5000, -(4020+4000)) = max(-5000, -8020) = -5000.
-        // setpoint after prepare = max(-5000, floor(-4000)) = -4000; round to 50 = -4000.
-        let expected = -(expected_solar_export as i32);
-        assert_eq!(out.setpoint_target, expected);
+        // The Zappi branch doesn't touch hours_remaining, exportable_capacity,
+        // to_be_consumed, or pv_multiplier — they remain at their sentinel -1.
+        assert!((out.debug.hours_remaining + 1.0).abs() < f64::EPSILON,
+            "hours_remaining should be sentinel -1, got {}", out.debug.hours_remaining);
+        assert!((out.debug.exportable_capacity + 1.0).abs() < f64::EPSILON,
+            "exportable_capacity should be sentinel -1, got {}", out.debug.exportable_capacity);
+        assert!((out.debug.to_be_consumed + 1.0).abs() < f64::EPSILON,
+            "to_be_consumed should be sentinel -1, got {}", out.debug.to_be_consumed);
+        assert!((out.debug.pv_multiplier + 1.0).abs() < f64::EPSILON,
+            "pv_multiplier should be sentinel -1, got {}", out.debug.pv_multiplier);
+    }
+
+    // D07 new test: bookkeeping unchanged when the tighten branch fires.
+    #[test]
+    fn bookkeeping_unchanged_in_tighten_branch() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                ..base_input().globals
+            },
+            battery_dc_power: -3000.0, // drain=3000 > threshold → tighten
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -5000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 1500.0,
+            soltaro_power: 500.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // Tighten fires; bookkeeping sentinels must remain at -1.
+        assert!((out.debug.hours_remaining + 1.0).abs() < f64::EPSILON,
+            "hours_remaining should be sentinel -1, got {}", out.debug.hours_remaining);
+        assert!((out.debug.exportable_capacity + 1.0).abs() < f64::EPSILON,
+            "exportable_capacity should be sentinel -1, got {}", out.debug.exportable_capacity);
+        assert!((out.debug.to_be_consumed + 1.0).abs() < f64::EPSILON,
+            "to_be_consumed should be sentinel -1, got {}", out.debug.to_be_consumed);
+        assert!((out.debug.pv_multiplier + 1.0).abs() < f64::EPSILON,
+            "pv_multiplier should be sentinel -1, got {}", out.debug.pv_multiplier);
     }
 
     // ------------------------------------------------------------------
@@ -2321,6 +2802,7 @@ mod tests {
             soltaro_power: 0.0,
             evcharger_ac_power: 0.0,
             power_consumption: 600.0, // = baseline
+            ..base_input()
         };
 
         // 18:00 — evening branch with At2300, hours_remaining ≈ 4 h.
