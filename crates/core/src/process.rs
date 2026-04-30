@@ -54,10 +54,10 @@ use crate::types::{
     ActuatedId, BookkeepingKey, BookkeepingValue, Command, DbusTarget,
     DbusValue, Decision, Effect, Event, ForecastProvider, KnobId, KnobValue, LogLevel,
     MyenergiAction, PinnedStatus, PinnedValue, PublishPayload, ScheduleField, SensorId,
-    SensorReading, TimerId, TimerStatus, TypedReading,
+    SensorReading, TimerId, TimerStatus, TypedReading, ZappiDrainBranch,
 };
 use crate::world::TimerEntry;
-use crate::world::{ForecastSnapshot, World};
+use crate::world::{ForecastSnapshot, World, ZappiDrainSnapshot};
 
 /// PR-gamma-hold-redesign: the γ-rule + per-knob hold window are gone.
 /// Conflicts on the four weather_soc-driven knobs are resolved
@@ -1163,6 +1163,33 @@ pub(crate) fn compensated_drain_w(world: &World) -> f64 {
     compute_compensated_drain(battery, hp, cooker)
 }
 
+/// Classify which branch of the compensated-drain Zappi-active controller
+/// fired this tick. Mirrors the `if/else if` ladder in
+/// `evaluate_setpoint`'s Zappi branch. Pure observability — never feeds
+/// back into the controller.
+///
+/// LOCKSTEP: must stay in sync with `evaluate_setpoint`'s branch ladder.
+/// If a new branch lands in the controller, this function MUST be
+/// updated in the same commit.
+pub(crate) fn classify_zappi_drain_branch(world: &World) -> ZappiDrainBranch {
+    if world.knobs.force_disable_export {
+        return ZappiDrainBranch::Bypass;
+    }
+    if !world.derived.zappi_active {
+        return ZappiDrainBranch::Disabled;
+    }
+    if world.knobs.allow_battery_to_car {
+        return ZappiDrainBranch::Bypass;
+    }
+    let drain = compensated_drain_w(world);
+    let threshold = f64::from(world.knobs.zappi_battery_drain_threshold_w);
+    if drain > threshold {
+        ZappiDrainBranch::Tighten
+    } else {
+        ZappiDrainBranch::Relax
+    }
+}
+
 /// PR-auto-extended-charge: at the daily 04:30 boundary, when
 /// `charge_car_extended_mode = Auto`, decide whether to enable extended
 /// charge for the upcoming NightExtended (05:00–08:00) window. The
@@ -1337,6 +1364,27 @@ pub(crate) fn run_setpoint(
             (out.setpoint_target, false, 0.0)
         };
 
+    // PR-ZDO-1: Compensated-drain observability capture. Pure read of
+    // what the controller just decided; no feedback into any branch.
+    // LOCKSTEP: classify_zappi_drain_branch must mirror evaluate_setpoint's
+    // Zappi-branch ladder.
+    {
+        let drain_w = compensated_drain_w(world);
+        let branch = classify_zappi_drain_branch(world);
+        let snap = ZappiDrainSnapshot {
+            compensated_drain_w: drain_w,
+            branch,
+            hard_clamp_engaged,
+            hard_clamp_excess_w: hard_clamp_excess,
+            threshold_w: i32::try_from(world.knobs.zappi_battery_drain_threshold_w)
+                .unwrap_or(i32::MAX),
+            hard_clamp_w: i32::try_from(world.knobs.zappi_battery_drain_hard_clamp_w)
+                .unwrap_or(i32::MAX),
+            captured_at_ms: clock.wall_clock_epoch_ms(),
+        };
+        world.zappi_drain_state.push(snap);
+    }
+
     // SPEC §5.11: grid-side hard cap — two-sided clamp.
     // PR-hardware-config: split the former single SAFE_MAX_GRID_LIMIT_W
     // = 10_000 into two per-direction ceilings sourced from
@@ -1467,6 +1515,22 @@ fn apply_setpoint_safety(
         topology.controller_params,
         effects,
     );
+
+    // PR-ZDO-1: Honest observability when the controller couldn't run.
+    // branch = Disabled tells the chart "no signal here", instead of
+    // freezing at the previous value.
+    let snap = ZappiDrainSnapshot {
+        compensated_drain_w: 0.0,
+        branch: ZappiDrainBranch::Disabled,
+        hard_clamp_engaged: false,
+        hard_clamp_excess_w: 0.0,
+        threshold_w: i32::try_from(world.knobs.zappi_battery_drain_threshold_w)
+            .unwrap_or(i32::MAX),
+        hard_clamp_w: i32::try_from(world.knobs.zappi_battery_drain_hard_clamp_w)
+            .unwrap_or(i32::MAX),
+        captured_at_ms: clock.wall_clock_epoch_ms(),
+    };
+    world.zappi_drain_state.push(snap);
 }
 
 /// Build a comma-separated list of the required setpoint sensors that
@@ -5349,6 +5413,347 @@ mod tests {
         assert!(
             hard_clamp_engaged_factor(&world).is_none(),
             "hard_clamp_engaged must not appear in decision factors when zappi_active=false"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZDO-1: Compensated-drain observability capture tests
+    // ------------------------------------------------------------------
+
+    /// PR-ZDO-1.T1: Fast + !allow + battery=-2500 + HP=0 + cooker=0 +
+    /// threshold=1000. Run setpoint. Assert captured `compensated_drain_w == 2500.0`.
+    #[test]
+    fn zappi_drain_capture_records_compensated_w_matching_controller() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // battery_drain_w=2500 → battery_dc_power=-2500.
+        // compensated_drain = max(0, 2500 - 0 - 0) = 2500.
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2500.0);
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let snap = world
+            .zappi_drain_state
+            .latest
+            .expect("snapshot captured after run_setpoint");
+        assert_eq!(
+            snap.compensated_drain_w, 2500.0,
+            "compensated_drain_w must match battery_dc_power magnitude"
+        );
+    }
+
+    /// PR-ZDO-1.T2: Push 130 synthetic snapshots via `push()`; assert
+    /// `samples.len() == 120` and the oldest 10 are evicted. Each push
+    /// is spaced `SAMPLE_INTERVAL_MS + 1` apart so the time gate passes
+    /// for every snapshot.
+    #[test]
+    fn zappi_drain_capture_ring_buffer_evicts_at_120() {
+        use crate::world::{ZappiDrainSnapshot, ZappiDrainState};
+        let mut state = crate::world::ZappiDrainState::default();
+        let base_ms: i64 = 1_777_503_600_000;
+
+        for i in 0_i32..130 {
+            state.push(ZappiDrainSnapshot {
+                compensated_drain_w: 0.0,
+                branch: ZappiDrainBranch::Relax,
+                hard_clamp_engaged: false,
+                hard_clamp_excess_w: 0.0,
+                threshold_w: 1000,
+                hard_clamp_w: 200,
+                captured_at_ms: base_ms + i64::from(i) * (ZappiDrainState::SAMPLE_INTERVAL_MS + 1),
+            });
+        }
+
+        assert_eq!(
+            state.samples.len(),
+            120,
+            "ring buffer must cap at RING_CAPACITY=120"
+        );
+        // Samples 0..=9 were evicted; oldest remaining is sample 10.
+        let expected_oldest = base_ms + 10 * (ZappiDrainState::SAMPLE_INTERVAL_MS + 1);
+        assert_eq!(
+            state.samples.front().unwrap().captured_at_ms,
+            expected_oldest,
+            "oldest retained sample must be index 10 (samples 0..=9 evicted)"
+        );
+    }
+
+    /// PR-ZDO-1.T2b: Time-gate: pushes closer than `SAMPLE_INTERVAL_MS` apart
+    /// must update `latest` but not grow `samples`.
+    #[test]
+    fn zappi_drain_capture_buffer_time_gated_to_15s_intervals() {
+        use crate::world::{ZappiDrainSnapshot, ZappiDrainState};
+        let mut state = crate::world::ZappiDrainState::default();
+        let base_ms: i64 = 1_777_503_600_000;
+
+        let snap_at = |ms: i64, drain: f64| ZappiDrainSnapshot {
+            compensated_drain_w: drain,
+            branch: ZappiDrainBranch::Relax,
+            hard_clamp_engaged: false,
+            hard_clamp_excess_w: 0.0,
+            threshold_w: 1000,
+            hard_clamp_w: 200,
+            captured_at_ms: ms,
+        };
+
+        // First push always appends; latest reflects the pushed drain.
+        state.push(snap_at(base_ms, 100.0));
+        assert_eq!(state.samples.len(), 1);
+        assert!((state.latest.unwrap().compensated_drain_w - 100.0).abs() < f64::EPSILON);
+        // Same-ms push: latest updates to 200, samples does not grow.
+        state.push(snap_at(base_ms, 200.0));
+        assert_eq!(state.samples.len(), 1);
+        assert!((state.latest.unwrap().compensated_drain_w - 200.0).abs() < f64::EPSILON);
+        // 14_999 ms later: still gated; latest updates to 300.
+        state.push(snap_at(base_ms + 14_999, 300.0));
+        assert_eq!(state.samples.len(), 1);
+        assert!((state.latest.unwrap().compensated_drain_w - 300.0).abs() < f64::EPSILON);
+        // Exactly 15_000 ms after the last sample: appends; latest updates to 400.
+        state.push(snap_at(base_ms + ZappiDrainState::SAMPLE_INTERVAL_MS, 400.0));
+        assert_eq!(state.samples.len(), 2);
+        assert!((state.latest.unwrap().compensated_drain_w - 400.0).abs() < f64::EPSILON);
+    }
+
+    /// PR-ZDO-1.T3: Table-driven branch classification — 5 sub-scenarios
+    /// confirming the classifier mirrors evaluate_setpoint's branch ladder.
+    #[test]
+    fn branch_classification_matches_evaluate_setpoint_branch_ladder() {
+        struct Case {
+            label: &'static str,
+            force_disable_export: bool,
+            zappi_active: bool,
+            allow_battery_to_car: bool,
+            battery_drain_w: f64, // positive = discharging
+            threshold_w: u32,
+            expected_branch: ZappiDrainBranch,
+        }
+        let cases = [
+            Case {
+                label: "Tighten: drain>threshold, zappi_active=true, !allow",
+                force_disable_export: false,
+                zappi_active: true,
+                allow_battery_to_car: false,
+                battery_drain_w: 2500.0,
+                threshold_w: 1000,
+                expected_branch: ZappiDrainBranch::Tighten,
+            },
+            Case {
+                label: "Relax: drain<=threshold, zappi_active=true, !allow",
+                force_disable_export: false,
+                zappi_active: true,
+                allow_battery_to_car: false,
+                battery_drain_w: 500.0,
+                threshold_w: 1000,
+                expected_branch: ZappiDrainBranch::Relax,
+            },
+            Case {
+                label: "Bypass-via-allow: allow_battery_to_car=true",
+                force_disable_export: false,
+                zappi_active: true,
+                allow_battery_to_car: true,
+                battery_drain_w: 2500.0,
+                threshold_w: 1000,
+                expected_branch: ZappiDrainBranch::Bypass,
+            },
+            Case {
+                label: "Bypass-via-force: force_disable_export=true",
+                force_disable_export: true,
+                zappi_active: true,
+                allow_battery_to_car: false,
+                battery_drain_w: 2500.0,
+                threshold_w: 1000,
+                expected_branch: ZappiDrainBranch::Bypass,
+            },
+            Case {
+                label: "Disabled: zappi_active=false",
+                force_disable_export: false,
+                zappi_active: false,
+                allow_battery_to_car: false,
+                battery_drain_w: 2500.0,
+                threshold_w: 1000,
+                expected_branch: ZappiDrainBranch::Disabled,
+            },
+        ];
+
+        for case in &cases {
+            let c = clock_at(12, 0);
+            let mut world = World::fresh_boot(c.monotonic);
+            seed_hard_clamp_scenario(&mut world, c.monotonic, case.battery_drain_w);
+            world.knobs.zappi_battery_drain_threshold_w = case.threshold_w;
+            world.knobs.force_disable_export = case.force_disable_export;
+            world.knobs.allow_battery_to_car = case.allow_battery_to_car;
+            // ZappiActiveCore runs each tick and writes derived.zappi_active;
+            // override explicitly after the tick to test the classifier.
+            // We run the tick first to populate the snapshot, then read it.
+            if !case.zappi_active {
+                // Override typed sensor to produce zappi_active=false.
+                world.typed_sensors.zappi_state.on_reading(
+                    ZappiState {
+                        zappi_mode: ZappiMode::Fast,
+                        zappi_plug_state: ZappiPlugState::EvDisconnected,
+                        zappi_status: ZappiStatus::Paused,
+                        zappi_last_change_signature: c.monotonic,
+                        session_kwh: 0.0,
+                    },
+                    c.monotonic,
+                );
+            }
+            world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+            let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+            let snap = world
+                .zappi_drain_state
+                .latest
+                .unwrap_or_else(|| panic!("snapshot missing for case: {}", case.label));
+            assert_eq!(
+                snap.branch,
+                case.expected_branch,
+                "case '{}': expected {:?}, got {:?}",
+                case.label,
+                case.expected_branch,
+                snap.branch
+            );
+        }
+    }
+
+    /// PR-ZDO-1.T4: Observer mode (`writes_enabled=false`) does NOT
+    /// short-circuit capture. Snapshot still records Tighten + drain=2500.
+    #[test]
+    fn zappi_drain_capture_honest_under_observer_mode() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2500.0);
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        // Observer mode.
+        world.knobs.writes_enabled = false;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let snap = world
+            .zappi_drain_state
+            .latest
+            .expect("snapshot captured even in observer mode");
+        assert_eq!(
+            snap.branch,
+            ZappiDrainBranch::Tighten,
+            "observer mode must not suppress capture; expected Tighten"
+        );
+        assert_eq!(
+            snap.compensated_drain_w, 2500.0,
+            "observer mode: compensated_drain_w must equal 2500.0"
+        );
+    }
+
+    /// PR-ZDO-1.T5: Fast + !allow + drain=500 + hard_clamp=200 + threshold=100.
+    /// drain(500) > hard_clamp(200) → hard_clamp_engaged=true, excess=300.
+    /// drain(500) > threshold(100) → branch=Tighten.
+    #[test]
+    fn zappi_drain_capture_lockstep_with_hard_clamp_engagement() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 500.0);
+        // Override threshold and hard_clamp so drain(500) > threshold(100)
+        // and drain(500) > hard_clamp(200) both hold.
+        world.knobs.zappi_battery_drain_threshold_w = 100;
+        world.knobs.zappi_battery_drain_hard_clamp_w = 200;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        let snap = world
+            .zappi_drain_state
+            .latest
+            .expect("snapshot must be captured");
+        assert!(
+            snap.hard_clamp_engaged,
+            "hard_clamp_engaged must be true when drain(500) > hard_clamp(200)"
+        );
+        assert!(
+            (snap.hard_clamp_excess_w - 300.0).abs() < 1e-6,
+            "hard_clamp_excess_w must be 300.0 (500-200), got {}",
+            snap.hard_clamp_excess_w
+        );
+        assert_eq!(
+            snap.branch,
+            ZappiDrainBranch::Tighten,
+            "drain(500) > threshold(100) → Tighten"
+        );
+    }
+
+    /// PR-ZDO-1.T6: Mutating `zappi_drain_state` after the first tick must
+    /// NOT affect the setpoint computed on the second tick. The ring buffer
+    /// is read-only from the controller's perspective.
+    #[test]
+    fn zappi_drain_capture_does_not_feed_back_into_setpoint() {
+        use crate::world::ZappiDrainSnapshot;
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2500.0);
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let setpoint_1 = world.grid_setpoint.target.value.expect("setpoint after tick 1");
+
+        // Poison the observability state with garbage values.
+        world.zappi_drain_state.latest = None;
+        world.zappi_drain_state.push(ZappiDrainSnapshot {
+            compensated_drain_w: 99_999.0,
+            branch: ZappiDrainBranch::Relax,
+            hard_clamp_engaged: false,
+            hard_clamp_excess_w: 0.0,
+            threshold_w: 0,
+            hard_clamp_w: 0,
+            captured_at_ms: 0,
+        });
+
+        // Run again with identical inputs.
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let setpoint_2 = world.grid_setpoint.target.value.expect("setpoint after tick 2");
+
+        assert_eq!(
+            setpoint_1, setpoint_2,
+            "zappi_drain_state mutation must not affect setpoint (no feedback invariant)"
+        );
+    }
+
+    /// PR-ZDO-1.T7: Push 50 samples (spaced `SAMPLE_INTERVAL_MS + 1` apart),
+    /// then call `World::fresh_boot`; the new world must have
+    /// `samples.len() == 0` and `latest == None`.
+    #[test]
+    fn zappi_drain_capture_buffer_resets_on_fresh_boot() {
+        use crate::world::{ZappiDrainSnapshot, ZappiDrainState};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let base_ms: i64 = 1_777_503_600_000;
+
+        for i in 0..50_i64 {
+            world.zappi_drain_state.push(ZappiDrainSnapshot {
+                compensated_drain_w: i as f64,
+                branch: ZappiDrainBranch::Relax,
+                hard_clamp_engaged: false,
+                hard_clamp_excess_w: 0.0,
+                threshold_w: 1000,
+                hard_clamp_w: 200,
+                captured_at_ms: base_ms + i * (ZappiDrainState::SAMPLE_INTERVAL_MS + 1),
+            });
+        }
+        assert_eq!(world.zappi_drain_state.samples.len(), 50);
+
+        let new_world = World::fresh_boot(c.monotonic);
+
+        assert_eq!(
+            new_world.zappi_drain_state.samples.len(),
+            0,
+            "fresh_boot must reset ring buffer to empty"
+        );
+        assert!(
+            new_world.zappi_drain_state.latest.is_none(),
+            "fresh_boot must reset latest to None"
         );
     }
 }

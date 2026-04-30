@@ -662,6 +662,10 @@ pub fn evaluate_setpoint(
     // new knob (SPEC §5.9) can bypass the PV-only export clamp and let
     // the regular time-of-day controller run (which may discharge battery
     // through the grid into the EV).
+    //
+    // LOCKSTEP: `classify_zappi_drain_branch` in `crates/core/src/process.rs`
+    // mirrors this branch ladder for observability. If a new branch is added
+    // here, the classifier MUST be updated in the same commit.
     let mut decision: Decision;
     if g.force_disable_export {
         setpoint_target = idle_setpoint_w;

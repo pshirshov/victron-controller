@@ -39,6 +39,10 @@ impl Clock for RealClock {
         let tz = self.tz.current();
         chrono::Utc::now().with_timezone(&tz).naive_local()
     }
+
+    fn wall_clock_epoch_ms(&self) -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
 }
 
 #[cfg(test)]

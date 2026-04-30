@@ -334,6 +334,12 @@ mod d02_boundary_consistency {
             self.naive_calls.set(self.naive_calls.get() + 1);
             cur
         }
+        fn wall_clock_epoch_ms(&self) -> i64 {
+            use chrono::TimeZone;
+            chrono::Utc
+                .from_utc_datetime(&self.naive.get())
+                .timestamp_millis()
+        }
     }
 
     fn seed_required_sensors(world: &mut World, at: Instant) {

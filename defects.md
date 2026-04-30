@@ -1631,3 +1631,70 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/process.rs:1320–1338`
 **Description:** `hard_clamp_drain_w = compensated_drain_w(world)` runs unconditionally on every tick. The function reads three `Actual<f64>::value` fields and does three subtractions — negligible cost, no correctness issue.
 **Fix:** Closed deferred. The flat structure is more readable than a nested gate. Micro-optimisation; reconsider if the per-tick cost ever shows up in profiling.
+
+---
+
+## PR-ZDO-1 (M-ZAPPI-DRAIN-OBS capture pipeline)
+
+### [PR-ZDO-1-D01] Snapshot capture fires on every event, not every tick — buffer 30-min window collapses to seconds in production
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1367-1386` (capture in `run_setpoint`, invoked from `run_controllers` on every event)
+**Description:** Plan locks "120 samples × 15 s = 30 min". Capture point assumes one snapshot per tick. Reality: every D-Bus sensor reading flows through `process()` → `run_setpoint` → snapshot push. Production cadence is many sensor events per second; buffer fills in seconds. The chart's "30 min" label becomes a lie. The MQTT broadcast (PR-ZDO-2) also dedup-thrashes because the snapshot's `captured_at_ms` changes constantly even when value is stable.
+**Fix:** `ZappiDrainState::push` in `crates/core/src/world.rs` now adds `pub const SAMPLE_INTERVAL_MS: i64 = 15_000` and time-gates the `samples.push_back` half: only appends when `new.captured_at_ms - samples.back().captured_at_ms >= SAMPLE_INTERVAL_MS`. `latest` updates unconditionally on every call so HA broadcasts (PR-ZDO-2) and wire-format snapshots (PR-ZDO-3) stay lockstep with the controller. Test PR-ZDO-1.T2 updated (130 pushes spaced 15001 ms; oldest 10 evicted). New test `zappi_drain_capture_buffer_time_gated_to_15s_intervals` covers the gate boundary (`14_999` rejected, `15_000` accepted, `latest` always updates).
+
+### [PR-ZDO-1-D02] `wall_clock_epoch_ms` doc-comment claims "returns 0 on overflow" but impl never overflows
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/clock.rs:30-31`
+**Description:** Doc says "Returns 0 on overflow (impossible in practice before 2262 CE)." `chrono::DateTime::timestamp_millis()` returns `i64` directly with no overflow handling — there's no zero fallback in any of the three impls. The doc misleads.
+**Fix:** Removed the false "Returns 0 on overflow" sentence in `crates/core/src/clock.rs:30-32`; replaced with "Saturates per chrono's i64 timestamp range; well outside operational lifetime."
+
+### [PR-ZDO-1-D03] `ZappiDrainBranch::Disabled` doc-comment lists incomplete precondition
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/types.rs:809-810`
+**Description:** Variant doc says "world.derived.zappi_active=false". The classifier returns `Disabled` only when `force_disable_export=false && !zappi_active` — `force_disable_export=true` short-circuits to `Bypass` first regardless of `zappi_active`.
+**Fix:** Rewrote `ZappiDrainBranch::Disabled` doc-comment in `crates/core/src/types.rs:809-810` to call out the `force_disable_export=false` precondition and that `force_disable_export=true` short-circuits to `Bypass`.
+
+### [PR-ZDO-1-D04] No unit test for `Clock::wall_clock_epoch_ms` correctness
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/clock.rs` (no test in test module)
+**Description:** New trait method introduced. Plan's risk section calls out "Clock-skew on `captured_at_ms`". No test verifies `FixedClock::wall_clock_epoch_ms()` returns the millis at the configured `naive` interpreted as UTC. Future refactors that flip UTC↔local could silently drift the chart's x-axis.
+**Fix:** Added `fixed_clock_wall_clock_epoch_ms_matches_utc_naive` test in `crates/core/src/clock.rs:76-93` using `FixedClock::at`. Asserts `clock.wall_clock_epoch_ms() == chrono::Utc.with_ymd_and_hms(2026,4,30,12,0,0).timestamp_millis()`.
+
+### [PR-ZDO-1-D05] `apply_setpoint_safety` captures `compensated_drain_w = 0.0` without an "unknown" indicator
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:1519-1533`
+**Description:** When sensors are stale, real drain is unknown — but the snapshot records `0.0`, indistinguishable from "drain genuinely zero". Chart will plot a flat zero line during safety fallback. Branch tag `Disabled` is the only signal that the value is a stand-in. PR-ZDO-4's renderer must check `branch != Disabled` before plotting; no such contract documented.
+**Fix:** Added doc-comments on both `ZappiDrainSnapshot::compensated_drain_w` and `ZappiDrainSample::compensated_drain_w` in `crates/core/src/world.rs` calling out the contract: "Meaningful only when `branch != Disabled`. ... renderers (PR-ZDO-4) MUST skip / grey-out `Disabled` samples to avoid plotting a misleading zero line during safety fallbacks."
+
+### [PR-ZDO-1-D06] Snapshot/sample fields lack doc-comments (especially `captured_at_ms` non-monotonicity caveat)
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/world.rs:436-456` (`ZappiDrainSnapshot` and `ZappiDrainSample` fields)
+**Description:** Struct doc-comments exist; individual fields don't. `captured_at_ms` lacks the "wall-clock epoch ms; non-monotonic if GX clock jumps; renderer sorts at draw time" caveat from plan §4.1 risk list.
+**Fix:** Added per-field doc-comments on every field of `ZappiDrainSnapshot` and `ZappiDrainSample` in `crates/core/src/world.rs`. `captured_at_ms` comment calls out non-monotonicity and the renderer-sorts-at-draw-time contract; `threshold_w` / `hard_clamp_w` snapshotted-for-chart-consistency rationale documented.
+
+### [PR-ZDO-1-D07] T6 doesn't push multiple garbage snapshots between runs
+**Status:** resolved (deferred; nit)
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:5664-5680`
+**Description:** Plan probe was "push synthetic garbage snapshots between runs" (plural). T6 sets `latest = None` and pushes one garbage snapshot before the second `process()` call. A future feedback bug that read from `samples.front()` would be partially exercised.
+**Fix:** Closed deferred (nit). Single garbage snapshot + cleared `latest` adequately covers the "no controller branch reads from `world.zappi_drain_state`" invariant. Multi-sample stress test would be marginal extra coverage; defer to a future hardening PR if a feedback regression ever materialises.
+
+### [PR-ZDO-1-D08] T2b weakly asserts `latest` update on gated calls
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:5486-5517`
+**Description:** T2b uses `compensated_drain_w: 100.0` constant for every push, so `assert!(state.latest.is_some())` after a same-ms gated push only proves `latest` wasn't cleared; cannot distinguish "updated to identical value" from "left untouched". The implementation is correct (unconditional `self.latest = Some(snap)`) but the test doesn't exercise it.
+**Fix:** Updated `zappi_drain_capture_buffer_time_gated_to_15s_intervals` in `crates/core/src/process.rs`: `snap_at` closure now takes a `drain: f64` param; the four pushes use distinct values (100 / 200 / 300 / 400). After each gated and non-gated call, the test asserts `state.latest.unwrap().compensated_drain_w` matches the most recent push, locking in "latest updates on every call regardless of gate state".
+
+### [PR-ZDO-1-D09] Backwards GX clock jump freezes `samples` for the jump duration; behaviour undocumented
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/world.rs` `ZappiDrainState::push` doc-comment
+**Description:** The gate `snap.captured_at_ms - prev.captured_at_ms >= SAMPLE_INTERVAL_MS` rejects samples with `captured_at_ms < prev.captured_at_ms + 15_000`. After a backwards GX clock jump (e.g. ntpdate correcting an hour of drift), every subsequent push fails the gate until wall-clock advances past the previous sample's timestamp + 15_000 ms — up to the entire jump duration. During that window `samples` doesn't grow; chart appears frozen even though `latest` continues updating. Plan §4.1 risk list calls out clock skew but no behavioural contract documents what `push` does under it.
+**Fix:** Extended `ZappiDrainState::push` doc-comment in `crates/core/src/world.rs` with a `**Clock skew**` paragraph describing the backwards-jump gate behaviour: `samples` appends are blocked until wall-clock recovers past `prev.captured_at_ms + SAMPLE_INTERVAL_MS`; `latest` continues to update on every call so HA broadcasts and wire-format `latest` snapshots stay current.

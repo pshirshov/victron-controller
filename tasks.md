@@ -33,6 +33,13 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
   PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
   switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
+- [~] **M-ZAPPI-DRAIN-OBS** — Observability for the M-ZAPPI-DRAIN
+  compensated-drain loop: three new HA broadcast sensors
+  (`controller.zappi-drain.compensated-w` / `.tighten-active` /
+  `.hard-clamp-active`) plus an in-dashboard Detail-tab chart with
+  current-snapshot widgets and a 30-minute branch-coloured sparkline.
+  Read-only; no control-loop coupling. Plan in
+  `./docs/drafts/20260430-2000-m-zappi-drain-obs-plan.md`.
 - [x] **M-ZAPPI-DRAIN** — Replace the PV-only Zappi-active export
   clamp with a closed-loop controller using compensated battery drain
   (`max(0, -battery_dc_power - heat_pump - cooker)`) as the feedback
@@ -355,6 +362,80 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 
 ---
 
+## Milestone M-ZAPPI-DRAIN-OBS — PR breakdown
+
+Detail in `./docs/drafts/20260430-2000-m-zappi-drain-obs-plan.md`.
+Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
+
+- [x] **PR-ZDO-1 — Capture pipeline (Core)**. New `ZappiDrainState` /
+  `ZappiDrainSnapshot` / `ZappiDrainSample` / `ZappiDrainBranch` types
+  in `core::world` + `core::types`. Capture fold into `run_setpoint`
+  immediately after the hard-clamp block, before grid-cap. 120-sample
+  FIFO ring; reset on `fresh_boot`. Pure backend; no broadcast or
+  wire-format yet. ≥ 6 unit tests including: lockstep with controller
+  output, ring-buffer eviction, branch-classification correctness
+  across all 4 branches, observer-mode honesty,
+  no-feedback-into-control invariant, fresh_boot reset.
+- [ ] **PR-ZDO-2 — HA broadcast sensors (Option A)**. New
+  `ControllerObservableId` enum + `PublishPayload::ControllerNumeric`
+  / `ControllerBool`. Wire through `SensorBroadcastCore` (4th block
+  alongside Sensors / BkBool / BkNumeric). New
+  `controller/<name>/state` topic root in `serialize.rs`. Three new
+  HA discovery configs (1 `sensor`, 2 `binary_sensor`). Frontend
+  display-name + description registrations. ≥ 5 tests.
+- [ ] **PR-ZDO-3 — Wire format + dashboard data plumbing (Option C,
+  backend half)**. Extend `models/dashboard.baboon` with
+  `ZappiDrainBranch` enum, `ZappiDrainSample` /
+  `ZappiDrainSnapshotWire` / `ZappiDrainState` data blocks, and
+  `WorldSnapshot.zappi_drain_state` field. Additive within v0.3.0.
+  `scripts/regen-baboon.sh` + fix `convert.rs`. ≥ 2 tests.
+- [ ] **PR-ZDO-4 — Frontend rendering (Option C, frontend half)**.
+  New `<section id="zappi-drain-section">` above `#sensors` in
+  `crates/shell/static/index.html`. Three big-number widgets +
+  hand-rolled SVG sparkline (mirroring `web/src/chart.ts` idiom)
+  with branch-coloured segments and dashed reference lines for
+  `threshold_w` (orange) and `hard_clamp_w` (red). New
+  `renderZappiDrainSummary` + `renderZappiDrainChart` exports in
+  `render.ts` wired into `applySnapshot`. ≥ 3 tests in
+  `render.test.ts`.
+
+### Cross-cutting (M-ZAPPI-DRAIN-OBS)
+
+- **Read-only invariant (locked).** New observables consume what
+  `evaluate_setpoint` and `run_setpoint`'s hard-clamp block already
+  computed; no re-derivation, no feedback into any controller. Test
+  PR-ZDO-1.T6 locks "no controller reads from
+  `world.zappi_drain_state`."
+- **Lockstep capture (locked).** Capture inside `run_setpoint`
+  immediately after the hard-clamp block determines
+  `(hard_clamped_target, hard_clamp_engaged, hard_clamp_excess)`.
+  The same tick's controller output is recorded; cross-tick drift
+  is impossible.
+- **Branch classifier mirror (locked).** New
+  `classify_zappi_drain_branch` pure helper; mirrors the if/else if
+  ladder in `evaluate_setpoint`. `// LOCKSTEP:` comments on both
+  sites; PR-ZDO-1.T3 covers all 4 branches.
+- **Honesty under observer mode (locked).** `writes_enabled=false`
+  does NOT short-circuit capture. PR-ZDO-1.T4.
+- **Ring-buffer policy (locked).** N=120, FIFO, reset on
+  `fresh_boot`, no persistence.
+- **Branch enum (locked).** `Tighten` / `Relax` / `Bypass` /
+  `Disabled`.
+- **Sensor naming (locked).** `controller.zappi-drain.compensated-w`
+  / `.tighten-active` / `.hard-clamp-active` under
+  `controller/<name>/state` topic root.
+- **Wire-format additive (locked).** New `ZappiDrainState` block +
+  new `WorldSnapshot.zappi_drain_state` field within v0.3.0; no
+  migration stubs.
+- **Tighten-active during Bypass/Disabled (locked).** `false`
+  (boolean, not tri-state).
+- **Per-sample timestamp source (locked).** `clock.wall_clock_epoch_ms()`;
+  renderer sorts at draw time.
+- **Polyline interpolation (locked).** Linear (matches SoC chart
+  convention).
+
+---
+
 ## Cross-cutting architectural notes (locked)
 
 - [x] **ET112 grid current sensor is not trusted — derive `grid_current` from
@@ -396,6 +477,57 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 ---
 
 ## Completed
+
+- **PR-ZDO-1 — Capture pipeline (Core)** (M-ZAPPI-DRAIN-OBS, 2026-04-30)
+  — Backend-only observability foundation. New types in `core::types`
+  (`ZappiDrainBranch` enum: Tighten / Relax / Bypass / Disabled with
+  `name()` + `Display`) and `core::world` (`ZappiDrainSnapshot`,
+  `ZappiDrainSample`, `ZappiDrainState` with `RING_CAPACITY = 120` +
+  `SAMPLE_INTERVAL_MS = 15_000` + `push()`). New `pub
+  zappi_drain_state: ZappiDrainState` field on `World`; reset on
+  `fresh_boot`. Capture in `run_setpoint` immediately after the
+  hard-clamp block; also in `apply_setpoint_safety` (records
+  `branch = Disabled`). Lockstep helper `classify_zappi_drain_branch`
+  mirrors `evaluate_setpoint`'s if/else ladder; `// LOCKSTEP:`
+  comments on both sides. New `Clock::wall_clock_epoch_ms()` trait
+  method (impl on `RealClock`, `FixedClock`, test `AdvancingClock`).
+  Two adversarial review rounds; round 1 caught a **major** defect
+  (D01): `run_setpoint` runs on every event in production, not just
+  Tick — so the 120-sample 30-min buffer would have collapsed to
+  seconds. Fix: time-gate the `samples.push_back` half of `push` on
+  `SAMPLE_INTERVAL_MS = 15_000`. `latest` updates unconditionally
+  every call so HA broadcasts (PR-ZDO-2) and wire snapshots
+  (PR-ZDO-3) stay lockstep. Round 2 found 2 follow-ups (D08 weak
+  test assertion, D09 missing doc on backwards-clock-jump gate
+  behaviour); both resolved.
+  Verification: `cargo test --workspace` → 560 passed (349 core +
+  10 dashboard-model + 201 shell, +9 vs M-ZAPPI-DRAIN baseline 551);
+  clippy + tsc clean; armv7 cross-build green.
+  Defects (9 filed, all closed): D01 major (run_setpoint per-event
+  firing → time-gated push), D02-D06 minor (doc/test gaps), D07-D08
+  nit, D09 minor (backwards-clock-jump doc).
+  Notes / surprises:
+  - The major D01 defect demonstrates why round-1 review was
+    essential: the plan-faithful capture-on-every-tick interpretation
+    matched the plan's wording but not the production runtime, where
+    `run_setpoint` is a per-event callback. Time-gating inside `push`
+    keeps `latest` at controller cadence (broadcast-friendly) while
+    bounding `samples` to the chart's 30-min window.
+  - `apply_setpoint_safety` records `branch = Disabled,
+    compensated_drain_w = 0.0`. The `0.0` is a placeholder; renderers
+    MUST grey-out / skip `Disabled` samples. Locked by D05's
+    field doc-comment.
+  - `wall_clock_epoch_ms` is a new `Clock` trait method;
+    deterministic-clock test fixture had to be updated to implement it.
+  Constraints future work must respect:
+  - `// LOCKSTEP:` comment cross-references between
+    `classify_zappi_drain_branch` (process.rs) and `evaluate_setpoint`'s
+    if/else ladder (setpoint.rs) MUST be maintained. PR-ZDO-1.T3 is
+    the regression guard.
+  - No controller branch reads from `world.zappi_drain_state`.
+    PR-ZDO-1.T6 locks this.
+  - `SAMPLE_INTERVAL_MS = 15_000` matches the default tick cadence.
+    If the tick rate ever changes, this constant must move with it.
 
 - **PR-ZD-5 — Dashboard MPPT-mode display** (M-ZAPPI-DRAIN, 2026-04-29)
   — Frontend-only. Renders the two `Mppt*OperationMode` sensors as

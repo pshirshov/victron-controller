@@ -8,7 +8,8 @@ use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
 use crate::types::{
-    BookkeepingId, Decision, ForecastProvider, PinnedRegisterEntity, SensorId, TimerId, TimerStatus,
+    BookkeepingId, Decision, ForecastProvider, PinnedRegisterEntity, SensorId, TimerId,
+    TimerStatus, ZappiDrainBranch,
 };
 
 /// All scalar sensor readings.
@@ -431,6 +432,132 @@ pub struct Timers {
     pub entries: std::collections::HashMap<TimerId, TimerEntry>,
 }
 
+/// Snapshot of the compensated-drain controller's per-tick state.
+/// Captured at the end of `run_setpoint` (after both soft-loop and
+/// hard-clamp branches have decided their outputs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZappiDrainSnapshot {
+    /// Compensated battery drain (W) the controller saw this tick.
+    /// Meaningful only when `branch != Disabled`. When `branch == Disabled`,
+    /// this carries `0.0` as a placeholder — renderers (PR-ZDO-4) MUST
+    /// skip / grey-out `Disabled` samples to avoid plotting a misleading
+    /// zero line during safety fallbacks.
+    pub compensated_drain_w: f64,
+    /// Which branch of the compensated-drain controller fired this tick.
+    pub branch: ZappiDrainBranch,
+    /// Whether the Fast-mode hard clamp engaged this tick.
+    pub hard_clamp_engaged: bool,
+    /// W by which the hard clamp raised the proposed setpoint when
+    /// `hard_clamp_engaged == true`; 0.0 otherwise.
+    pub hard_clamp_excess_w: f64,
+    /// Soft-loop threshold (W) at the time of capture. Snapshotted so
+    /// the chart's reference line stays consistent if the operator
+    /// retunes mid-window.
+    pub threshold_w: i32,
+    /// Fast-mode hard-clamp threshold (W) at the time of capture.
+    pub hard_clamp_w: i32,
+    /// Wall-clock UTC epoch ms at capture time. Non-monotonic if the
+    /// GX clock jumps backwards; renderers (PR-ZDO-4) sort by this
+    /// field at draw time before plotting.
+    pub captured_at_ms: i64,
+}
+
+/// Compact form for the ring buffer — only the fields the chart needs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZappiDrainSample {
+    /// Wall-clock UTC epoch ms at capture time. Non-monotonic if the
+    /// GX clock jumps backwards; renderers (PR-ZDO-4) sort by this
+    /// field at draw time before plotting.
+    pub captured_at_ms: i64,
+    /// Compensated battery drain (W) the controller saw this tick.
+    /// Meaningful only when `branch != Disabled`. When `branch == Disabled`,
+    /// this carries `0.0` as a placeholder — renderers (PR-ZDO-4) MUST
+    /// skip / grey-out `Disabled` samples to avoid plotting a misleading
+    /// zero line during safety fallbacks.
+    pub compensated_drain_w: f64,
+    /// Which branch of the compensated-drain controller fired this tick.
+    pub branch: ZappiDrainBranch,
+    /// Whether the Fast-mode hard clamp engaged this tick.
+    pub hard_clamp_engaged: bool,
+}
+
+impl From<&ZappiDrainSnapshot> for ZappiDrainSample {
+    fn from(s: &ZappiDrainSnapshot) -> Self {
+        Self {
+            captured_at_ms: s.captured_at_ms,
+            compensated_drain_w: s.compensated_drain_w,
+            branch: s.branch,
+            hard_clamp_engaged: s.hard_clamp_engaged,
+        }
+    }
+}
+
+/// Observability surface for the M-ZAPPI-DRAIN compensated-drain loop.
+/// Carries the latest snapshot plus a 30-minute rolling history (120
+/// samples at the default 15 s tick cadence). Reset on `fresh_boot`;
+/// no persistence. **Read-only from the controller's perspective** —
+/// no controller branch reads from this struct (locked invariant,
+/// PR-ZDO-1.T6).
+#[derive(Debug, Clone)]
+pub struct ZappiDrainState {
+    pub latest: Option<ZappiDrainSnapshot>,
+    pub samples: std::collections::VecDeque<ZappiDrainSample>,
+}
+
+impl ZappiDrainState {
+    /// Maximum number of samples retained in the ring buffer.
+    /// 120 × 15 s = 30 min.
+    pub const RING_CAPACITY: usize = 120;
+
+    /// Minimum time between consecutive ring-buffer samples (ms). Enforced
+    /// by `push` so the buffer covers a fixed 30-minute window regardless
+    /// of how often `run_setpoint` is invoked. `latest` is updated on
+    /// every `push` call so HA broadcasts and wire-format snapshots stay
+    /// lockstep with the controller.
+    pub const SAMPLE_INTERVAL_MS: i64 = 15_000;
+
+    /// Update `latest` unconditionally; append to `samples` only when
+    /// the new snapshot is at least `SAMPLE_INTERVAL_MS` newer than the
+    /// most recent sample. FIFO-evicts on overflow at `RING_CAPACITY`.
+    ///
+    /// **Clock skew**: a backwards wall-clock jump (e.g. ntpdate correction)
+    /// makes the gate `snap.captured_at_ms - prev.captured_at_ms >=
+    /// SAMPLE_INTERVAL_MS` reject all subsequent pushes until wall-clock
+    /// recovers past `prev.captured_at_ms + SAMPLE_INTERVAL_MS`. During that
+    /// window `samples` does not grow and the dashboard chart appears frozen,
+    /// but `latest` continues to update every call so HA broadcasts and
+    /// wire-format `latest` snapshots stay current.
+    pub fn push(&mut self, snap: ZappiDrainSnapshot) {
+        self.latest = Some(snap);
+        let should_append = match self.samples.back() {
+            None => true,
+            Some(prev) => snap.captured_at_ms - prev.captured_at_ms >= Self::SAMPLE_INTERVAL_MS,
+        };
+        if !should_append {
+            return;
+        }
+        if self.samples.len() == Self::RING_CAPACITY {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(ZappiDrainSample::from(&snap));
+    }
+}
+
+impl Default for ZappiDrainState {
+    fn default() -> Self {
+        Self {
+            latest: None,
+            samples: std::collections::VecDeque::with_capacity(Self::RING_CAPACITY),
+        }
+    }
+}
+
+impl PartialEq for ZappiDrainState {
+    fn eq(&self, other: &Self) -> bool {
+        self.latest == other.latest && self.samples == other.samples
+    }
+}
+
 /// Top-level world state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
@@ -482,6 +609,11 @@ pub struct World {
     /// PR-timers-section: per-timer observability snapshot. Updated by
     /// the shell via `Event::TimerState`; pure observability.
     pub timers: Timers,
+
+    /// PR-ZDO-1: compensated-drain observability ring buffer. Written by
+    /// `run_setpoint` and `apply_setpoint_safety` every tick; never read
+    /// by any controller branch (locked invariant, PR-ZDO-1.T6).
+    pub zappi_drain_state: ZappiDrainState,
 
     /// PR-tz-from-victron: the Victron-supplied display timezone (IANA
     /// name, e.g. `"Europe/London"`). Updated by `apply_event` on every
@@ -544,6 +676,7 @@ impl World {
             cores_state: CoresState::default(),
             published_cache: PublishedCache::default(),
             timers: Timers::default(),
+            zappi_drain_state: ZappiDrainState::default(),
             // PR-tz-from-victron: default UTC until the first D-Bus
             // `/Settings/System/TimeZone` reading lands.
             timezone: "Etc/UTC".to_string(),

@@ -790,6 +790,46 @@ pub enum KnobId {
     ZappiBatteryDrainHardClampW,
 }
 
+/// Which branch of the compensated-drain controller fired this tick.
+/// Mirrors the `if/else if` ladder in `evaluate_setpoint`'s Zappi
+/// branch. Used purely for observability — never feeds back into the
+/// controller. LOCKSTEP: `classify_zappi_drain_branch` in
+/// `crates/core/src/process.rs` must stay in sync with
+/// `evaluate_setpoint`'s branch ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZappiDrainBranch {
+    /// Drain > threshold; controller raising setpoint to halt drain.
+    Tighten,
+    /// Drain ≤ threshold; controller stepping toward `-solar_export`.
+    Relax,
+    /// `allow_battery_to_car=true` OR `force_disable_export=true` —
+    /// the Zappi-active branch was bypassed entirely.
+    Bypass,
+    /// `world.derived.zappi_active=false` — Zappi not pulling, drain
+    /// branch inactive. Reached only when `force_disable_export=false`;
+    /// `force_disable_export=true` short-circuits to `Bypass` regardless
+    /// of `zappi_active`.
+    Disabled,
+}
+
+impl ZappiDrainBranch {
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Tighten => "Tighten",
+            Self::Relax => "Relax",
+            Self::Bypass => "Bypass",
+            Self::Disabled => "Disabled",
+        }
+    }
+}
+
+impl std::fmt::Display for ZappiDrainBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// Forecast providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForecastProvider {
