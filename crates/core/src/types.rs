@@ -788,6 +788,10 @@ pub enum KnobId {
     ZappiBatteryDrainTargetW,
     /// Fast-mode hard-clamp threshold (W). Default 200.
     ZappiBatteryDrainHardClampW,
+    /// PR-ZDP-1: MPPT probe offset (W). When at least one MPPT reports
+    /// voltage/current limited (mode 1), the relax target is pushed
+    /// deeper than observed `-solar_export` by this amount. Default 500.
+    ZappiBatteryDrainMpptProbeW,
 }
 
 /// Which branch of the compensated-drain controller fired this tick.

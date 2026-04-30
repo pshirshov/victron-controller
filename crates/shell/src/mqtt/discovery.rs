@@ -581,6 +581,8 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::ZappiBatteryDrainKp, 0.05, None),
         number_knob(KnobId::ZappiBatteryDrainTargetW, 25.0, Some("W")),
         number_knob(KnobId::ZappiBatteryDrainHardClampW, 25.0, Some("W")),
+        // PR-ZDP-1: MPPT curtailment probe offset.
+        number_knob(KnobId::ZappiBatteryDrainMpptProbeW, 50.0, Some("W")),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),
@@ -626,7 +628,7 @@ mod tests {
     use super::*;
     use victron_controller_core::types::KnobId;
 
-    /// PR-ZD-2: all five compensated-drain knobs must appear in
+    /// PR-ZD-2 / PR-ZDP-1: all compensated-drain knobs must appear in
     /// `knob_schemas()` with a non-empty component type. The test
     /// mirrors what `publish_knobs` does at runtime — if a KnobId is
     /// missing here HA would never see a discovery payload for it.
@@ -639,6 +641,8 @@ mod tests {
             KnobId::ZappiBatteryDrainKp,
             KnobId::ZappiBatteryDrainTargetW,
             KnobId::ZappiBatteryDrainHardClampW,
+            // PR-ZDP-1.
+            KnobId::ZappiBatteryDrainMpptProbeW,
         ];
         for id in ids_to_check {
             let found = schemas.iter().any(|(schema_id, component, _)| {

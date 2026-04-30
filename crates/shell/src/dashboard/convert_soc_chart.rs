@@ -283,6 +283,12 @@ fn build_setpoint_template_for_projection(
             zappi_drain_relax_step_w: k.zappi_battery_drain_relax_step_w,
             zappi_drain_kp: k.zappi_battery_drain_kp,
             zappi_drain_target_w: k.zappi_battery_drain_target_w,
+            // PR-ZDP-1: probe fields. The SoC-chart projection runs
+            // `compute_battery_balance`, not the full setpoint loop, so
+            // these are unused here. Pass live values for consistency.
+            zappi_drain_mppt_probe_w: k.zappi_battery_drain_mppt_probe_w,
+            mppt_curtailed: false, // projection: probe not applied to chart
+            grid_export_limit_w: k.grid_export_limit_w,
         },
         // Use the live consumption when known so the
         // `preserve_battery` evening-discharge clamp uses a realistic

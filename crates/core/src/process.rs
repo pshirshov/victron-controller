@@ -790,6 +790,10 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::ZappiBatteryDrainTargetW, KnobValue::Float(v)) => {
             replace(&mut k.zappi_battery_drain_target_w, v.round() as i32) != v.round() as i32
         }
+        // PR-ZDP-1.
+        (KnobId::ZappiBatteryDrainMpptProbeW, KnobValue::Uint32(v)) => {
+            replace(&mut k.zappi_battery_drain_mppt_probe_w, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -948,6 +952,11 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::ZappiBatteryDrainHardClampW,
             value: V::Uint32(k.zappi_battery_drain_hard_clamp_w),
+        },
+        // PR-ZDP-1.
+        PublishPayload::Knob {
+            id: I::ZappiBatteryDrainMpptProbeW,
+            value: V::Uint32(k.zappi_battery_drain_mppt_probe_w),
         },
     ]
 }
@@ -1163,6 +1172,34 @@ pub(crate) fn compensated_drain_w(world: &World) -> f64 {
     compute_compensated_drain(battery, hp, cooker)
 }
 
+/// Returns `true` when at least one MPPT charger reports
+/// `MppOperationMode == 1` (voltage/current limited — curtailed by
+/// the inverter). This is the only "potential production available"
+/// signal we have; when curtailed, the MPPT could produce more if
+/// there were demand. Used by `evaluate_setpoint`'s relax branch to
+/// gate a probe step deeper than observed `-solar_export`.
+///
+/// Stale or unknown sensor → `false` (conservative — don't probe
+/// blindly when we can't confirm the curtailment state).
+///
+/// LOCKSTEP NOTE: this is one of two control-loop reads of the
+/// MPPT op-mode sensors (the other is the dashboard surface in
+/// `convert.rs`). The M-ZAPPI-DRAIN cross-cutting note "MPPT op-mode
+/// is observability only" was reversed by M-ZAPPI-DRAIN-PROBE.
+#[must_use]
+pub(crate) fn mppt_curtailed(world: &World) -> bool {
+    /// Victron `/MppOperationMode` enum: 0=Off, 1=V/I-limited, 2=MPPT-tracking.
+    const VOLTAGE_OR_CURRENT_LIMITED: f64 = 1.0;
+
+    fn is_curtailed(slot: &crate::tass::Actual<f64>) -> bool {
+        slot.is_usable()
+            && matches!(slot.value, Some(v) if (v - VOLTAGE_OR_CURRENT_LIMITED).abs() < 1e-6)
+    }
+
+    is_curtailed(&world.sensors.mppt_0_operation_mode)
+        || is_curtailed(&world.sensors.mppt_1_operation_mode)
+}
+
 /// Classify which branch of the compensated-drain Zappi-active controller
 /// fired this tick. Mirrors the `if/else if` ladder in
 /// `evaluate_setpoint`'s Zappi branch. Pure observability — never feeds
@@ -1298,6 +1335,10 @@ pub(crate) fn build_setpoint_input(world: &World, idle_setpoint_w: i32) -> Optio
             zappi_drain_relax_step_w: k.zappi_battery_drain_relax_step_w,
             zappi_drain_kp: k.zappi_battery_drain_kp,
             zappi_drain_target_w: k.zappi_battery_drain_target_w,
+            // PR-ZDP-1: MPPT probe fields.
+            zappi_drain_mppt_probe_w: k.zappi_battery_drain_mppt_probe_w,
+            mppt_curtailed: mppt_curtailed(world),
+            grid_export_limit_w: k.grid_export_limit_w,
         },
         power_consumption: world.sensors.power_consumption.value.unwrap(),
         battery_soc: world.sensors.battery_soc.value.unwrap(),
@@ -4869,6 +4910,100 @@ mod tests {
         let mut world = World::fresh_boot(c.monotonic);
         send_knob(&mut world, KnobId::ZappiBatteryDrainHardClampW, KnobValue::Uint32(500));
         assert_eq!(world.knobs.zappi_battery_drain_hard_clamp_w, 500);
+    }
+
+    #[test]
+    fn apply_knob_zappi_battery_drain_mppt_probe_w_routes_to_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::ZappiBatteryDrainMpptProbeW, KnobValue::Uint32(750));
+        assert_eq!(world.knobs.zappi_battery_drain_mppt_probe_w, 750);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZDP-1: mppt_curtailed helper tests
+    // ------------------------------------------------------------------
+
+    /// ZDP-H1: both mppt op-mode sensors Unknown → mppt_curtailed returns false
+    /// (conservative — don't probe when sensors are stale/unknown).
+    #[test]
+    fn mppt_curtailed_helper_handles_stale() {
+        let c = clock_at(12, 0);
+        let world = World::fresh_boot(c.monotonic);
+        // fresh_boot leaves sensors Unknown (no reading received).
+        assert!(world.sensors.mppt_0_operation_mode.value.is_none(), "precondition");
+        assert!(world.sensors.mppt_1_operation_mode.value.is_none(), "precondition");
+        assert!(!mppt_curtailed(&world), "stale sensors must not trigger probe");
+    }
+
+    /// ZDP-H2: table-driven — mode 1 on either channel → true; mode 2 or 0 on
+    /// both → false.
+    #[test]
+    fn mppt_curtailed_helper_returns_true_on_either_mode_1() {
+        let cases: &[(Option<f64>, Option<f64>, bool)] = &[
+            (Some(1.0), Some(2.0), true),   // mppt0 curtailed
+            (Some(2.0), Some(1.0), true),   // mppt1 curtailed
+            (Some(1.0), Some(1.0), true),   // both curtailed
+            (Some(2.0), Some(2.0), false),  // both tracking
+            (Some(0.0), Some(0.0), false),  // both off
+            (Some(2.0), None,      false),  // mppt1 stale
+            (None,      Some(2.0), false),  // mppt0 stale
+            (None,      None,      false),  // both stale
+        ];
+
+        for &(mode0, mode1, expected) in cases {
+            let c = clock_at(12, 0);
+            let mut world = World::fresh_boot(c.monotonic);
+            if let Some(v) = mode0 {
+                world.sensors.mppt_0_operation_mode.on_reading(v, c.monotonic);
+            }
+            if let Some(v) = mode1 {
+                world.sensors.mppt_1_operation_mode.on_reading(v, c.monotonic);
+            }
+            assert_eq!(
+                mppt_curtailed(&world), expected,
+                "mode0={mode0:?} mode1={mode1:?}: expected {expected}"
+            );
+        }
+    }
+
+    /// ZDP-H3: stale-with-cached-mode-1 — both channels received mode 1 then
+    /// went Stale (no further updates). The helper must return false because
+    /// Stale is not usable — `is_curtailed` gates on `is_usable()`.
+    ///
+    /// This is the production-realistic failure mode that D01 addresses:
+    /// a sensor that read mode 1 once, stopped reporting, and decayed to
+    /// Stale retains `value: Some(1.0)` with `freshness: Stale`. The
+    /// old implementation (checking `.value` directly) would have returned
+    /// true here.
+    #[test]
+    fn mppt_curtailed_helper_returns_false_on_stale_cached_mode_1() {
+        use std::time::Duration;
+        let c = clock_at(12, 0);
+        let t0 = c.monotonic;
+        let mut world = World::fresh_boot(t0);
+
+        // Both channels receive mode 1 → Fresh, value Some(1.0).
+        world.sensors.mppt_0_operation_mode.on_reading(1.0, t0);
+        world.sensors.mppt_1_operation_mode.on_reading(1.0, t0);
+        assert!(world.sensors.mppt_0_operation_mode.is_usable(), "precondition: fresh after reading");
+        assert_eq!(world.sensors.mppt_0_operation_mode.value, Some(1.0), "precondition: value is mode 1");
+
+        // Advance past the 30 s freshness threshold → both decay to Stale.
+        let stale_at = t0 + Duration::from_secs(60);
+        let threshold = crate::types::SensorId::Mppt0OperationMode.freshness_threshold();
+        world.sensors.mppt_0_operation_mode.tick(stale_at, threshold);
+        world.sensors.mppt_1_operation_mode.tick(stale_at, threshold);
+
+        // Verify: slots are Stale but still hold the cached mode-1 value.
+        assert!(!world.sensors.mppt_0_operation_mode.is_usable(), "must be Stale");
+        assert_eq!(world.sensors.mppt_0_operation_mode.value, Some(1.0), "value must be preserved");
+        assert!(!world.sensors.mppt_1_operation_mode.is_usable(), "must be Stale");
+        assert_eq!(world.sensors.mppt_1_operation_mode.value, Some(1.0), "value must be preserved");
+
+        // The helper must return false — stale sensors are not curtailed
+        // (conservative: don't fire probe without live evidence).
+        assert!(!mppt_curtailed(&world), "stale cached mode-1 must not trigger probe");
     }
 
     // ------------------------------------------------------------------

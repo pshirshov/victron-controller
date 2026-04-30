@@ -236,6 +236,11 @@ pub struct Knobs {
     /// this value, the controller raises the proposed setpoint by the
     /// excess as a belt-and-suspenders safety net.
     pub zappi_battery_drain_hard_clamp_w: u32,
+    /// PR-ZDP-1: MPPT probe offset (W). When at least one MPPT reports
+    /// voltage/current limited (mode 1 — curtailed by the inverter),
+    /// the relax target is pushed deeper than observed `-solar_export`
+    /// by this amount. Set to 0 to disable probing entirely.
+    pub zappi_battery_drain_mppt_probe_w: u32,
 }
 
 impl Knobs {
@@ -346,6 +351,10 @@ impl Knobs {
             zappi_battery_drain_kp: 1.0,
             zappi_battery_drain_target_w: 0,
             zappi_battery_drain_hard_clamp_w: 200,
+            // PR-ZDP-1: MPPT curtailment probe offset. Default 500 W —
+            // enough to push the inverter toward MPP without overshoot.
+            // Set to 0 to disable probing (reverts to PR-ZD-3 behaviour).
+            zappi_battery_drain_mppt_probe_w: 500,
         }
     }
 }
@@ -422,5 +431,7 @@ mod tests {
         assert!((k.zappi_battery_drain_kp - 1.0).abs() < f64::EPSILON, "kp");
         assert_eq!(k.zappi_battery_drain_target_w, 0, "target_w");
         assert_eq!(k.zappi_battery_drain_hard_clamp_w, 200, "hard_clamp_w");
+        // PR-ZDP-1: probe offset default.
+        assert_eq!(k.zappi_battery_drain_mppt_probe_w, 500, "mppt_probe_w");
     }
 }

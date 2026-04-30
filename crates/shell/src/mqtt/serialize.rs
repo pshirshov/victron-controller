@@ -371,6 +371,8 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::ZappiBatteryDrainKp => "zappi.battery-drain.kp",
         KnobId::ZappiBatteryDrainTargetW => "zappi.battery-drain.target-w",
         KnobId::ZappiBatteryDrainHardClampW => "zappi.battery-drain.hard-clamp-w",
+        // PR-ZDP-1.
+        KnobId::ZappiBatteryDrainMpptProbeW => "zappi.battery-drain.mppt-probe-w",
     }
 }
 
@@ -427,6 +429,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi.battery-drain.kp" => KnobId::ZappiBatteryDrainKp,
         "zappi.battery-drain.target-w" => KnobId::ZappiBatteryDrainTargetW,
         "zappi.battery-drain.hard-clamp-w" => KnobId::ZappiBatteryDrainHardClampW,
+        // PR-ZDP-1.
+        "zappi.battery-drain.mppt-probe-w" => KnobId::ZappiBatteryDrainMpptProbeW,
         _ => return None,
     })
 }
@@ -645,6 +649,8 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // target_w is signed; routes via Float. Range ±5000 W.
         KnobId::ZappiBatteryDrainTargetW => (-5000.0, 5000.0),
         KnobId::ZappiBatteryDrainHardClampW => (0.0, 10000.0),
+        // PR-ZDP-1: MPPT probe offset range.
+        KnobId::ZappiBatteryDrainMpptProbeW => (0.0, 5000.0),
 
         // Enums + bools don't use this table.
         KnobId::ForceDisableExport
@@ -772,7 +778,9 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         // PR-ZD-2: three u32 drain knobs.
         | KnobId::ZappiBatteryDrainThresholdW
         | KnobId::ZappiBatteryDrainRelaxStepW
-        | KnobId::ZappiBatteryDrainHardClampW => {
+        | KnobId::ZappiBatteryDrainHardClampW
+        // PR-ZDP-1.
+        | KnobId::ZappiBatteryDrainMpptProbeW => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {
@@ -1655,7 +1663,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // PR-ZD-2: name round-trip test for the five drain knobs
+    // PR-ZD-2 / PR-ZDP-1: name round-trip test for the drain knobs
     // ------------------------------------------------------------------
 
     #[test]
@@ -1666,6 +1674,8 @@ mod tests {
             KnobId::ZappiBatteryDrainKp,
             KnobId::ZappiBatteryDrainTargetW,
             KnobId::ZappiBatteryDrainHardClampW,
+            // PR-ZDP-1.
+            KnobId::ZappiBatteryDrainMpptProbeW,
         ];
         for id in ids {
             let name = knob_name(id);

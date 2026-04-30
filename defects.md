@@ -1810,3 +1810,35 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Severity:** nit
 **Description:** Reviewer verified ordering in index.ts is intact; new ZappiDrain renders fire before `prevSnapshot`/`lastSnapshot` reassignment. No defect.
 **Fix:** Closed note-only.
+
+---
+
+## PR-ZDP-1 (M-ZAPPI-DRAIN-PROBE MPPT-curtailment probe)
+
+### [PR-ZDP-1-D01] `mppt_curtailed` checks only `value`, not `freshness` — stale-cached mode 1 fires probe forever
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1190-1200` (`mppt_curtailed` helper)
+**Description:** Helper inspects `Actual::value` directly. In this codebase, `Actual::tick()` decays `Fresh → Stale` *without clearing* `value`. A sensor that read mode 1 once and then stops reporting retains `value: Some(1.0)` with `freshness: Stale` indefinitely. The doc-comment promises "Stale or unknown sensor → false (conservative — don't probe blindly when we can't confirm the curtailment state)" — implementation only honours the `value=None` half. With the user's reported "MPPT op-mode constantly flipping" + occasional D-Bus hiccups, this is a likely failure mode: probe fires forever, walks setpoint to `-grid_export_limit_w` and holds. The grid-cap clamp catches the absolute floor but controller intent is wrong for the duration.
+**Fix:** `mppt_curtailed` in `crates/core/src/process.rs` now takes `&Actual<f64>` references and gates on `slot.is_usable()` before matching the value: `slot.is_usable() && matches!(slot.value, Some(v) if (v - 1.0).abs() < 1e-6)`. `is_usable()` is `const fn` defined as `matches!(self.freshness, Freshness::Fresh) && self.value.is_some()` — returns false for Stale/Unknown/Deprecated, restoring the doc-comment's "Stale or unknown → false (conservative)" contract.
+
+### [PR-ZDP-1-D02] `mppt_curtailed_helper_handles_stale` test misses the realistic stale case
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:4925-4935` (test) and `mppt_curtailed_helper_returns_true_on_either_mode_1` table-driven test
+**Description:** Test only exercises `Actual::unknown` (value=None, freshness=Unknown). Does not construct `Actual` with `freshness=Stale, value=Some(1.0)` — the production-realistic stale case. Misleading test name implied stale coverage; only Unknown is covered. Allowed D-ZDP-1 to slip past.
+**Fix:** Added new test `mppt_curtailed_helper_returns_false_on_stale_cached_mode_1` in `crates/core/src/process.rs`. Constructs world with mode-1 readings on both MPPT channels (Fresh, value=Some(1.0)), advances by 60 s past the 30 s freshness threshold via `tick()`, asserts both slots are `!is_usable()` with `value` still `Some(1.0)`, then asserts `mppt_curtailed(&world) == false`. Locks the production-realistic stale-with-cached-value invariant that would have masked D01.
+
+### [PR-ZDP-1-D03] No multi-tick integration test for probe convergence trajectory
+**Status:** resolved (deferred; nit per plan)
+**Severity:** nit
+**Location:** Plan §16 listed test #8 as "(optional)"
+**Description:** Plan called out `probe_walks_setpoint_deeper_over_multiple_ticks` as optional. Single-tick test #1 covers first step; convergence narrative (MPPT ramps up, op-mode flips to 2, target settles) is asserted by no automated test.
+**Fix:** Closed deferred (nit). Single-tick + helper tests cover the load-bearing arithmetic. Multi-tick convergence is observable in the field via the dashboard chart.
+
+### [PR-ZDP-1-D04] Op-mode flap induces ±relax_step oscillation; no hysteresis
+**Status:** resolved (deferred; behavioural, bounded by deadband + soft-loop convergence)
+**Severity:** nit
+**Location:** `crates/core/src/controllers/setpoint.rs:723-735`
+**Description:** When MPPT op-mode flaps faster than the controller cadence, setpoint oscillates ±relax_step_w/tick. Each cycle exceeds the 25 W deadband → produces a D-Bus write per tick. Bounded; in the convergence-correct case (MPPT genuinely ramps up to meet demand), oscillation collapses as solar_export rises.
+**Fix:** Closed deferred. Bounded oscillation acceptable in the absence of evidence it harms convergence. EWMA / N-of-M majority filter is a future hardening if field deployment shows the flap dominates the convergence dynamics.

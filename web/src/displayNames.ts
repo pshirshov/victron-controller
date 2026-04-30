@@ -96,6 +96,8 @@ const DISPLAY_NAMES: Record<string, string> = {
   zappi_battery_drain_kp: "zappi.battery-drain.kp",
   zappi_battery_drain_target_w: "zappi.battery-drain.target-w",
   zappi_battery_drain_hard_clamp_w: "zappi.battery-drain.hard-clamp-w",
+  // PR-ZDP-1: MPPT curtailment probe.
+  zappi_battery_drain_mppt_probe_w: "zappi.battery-drain.mppt-probe-w",
 
   // --- Controller observables (PR-ZDO-2) ---
   controller_zappi_drain_compensated_w: "controller.zappi-drain.compensated-w",

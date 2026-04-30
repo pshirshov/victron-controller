@@ -215,6 +215,8 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "zappi.battery-drain.kp": { kind: "float", min: 0, max: 50, step: 0.05, default: 1.0, category: "config", group: "Zappi compensated drain" },
   "zappi.battery-drain.target-w": { kind: "float", min: -5000, max: 5000, step: 25, default: 0, category: "config", group: "Zappi compensated drain" },
   "zappi.battery-drain.hard-clamp-w": { kind: "int", min: 0, max: 10000, step: 25, default: 200, category: "config", group: "Zappi compensated drain" },
+  // PR-ZDP-1: MPPT curtailment probe offset.
+  "zappi.battery-drain.mppt-probe-w": { kind: "int", min: 0, max: 5000, step: 50, default: 500, category: "config", group: "Zappi compensated drain" },
 
   // --- Config: Zappi calibration ---
   "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5, category: "config", group: "Zappi calibration" },

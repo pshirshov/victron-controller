@@ -939,6 +939,8 @@ pub struct KnobsDefaultsConfig {
     pub zappi_battery_drain_kp: Option<f64>,
     pub zappi_battery_drain_target_w: Option<i32>,
     pub zappi_battery_drain_hard_clamp_w: Option<u32>,
+    // --- PR-ZDP-1: MPPT curtailment probe ---
+    pub zappi_battery_drain_mppt_probe_w: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -1015,6 +1017,8 @@ impl KnobsDefaultsConfig {
         set!(zappi_battery_drain_kp);
         set!(zappi_battery_drain_target_w);
         set!(zappi_battery_drain_hard_clamp_w);
+        // PR-ZDP-1: MPPT curtailment probe.
+        set!(zappi_battery_drain_mppt_probe_w);
     }
 }
 

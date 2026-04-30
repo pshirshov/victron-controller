@@ -55,8 +55,9 @@ export class Knobs implements BaboonGeneratedLatest {
     private readonly _zappi_battery_drain_kp: number;
     private readonly _zappi_battery_drain_target_w: number;
     private readonly _zappi_battery_drain_hard_clamp_w: number;
+    private readonly _zappi_battery_drain_mppt_probe_w: number;
 
-    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended_mode: ExtendedChargeMode, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean, baseline_winter_start_mm_dd: number, baseline_winter_end_mm_dd: number, baseline_wh_per_hour_winter: number, baseline_wh_per_hour_summer: number, keep_batteries_charged_during_full_charge: boolean, sunrise_sunset_offset_min: number, full_charge_defer_to_next_sunday: boolean, full_charge_snap_back_max_weekday: number, zappi_battery_drain_threshold_w: number, zappi_battery_drain_relax_step_w: number, zappi_battery_drain_kp: number, zappi_battery_drain_target_w: number, zappi_battery_drain_hard_clamp_w: number) {
+    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended_mode: ExtendedChargeMode, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean, baseline_winter_start_mm_dd: number, baseline_winter_end_mm_dd: number, baseline_wh_per_hour_winter: number, baseline_wh_per_hour_summer: number, keep_batteries_charged_during_full_charge: boolean, sunrise_sunset_offset_min: number, full_charge_defer_to_next_sunday: boolean, full_charge_snap_back_max_weekday: number, zappi_battery_drain_threshold_w: number, zappi_battery_drain_relax_step_w: number, zappi_battery_drain_kp: number, zappi_battery_drain_target_w: number, zappi_battery_drain_hard_clamp_w: number, zappi_battery_drain_mppt_probe_w: number) {
         this._force_disable_export = force_disable_export
         this._export_soc_threshold = export_soc_threshold
         this._discharge_soc_target = discharge_soc_target
@@ -104,6 +105,7 @@ export class Knobs implements BaboonGeneratedLatest {
         this._zappi_battery_drain_kp = zappi_battery_drain_kp
         this._zappi_battery_drain_target_w = zappi_battery_drain_target_w
         this._zappi_battery_drain_hard_clamp_w = zappi_battery_drain_hard_clamp_w
+        this._zappi_battery_drain_mppt_probe_w = zappi_battery_drain_mppt_probe_w
     }
 
     public get force_disable_export(): boolean {
@@ -247,6 +249,9 @@ export class Knobs implements BaboonGeneratedLatest {
     public get zappi_battery_drain_hard_clamp_w(): number {
         return this._zappi_battery_drain_hard_clamp_w;
     }
+    public get zappi_battery_drain_mppt_probe_w(): number {
+        return this._zappi_battery_drain_mppt_probe_w;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -296,11 +301,12 @@ export class Knobs implements BaboonGeneratedLatest {
             zappi_battery_drain_relax_step_w: this._zappi_battery_drain_relax_step_w,
             zappi_battery_drain_kp: this._zappi_battery_drain_kp,
             zappi_battery_drain_target_w: this._zappi_battery_drain_target_w,
-            zappi_battery_drain_hard_clamp_w: this._zappi_battery_drain_hard_clamp_w
+            zappi_battery_drain_hard_clamp_w: this._zappi_battery_drain_hard_clamp_w,
+            zappi_battery_drain_mppt_probe_w: this._zappi_battery_drain_mppt_probe_w
         };
     }
 
-    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended_mode?: ExtendedChargeMode; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean; baseline_winter_start_mm_dd?: number; baseline_winter_end_mm_dd?: number; baseline_wh_per_hour_winter?: number; baseline_wh_per_hour_summer?: number; keep_batteries_charged_during_full_charge?: boolean; sunrise_sunset_offset_min?: number; full_charge_defer_to_next_sunday?: boolean; full_charge_snap_back_max_weekday?: number; zappi_battery_drain_threshold_w?: number; zappi_battery_drain_relax_step_w?: number; zappi_battery_drain_kp?: number; zappi_battery_drain_target_w?: number; zappi_battery_drain_hard_clamp_w?: number}): Knobs {
+    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended_mode?: ExtendedChargeMode; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean; baseline_winter_start_mm_dd?: number; baseline_winter_end_mm_dd?: number; baseline_wh_per_hour_winter?: number; baseline_wh_per_hour_summer?: number; keep_batteries_charged_during_full_charge?: boolean; sunrise_sunset_offset_min?: number; full_charge_defer_to_next_sunday?: boolean; full_charge_snap_back_max_weekday?: number; zappi_battery_drain_threshold_w?: number; zappi_battery_drain_relax_step_w?: number; zappi_battery_drain_kp?: number; zappi_battery_drain_target_w?: number; zappi_battery_drain_hard_clamp_w?: number; zappi_battery_drain_mppt_probe_w?: number}): Knobs {
         return new Knobs(
             'force_disable_export' in overrides ? overrides.force_disable_export! : this._force_disable_export,
             'export_soc_threshold' in overrides ? overrides.export_soc_threshold! : this._export_soc_threshold,
@@ -348,11 +354,12 @@ export class Knobs implements BaboonGeneratedLatest {
             'zappi_battery_drain_relax_step_w' in overrides ? overrides.zappi_battery_drain_relax_step_w! : this._zappi_battery_drain_relax_step_w,
             'zappi_battery_drain_kp' in overrides ? overrides.zappi_battery_drain_kp! : this._zappi_battery_drain_kp,
             'zappi_battery_drain_target_w' in overrides ? overrides.zappi_battery_drain_target_w! : this._zappi_battery_drain_target_w,
-            'zappi_battery_drain_hard_clamp_w' in overrides ? overrides.zappi_battery_drain_hard_clamp_w! : this._zappi_battery_drain_hard_clamp_w
+            'zappi_battery_drain_hard_clamp_w' in overrides ? overrides.zappi_battery_drain_hard_clamp_w! : this._zappi_battery_drain_hard_clamp_w,
+            'zappi_battery_drain_mppt_probe_w' in overrides ? overrides.zappi_battery_drain_mppt_probe_w! : this._zappi_battery_drain_mppt_probe_w
         );
     }
 
-    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended_mode: ExtendedChargeMode; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean; baseline_winter_start_mm_dd: number; baseline_winter_end_mm_dd: number; baseline_wh_per_hour_winter: number; baseline_wh_per_hour_summer: number; keep_batteries_charged_during_full_charge: boolean; sunrise_sunset_offset_min: number; full_charge_defer_to_next_sunday: boolean; full_charge_snap_back_max_weekday: number; zappi_battery_drain_threshold_w: number; zappi_battery_drain_relax_step_w: number; zappi_battery_drain_kp: number; zappi_battery_drain_target_w: number; zappi_battery_drain_hard_clamp_w: number}): Knobs {
+    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended_mode: ExtendedChargeMode; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean; baseline_winter_start_mm_dd: number; baseline_winter_end_mm_dd: number; baseline_wh_per_hour_winter: number; baseline_wh_per_hour_summer: number; keep_batteries_charged_during_full_charge: boolean; sunrise_sunset_offset_min: number; full_charge_defer_to_next_sunday: boolean; full_charge_snap_back_max_weekday: number; zappi_battery_drain_threshold_w: number; zappi_battery_drain_relax_step_w: number; zappi_battery_drain_kp: number; zappi_battery_drain_target_w: number; zappi_battery_drain_hard_clamp_w: number; zappi_battery_drain_mppt_probe_w: number}): Knobs {
         return new Knobs(
             obj.force_disable_export,
             obj.export_soc_threshold,
@@ -400,7 +407,8 @@ export class Knobs implements BaboonGeneratedLatest {
             obj.zappi_battery_drain_relax_step_w,
             obj.zappi_battery_drain_kp,
             obj.zappi_battery_drain_target_w,
-            obj.zappi_battery_drain_hard_clamp_w
+            obj.zappi_battery_drain_hard_clamp_w,
+            obj.zappi_battery_drain_mppt_probe_w
         );
     }
 
@@ -481,6 +489,7 @@ export class Knobs_UEBACodec {
             BinTools.writeF64(buffer, value.zappi_battery_drain_kp);
             BinTools.writeI32(buffer, value.zappi_battery_drain_target_w);
             BinTools.writeI32(buffer, value.zappi_battery_drain_hard_clamp_w);
+            BinTools.writeI32(buffer, value.zappi_battery_drain_mppt_probe_w);
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -531,6 +540,7 @@ export class Knobs_UEBACodec {
             BinTools.writeF64(writer, value.zappi_battery_drain_kp);
             BinTools.writeI32(writer, value.zappi_battery_drain_target_w);
             BinTools.writeI32(writer, value.zappi_battery_drain_hard_clamp_w);
+            BinTools.writeI32(writer, value.zappi_battery_drain_mppt_probe_w);
         }
     }
     
@@ -594,6 +604,7 @@ export class Knobs_UEBACodec {
         const zappi_battery_drain_kp = BinTools.readF64(reader);
         const zappi_battery_drain_target_w = BinTools.readI32(reader);
         const zappi_battery_drain_hard_clamp_w = BinTools.readI32(reader);
+        const zappi_battery_drain_mppt_probe_w = BinTools.readI32(reader);
         return new Knobs(
             force_disable_export,
             export_soc_threshold,
@@ -642,6 +653,7 @@ export class Knobs_UEBACodec {
             zappi_battery_drain_kp,
             zappi_battery_drain_target_w,
             zappi_battery_drain_hard_clamp_w,
+            zappi_battery_drain_mppt_probe_w,
         );
     }
 

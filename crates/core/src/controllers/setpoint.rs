@@ -113,6 +113,15 @@ pub struct SetpointInputGlobals {
     /// future PI extension; currently inert — the loop uses
     /// `zappi_drain_threshold_w` as its reference. PR-ZD-3.
     pub zappi_drain_target_w: i32,
+    /// PR-ZDP-1: probe offset (W) added to the relax target when MPPT
+    /// is curtailed (mode 1). Set to 0 to disable probing.
+    pub zappi_drain_mppt_probe_w: u32,
+    /// PR-ZDP-1: `true` when at least one MPPT reports mode 1
+    /// (voltage/current limited — curtailed by the inverter).
+    pub mppt_curtailed: bool,
+    /// Absolute floor for the probed relax target. The probe cannot
+    /// push the target below `-grid_export_limit_w`.
+    pub grid_export_limit_w: u32,
 }
 
 /// Full output of the setpoint controller. The shell turns this into a
@@ -691,21 +700,33 @@ pub fn evaluate_setpoint(
         let prev = f64::from(input.setpoint_target_prev);
         let threshold = f64::from(g.zappi_drain_threshold_w);
 
-        let new_setpoint = if compensated_drain_w > threshold {
+        let tightening = compensated_drain_w > threshold;
+        let new_setpoint = if tightening {
             // Tighten — raise (less negative) by kp × excess drain.
             prev + g.zappi_drain_kp * (compensated_drain_w - threshold)
         } else {
-            // Relax — step toward -solar_export at relax_step_w per tick
+            // Relax — step toward the target at relax_step_w per tick
             // from any direction.
             //
-            // prev < target means prev < -solar_export, i.e. exporting
-            // more than full PV (battery draining into grid). Step UP
+            // PR-ZDP-1: when MPPT is curtailed (mode 1), probe deeper
+            // than observed solar_export to create demand. The MPPT
+            // ramps up to meet the demand; once it's at MPP (mode 2),
+            // op-mode flips, probe disengages, target settles at the
+            // new (higher) -solar_export. Bounded below by
+            // -grid_export_limit_w to stay within operator's ceiling.
+            //
+            // prev < target means exporting more than target. Step UP
             // (less negative), clamped at target from above.
             //
-            // prev > target means prev > -solar_export, i.e. exporting
-            // less than full PV or importing. Step DOWN (more negative),
-            // clamped at target from below.
-            let target = -solar_export;
+            // prev > target means exporting less than target. Step DOWN
+            // (more negative), clamped at target from below.
+            let probe_offset_w = if g.mppt_curtailed {
+                f64::from(g.zappi_drain_mppt_probe_w)
+            } else {
+                0.0
+            };
+            let absolute_floor = -f64::from(g.grid_export_limit_w);
+            let target = (-(solar_export + probe_offset_w)).max(absolute_floor);
             let step = f64::from(g.zappi_drain_relax_step_w);
             if prev < target {
                 (prev + step).min(target)
@@ -715,7 +736,8 @@ pub fn evaluate_setpoint(
         };
 
         setpoint_target = new_setpoint;
-        decision = Decision::new(if compensated_drain_w > threshold {
+
+        let common_decision = Decision::new(if tightening {
             "Zappi active — tightening setpoint to halt battery drain into EV"
         } else {
             "Zappi active — relaxing setpoint toward solar-only export"
@@ -731,6 +753,20 @@ pub fn evaluate_setpoint(
         .with_factor("solar_export_W", format!("{solar_export:.0}"))
         .with_factor("setpoint_prev_W", format!("{prev:.0}"))
         .with_factor("setpoint_new_W (pre-clamp)", format!("{new_setpoint:.0}"));
+
+        decision = if tightening {
+            common_decision
+        } else {
+            // PR-ZDP-1: relax-branch-only probe factors.
+            let probe_offset_w = if g.mppt_curtailed {
+                f64::from(g.zappi_drain_mppt_probe_w)
+            } else {
+                0.0
+            };
+            common_decision
+                .with_factor("mppt_curtailed", format!("{}", g.mppt_curtailed))
+                .with_factor("probe_offset_W", format!("{probe_offset_w:.0}"))
+        };
     } else if hour == 23 && minute >= 55 {
         // "qendercore protection window" — avoid feeding Soltaro during the
         // 23:59–00:00 grid quirk; start 5 min early for export rampdown.
@@ -1115,6 +1151,13 @@ mod tests {
                 zappi_drain_relax_step_w: 100,
                 zappi_drain_kp: 1.0,
                 zappi_drain_target_w: 0,
+                // PR-ZDP-1: probe off by default in fixtures so existing
+                // tests are unaffected (curtailed=false → probe_offset=0
+                // regardless of knob value; curtailed=true with knob=0
+                // → also 0). Tests that exercise the probe override these.
+                zappi_drain_mppt_probe_w: 0,
+                mppt_curtailed: false,
+                grid_export_limit_w: 5000,
             },
             power_consumption: 1500.0,
             battery_soc: 80.0,
@@ -2881,5 +2924,201 @@ mod tests {
             bal.net_battery_w,
             expected_net_w
         );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZDP-1: MPPT curtailment probe tests
+    // ------------------------------------------------------------------
+
+    // ZDP-T1: mppt_curtailed=true, probe_w=500, drain<threshold,
+    // solar_export=2000, prev=-2000.
+    // probe_offset=500, target=-(2000+500).max(-5000)=-2500.
+    // prev=-2000 > target=-2500 → step DOWN: (-2000-100).max(-2500) = -2100.
+    #[test]
+    fn probe_fires_when_either_mppt_curtailed() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_mppt_probe_w: 500,
+                mppt_curtailed: true,
+                grid_export_limit_w: 5000,
+                ..base_input().globals
+            },
+            battery_dc_power: -500.0, // drain < threshold
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -2000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // probe_offset=500, target=-2500
+        // prev(-2000) > target(-2500) → step DOWN: (-2000-100).max(-2500) = -2100
+        assert_eq!(out.setpoint_target, -2100);
+        assert!(out.decision.summary.contains("relaxing"));
+        // probe_offset factor must be present and non-zero
+        let factor = out.decision.factors.iter()
+            .find(|f| f.name == "probe_offset_W")
+            .expect("probe_offset_W factor must be present in relax branch");
+        assert_eq!(factor.value, "500", "probe_offset_W must equal probe_w when curtailed");
+    }
+
+    // ZDP-T2: mppt_curtailed=false → no probe, target=-solar_export=-2000.
+    // prev=-2000 == target → step DOWN clamped at target: (-2000-100).max(-2000) = -2000.
+    #[test]
+    fn probe_does_not_fire_when_both_mppts_tracking() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_mppt_probe_w: 500,
+                mppt_curtailed: false, // not curtailed → no probe
+                grid_export_limit_w: 5000,
+                ..base_input().globals
+            },
+            battery_dc_power: -500.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -2000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // No probe: target=-2000, prev=-2000 → at target, stays at -2000.
+        assert_eq!(out.setpoint_target, -2000);
+        // probe_offset factor must be zero
+        let factor = out.decision.factors.iter()
+            .find(|f| f.name == "probe_offset_W")
+            .expect("probe_offset_W factor must be present");
+        assert_eq!(factor.value, "0", "probe_offset_W must be 0 when not curtailed");
+    }
+
+    // ZDP-T3: probe clamped by grid_export_limit.
+    // solar_export=2000, probe=5000, grid_export_limit=4000
+    // target = -(2000+5000).max(-4000) = -4000.
+    // prev=-2000 > target=-4000 → step DOWN: (-2000-100).max(-4000) = -2100.
+    #[test]
+    fn probe_clamped_by_grid_export_limit() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_mppt_probe_w: 5000,
+                mppt_curtailed: true,
+                grid_export_limit_w: 4000, // cap at 4000 W export
+                ..base_input().globals
+            },
+            battery_dc_power: -500.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -2000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // target = max(-(2000+5000), -4000) = -4000
+        // prev=-2000 > -4000 → step DOWN: (-2000-100).max(-4000) = -2100
+        assert_eq!(out.setpoint_target, -2100);
+        // Verify it is NOT stepping toward -7000 (unclamped would be -7000)
+        // by checking the probe_offset factor equals 5000 but output is -2100.
+        let factor = out.decision.factors.iter()
+            .find(|f| f.name == "probe_offset_W")
+            .expect("probe_offset_W factor must be present");
+        assert_eq!(factor.value, "5000");
+    }
+
+    // ZDP-T4: tighten branch overrides probe.
+    // mppt_curtailed=true AND drain>threshold → tighten branch fires.
+    // drain=2500, threshold=1000, kp=1.0, prev=-2000
+    // new = -2000 + 1.0*(2500-1000) = -500.
+    #[test]
+    fn tighten_branch_overrides_probe() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_mppt_probe_w: 500,
+                mppt_curtailed: true, // curtailed but drain > threshold → tighten wins
+                grid_export_limit_w: 5000,
+                ..base_input().globals
+            },
+            battery_dc_power: -2500.0, // drain=2500 > threshold=1000
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -2000,
+            mppt_power_0: 0.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // Tighten: new = -2000 + 1.0*(2500-1000) = -500
+        assert_eq!(out.setpoint_target, -500);
+        assert!(out.decision.summary.contains("tightening"),
+            "expected tightening but got: {}", out.decision.summary);
+        // probe_offset_W must NOT appear in the tighten decision
+        let probe_factor = out.decision.factors.iter()
+            .find(|f| f.name == "probe_offset_W");
+        assert!(probe_factor.is_none(), "probe_offset_W must not appear in tighten branch");
+    }
+
+    // ZDP-T5: probe knob=0 disables probing even when curtailed.
+    // zappi_drain_mppt_probe_w=0, mppt_curtailed=true
+    // probe_offset=0, target=-solar_export=-2000.
+    // prev=-2000 == target → stays at -2000.
+    #[test]
+    fn probe_off_when_knob_zero() {
+        let input = SetpointInput {
+            globals: SetpointInputGlobals {
+                zappi_active: true,
+                allow_battery_to_car: false,
+                zappi_drain_threshold_w: 1000,
+                zappi_drain_relax_step_w: 100,
+                zappi_drain_kp: 1.0,
+                zappi_drain_mppt_probe_w: 0, // disabled
+                mppt_curtailed: true,
+                grid_export_limit_w: 5000,
+                ..base_input().globals
+            },
+            battery_dc_power: -500.0,
+            heat_pump_power: 0.0,
+            cooker_power: 0.0,
+            setpoint_target_prev: -2000,
+            mppt_power_0: 2000.0,
+            mppt_power_1: 0.0,
+            soltaro_power: 0.0,
+            ..base_input()
+        };
+        let c = clock_at(2026, 1, 15, 14, 30);
+        let out = evaluate_setpoint(&input, &c, &hw());
+        // No probe (knob=0): target=-2000, prev=-2000 → stays at -2000.
+        assert_eq!(out.setpoint_target, -2000);
+        let factor = out.decision.factors.iter()
+            .find(|f| f.name == "probe_offset_W")
+            .expect("probe_offset_W factor must be present");
+        assert_eq!(factor.value, "0", "probe_offset_W must be 0 when knob is zero");
     }
 }

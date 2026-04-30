@@ -930,6 +930,9 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         zappi_battery_drain_target_w: k.zappi_battery_drain_target_w,
         zappi_battery_drain_hard_clamp_w: i32::try_from(k.zappi_battery_drain_hard_clamp_w)
             .unwrap_or(i32::MAX),
+        // PR-ZDP-1: MPPT probe offset.
+        zappi_battery_drain_mppt_probe_w: i32::try_from(k.zappi_battery_drain_mppt_probe_w)
+            .unwrap_or(i32::MAX),
     }
 }
 
@@ -1157,6 +1160,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi_battery_drain_kp" => KnobId::ZappiBatteryDrainKp,
         "zappi_battery_drain_target_w" => KnobId::ZappiBatteryDrainTargetW,
         "zappi_battery_drain_hard_clamp_w" => KnobId::ZappiBatteryDrainHardClampW,
+        // PR-ZDP-1.
+        "zappi_battery_drain_mppt_probe_w" => KnobId::ZappiBatteryDrainMpptProbeW,
         _ => return None,
     })
 }

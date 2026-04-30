@@ -33,6 +33,16 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
   PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
   switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
+- [x] **M-ZAPPI-DRAIN-PROBE** — Field evidence (2026-04-30) shows the
+  M-ZAPPI-DRAIN compensated-drain loop's spiral persists at slower
+  speed: `relax_target = -solar_export` couples controller demand to
+  *observed* (potentially throttled) production, so once any source
+  curtails, the relax floor rises and the loop dies. Fix: use
+  `Mppt*OperationMode` (mode 1 = "voltage/current limited" =
+  curtailed) as a control signal — when either MPPT is curtailed,
+  push relax target deeper than observed by a probe offset. New knob
+  `zappi_drain_mppt_probe_w` (default 500). Relitigates the
+  observability-only lock from M-ZAPPI-DRAIN. One PR (PR-ZDP-1).
 - [x] **M-ZAPPI-DRAIN-OBS** — Observability for the M-ZAPPI-DRAIN
   compensated-drain loop: three new HA broadcast sensors
   (`controller.zappi-drain.compensated-w` / `.tighten-active` /
@@ -362,6 +372,42 @@ PR-ZD-3 + PR-ZD-4 ship the new control law, PR-ZD-5 is frontend-only.
 
 ---
 
+## Milestone M-ZAPPI-DRAIN-PROBE — PR breakdown
+
+Field-driven follow-up to M-ZAPPI-DRAIN. The compensated-drain loop's
+relax target was `-solar_export` (observed); spiral persists because
+once any source throttles, observed drops, demand drops, more
+throttling. Fix: use MPPT op-mode (a real "potential available"
+signal, mode 1 = curtailed) to gate a probe.
+
+- [x] **PR-ZDP-1 — MPPT-curtailment-gated probe**. Add knob
+  `zappi_drain_mppt_probe_w` (u32, default 500) through 11-step
+  registration. Add helper `mppt_curtailed(&World) -> bool` in
+  process.rs reading `Mppt0OperationMode` and `Mppt1OperationMode`
+  (stale → false). In the relax branch of `evaluate_setpoint`'s
+  Zappi gate, replace `target = -solar_export` with
+  `target = -(solar_export + probe_offset_w).max(-grid_export_limit_w)`
+  where `probe_offset_w = mppt_curtailed ? probe_w : 0`. New
+  Decision factors `mppt_curtailed`, `probe_offset_W`. ≥ 5 tests
+  (probe fires on either MPPT curtailed; doesn't fire when both
+  tracking; doesn't fire when stale; absolute_floor respected;
+  tighten beats probe; multi-tick ramp-up trajectory).
+
+### Cross-cutting (M-ZAPPI-DRAIN-PROBE)
+
+- **MPPT op-mode coupling locked decision REVERSED** (M-ZAPPI-DRAIN
+  cross-cutting note "MPPT op-mode is observability only, no
+  control-loop coupling" is superseded by this milestone's PR-ZDP-1).
+  Justification: field evidence; spiral persisted; no other
+  potential-production signal exists.
+- **Stale MPPT op-mode → no probe** (locked). Conservative default;
+  preserves current behaviour when sensors aren't reporting.
+- **Hoymiles curtailment remains invisible** (no signal). Acknowledged
+  gap; the MPPTs carry most of the production so the partial fix is
+  judged adequate.
+
+---
+
 ## Milestone M-ZAPPI-DRAIN-OBS — PR breakdown
 
 Detail in `./docs/drafts/20260430-2000-m-zappi-drain-obs-plan.md`.
@@ -477,6 +523,100 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-ZDP-1 — MPPT-curtailment-gated probe** (M-ZAPPI-DRAIN-PROBE,
+  2026-04-30) — Field-driven follow-up to M-ZAPPI-DRAIN. Operator
+  reported the spiral persisted at slower speed: `relax_target =
+  -solar_export` couples controller demand to *observed* (potentially
+  throttled) production, so once any source curtails, the relax floor
+  rises and the loop dies. Fix: use `Mppt0OperationMode` /
+  `Mppt1OperationMode` (Victron enum mode 1 = "voltage/current
+  limited" = curtailed by inverter = "I could produce more if there
+  were demand") as a control signal — when either MPPT is curtailed
+  AND fresh, push relax target deeper than observed `-solar_export`
+  by a probe offset. The MPPT ramps up to meet demand; once at MPP
+  (mode 2 tracking), op-mode flips, probe disengages, target settles
+  at the new (higher) observed `-solar_export`. Natural hill-climb
+  toward potential.
+  New knob `zappi_battery_drain_mppt_probe_w` (u32, default 500,
+  range 0-5000) through full 11-step CLAUDE.md registration. New
+  helper `mppt_curtailed(&World) -> bool` near `compensated_drain_w`
+  in process.rs. `SetpointInputGlobals` extended with the new knob,
+  `mppt_curtailed: bool`, and (newly threaded) `grid_export_limit_w:
+  u32` for the absolute floor.
+  Relax branch in `evaluate_setpoint` updated:
+  ```
+  let probe_offset_w = if g.mppt_curtailed { f64::from(g.zappi_drain_mppt_probe_w) } else { 0.0 };
+  let absolute_floor = -f64::from(g.grid_export_limit_w);
+  let target = (-(solar_export + probe_offset_w)).max(absolute_floor);
+  ```
+  New Decision factors `mppt_curtailed`, `probe_offset_W` (relax-only;
+  tighten branch unchanged).
+  **Relitigated locked decision:** M-ZAPPI-DRAIN cross-cutting note
+  "MPPT op-mode coupling (locked): observability only, no
+  control-loop coupling" was REVERSED. Justification: field
+  evidence; spiral persisted; no other potential-production signal
+  exists. Reversal documented in `cross-cutting (M-ZAPPI-DRAIN-PROBE)`
+  section above.
+  Adversarial review caught a **major defect** on round 1 (D01):
+  `mppt_curtailed` checked only `Actual::value`, not freshness. The
+  codebase's `Actual::tick()` decays Fresh → Stale *without* clearing
+  `value`, so a sensor that read mode 1 once and then stops
+  reporting would retain `value: Some(1.0)` with `freshness: Stale`
+  indefinitely — and the helper would return `true`, firing the
+  probe forever even when the operator's "MPPT op-mode constantly
+  flipping" + occasional D-Bus hiccups produced exactly that state.
+  Doc-comment promised "Stale → false" but impl only honoured the
+  `value=None` half. Fix: gate per-channel on `Actual::is_usable()`
+  (which checks `freshness == Fresh && value.is_some()`). Plus D02:
+  test `mppt_curtailed_helper_handles_stale` only exercised
+  `Actual::unknown` (value=None) — added new test
+  `mppt_curtailed_helper_returns_false_on_stale_cached_mode_1` that
+  constructs the production-realistic case (mode 1 read at t0, then
+  60 s elapsed past the 30 s freshness window).
+  Verification: `cargo test --workspace` → 581 passed (364 core + 10
+  dashboard-model + 207 shell, +1 vs PR-ZDO-4 baseline 572 + 8 PR
+  tests); clippy + tsc clean; armv7 cross-build green.
+  Defects (4 filed, all closed):
+  - D01 (major) — `mppt_curtailed` missed freshness gate → fixed via
+    `Actual::is_usable()`.
+  - D02 (major) — stale-cached test gap → added new test covering
+    the realistic Stale + value=Some(1.0) case.
+  - D03 (nit) — multi-tick convergence test optional/deferred.
+  - D04 (nit) — op-mode flap oscillation deferred (bounded;
+    acceptable in absence of evidence it harms convergence).
+  Notes / surprises:
+  - The major D01 reverses-the-locked-decision concern materialized
+    on round 1: a control-coupled sensor that misreads will steer
+    the loop wrong. The reviewer flagged it specifically because the
+    user's framing (in the M-ZAPPI-DRAIN-OBS session) was "a derived
+    sensor out of sync with the controller is worse than no
+    observability" — same applies in reverse for control coupling.
+  - `Actual::is_usable()` is the canonical guard idiom in this
+    codebase. Reusing it locks the freshness invariant in one place.
+  - `grid_export_limit_w` was not previously on `SetpointInputGlobals`
+    — added as part of this PR for the absolute floor in the relax
+    target. No other callsite consumed the knob through the input;
+    PR-09a's symmetric clamp uses it directly via `world.knobs`.
+  - Probe is operator-disable-able: setting
+    `zappi_battery_drain_mppt_probe_w = 0` reverts to PR-ZD-3
+    behaviour (relax target = `-solar_export`). Locked by
+    `probe_off_when_knob_zero` test.
+  - Hoymiles curtailment remains invisible — no signal. Acknowledged
+    gap. The MPPTs carry most of the production so the partial fix
+    is judged adequate.
+  Constraints future work must respect:
+  - The reversed M-ZAPPI-DRAIN locked decision is now the binding
+    one: MPPT op-mode IS a control input. Future PRs that touch
+    `mppt_curtailed` MUST preserve the `Actual::is_usable()` gate;
+    the doc-comment + LOCKSTEP NOTE on the helper warn against
+    regressing this.
+  - The probe direction is "deeper than observed" (more negative).
+    Future probe extensions (e.g. ratchet, EWMA filter for op-mode
+    flap) MUST preserve this direction.
+  - `grid_export_limit_w` floor MUST stay; without it a runaway
+    probe would push setpoint past the operator's chosen export
+    ceiling.
 
 - **PR-ZDO-4 — Frontend rendering (Option C, frontend half)**
   (M-ZAPPI-DRAIN-OBS, 2026-04-30) — New `<section

@@ -205,6 +205,9 @@ export const entityDescriptions: Record<string, string> = {
     "Reference for the compensated-drain controller (W). Currently inert — the math uses `threshold` as reference. Reserved for a future PI extension.",
   "zappi.battery-drain.hard-clamp-w":
     "Fast-mode hard-clamp threshold (W). When Zappi is in Fast mode and `allow_battery_to_car=false`, if compensated drain exceeds this value, the controller raises the proposed setpoint by the excess as a separate safety net on top of the soft loop. Defaults to 200 W. Eco / Eco+ / Off modes bypass this clamp.",
+  // PR-ZDP-1: MPPT curtailment probe offset.
+  "zappi.battery-drain.mppt-probe-w":
+    "Probe offset (W) added to the relax target when at least one MPPT reports voltage/current limited (mode 1 — curtailed by inverter). Lets the loop hill-climb toward potential production by demanding slightly more export than currently observed; the MPPT ramps up to meet the demand, eventually reaches MPP, op-mode flips to 2 (tracking), and the probe disengages. Set to 0 to disable probing entirely (loop reverts to PR-ZD-3 behaviour: relax target = -solar_export). Stale MPPT op-mode → no probe (conservative).",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

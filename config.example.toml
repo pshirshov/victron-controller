@@ -374,4 +374,9 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # Fast-mode hard-clamp threshold (W). Belt-and-suspenders safety net
 # that runs after the soft loop when Zappi is in Fast mode.
 # zappi_battery_drain_hard_clamp_w         = 200
+# PR-ZDP-1: MPPT probe offset (W). When at least one MPPT reports
+# voltage/current limited (mode 1 — curtailed by inverter), the relax
+# target is pushed deeper by this amount to create demand. Set to 0 to
+# disable probing entirely (reverts to PR-ZD-3 behaviour).
+# zappi_battery_drain_mppt_probe_w         = 500
 

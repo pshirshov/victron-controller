@@ -157,6 +157,10 @@ data Knobs {
   zappi_battery_drain_kp: f64
   zappi_battery_drain_target_w: i32
   zappi_battery_drain_hard_clamp_w: i32
+  // PR-ZDP-1: MPPT probe offset (W). When at least one MPPT reports
+  // voltage/current limited (mode 1 — curtailed), the relax target is
+  // pushed deeper by this amount to create demand. Default 500.
+  zappi_battery_drain_mppt_probe_w: i32
 }
 
 // 0.3.0 redefinition of `Bookkeeping` — `prev_ess_state` removed.
