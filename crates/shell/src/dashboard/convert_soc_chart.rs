@@ -157,21 +157,19 @@ pub fn compute_soc_chart(
     }
 }
 
-/// `max_grid_current_a * grid_nominal_voltage_v`, or None when the
-/// hardware values aren't sane. This is the inverter-nameplate ceiling
-/// for grid-sourced charge power; real rates may be lower if the
-/// inverter throttles, the battery-side BMS limits accept current, or
-/// the grid-import-limit knob caps it. We deliberately do NOT apply a
-/// per-PR fixed cap on top — earlier versions used a 5000 W default
-/// that was wrong for high-power inverters (e.g. MultiPlus-II 15 kVA
-/// at 65 A × 230 V ≈ 15 kW).
+/// `grid_import_knob_max_w` — the configured continuous-import ceiling
+/// that also caps the operator-visible `grid_import_limit_w` knob. This
+/// is the meaningful ceiling for grid-sourced scheduled charging:
+/// the raw inverter nameplate (`max_grid_current_a *
+/// grid_nominal_voltage_v` ≈ 15 kW on a MultiPlus-II 15 kVA at
+/// 65 A × 230 V) overstates what the inverter sustains continuously,
+/// while `grid_import_knob_max_w` (default 13 kW) captures the real
+/// continuous-import budget the operator and the controller agree on.
+/// Returns `None` only when the configured ceiling is zero (sentinel
+/// for "import disabled at the topology level").
 fn derive_charge_rate_w(hardware: HardwareParams) -> Option<f64> {
-    let raw = hardware.max_grid_current_a * hardware.grid_nominal_voltage_v;
-    if raw.is_finite() && raw > 0.0 {
-        Some(raw)
-    } else {
-        None
-    }
+    let cap = f64::from(hardware.grid_import_knob_max_w);
+    if cap > 0.0 { Some(cap) } else { None }
 }
 
 /// Return the schedule's `ScheduleSpec` if it's enabled (`days == 7`).
