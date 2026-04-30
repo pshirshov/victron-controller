@@ -5756,4 +5756,366 @@ mod tests {
             "fresh_boot must reset latest to None"
         );
     }
+
+    // =========================================================================
+    // PR-ZDO-2: HA broadcast sensor tests for controller-derived observables.
+    // =========================================================================
+
+    /// Run `SensorBroadcastCore` directly on a pre-seeded world and return
+    /// the `Effect::Publish` variants emitted (all other effects dropped).
+    fn run_sensor_broadcast(world: &mut World, c: &FixedClock) -> Vec<Effect> {
+        use crate::core_dag::cores::SensorBroadcastCore;
+        use crate::core_dag::Core;
+        let mut effects: Vec<Effect> = Vec::new();
+        SensorBroadcastCore.run(world, c, &Topology::defaults(), &mut effects);
+        effects
+    }
+
+    /// Filter only `Effect::Publish(PublishPayload::ControllerNumeric{..})`
+    /// and `Effect::Publish(PublishPayload::ControllerBool{..})` from a vec.
+    fn controller_observable_effects(effects: &[Effect]) -> Vec<&Effect> {
+        effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Publish(
+                        PublishPayload::ControllerNumeric { .. }
+                            | PublishPayload::ControllerBool { .. }
+                    )
+                )
+            })
+            .collect()
+    }
+
+    /// PR-ZDO-2.T1: fresh World, run_setpoint once with Tighten scenario, then
+    /// run SensorBroadcastCore. Assert exactly 3 controller-observable publishes,
+    /// with tighten=true, hard-clamp=false, compensated-w=2500.
+    #[test]
+    fn controller_observables_publish_on_first_tick() {
+        use crate::types::{ControllerObservableId, PublishPayload};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Tighten scenario: battery drain = 2500 W, threshold = 1000 W.
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2500.0);
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_hard_clamp_w = 5000; // no hard clamp
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        // Run the full tick so zappi_drain_state.latest is populated.
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+
+        // Verify snapshot was captured.
+        let snap = world.zappi_drain_state.latest.expect("snapshot must be present");
+        assert_eq!(snap.branch, ZappiDrainBranch::Tighten);
+
+        // Now run broadcast in isolation (cache is fresh after process call).
+        // Clear cache to force publish (simulate first-ever tick).
+        world.published_cache.controller_numeric.clear();
+        world.published_cache.controller_bool.clear();
+
+        let effects = run_sensor_broadcast(&mut world, &c);
+        let obs = controller_observable_effects(&effects);
+        assert_eq!(obs.len(), 3, "expected 3 controller observable publishes, got {}", obs.len());
+
+        // Find each by id.
+        let find_numeric = |id: ControllerObservableId| {
+            effects.iter().find_map(|e| {
+                if let Effect::Publish(PublishPayload::ControllerNumeric {
+                    id: eid,
+                    value,
+                    freshness,
+                }) = e
+                {
+                    if *eid == id { Some((*value, *freshness)) } else { None }
+                } else {
+                    None
+                }
+            })
+        };
+        let find_bool = |id: ControllerObservableId| {
+            effects.iter().find_map(|e| {
+                if let Effect::Publish(PublishPayload::ControllerBool { id: eid, value }) = e {
+                    if *eid == id { Some(*value) } else { None }
+                } else {
+                    None
+                }
+            })
+        };
+
+        let (drain_val, drain_fresh) =
+            find_numeric(ControllerObservableId::ZappiDrainCompensatedW)
+                .expect("compensated-w must be published");
+        assert!(
+            (drain_val - 2500.0).abs() < 1.0,
+            "compensated-w: expected ~2500.0, got {drain_val}"
+        );
+        assert_eq!(drain_fresh, Freshness::Fresh);
+
+        let tighten =
+            find_bool(ControllerObservableId::ZappiDrainTightenActive)
+                .expect("tighten-active must be published");
+        assert!(tighten, "tighten-active must be true for Tighten branch");
+
+        let clamp =
+            find_bool(ControllerObservableId::ZappiDrainHardClampActive)
+                .expect("hard-clamp-active must be published");
+        assert!(!clamp, "hard-clamp-active must be false when hard_clamp_w=5000 >> drain");
+    }
+
+    /// PR-ZDO-2.T2: run twice with identical inputs — second run emits 0
+    /// controller observable publishes (dedup on wire body).
+    #[test]
+    fn controller_observables_dedup_on_unchanged_state() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_hard_clamp_scenario(&mut world, c.monotonic, 2500.0);
+        world.knobs.zappi_battery_drain_threshold_w = 1000;
+        world.knobs.zappi_battery_drain_hard_clamp_w = 5000;
+        world.zappi_mode.propose_target(ZappiMode::Fast, Owner::SetpointController, c.monotonic);
+
+        // First tick + broadcast.
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        world.published_cache.controller_numeric.clear();
+        world.published_cache.controller_bool.clear();
+        let effects1 = run_sensor_broadcast(&mut world, &c);
+        let obs1 = controller_observable_effects(&effects1);
+        assert_eq!(obs1.len(), 3, "first run: expected 3 publishes");
+
+        // Second run — cache is now populated; same snapshot. Zero new publishes.
+        let effects2 = run_sensor_broadcast(&mut world, &c);
+        let obs2 = controller_observable_effects(&effects2);
+        assert_eq!(obs2.len(), 0, "second run with same state: expected 0 publishes (dedup)");
+    }
+
+    /// PR-ZDO-2.T3: fresh World with no run_setpoint call. Broadcast publishes
+    /// compensated-w as "unavailable"; both booleans publish false.
+    #[test]
+    fn controller_observables_compensated_w_unavailable_when_no_capture() {
+        use crate::types::{ControllerObservableId, PublishPayload, encode_sensor_body};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        assert!(world.zappi_drain_state.latest.is_none(), "precondition: no snapshot");
+
+        let effects = run_sensor_broadcast(&mut world, &c);
+        let obs = controller_observable_effects(&effects);
+        // All three must be published (first tick, cache empty).
+        assert_eq!(obs.len(), 3, "expected 3 publishes on fresh world, got {}", obs.len());
+
+        // compensated-w must encode as "unavailable".
+        let drain_effect = effects.iter().find(|e| {
+            matches!(
+                e,
+                Effect::Publish(PublishPayload::ControllerNumeric {
+                    id: ControllerObservableId::ZappiDrainCompensatedW,
+                    ..
+                })
+            )
+        });
+        if let Some(Effect::Publish(PublishPayload::ControllerNumeric {
+            value,
+            freshness,
+            ..
+        })) = drain_effect
+        {
+            let body = encode_sensor_body(Some(*value), *freshness);
+            assert_eq!(body, "unavailable", "no-snapshot compensated-w must encode as 'unavailable'");
+        } else {
+            panic!("compensated-w publish not found in effects");
+        }
+
+        // Both booleans must be false.
+        for id in [
+            ControllerObservableId::ZappiDrainTightenActive,
+            ControllerObservableId::ZappiDrainHardClampActive,
+        ] {
+            let val = effects.iter().find_map(|e| {
+                if let Effect::Publish(PublishPayload::ControllerBool { id: eid, value }) = e {
+                    if *eid == id { Some(*value) } else { None }
+                } else {
+                    None
+                }
+            });
+            assert_eq!(
+                val,
+                Some(false),
+                "no-snapshot {id:?} must publish false"
+            );
+        }
+    }
+
+    /// PR-ZDO-2.D05: Disabled-branch snapshot must publish "unavailable" for
+    /// compensated-w and "false" for both booleans — mirrors T3 but with
+    /// `latest = Some(snap with branch=Disabled)` instead of `latest = None`.
+    #[test]
+    fn controller_observables_disabled_branch_yields_unavailable_and_false_bools() {
+        use crate::types::{ControllerObservableId, PublishPayload, ZappiDrainBranch, encode_sensor_body};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        // Seed a snapshot with branch=Disabled (apply_setpoint_safety fallback shape).
+        world.zappi_drain_state.latest = Some(crate::world::ZappiDrainSnapshot {
+            compensated_drain_w: 0.0,
+            branch: ZappiDrainBranch::Disabled,
+            hard_clamp_engaged: false,
+            hard_clamp_excess_w: 0.0,
+            threshold_w: 1000,
+            hard_clamp_w: 200,
+            captured_at_ms: 0,
+        });
+
+        let effects = run_sensor_broadcast(&mut world, &c);
+        let obs = controller_observable_effects(&effects);
+        assert_eq!(obs.len(), 3, "expected 3 publishes on fresh world, got {}", obs.len());
+
+        // compensated-w must encode as "unavailable" (Disabled branch → Stale).
+        let drain_effect = effects.iter().find(|e| {
+            matches!(
+                e,
+                Effect::Publish(PublishPayload::ControllerNumeric {
+                    id: ControllerObservableId::ZappiDrainCompensatedW,
+                    ..
+                })
+            )
+        });
+        if let Some(Effect::Publish(PublishPayload::ControllerNumeric {
+            value,
+            freshness,
+            ..
+        })) = drain_effect
+        {
+            let body = encode_sensor_body(Some(*value), *freshness);
+            assert_eq!(
+                body, "unavailable",
+                "Disabled-branch compensated-w must encode as 'unavailable', not fake zero"
+            );
+        } else {
+            panic!("compensated-w publish not found in effects");
+        }
+
+        // Both booleans must be false (Disabled is neither Tighten nor HardClamp).
+        for id in [
+            ControllerObservableId::ZappiDrainTightenActive,
+            ControllerObservableId::ZappiDrainHardClampActive,
+        ] {
+            let val = effects.iter().find_map(|e| {
+                if let Effect::Publish(PublishPayload::ControllerBool { id: eid, value }) = e {
+                    if *eid == id { Some(*value) } else { None }
+                } else {
+                    None
+                }
+            });
+            assert_eq!(val, Some(false), "Disabled-branch {id:?} must publish false");
+        }
+    }
+
+    /// PR-ZDO-2.T4: round-trip each ControllerObservableId through
+    /// encode_publish_payload (tested in serialize.rs). This test validates
+    /// the core-side invariant: the three dedup bodies stored in the cache
+    /// match what encode_sensor_body / bool formatting would produce.
+    #[test]
+    fn controller_observables_cache_body_matches_encode_sensor_body() {
+        use crate::types::{ControllerObservableId, encode_sensor_body};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Fresh snapshot: drain=1500, Tighten, no hard clamp.
+        world.zappi_drain_state.latest = Some(crate::world::ZappiDrainSnapshot {
+            compensated_drain_w: 1500.0,
+            branch: ZappiDrainBranch::Tighten,
+            hard_clamp_engaged: false,
+            hard_clamp_excess_w: 0.0,
+            threshold_w: 1000,
+            hard_clamp_w: 200,
+            captured_at_ms: 1_777_503_600_000,
+        });
+
+        let _ = run_sensor_broadcast(&mut world, &c);
+
+        // Cache must store the encoded wire body for the numeric.
+        let cached_drain = world
+            .published_cache
+            .controller_numeric
+            .get(&ControllerObservableId::ZappiDrainCompensatedW)
+            .expect("cache must contain compensated-w after broadcast");
+        let expected_drain = encode_sensor_body(Some(1500.0), Freshness::Fresh);
+        assert_eq!(cached_drain, &expected_drain, "cache body mismatch for compensated-w");
+
+        // Cache must store the booleans.
+        let cached_tighten = world
+            .published_cache
+            .controller_bool
+            .get(&ControllerObservableId::ZappiDrainTightenActive)
+            .copied()
+            .expect("cache must contain tighten-active");
+        assert!(cached_tighten, "Tighten branch → tighten-active=true in cache");
+
+        let cached_clamp = world
+            .published_cache
+            .controller_bool
+            .get(&ControllerObservableId::ZappiDrainHardClampActive)
+            .copied()
+            .expect("cache must contain hard-clamp-active");
+        assert!(!cached_clamp, "hard_clamp_engaged=false → hard-clamp-active=false in cache");
+    }
+
+    /// PR-ZDO-2.T5: freshness-aware publish for compensated-w.
+    /// Snapshot drain=1500 → publishes "1500". Clear snapshot → re-broadcast
+    /// produces "unavailable" (cache invalidates because wire body changed).
+    #[test]
+    fn freshness_aware_publish_for_compensated_w() {
+        use crate::types::{ControllerObservableId, PublishPayload, encode_sensor_body};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+
+        // Seed snapshot.
+        world.zappi_drain_state.latest = Some(crate::world::ZappiDrainSnapshot {
+            compensated_drain_w: 1500.0,
+            branch: ZappiDrainBranch::Relax,
+            hard_clamp_engaged: false,
+            hard_clamp_excess_w: 0.0,
+            threshold_w: 1000,
+            hard_clamp_w: 200,
+            captured_at_ms: 1_777_503_600_000,
+        });
+        let effects1 = run_sensor_broadcast(&mut world, &c);
+        let drain_body1 = effects1.iter().find_map(|e| {
+            if let Effect::Publish(PublishPayload::ControllerNumeric {
+                id: ControllerObservableId::ZappiDrainCompensatedW,
+                value,
+                freshness,
+            }) = e
+            {
+                Some(encode_sensor_body(Some(*value), *freshness))
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            drain_body1.as_deref(),
+            Some("1500"),
+            "first broadcast: expected '1500', got {drain_body1:?}"
+        );
+
+        // Clear snapshot → unavailable.
+        world.zappi_drain_state.latest = None;
+        let effects2 = run_sensor_broadcast(&mut world, &c);
+        let drain_body2 = effects2.iter().find_map(|e| {
+            if let Effect::Publish(PublishPayload::ControllerNumeric {
+                id: ControllerObservableId::ZappiDrainCompensatedW,
+                value,
+                freshness,
+            }) = e
+            {
+                Some(encode_sensor_body(Some(*value), *freshness))
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            drain_body2.as_deref(),
+            Some("unavailable"),
+            "after snapshot cleared: expected 'unavailable', got {drain_body2:?}"
+        );
+    }
 }

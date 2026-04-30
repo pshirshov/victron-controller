@@ -72,7 +72,7 @@ use rumqttc::{AsyncClient, QoS};
 use serde_json::json;
 use tracing::{debug, info};
 
-use victron_controller_core::types::{ActuatedId, BookkeepingId, KnobId, SensorId};
+use victron_controller_core::types::{ActuatedId, BookkeepingId, ControllerObservableId, KnobId, SensorId};
 
 use super::serialize::{knob_name, knob_range, sensor_name};
 
@@ -128,7 +128,8 @@ pub async fn publish_ha_discovery(client: &AsyncClient, topic_root: &str) -> Res
         + publish_kill_switch(client, topic_root).await?
         + publish_phases(client, topic_root).await?
         + publish_sensors(client, topic_root).await?
-        + publish_bookkeeping(client, topic_root).await?;
+        + publish_bookkeeping(client, topic_root).await?
+        + publish_controller_observables(client, topic_root).await?;
     info!(count = total, "HA discovery published");
     Ok(())
 }
@@ -326,6 +327,92 @@ async fn publish_bookkeeping(client: &AsyncClient, topic_root: &str) -> Result<u
         client
             .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
             .await?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+/// PR-ZDO-2: discovery configs for the three controller-derived observables.
+/// Topic root: `controller/<name>/state` — distinct from `sensor/` and
+/// `bookkeeping/`. Future controller-derived observables (setpoint decision
+/// tag, schedule activation flags) ride this same prefix.
+///
+/// Entities:
+/// - 1× `sensor` (compensated-w, unit W, device_class power, state_class measurement)
+/// - 2× `binary_sensor` (tighten-active, hard-clamp-active)
+///
+/// Note: HA's `binary_sensor` does not accept `state_class`; omit it.
+async fn publish_controller_observables(client: &AsyncClient, topic_root: &str) -> Result<usize> {
+    let mut count = 0;
+
+    // compensated-w: numeric sensor.
+    {
+        let id = ControllerObservableId::ZappiDrainCompensatedW;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Zappi compensated drain",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "device_class": "power",
+            "state_class": "measurement",
+            "unit_of_measurement": "W",
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery controller observable published");
+        count += 1;
+    }
+
+    // tighten-active: binary sensor.
+    {
+        let id = ControllerObservableId::ZappiDrainTightenActive;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/binary_sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Zappi drain tighten active",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "payload_on": "true",
+            "payload_off": "false",
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery controller observable published");
+        count += 1;
+    }
+
+    // hard-clamp-active: binary sensor.
+    {
+        let id = ControllerObservableId::ZappiDrainHardClampActive;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/binary_sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Zappi drain hard clamp active",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "payload_on": "true",
+            "payload_off": "false",
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery controller observable published");
         count += 1;
     }
 

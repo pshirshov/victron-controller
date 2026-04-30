@@ -1231,6 +1231,55 @@ pub enum PublishPayload {
         id: BookkeepingId,
         value: bool,
     },
+    /// PR-ZDO-2: numeric controller-derived observable. Uses
+    /// `encode_sensor_body` so stale values render as `"unavailable"` on
+    /// the HA side.
+    ControllerNumeric {
+        id: ControllerObservableId,
+        value: f64,
+        freshness: crate::tass::Freshness,
+    },
+    /// PR-ZDO-2: boolean controller-derived observable. Always-meaningful
+    /// — `false` is honest pre-first-tick output. No freshness gating.
+    ControllerBool {
+        id: ControllerObservableId,
+        value: bool,
+    },
+}
+
+/// Identifier for a controller-derived broadcast observable.
+/// Distinct from `SensorId` (raw sensor reads) and `BookkeepingId`
+/// (controller bookkeeping fields). Topic root: `controller/<name>/state`.
+///
+/// PR-ZDO-2: first three entries surface the M-ZAPPI-DRAIN compensated-drain
+/// loop's per-tick state to HA for recording. Future controller-derived
+/// observables (setpoint decision tag, schedule activation flags) ride this
+/// same prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ControllerObservableId {
+    ZappiDrainCompensatedW,
+    ZappiDrainTightenActive,
+    ZappiDrainHardClampActive,
+}
+
+impl ControllerObservableId {
+    /// Dotted name used in MQTT topic and HA discovery — without the
+    /// `controller/` prefix or `/state` suffix.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::ZappiDrainCompensatedW => "zappi-drain.compensated-w",
+            Self::ZappiDrainTightenActive => "zappi-drain.tighten-active",
+            Self::ZappiDrainHardClampActive => "zappi-drain.hard-clamp-active",
+        }
+    }
+
+    /// All variants, for iteration in tests and broadcast loops.
+    pub const ALL: &'static [Self] = &[
+        Self::ZappiDrainCompensatedW,
+        Self::ZappiDrainTightenActive,
+        Self::ZappiDrainHardClampActive,
+    ];
 }
 
 /// Identifiers for the controller-relevant bookkeeping fields surfaced

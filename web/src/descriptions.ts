@@ -52,6 +52,14 @@ export const entityDescriptions: Record<string, string> = {
   "solar.mppt.1.mode.operation":
     "Operation mode of MPPT charger 1 (com.victronenergy.solarcharger.ttyS2, DI 274). 0=Off, 1=Voltage-or-current-limited (curtailed by inverter), 2=MPPT-tracking (running unconstrained). Observability only — not coupled into the control loop.",
 
+  // --- Controller observables (PR-ZDO-2) ---
+  "controller.zappi-drain.compensated-w":
+    "Compensated battery drain (W) the M-ZAPPI-DRAIN soft loop saw on the most recent controller tick. max(0, -battery_dc_power - heat_pump - cooker). Broadcast-only — also visible on the Detail tab chart.",
+  "controller.zappi-drain.tighten-active":
+    "True when the soft-loop tightening branch fired this tick (drain > threshold && Zappi active && !allow_battery_to_car). Broadcast-only.",
+  "controller.zappi-drain.hard-clamp-active":
+    "True when the Fast-mode hard clamp engaged this tick (Zappi target Fast + drain > hard_clamp_w). Broadcast-only.",
+
   // --- Actuated entities ---
   "grid.setpoint":
     "Commanded AC power setpoint at the grid tie. Negative = export, positive = import. Idle baseline 10 W.",

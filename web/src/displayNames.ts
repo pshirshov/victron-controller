@@ -97,6 +97,11 @@ const DISPLAY_NAMES: Record<string, string> = {
   zappi_battery_drain_target_w: "zappi.battery-drain.target-w",
   zappi_battery_drain_hard_clamp_w: "zappi.battery-drain.hard-clamp-w",
 
+  // --- Controller observables (PR-ZDO-2) ---
+  controller_zappi_drain_compensated_w: "controller.zappi-drain.compensated-w",
+  controller_zappi_drain_tighten_active: "controller.zappi-drain.tighten-active",
+  controller_zappi_drain_hard_clamp_active: "controller.zappi-drain.hard-clamp-active",
+
   // --- Bookkeeping (14) ---
   next_full_charge_iso: "schedule.full-charge.next",
   above_soc_date_iso: "battery.soc.above-threshold.date",

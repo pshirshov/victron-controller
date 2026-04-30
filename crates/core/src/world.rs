@@ -8,8 +8,8 @@ use crate::knobs::Knobs;
 use crate::myenergi::{EddiMode, ZappiMode, ZappiState};
 use crate::tass::{Actual, Actuated};
 use crate::types::{
-    BookkeepingId, Decision, ForecastProvider, PinnedRegisterEntity, SensorId, TimerId,
-    TimerStatus, ZappiDrainBranch,
+    BookkeepingId, ControllerObservableId, Decision, ForecastProvider, PinnedRegisterEntity,
+    SensorId, TimerId, TimerStatus, ZappiDrainBranch,
 };
 
 /// All scalar sensor readings.
@@ -408,6 +408,10 @@ pub struct PublishedCache {
     pub sensors: std::collections::HashMap<SensorId, String>,
     pub bookkeeping_numeric: std::collections::HashMap<BookkeepingId, u64>,
     pub bookkeeping_bool: std::collections::HashMap<BookkeepingId, bool>,
+    /// PR-ZDO-2: dedup cache for controller-derived numerics (encoded wire body).
+    pub controller_numeric: std::collections::HashMap<ControllerObservableId, String>,
+    /// PR-ZDO-2: dedup cache for controller-derived booleans.
+    pub controller_bool: std::collections::HashMap<ControllerObservableId, bool>,
 }
 
 /// One per-timer entry mirroring the wire `Timer` shape. PR-timers-section.

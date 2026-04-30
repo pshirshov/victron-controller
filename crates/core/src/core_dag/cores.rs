@@ -34,11 +34,11 @@ use crate::process::{
     build_setpoint_input, build_zappi_mode_input, cbe_derivation, run_current_limit,
     run_eddi_mode, run_schedules, run_setpoint, run_weather_soc, run_zappi_mode,
 };
-use crate::tass::Actual;
+use crate::tass::{Actual, Freshness};
 use crate::topology::{HardwareParams, Topology};
 use crate::types::{
-    BookkeepingId, DbusTarget, DbusValue, Effect, ForecastProvider, LogLevel,
-    PublishPayload, SensorId, encode_sensor_body,
+    BookkeepingId, ControllerObservableId, DbusTarget, DbusValue, Effect, ForecastProvider,
+    LogLevel, PublishPayload, SensorId, ZappiDrainBranch, encode_sensor_body,
 };
 use crate::world::{CoreFactor, SUNRISE_SUNSET_FRESHNESS, World};
 
@@ -916,6 +916,81 @@ impl Core for SensorBroadcastCore {
                 effects.push(Effect::Publish(PublishPayload::BookkeepingNumeric {
                     id,
                     value,
+                }));
+            }
+        }
+
+        // ----- PR-ZDO-2: Controller-derived observables -----
+        // Reads world.zappi_drain_state.latest (populated by run_setpoint and
+        // apply_setpoint_safety in PR-ZDO-1). Per-id dedup against
+        // world.published_cache.controller_{numeric,bool}.
+        //
+        // When latest.is_none(): numeric publishes "unavailable" (honest —
+        // 0 W would be a real reading); booleans publish false (always-
+        // meaningful, false is honest pre-first-tick).
+        {
+            let snap = world.zappi_drain_state.latest;
+
+            // compensated-w: numeric, freshness-aware.
+            // Disabled branch carries a placeholder 0.0 — treat it as Stale
+            // (publishes "unavailable") so HA Recorder does not ingest fake zeros.
+            let (drain_value, drain_freshness) = match snap {
+                None => (0.0, Freshness::Stale),
+                Some(s) if s.branch == ZappiDrainBranch::Disabled => (0.0, Freshness::Stale),
+                Some(s) => (s.compensated_drain_w, Freshness::Fresh),
+            };
+            let drain_body = encode_sensor_body(Some(drain_value), drain_freshness);
+            let drain_id = ControllerObservableId::ZappiDrainCompensatedW;
+            let drain_changed = world
+                .published_cache
+                .controller_numeric
+                .get(&drain_id)
+                .is_none_or(|prev| prev != &drain_body);
+            if drain_changed {
+                world
+                    .published_cache
+                    .controller_numeric
+                    .insert(drain_id, drain_body.clone());
+                effects.push(Effect::Publish(PublishPayload::ControllerNumeric {
+                    id: drain_id,
+                    value: drain_value,
+                    freshness: drain_freshness,
+                }));
+            }
+
+            // tighten-active: bool, always-meaningful.
+            let tighten =
+                matches!(snap.map(|s| s.branch), Some(ZappiDrainBranch::Tighten));
+            let tighten_id = ControllerObservableId::ZappiDrainTightenActive;
+            let tighten_changed = world
+                .published_cache
+                .controller_bool
+                .get(&tighten_id)
+                .is_none_or(|prev| prev != &tighten);
+            if tighten_changed {
+                world
+                    .published_cache
+                    .controller_bool
+                    .insert(tighten_id, tighten);
+                effects.push(Effect::Publish(PublishPayload::ControllerBool {
+                    id: tighten_id,
+                    value: tighten,
+                }));
+            }
+
+            // hard-clamp-active: bool.
+            let clamp = snap.is_some_and(|s| s.hard_clamp_engaged);
+            let clamp_id = ControllerObservableId::ZappiDrainHardClampActive;
+            let clamp_changed = world
+                .published_cache
+                .controller_bool
+                .get(&clamp_id)
+                .is_none_or(|prev| prev != &clamp);
+            if clamp_changed {
+                world.published_cache.controller_bool.insert(clamp_id, clamp);
+                effects.push(Effect::Publish(PublishPayload::ControllerBool {
+                    id: clamp_id,
+                    value: clamp,
                 }));
             }
         }

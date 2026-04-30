@@ -1698,3 +1698,42 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/world.rs` `ZappiDrainState::push` doc-comment
 **Description:** The gate `snap.captured_at_ms - prev.captured_at_ms >= SAMPLE_INTERVAL_MS` rejects samples with `captured_at_ms < prev.captured_at_ms + 15_000`. After a backwards GX clock jump (e.g. ntpdate correcting an hour of drift), every subsequent push fails the gate until wall-clock advances past the previous sample's timestamp + 15_000 ms — up to the entire jump duration. During that window `samples` doesn't grow; chart appears frozen even though `latest` continues updating. Plan §4.1 risk list calls out clock skew but no behavioural contract documents what `push` does under it.
 **Fix:** Extended `ZappiDrainState::push` doc-comment in `crates/core/src/world.rs` with a `**Clock skew**` paragraph describing the backwards-jump gate behaviour: `samples` appends are blocked until wall-clock recovers past `prev.captured_at_ms + SAMPLE_INTERVAL_MS`; `latest` continues to update on every call so HA broadcasts and wire-format `latest` snapshots stay current.
+
+---
+
+## PR-ZDO-2 (M-ZAPPI-DRAIN-OBS HA broadcast)
+
+### [PR-ZDO-2-D01] HA discovery references unpublished availability_topic — all three entities display as Unavailable
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/mqtt/discovery.rs:365, :389, :413`
+**Description:** All three new discovery configs include `"availability_topic": format!("{topic_root}/availability")`. No code path publishes to that topic. Existing `publish_sensors` / `publish_bookkeeping` deliberately omit `availability_topic`. Adding a non-functional availability topic causes HA to render all three new entities as permanently `unavailable` regardless of state-topic content.
+**Fix:** Removed `availability_topic` from all three discovery configs in `crates/shell/src/mqtt/discovery.rs::publish_controller_observables`. Numeric keeps `device_class: power`, `state_class: measurement`, `unit_of_measurement: W`; booleans keep `payload_on/off`. Inline `unavailable` via `encode_sensor_body` is now the only freshness signal (matches `publish_sensors` / `publish_bookkeeping` convention).
+
+### [PR-ZDO-2-D02] Disabled-branch placeholder `compensated_drain_w = 0.0` leaks to HA Recorder as a real 0 W reading
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/core_dag/cores.rs:932-935`
+**Description:** `ZappiDrainSnapshot::compensated_drain_w` is documented (world.rs:444-449) as a placeholder when `branch == Disabled`: "carries `0.0` as a placeholder — renderers MUST skip / grey-out `Disabled` samples." `apply_setpoint_safety` records `branch=Disabled, compensated_drain_w=0.0` whenever the controller can't run. The new HA broadcast block treats this as a real reading and publishes "0" to HA. HA Recorder will ingest fake 0 W samples during every safety fallback — exactly the "derived sensor out of sync with controller output" scenario the user explicitly framed as worse than no observability.
+**Fix:** Updated `match snap` block in `crates/core/src/core_dag/cores.rs::SensorBroadcastCore::run` "Controller observables" section: three arms — `None` → `(0.0, Stale)`, `Some(s) if s.branch == Disabled` → `(0.0, Stale)`, `Some(s)` → `(s.compensated_drain_w, Fresh)`. Both no-snapshot and Disabled-branch cases now yield `"unavailable"` via `encode_sensor_body`. New regression test `controller_observables_disabled_branch_yields_unavailable_and_false_bools` (D05) locks this in.
+
+### [PR-ZDO-2-D03] T4 numbering: planned round-trip-via-serialize lives in serialize.rs (4 tests), not the test labelled T4 in process.rs
+**Status:** resolved (note-only; semantic match)
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:5996-6042` (`controller_observables_cache_body_matches_encode_sensor_body`)
+**Description:** Plan §4.2 specified T4 as round-trip-via-serialize. The four serialize.rs tests collectively meet this. The test labelled T4 in process.rs is a *different* test (cache encoding equality) — both are useful, just mis-numbered.
+**Fix:** Closed note-only. The four serialize.rs round-trip tests collectively satisfy the planned T4 contract; the cache-body-equality test in process.rs is a sibling check. No code change.
+
+### [PR-ZDO-2-D04] displayNames/descriptions entries are dead code until PR-ZDO-3 lands the wire-format field
+**Status:** resolved (deferred; preregistration for PR-ZDO-3)
+**Severity:** nit
+**Location:** `web/src/displayNames.ts:100-103`, `web/src/descriptions.ts:55-61`
+**Description:** displayNames table maps snake_case canonicals from the dashboard snapshot model. PR-ZDO-2 doesn't touch the wire format — no `controller_zappi_drain_*` field in any baboon-generated TS type yet. Entries inert until PR-ZDO-3.
+**Fix:** Closed deferred. Preregistration is harmless and removes a future-PR step. PR-ZDO-3 will make these entries reachable.
+
+### [PR-ZDO-2-D05] No test covers the Disabled→false bool transition (allowed D02 to slip through)
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/process.rs::tests` (no test for `latest.is_some() && branch == Disabled`)
+**Description:** T3 covers `latest.is_none()` → both bools false. T1 covers Tighten → tighten=true, clamp=false. Untested: `latest.is_some() && branch == Disabled` (e.g., post-`apply_setpoint_safety`) — both bools must publish false AND numeric must publish unavailable (per D02 fix). A test like this would have caught D02.
+**Fix:** Added `controller_observables_disabled_branch_yields_unavailable_and_false_bools` test in `crates/core/src/process.rs::tests` between T3 and T4. Seeds `latest = Some(ZappiDrainSnapshot { branch: Disabled, compensated_drain_w: 0.0, ... })`, runs `SensorBroadcastCore`, asserts compensated-w encodes as `"unavailable"`, both booleans publish `false`. Locks in D02's fix.

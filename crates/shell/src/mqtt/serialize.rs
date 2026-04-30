@@ -98,6 +98,19 @@ pub fn encode_publish_payload(p: &PublishPayload) -> Option<(String, String, boo
             let body = if *value { "true" } else { "false" }.to_string();
             Some((format!("bookkeeping/{name}/state"), body, true))
         }
+        // PR-ZDO-2: controller-derived observables. Topic root `controller/`.
+        // Numeric uses encode_sensor_body (stale → "unavailable"). Bool always-
+        // meaningful ("true"/"false"). Both retained.
+        PublishPayload::ControllerNumeric { id, value, freshness } => {
+            let name = id.name();
+            let body = encode_sensor_body(Some(*value), *freshness);
+            Some((format!("controller/{name}/state"), body, true))
+        }
+        PublishPayload::ControllerBool { id, value } => {
+            let name = id.name();
+            let body = if *value { "true" } else { "false" }.to_string();
+            Some((format!("controller/{name}/state"), body, true))
+        }
     }
 }
 
@@ -847,7 +860,7 @@ fn encode_bookkeeping_value(v: BookkeepingValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use victron_controller_core::types::BookkeepingId;
+    use victron_controller_core::types::{BookkeepingId, ControllerObservableId};
 
     // ------------------------------------------------------------------
     // Knob → wire
@@ -1394,6 +1407,60 @@ mod tests {
         })
         .unwrap();
         assert_eq!(b, "87.5");
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ZDO-2: ControllerNumeric / ControllerBool round-trip
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn encode_controller_numeric_fresh_emits_value() {
+        let p = PublishPayload::ControllerNumeric {
+            id: ControllerObservableId::ZappiDrainCompensatedW,
+            value: 1500.0,
+            freshness: Freshness::Fresh,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/zappi-drain.compensated-w/state");
+        assert_eq!(b, "1500");
+        assert!(r, "controller observables must be retained");
+    }
+
+    #[test]
+    fn encode_controller_numeric_stale_is_unavailable() {
+        let p = PublishPayload::ControllerNumeric {
+            id: ControllerObservableId::ZappiDrainCompensatedW,
+            value: 0.0,
+            freshness: Freshness::Stale,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/zappi-drain.compensated-w/state");
+        assert_eq!(b, "unavailable");
+        assert!(r);
+    }
+
+    #[test]
+    fn encode_controller_bool_tighten_active() {
+        let p = PublishPayload::ControllerBool {
+            id: ControllerObservableId::ZappiDrainTightenActive,
+            value: true,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/zappi-drain.tighten-active/state");
+        assert_eq!(b, "true");
+        assert!(r);
+    }
+
+    #[test]
+    fn encode_controller_bool_hard_clamp_active() {
+        let p = PublishPayload::ControllerBool {
+            id: ControllerObservableId::ZappiDrainHardClampActive,
+            value: false,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/zappi-drain.hard-clamp-active/state");
+        assert_eq!(b, "false");
+        assert!(r);
     }
 
     // ------------------------------------------------------------------

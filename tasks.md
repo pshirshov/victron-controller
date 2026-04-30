@@ -376,7 +376,7 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
   output, ring-buffer eviction, branch-classification correctness
   across all 4 branches, observer-mode honesty,
   no-feedback-into-control invariant, fresh_boot reset.
-- [ ] **PR-ZDO-2 — HA broadcast sensors (Option A)**. New
+- [x] **PR-ZDO-2 — HA broadcast sensors (Option A)**. New
   `ControllerObservableId` enum + `PublishPayload::ControllerNumeric`
   / `ControllerBool`. Wire through `SensorBroadcastCore` (4th block
   alongside Sensors / BkBool / BkNumeric). New
@@ -477,6 +477,85 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-ZDO-2 — HA broadcast sensors (Option A)** (M-ZAPPI-DRAIN-OBS,
+  2026-04-30) — Three new derived sensors broadcast via
+  `SensorBroadcastCore` so HA Recorder can chart the
+  M-ZAPPI-DRAIN compensated-drain loop's behaviour over time:
+  - `controller.zappi-drain.compensated-w` (numeric, W,
+    freshness-aware)
+  - `controller.zappi-drain.tighten-active` (binary_sensor, true when
+    soft loop is tightening)
+  - `controller.zappi-drain.hard-clamp-active` (binary_sensor, true
+    when Fast-mode hard clamp engaged)
+  Topic root `controller/<name>/state` (new namespace, distinct from
+  `sensor/` and `bookkeeping/`). New `ControllerObservableId` enum +
+  `PublishPayload::ControllerNumeric` / `ControllerBool` variants +
+  `PublishedCache.controller_{numeric,bool}` dedup HashMaps. Fourth
+  block in `SensorBroadcastCore::run` reads
+  `world.zappi_drain_state.latest` (lockstep with PR-ZDO-1 capture);
+  no re-derivation. HA discovery: 1× `sensor` (compensated-w with
+  `device_class: power`, `state_class: measurement`, `unit: W`) +
+  2× `binary_sensor`.
+  Two adversarial review rounds. Round 1 caught **2 major defects**:
+  (D01) HA discovery referenced an unpublished `availability_topic`
+  → all entities would have shown as Unavailable in HA;
+  (D02) `branch == Disabled` placeholder `compensated_drain_w = 0.0`
+  was leaking to HA Recorder as a real 0 W reading during every
+  `apply_setpoint_safety` fallback. The user's exact framing —
+  "a derived sensor out of sync with the controller is worse than
+  no observability" — would have been violated.
+  Fixes:
+  - D01: removed `availability_topic` from all three discovery
+    configs; freshness signalled inline via `unavailable` token in
+    state-body (matches `publish_sensors` / `publish_bookkeeping`
+    convention).
+  - D02: added a guard arm in `SensorBroadcastCore`'s match on
+    `world.zappi_drain_state.latest`: `Some(s) if s.branch ==
+    Disabled` → `(0.0, Stale)` → wire body encodes as
+    `"unavailable"`. Both no-snapshot and Disabled-branch paths now
+    yield the same wire output.
+  - D05: new regression test
+    `controller_observables_disabled_branch_yields_unavailable_and_false_bools`
+    locks D02's fix.
+  Verification: `cargo test --workspace` → 570 passed (355 core +
+  10 dashboard-model + 205 shell, +10 vs PR-ZDO-1 baseline 560);
+  clippy + tsc clean; armv7 cross-build green.
+  Defects (5 filed, all closed): D01 + D02 major (HA discovery
+  unavailable / Disabled-leak), D03 minor (T4 numbering, note-only),
+  D04 nit (displayNames preregistered for PR-ZDO-3, deferred), D05
+  nit (regression test for D02).
+  Notes / surprises:
+  - The two majors demonstrate why the user's "lockstep" framing is
+    operationally about more than just the value-axis: the HA-side
+    surface (recorder, dashboards) is itself a downstream renderer
+    of the broadcast, and must respect the same "skip Disabled
+    samples" contract as the in-dashboard chart will (PR-ZDO-4).
+    The fix unifies both surfaces under the same wire encoding.
+  - `availability_topic` rule: the project's existing convention
+    (since `publish_sensors`) is to encode freshness inline via the
+    `unavailable` token in the state body — never via a separate
+    availability topic. PR-ZDO-2's first attempt accidentally
+    diverged; the fix restores convention parity.
+  - Operator action post-deploy: HA caches retained discovery
+    payloads; restarting the controller re-publishes the corrected
+    discovery (no `availability_topic`), and HA picks up the new
+    config. No manual cleanup needed.
+  - Frontend `displayNames` / `descriptions` entries are
+    preregistered now even though no wire-format field references
+    them yet. PR-ZDO-3 lands the wire field; preregistration removes
+    a future-PR step.
+  Constraints future work must respect:
+  - The `Disabled` branch is the canonical "controller couldn't
+    run" signal. Any future broadcast surface (numeric or
+    string-valued) MUST treat `branch == Disabled` as Stale, not
+    as a real reading.
+  - `controller/<name>/state` topic root is reserved for
+    controller-derived observables. Future siblings (setpoint
+    decision tag, schedule activation flags) ride this prefix.
+  - HA discovery for new derived sensors MUST NOT include
+    `availability_topic` unless the controller actually publishes
+    to it. Inline `unavailable` in state-body is the convention.
 
 - **PR-ZDO-1 — Capture pipeline (Core)** (M-ZAPPI-DRAIN-OBS, 2026-04-30)
   — Backend-only observability foundation. New types in `core::types`
