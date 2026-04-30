@@ -108,6 +108,11 @@ use victron_controller_dashboard_model::victron_controller::dashboard::timer::Ti
 use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
 use victron_controller_dashboard_model::victron_controller::dashboard::pinned_register::PinnedRegister as ModelPinnedRegister;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
+// PR-ZDO-3: compensated-drain observability wire types.
+use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_branch::ZappiDrainBranch as ModelZappiDrainBranch;
+use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_sample::ZappiDrainSample as ModelZappiDrainSample;
+use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_snapshot_wire::ZappiDrainSnapshotWire as ModelZappiDrainSnapshotWire;
+use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_state::ZappiDrainState as ModelZappiDrainState;
 
 // --- enums ----------------------------------------------------------------
 
@@ -287,6 +292,47 @@ fn actuated_schedule(a: &Actuated<ScheduleSpec>) -> ModelActuatedSchedule {
     }
 }
 
+/// PR-ZDO-3: map the core `ZappiDrainBranch` enum onto the wire model enum.
+fn zappi_drain_branch_to_model(b: victron_controller_core::types::ZappiDrainBranch) -> ModelZappiDrainBranch {
+    use victron_controller_core::types::ZappiDrainBranch as CoreBranch;
+    match b {
+        CoreBranch::Tighten => ModelZappiDrainBranch::Tighten,
+        CoreBranch::Relax => ModelZappiDrainBranch::Relax,
+        CoreBranch::Bypass => ModelZappiDrainBranch::Bypass,
+        CoreBranch::Disabled => ModelZappiDrainBranch::Disabled,
+    }
+}
+
+/// PR-ZDO-3: project `core::world::ZappiDrainState` onto the wire
+/// `ZappiDrainState`. `samples` is oldest-first (ring-buffer insertion
+/// order); the renderer sorts by `captured_at_epoch_ms` at draw time to
+/// handle non-monotonic wall-clock jumps.
+fn zappi_drain_state_to_model(s: &victron_controller_core::world::ZappiDrainState) -> ModelZappiDrainState {
+    use victron_controller_core::world::{ZappiDrainSnapshot, ZappiDrainSample};
+
+    let snap_to_wire = |snap: &ZappiDrainSnapshot| ModelZappiDrainSnapshotWire {
+        compensated_drain_w: snap.compensated_drain_w,
+        branch: zappi_drain_branch_to_model(snap.branch),
+        hard_clamp_engaged: snap.hard_clamp_engaged,
+        hard_clamp_excess_w: snap.hard_clamp_excess_w,
+        threshold_w: snap.threshold_w,
+        hard_clamp_w: snap.hard_clamp_w,
+        captured_at_epoch_ms: snap.captured_at_ms,
+    };
+
+    let sample_to_wire = |sample: &ZappiDrainSample| ModelZappiDrainSample {
+        captured_at_epoch_ms: sample.captured_at_ms,
+        compensated_drain_w: sample.compensated_drain_w,
+        branch: zappi_drain_branch_to_model(sample.branch),
+        hard_clamp_engaged: sample.hard_clamp_engaged,
+    };
+
+    ModelZappiDrainState {
+        latest: s.latest.as_ref().map(snap_to_wire),
+        samples: s.samples.iter().map(sample_to_wire).collect(),
+    }
+}
+
 /// PR-pinned-registers: project the per-register state on
 /// `world.pinned_registers` into the wire `PinnedRegister` shape.
 /// Sorted by `path` ascending for a deterministic dashboard render —
@@ -447,6 +493,10 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         // "we last knew this 12 h ago" are equivalent.
         sunrise_local_iso: fresh_sunrise_sunset(world).0,
         sunset_local_iso: fresh_sunrise_sunset(world).1,
+        // PR-ZDO-3: compensated-drain observability ring buffer + latest
+        // snapshot. `latest` is None until the first controller tick runs;
+        // `samples` is oldest-first (ring-buffer insertion order).
+        zappi_drain_state: zappi_drain_state_to_model(&world.zappi_drain_state),
     }
 }
 
@@ -1203,6 +1253,128 @@ mod snapshot_new_sensors_tests {
         // MPPT op-mode entries are always present (D-Bus, unconditional).
         assert!(snap.sensors_meta.contains_key("mppt_0_operation_mode"));
         assert!(snap.sensors_meta.contains_key("mppt_1_operation_mode"));
+    }
+}
+
+#[cfg(test)]
+mod zappi_drain_state_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use victron_controller_core::topology::{ControllerParams, HardwareParams};
+    use victron_controller_core::types::ZappiDrainBranch as CoreBranch;
+    use victron_controller_core::world::{World, ZappiDrainSnapshot};
+
+    fn test_meta() -> MetaContext {
+        MetaContext {
+            services: crate::config::DbusServices::default_venus_3_70(),
+            open_meteo_cadence: Duration::from_secs(1800),
+            controller_params: ControllerParams::defaults(),
+            matter_outdoor_topic: None,
+            ev_soc_discovery_topic: None,
+            ev_charge_target_discovery_topic: None,
+            heat_pump_topic: None,
+            cooker_topic: None,
+            soc_history: crate::dashboard::soc_history::SocHistoryStore::new(),
+            hardware: HardwareParams::defaults(),
+        }
+    }
+
+    fn make_snapshot(drain_w: f64, branch: CoreBranch, clamp: bool, excess: f64, ms: i64) -> ZappiDrainSnapshot {
+        ZappiDrainSnapshot {
+            compensated_drain_w: drain_w,
+            branch,
+            hard_clamp_engaged: clamp,
+            hard_clamp_excess_w: excess,
+            threshold_w: 500,
+            hard_clamp_w: 200,
+            captured_at_ms: ms,
+        }
+    }
+
+    /// PR-ZDO-3.T1: world_to_snapshot surfaces `zappi_drain_state` with
+    /// correct `latest` and `samples` when 5 snapshots have been pushed.
+    #[test]
+    fn dashboard_snapshot_surfaces_zappi_drain_state() {
+        let now = Instant::now();
+        let mut world = World::fresh_boot(now);
+
+        // Push 5 snapshots, spacing them by SAMPLE_INTERVAL_MS to guarantee
+        // all 5 land in the ring buffer.
+        let interval = victron_controller_core::world::ZappiDrainState::SAMPLE_INTERVAL_MS;
+        let base_ms = 1_700_000_000_000_i64;
+        let snaps = [
+            make_snapshot(100.0, CoreBranch::Tighten, false, 0.0, base_ms),
+            make_snapshot(200.0, CoreBranch::Relax,   false, 0.0, base_ms + interval),
+            make_snapshot(300.0, CoreBranch::Bypass,  false, 0.0, base_ms + interval * 2),
+            make_snapshot(400.0, CoreBranch::Disabled,false, 0.0, base_ms + interval * 3),
+            make_snapshot(500.0, CoreBranch::Tighten, true,  50.0, base_ms + interval * 4),
+        ];
+        for s in &snaps {
+            world.zappi_drain_state.push(*s);
+        }
+
+        let meta = test_meta();
+        let snap = world_to_snapshot(&world, &meta);
+        let zds = &snap.zappi_drain_state;
+
+        assert_eq!(zds.samples.len(), 5, "expected 5 samples in wire state");
+
+        // latest must reflect the last push (500 W, Tighten, clamp engaged)
+        let latest = zds.latest.as_ref().expect("latest must be Some after pushes");
+        assert!(
+            (latest.compensated_drain_w - 500.0).abs() < f64::EPSILON,
+            "latest.compensated_drain_w mismatch: {:?}",
+            latest.compensated_drain_w
+        );
+        assert!(latest.hard_clamp_engaged, "latest.hard_clamp_engaged must be true");
+
+        // samples[0] = first push: 100 W, Tighten
+        let s0 = &zds.samples[0];
+        assert!(
+            (s0.compensated_drain_w - 100.0).abs() < f64::EPSILON,
+            "samples[0].compensated_drain_w mismatch"
+        );
+        assert_eq!(
+            s0.branch,
+            ModelZappiDrainBranch::Tighten,
+            "samples[0].branch must be Tighten"
+        );
+
+        // samples[4] = last push: 500 W, Tighten, clamp engaged
+        let s4 = &zds.samples[4];
+        assert!(
+            (s4.compensated_drain_w - 500.0).abs() < f64::EPSILON,
+            "samples[4].compensated_drain_w mismatch"
+        );
+        assert!(s4.hard_clamp_engaged, "samples[4].hard_clamp_engaged must be true");
+
+        // Enum round-trip check: Bypass sample is at index 2
+        assert_eq!(
+            zds.samples[2].branch,
+            ModelZappiDrainBranch::Bypass,
+            "samples[2].branch must be Bypass"
+        );
+    }
+
+    /// PR-ZDO-3.T2: fresh World (no captures) → `latest` is None,
+    /// `samples` is empty, no panic.
+    #[test]
+    fn dashboard_snapshot_handles_empty_zappi_drain_state() {
+        let now = Instant::now();
+        let world = World::fresh_boot(now);
+        let meta = test_meta();
+        let snap = world_to_snapshot(&world, &meta);
+        let zds = &snap.zappi_drain_state;
+
+        assert!(
+            zds.latest.is_none(),
+            "latest must be None for fresh World"
+        );
+        assert_eq!(
+            zds.samples.len(),
+            0,
+            "samples must be empty for fresh World"
+        );
     }
 }
 

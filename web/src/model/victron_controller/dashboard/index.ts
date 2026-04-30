@@ -51,3 +51,7 @@ export * from './WsLogLine';
 export * from './WsPing';
 export * from './WsPong';
 export * from './WsServerMessage';
+export * from './ZappiDrainBranch';
+export * from './ZappiDrainSample';
+export * from './ZappiDrainSnapshotWire';
+export * from './ZappiDrainState';

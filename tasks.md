@@ -383,7 +383,7 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
   `controller/<name>/state` topic root in `serialize.rs`. Three new
   HA discovery configs (1 `sensor`, 2 `binary_sensor`). Frontend
   display-name + description registrations. ≥ 5 tests.
-- [ ] **PR-ZDO-3 — Wire format + dashboard data plumbing (Option C,
+- [x] **PR-ZDO-3 — Wire format + dashboard data plumbing (Option C,
   backend half)**. Extend `models/dashboard.baboon` with
   `ZappiDrainBranch` enum, `ZappiDrainSample` /
   `ZappiDrainSnapshotWire` / `ZappiDrainState` data blocks, and
@@ -477,6 +477,55 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-ZDO-3 — Wire format + dashboard data plumbing (Option C, backend
+  half)** (M-ZAPPI-DRAIN-OBS, 2026-04-30) — Extends the baboon model
+  with four new types so the WorldSnapshot carries
+  compensated-drain observability state to the dashboard. Additive
+  within v0.3.0 (no version bump per CLAUDE.md "Deployment topology"):
+  - `enum ZappiDrainBranch { Tighten, Relax, Bypass, Disabled }`.
+  - `data ZappiDrainSample` (4 fields — compact ring-buffer entry).
+  - `data ZappiDrainSnapshotWire` (7 fields — current snapshot for
+    big-number widgets in PR-ZDO-4).
+  - `data ZappiDrainState { latest: opt[ZappiDrainSnapshotWire],
+    samples: lst[ZappiDrainSample] }`.
+  - `WorldSnapshot.zappi_drain_state` field (appended at end, 16th
+    field — no insertion that would shift wire ordering).
+  Regen produced 4 new files each in `crates/dashboard-model/` and
+  `web/src/model/`. `crates/shell/src/dashboard/convert.rs` adds
+  `zappi_drain_branch_to_model` (4-arm exhaustive match) and
+  `zappi_drain_state_to_model` (maps `latest` + `samples`); name
+  swap `captured_at_ms` (core) → `captured_at_epoch_ms` (wire) is
+  consistent. `world_to_snapshot` populates the new field.
+  Frontend `displayNames`/`descriptions` entries from PR-ZDO-2 are
+  now wire-reachable.
+  Adversarial review: zero defects on round 1. T1 verifies
+  oldest-first sample ordering + Tighten/Bypass enum round-trip;
+  T2 verifies empty-world edge. No control-loop coupling, no HA
+  broadcast change, no frontend rendering change.
+  Verification: `bash scripts/regen-baboon.sh` clean (82 retained
+  v0.3.0 definitions); `cargo test --workspace` → 572 passed (355
+  core + 10 dashboard-model + 207 shell, +2 vs PR-ZDO-2 baseline
+  570); clippy + tsc clean; armv7 cross-build green.
+  Notes / surprises:
+  - Wire size ceiling: 120 samples × ~32 bytes + 7-field snapshot
+    ≈ 4 KB, comparable to existing `soc_chart` history.
+  - The auto-emitted `from_0_2_0_world_snapshot.rs` migration stub
+    is commented-out / empty per the regen template (project
+    convention: single-client deployment, never called at runtime).
+  - PR-ZDO-2's preregistered displayNames + descriptions entries
+    (D04 deferred) become reachable now that the wire field exists.
+    No additional frontend work in PR-ZDO-3.
+  Constraints future work must respect:
+  - The `WorldSnapshot.zappi_drain_state` field MUST stay at the
+    end of the WorldSnapshot data block. Inserting new fields
+    before it would shift the wire ordering and break the
+    additive-within-v0.3.0 invariant.
+  - The `captured_at_ms` (core) → `captured_at_epoch_ms` (wire)
+    name swap is intentional — it follows the convention that
+    wire fields use the explicit `_epoch_ms` suffix while internal
+    fields use the shorter `_ms`. Maintain this when adding new
+    timestamp fields.
 
 - **PR-ZDO-2 — HA broadcast sensors (Option A)** (M-ZAPPI-DRAIN-OBS,
   2026-04-30) — Three new derived sensors broadcast via

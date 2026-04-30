@@ -209,6 +209,39 @@ data PinnedRegister {
   last_check_iso: opt[str]
 }
 
+// PR-ZDO-3: observability types for the M-ZAPPI-DRAIN compensated-drain
+// loop. Additive within v0.3.0 (single client, no wire-format migration
+// needed).
+
+enum ZappiDrainBranch {
+  Tighten
+  Relax
+  Bypass
+  Disabled
+}
+
+data ZappiDrainSample {
+  captured_at_epoch_ms: i64
+  compensated_drain_w: f64
+  branch: ZappiDrainBranch
+  hard_clamp_engaged: bit
+}
+
+data ZappiDrainSnapshotWire {
+  compensated_drain_w: f64
+  branch: ZappiDrainBranch
+  hard_clamp_engaged: bit
+  hard_clamp_excess_w: f64
+  threshold_w: i32
+  hard_clamp_w: i32
+  captured_at_epoch_ms: i64
+}
+
+data ZappiDrainState {
+  latest: opt[ZappiDrainSnapshotWire]
+  samples: lst[ZappiDrainSample]
+}
+
 root data WorldSnapshot {
   captured_at_epoch_ms: i64
   captured_at_naive_iso: str
@@ -233,4 +266,8 @@ root data WorldSnapshot {
   // renders an em-dash row for either case.
   sunrise_local_iso: opt[str]
   sunset_local_iso: opt[str]
+  // PR-ZDO-3: compensated-drain observability. Populated on every tick
+  // by `world_to_snapshot`; `latest` is None until the first controller
+  // tick runs, `samples` is oldest-first (ring buffer insertion order).
+  zappi_drain_state: ZappiDrainState
 }
