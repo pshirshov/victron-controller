@@ -367,6 +367,70 @@ button.secondary { background: transparent; color: var(--fg); border: 1px solid 
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* --- PR-ZDO-4: Zappi compensated drain section --- */
+
+.big-number-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.big-number {
+  padding: 12px 16px;
+  border-radius: 6px;
+  min-width: 160px;
+  background: rgba(128, 128, 128, 0.06);
+  border-left: 4px solid var(--border);
+}
+
+.big-number-value {
+  font-size: 1.6em;
+  font-weight: 600;
+}
+
+.big-number-label {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.branch-tighten { background: rgba(221, 51, 51, 0.12); border-left: 4px solid #d33; }
+.branch-relax   { background: rgba(58, 170, 58, 0.12); border-left: 4px solid #3a3; }
+.branch-bypass  { background: rgba(136, 136, 136, 0.12); border-left: 4px solid #888; }
+.branch-disabled{ background: rgba(85, 85, 85, 0.08); border-left: 4px solid #555; }
+
+.hard-clamp-engaged    { background: rgba(221, 51, 51, 0.12); border-left: 4px solid #d33; }
+.hard-clamp-disengaged { background: rgba(85, 85, 85, 0.06); border-left: 4px solid #555; }
+
+#zappi-drain-chart {
+  width: 100%;
+}
+
+/* SVG chart rules for the zappi-drain sparkline. Mirror the soc-chart
+ * conventions so the two charts share a consistent visual vocabulary. */
+#zappi-drain-chart svg .zd-axis-grid {
+  stroke: var(--border);
+  stroke-width: 0.5;
+}
+
+#zappi-drain-chart svg .zd-axis-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+#zappi-drain-chart svg .zd-threshold-line {
+  stroke: #d97706;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+}
+
+#zappi-drain-chart svg .zd-hard-clamp-line {
+  stroke: #dc2626;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+}
+
 footer {
   margin-top: 24px;
   padding-top: 8px;

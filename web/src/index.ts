@@ -15,6 +15,8 @@ import {
   renderSchedule,
   renderSensors,
   renderTimers,
+  renderZappiDrainSummary,
+  renderZappiDrainChart,
   type EntityType,
 } from "./render.js";
 import { renderKnobs } from "./knobs.js";
@@ -165,6 +167,12 @@ function applySnapshot(snap: WorldSnapshot): void {
   // chart slice changes every tick anyway; deepEqual short-circuits
   // immediately. We simply forward the snapshot.
   if (!prev || !deepEqual(prev.soc_chart, snap.soc_chart)) renderSocChart(snap);
+  // Zappi drain section: re-render whenever the state changes or a second
+  // has passed (the sparkline's x-axis scrolls in real time).
+  if (!prev || !deepEqual(prev.zappi_drain_state, snap.zappi_drain_state) || tickedSecond) {
+    renderZappiDrainSummary(snap.zappi_drain_state);
+    renderZappiDrainChart(snap.zappi_drain_state);
+  }
 
   prevSnapshot = snap;
   lastSnapshot = snap;

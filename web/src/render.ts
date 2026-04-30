@@ -13,6 +13,10 @@ import type { ActuatedI32 } from "./model/victron_controller/dashboard/ActuatedI
 import type { ActuatedF64 } from "./model/victron_controller/dashboard/ActuatedF64.js";
 import type { ActuatedEnumName } from "./model/victron_controller/dashboard/ActuatedEnumName.js";
 import type { ActuatedSchedule } from "./model/victron_controller/dashboard/ActuatedSchedule.js";
+import { ZappiDrainBranch } from "./model/victron_controller/dashboard/ZappiDrainBranch.js";
+import type { ZappiDrainState } from "./model/victron_controller/dashboard/ZappiDrainState.js";
+import type { ZappiDrainSnapshotWire } from "./model/victron_controller/dashboard/ZappiDrainSnapshotWire.js";
+import type { ZappiDrainSample } from "./model/victron_controller/dashboard/ZappiDrainSample.js";
 import {
   bookkeepingWriters,
   entityDescriptions,
@@ -1500,4 +1504,243 @@ async function doCopy(value: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// --- PR-ZDO-4: Zappi compensated-drain section ---------------------------
+//
+// Two exported functions: `renderZappiDrainSummary` (big-number widgets)
+// and `renderZappiDrainChart` (30-min sparkline). Both are called from
+// `applySnapshot` in `index.ts` whenever `zappi_drain_state` changes.
+
+export const BRANCH_COLOR: Record<ZappiDrainBranch, string> = {
+  [ZappiDrainBranch.Tighten]: "#d33",
+  [ZappiDrainBranch.Relax]: "#3a3",
+  [ZappiDrainBranch.Bypass]: "#888",
+  [ZappiDrainBranch.Disabled]: "#555",
+};
+
+export const BRANCH_LABEL: Record<ZappiDrainBranch, string> = {
+  [ZappiDrainBranch.Tighten]: "Tighten",
+  [ZappiDrainBranch.Relax]: "Relax",
+  [ZappiDrainBranch.Bypass]: "Bypass",
+  [ZappiDrainBranch.Disabled]: "Disabled",
+};
+
+export const BRANCH_CSS_CLASS: Record<ZappiDrainBranch, string> = {
+  [ZappiDrainBranch.Tighten]: "branch-tighten",
+  [ZappiDrainBranch.Relax]: "branch-relax",
+  [ZappiDrainBranch.Bypass]: "branch-bypass",
+  [ZappiDrainBranch.Disabled]: "branch-disabled",
+};
+
+export type ZappiDrainSummaryDisplay = {
+  /** "1500 W" or "—" when latest is null/Disabled. */
+  compensatedText: string;
+  /** "Tighten" / "Relax" / "Bypass" / "Disabled" / "—". */
+  branchText: string;
+  /** "Engaged" / "Disengaged" / "—". */
+  hardClampText: string;
+  /** CSS class for the compensated big-number ("big-number" + maybe branch-*). */
+  compensatedClass: string;
+  /** CSS class for the branch big-number. */
+  branchClass: string;
+  /** CSS class for the hard-clamp big-number. */
+  hardClampClass: string;
+};
+
+/**
+ * Pure decision logic for the Zappi drain summary widgets. Given a wire
+ * snapshot, returns the text and CSS classes the three big-number
+ * widgets should display. Pulled out of `renderZappiDrainSummary` so
+ * it can be unit-tested without a DOM.
+ */
+export function summaryFor(latest: ZappiDrainSnapshotWire | undefined): ZappiDrainSummaryDisplay {
+  if (!latest) {
+    return {
+      compensatedText: "—",
+      branchText: "—",
+      hardClampText: "—",
+      compensatedClass: "big-number",
+      branchClass: "big-number",
+      hardClampClass: "big-number",
+    };
+  }
+  const branchClass = `big-number ${BRANCH_CSS_CLASS[latest.branch]}`;
+  // Show "—" for Disabled branch per PR-ZDO-1-D05:
+  // compensated_drain_w=0.0 is a meaningless placeholder.
+  const compensatedText = latest.branch === ZappiDrainBranch.Disabled
+    ? "—"
+    : `${Math.round(latest.compensated_drain_w)} W`;
+  const branchText = BRANCH_LABEL[latest.branch];
+  const hardClampText = latest.hard_clamp_engaged ? "Engaged" : "Disengaged";
+  const hardClampClass = latest.hard_clamp_engaged
+    ? "big-number hard-clamp-engaged"
+    : "big-number hard-clamp-disengaged";
+  return {
+    compensatedText,
+    branchText,
+    hardClampText,
+    compensatedClass: branchClass,
+    branchClass,
+    hardClampClass,
+  };
+}
+
+export function renderZappiDrainSummary(state: ZappiDrainState): void {
+  const compEl = document.querySelector<HTMLDivElement>("#zd-compensated-w");
+  const branchEl = document.querySelector<HTMLDivElement>("#zd-branch");
+  const hcEl = document.querySelector<HTMLDivElement>("#zd-hard-clamp");
+  if (!compEl || !branchEl || !hcEl) return;
+
+  const display = summaryFor(state.latest as ZappiDrainSnapshotWire | undefined);
+
+  const setBigNumber = (el: HTMLDivElement, text: string, cls: string) => {
+    const v = el.querySelector<HTMLDivElement>(".big-number-value");
+    if (v) v.textContent = text;
+    el.className = cls;
+  };
+
+  setBigNumber(compEl, display.compensatedText, display.compensatedClass);
+  setBigNumber(branchEl, display.branchText, display.branchClass);
+  setBigNumber(hcEl, display.hardClampText, display.hardClampClass);
+}
+
+// SVG layout constants for the zappi-drain sparkline. Mirrors chart.ts.
+const ZD_VB_W_FALLBACK = 800;
+const ZD_VB_H = 160;
+const ZD_PAD_L = 48;
+const ZD_PAD_R = 8;
+const ZD_PAD_T = 8;
+const ZD_PAD_B = 22;
+const ZD_PLOT_H = ZD_VB_H - ZD_PAD_T - ZD_PAD_B;
+const ZD_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+
+export function renderZappiDrainChart(state: ZappiDrainState): void {
+  const container = document.querySelector<HTMLDivElement>("#zappi-drain-chart");
+  if (!container) return;
+
+  const latest = state.latest as ZappiDrainSnapshotWire | undefined;
+
+  // Sort samples by timestamp; GX clock can jump backwards (PR-ZDO-1 risk note).
+  const samples = (state.samples as ZappiDrainSample[])
+    .slice()
+    .sort((a, b) => Number(a.captured_at_epoch_ms - b.captured_at_epoch_ms));
+
+  // Y-axis max. Skip Disabled samples from the max calculation — their
+  // compensated_drain_w=0.0 is a placeholder and would yank the scale to 0.
+  const nonDisabled = samples.filter((s) => s.branch !== ZappiDrainBranch.Disabled);
+  const sampleMax = nonDisabled.length > 0
+    ? Math.max(...nonDisabled.map((s) => s.compensated_drain_w))
+    : 0;
+  const hardClampW = latest ? latest.hard_clamp_w : 0;
+  const yMax = Math.max(sampleMax, hardClampW * 1.5, 100);
+
+  const nowMs = Date.now();
+  const x0 = nowMs - ZD_WINDOW_MS;
+  const x1 = nowMs;
+
+  const vbW = Math.max(320, Math.round(container.clientWidth || ZD_VB_W_FALLBACK));
+  const plotW = vbW - ZD_PAD_L - ZD_PAD_R;
+
+  function xToSvg(epochMs: number): number {
+    const t = (epochMs - x0) / (x1 - x0);
+    return ZD_PAD_L + Math.max(0, Math.min(1, t)) * plotW;
+  }
+
+  function yToSvg(w: number): number {
+    const t = Math.max(0, Math.min(yMax, w)) / yMax;
+    return ZD_PAD_T + (1 - t) * ZD_PLOT_H;
+  }
+
+  const parts: string[] = [];
+  parts.push(
+    `<svg viewBox="0 0 ${vbW} ${ZD_VB_H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Zappi compensated drain sparkline">`,
+  );
+
+  // Plot background hit area.
+  parts.push(
+    `<rect x="${ZD_PAD_L}" y="${ZD_PAD_T}" width="${plotW}" height="${ZD_PLOT_H}" fill="transparent" />`,
+  );
+
+  // Horizontal gridlines — 0, 25%, 50%, 75%, 100% of yMax.
+  const yGridFractions = [0, 0.25, 0.5, 0.75, 1.0];
+  for (const frac of yGridFractions) {
+    const wVal = yMax * frac;
+    const yPx = yToSvg(wVal);
+    parts.push(
+      `<line class="zd-axis-grid" x1="${ZD_PAD_L}" y1="${yPx.toFixed(1)}" x2="${ZD_PAD_L + plotW}" y2="${yPx.toFixed(1)}" />`,
+    );
+    if (frac === 0 || frac === 1.0) {
+      const label = `${Math.round(wVal)} W`;
+      const anchor = "end";
+      parts.push(
+        `<text class="zd-axis-label" x="${ZD_PAD_L - 4}" y="${(yPx + 3).toFixed(1)}" text-anchor="${anchor}">${label}</text>`,
+      );
+    }
+  }
+
+  // X-axis labels: "-30 min" at left, "0" at right.
+  parts.push(
+    `<text class="zd-axis-label" x="${ZD_PAD_L}" y="${ZD_PAD_T + ZD_PLOT_H + 14}" text-anchor="start">-30 min</text>`,
+  );
+  parts.push(
+    `<text class="zd-axis-label" x="${ZD_PAD_L + plotW}" y="${ZD_PAD_T + ZD_PLOT_H + 14}" text-anchor="end">0</text>`,
+  );
+  // Mid-point tick at -15 min.
+  const xMid = xToSvg(x0 + ZD_WINDOW_MS / 2);
+  parts.push(
+    `<line class="zd-axis-grid" x1="${xMid.toFixed(1)}" y1="${ZD_PAD_T + ZD_PLOT_H}" x2="${xMid.toFixed(1)}" y2="${ZD_PAD_T + ZD_PLOT_H + 4}" />`,
+  );
+  parts.push(
+    `<text class="zd-axis-label" x="${xMid.toFixed(1)}" y="${ZD_PAD_T + ZD_PLOT_H + 14}" text-anchor="middle">-15 min</text>`,
+  );
+
+  // Dashed reference lines (drawn before polyline so polyline sits on top).
+  if (latest) {
+    const yThresh = yToSvg(latest.threshold_w);
+    parts.push(
+      `<line class="zd-threshold-line" x1="${ZD_PAD_L}" y1="${yThresh.toFixed(1)}" x2="${ZD_PAD_L + plotW}" y2="${yThresh.toFixed(1)}" />`,
+    );
+    parts.push(
+      `<text class="zd-axis-label" x="${ZD_PAD_L + plotW - 2}" y="${(yThresh - 3).toFixed(1)}" text-anchor="end" style="fill:#d97706">threshold</text>`,
+    );
+
+    const yHardClamp = yToSvg(latest.hard_clamp_w);
+    parts.push(
+      `<line class="zd-hard-clamp-line" x1="${ZD_PAD_L}" y1="${yHardClamp.toFixed(1)}" x2="${ZD_PAD_L + plotW}" y2="${yHardClamp.toFixed(1)}" />`,
+    );
+    parts.push(
+      `<text class="zd-axis-label" x="${ZD_PAD_L + plotW - 2}" y="${(yHardClamp - 3).toFixed(1)}" text-anchor="end" style="fill:#dc2626">hard clamp</text>`,
+    );
+  }
+
+  // Polyline: one coloured <line> per adjacent pair of samples. The
+  // segment colour is that of the *later* sample's branch (PR-ZDO-4
+  // locked convention). Segments where either endpoint is Disabled are
+  // rendered in neutral grey at half opacity.
+  if (samples.length >= 2) {
+    for (let i = 0; i < samples.length - 1; i++) {
+      const sa = samples[i];
+      const sb = samples[i + 1];
+      const xa = xToSvg(Number(sa.captured_at_epoch_ms));
+      const ya = yToSvg(sa.branch === ZappiDrainBranch.Disabled ? 0 : sa.compensated_drain_w);
+      const xb = xToSvg(Number(sb.captured_at_epoch_ms));
+      const yb = yToSvg(sb.branch === ZappiDrainBranch.Disabled ? 0 : sb.compensated_drain_w);
+      const isDisabled =
+        sa.branch === ZappiDrainBranch.Disabled || sb.branch === ZappiDrainBranch.Disabled;
+      const color = isDisabled ? "#555" : BRANCH_COLOR[sb.branch];
+      const opacity = isDisabled ? "0.35" : "1";
+      parts.push(
+        `<line x1="${xa.toFixed(2)}" y1="${ya.toFixed(2)}" x2="${xb.toFixed(2)}" y2="${yb.toFixed(2)}" stroke="${color}" stroke-width="2" stroke-linecap="round" opacity="${opacity}" />`,
+      );
+    }
+  } else if (samples.length === 0 && !latest) {
+    // Empty state: show placeholder text.
+    parts.push(
+      `<text class="zd-axis-label" x="${ZD_PAD_L + plotW / 2}" y="${ZD_PAD_T + ZD_PLOT_H / 2}" text-anchor="middle">no data yet</text>`,
+    );
+  }
+
+  parts.push(`</svg>`);
+  container.innerHTML = parts.join("");
 }

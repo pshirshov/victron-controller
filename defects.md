@@ -1737,3 +1737,76 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/process.rs::tests` (no test for `latest.is_some() && branch == Disabled`)
 **Description:** T3 covers `latest.is_none()` → both bools false. T1 covers Tighten → tighten=true, clamp=false. Untested: `latest.is_some() && branch == Disabled` (e.g., post-`apply_setpoint_safety`) — both bools must publish false AND numeric must publish unavailable (per D02 fix). A test like this would have caught D02.
 **Fix:** Added `controller_observables_disabled_branch_yields_unavailable_and_false_bools` test in `crates/core/src/process.rs::tests` between T3 and T4. Seeds `latest = Some(ZappiDrainSnapshot { branch: Disabled, compensated_drain_w: 0.0, ... })`, runs `SensorBroadcastCore`, asserts compensated-w encodes as `"unavailable"`, both booleans publish `false`. Locks in D02's fix.
+
+---
+
+## PR-ZDO-4 (M-ZAPPI-DRAIN-OBS frontend chart)
+
+### [PR-ZDO-4-D01] T1/T2/T3 verify lookup tables only — renderers themselves are uninvoked
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.test.ts:54-126`
+**Description:** The three "PR-ZDO-4.T*" tests assert only on the constant lookup tables (`BRANCH_LABEL`/`BRANCH_CSS_CLASS`/`BRANCH_COLOR`) consumed by the renderers, not on the renderer outputs themselves. Neither `renderZappiDrainSummary` nor `renderZappiDrainChart` is invoked. Untested: Disabled-branch placeholder ("—" instead of "0 W"), `latest=null` reset path, y-axis-max exclusion of Disabled samples, segment-colour-by-later-sample logic, reference-line emission. Acknowledged by file comment ("no DOM in tsc-only check environment") — structural to project's "no test runner" stance, consistent with `fmtMpptOperationMode` precedent.
+**Fix:** Extracted `summaryFor(latest: ZappiDrainSnapshotWire | undefined): ZappiDrainSummaryDisplay` as a pure exported function in `web/src/render.ts`. `renderZappiDrainSummary` now calls `summaryFor` and applies returned text/classes via a thin `setBigNumber` DOM-poker. Added 4 test blocks in `web/src/render.test.ts` (22 assertions total) covering: undefined input → all dashes; Tighten + clamp engaged → "1500 W"/"Tighten"/"Engaged"; Disabled → "—" honest contract (locks PR-ZDO-1-D05 / PR-ZDO-2-D02); Relax + clamp disengaged steady state.
+
+### [PR-ZDO-4-D02] Tautological assertion in T1 (compares string to itself)
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.test.ts:79-82`
+**Description:** `assert("...", "big-number hard-clamp-engaged", "big-number hard-clamp-engaged")` compares a literal to itself. Cannot fail. Pads test count without adding evidence.
+**Fix:** Deleted the literal-vs-literal assertion in `web/src/render.test.ts`. Replaced with real `summaryFor(...)` test cases (per D01) that exercise the actual decision logic.
+
+### [PR-ZDO-4-D03] Unnecessary type casts on `state.latest` / `state.samples`
+**Status:** resolved (note-only; defensible workaround for @ts-nocheck)
+**Severity:** nit
+**Location:** `web/src/render.ts:1542, 1572-1576`
+**Description:** Generated TS module has `// @ts-nocheck`; type information is stripped at the import site. The casts re-narrow `any` to typed values — not no-ops in practice.
+**Fix:** Closed note-only. Add a one-line comment at the cast site explaining "re-narrowing past @ts-nocheck in generated module". Can be addressed in a hygiene PR.
+
+### [PR-ZDO-4-D04] `samples.length === 1` produces no visible point
+**Status:** open
+**Severity:** nit
+**Location:** `web/src/render.ts:1690-1699`
+**Description:** Polyline branch fires only when `samples.length >= 2`. Empty-state placeholder fires only when `samples.length === 0 && !latest`. With exactly 1 sample + `latest` non-null, chart shows reference lines but no point. Persists for one tick (~15s) after fresh boot.
+**Suggested fix:** Render a single `<circle>` at the lone sample point, or document the gap. Defer to hygiene PR.
+
+### [PR-ZDO-4-D05] Threshold and hard-clamp text labels can overlap when y-coordinates are close
+**Status:** resolved (deferred; cosmetic)
+**Severity:** nit
+**Location:** `web/src/render.ts:1666-1671, 1674-1679`
+**Description:** Both labels use `text-anchor="end"` at the same x. When threshold and hard-clamp are within ~9 px vertically, labels visually overlap.
+**Fix:** Closed deferred. Cosmetic readability gap; the two reference lines themselves remain colour-distinguishable. Can be addressed in a hygiene PR.
+
+### [PR-ZDO-4-D06] Inline `style="fill:..."` on threshold/hard-clamp labels overrides theme-aware CSS class
+**Status:** resolved (deferred; cosmetic)
+**Severity:** nit
+**Location:** `web/src/render.ts:1670, 1678`
+**Description:** `.zd-axis-label { fill: var(--muted); }` overridden by inline hex codes. Light-theme switching wouldn't pick up the inline labels.
+**Fix:** Closed deferred. The same hex codes already exist as `.zd-{threshold,hard-clamp}-line` stroke colours — visual consistency is preserved. Theme-awareness is a hygiene concern.
+
+### [PR-ZDO-4-D07] Dead conditional in y-axis label anchor logic
+**Status:** resolved
+**Severity:** nit
+**Location:** `web/src/render.ts:1635-1638`
+**Description:** `const anchor = frac === 0 ? "end" : "end";` — both branches return identical string. Leftover from earlier iteration.
+**Fix:** Replaced `const anchor = frac === 0 ? "end" : "end"` with `const anchor = "end"` in `web/src/render.ts`.
+
+### [PR-ZDO-4-D08] Disabled samples plotted at y=0 (greyed) imply a real 0-W reading
+**Status:** resolved (note-only; documented behaviour)
+**Severity:** nit
+**Location:** `web/src/render.ts:1700-1715`
+**Description:** Implementation greys out Disabled segments at y=0 with 0.35 opacity. Locked decision allows "skip OR grey out"; greying picked. A purer "skip" would split the polyline into segments separated by gaps.
+**Fix:** Closed note-only. Add a code comment documenting the chosen behaviour to prevent future "fixes" of this pattern.
+
+### [PR-ZDO-4-D09] Theoretical chart edge case when samples populated but latest missing
+**Status:** resolved (deferred; backend invariant)
+**Severity:** nit
+**Location:** `web/src/render.ts`
+**Description:** Wire format guarantees `samples` non-empty implies `latest` set (PR-ZDO-3 invariant). Defensive only.
+**Fix:** Closed deferred. Backend invariant holds; renderer doesn't need a fallback.
+
+### [PR-ZDO-4-D10] Note: existing `lastSnapshot` global ordering with new render call
+**Status:** resolved (note-only; verified)
+**Severity:** nit
+**Description:** Reviewer verified ordering in index.ts is intact; new ZappiDrain renders fire before `prevSnapshot`/`lastSnapshot` reassignment. No defect.
+**Fix:** Closed note-only.

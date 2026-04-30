@@ -1,4 +1,5 @@
 // PR-ZD-5: smoke-check for MPPT operation-mode rendering.
+// PR-ZDO-4: smoke-checks for Zappi compensated-drain rendering.
 //
 // No test framework is present in this project (only tsc + esbuild).
 // This file is type-checked by: cd web && ./node_modules/.bin/tsc --noEmit -p .
@@ -6,11 +7,19 @@
 // The assertions below are compile-time (TypeScript). Any runtime failure
 // throws an Error (non-zero exit when run via ts-node or similar).
 
-import { fmtMpptOperationMode, fmtSensorValue } from "./render.js";
+import { fmtMpptOperationMode, fmtSensorValue, BRANCH_COLOR, BRANCH_LABEL, BRANCH_CSS_CLASS, summaryFor } from "./render.js";
+import { ZappiDrainSnapshotWire } from "./model/victron_controller/dashboard/ZappiDrainSnapshotWire.js";
+import { ZappiDrainBranch } from "./model/victron_controller/dashboard/ZappiDrainBranch.js";
 
 function assert(label: string, actual: string, expected: string): void {
   if (actual !== expected) {
     throw new Error(`FAIL [${label}]: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+function assertBool(label: string, actual: boolean, expected: boolean): void {
+  if (actual !== expected) {
+    throw new Error(`FAIL [${label}]: expected ${expected}, got ${actual}`);
   }
 }
 
@@ -42,3 +51,113 @@ assert(
   String(fmtSensorValue("battery_soc", 82.5)),
   "null",
 );
+
+// --- PR-ZDO-4: branch lookup tables ------------------------------------------
+//
+// T1, T2, T3 below test the pure data referenced by renderZappiDrainSummary
+// and renderZappiDrainChart. Because there is no DOM in the tsc-only check
+// environment, the DOM-mutating render functions themselves are not directly
+// called here; instead we verify the colour/label/class constants that drive
+// the rendered output.
+
+// PR-ZDO-4.T1 renderZappiDrainSummary_displays_latest_snapshot
+// Verify that the Tighten branch maps to the expected display text, CSS class,
+// and colour that a renderer with a populated latest snapshot would apply.
+assert(
+  "T1: Tighten branch label",
+  BRANCH_LABEL[ZappiDrainBranch.Tighten],
+  "Tighten",
+);
+assert(
+  "T1: Tighten branch CSS class",
+  BRANCH_CSS_CLASS[ZappiDrainBranch.Tighten],
+  "branch-tighten",
+);
+assert(
+  "T1: Tighten branch colour",
+  BRANCH_COLOR[ZappiDrainBranch.Tighten],
+  "#d33",
+);
+// The hard-clamp-engaged CSS class contract is exercised in the summaryFor
+// tests below (D01), which use real snapshot data rather than literal
+// comparisons.
+
+// PR-ZDO-4.T2 renderZappiDrainSummary_handles_empty_state
+// Verify that all four branches have CSS classes, labels, and colours
+// defined — if any record entry is missing, the render call would silently
+// produce `undefined`. A complete Record with no optional keys is enforced
+// by TypeScript's type system; check all four values at runtime for defence.
+assertBool("T2: all branches have labels", [
+  ZappiDrainBranch.Tighten,
+  ZappiDrainBranch.Relax,
+  ZappiDrainBranch.Bypass,
+  ZappiDrainBranch.Disabled,
+].every((b) => typeof BRANCH_LABEL[b] === "string" && BRANCH_LABEL[b].length > 0), true);
+
+assertBool("T2: all branches have CSS classes", [
+  ZappiDrainBranch.Tighten,
+  ZappiDrainBranch.Relax,
+  ZappiDrainBranch.Bypass,
+  ZappiDrainBranch.Disabled,
+].every((b) => typeof BRANCH_CSS_CLASS[b] === "string" && BRANCH_CSS_CLASS[b].length > 0), true);
+
+assertBool("T2: all branches have colours", [
+  ZappiDrainBranch.Tighten,
+  ZappiDrainBranch.Relax,
+  ZappiDrainBranch.Bypass,
+  ZappiDrainBranch.Disabled,
+].every((b) => typeof BRANCH_COLOR[b] === "string" && BRANCH_COLOR[b].length > 0), true);
+
+// Disabled branch renders neutral grey (not a warm accent colour).
+assert("T2: Disabled branch colour is neutral", BRANCH_COLOR[ZappiDrainBranch.Disabled], "#555");
+assert("T2: Disabled branch CSS class", BRANCH_CSS_CLASS[ZappiDrainBranch.Disabled], "branch-disabled");
+
+// PR-ZDO-4.T3 renderZappiDrainChart_draws_polyline_and_reference_lines
+// Verify that the four branch colours used in polyline segments are the
+// correct hex codes matching the locked decisions in the plan.
+assert("T3: Tighten segment colour = red", BRANCH_COLOR[ZappiDrainBranch.Tighten], "#d33");
+assert("T3: Relax segment colour = green", BRANCH_COLOR[ZappiDrainBranch.Relax], "#3a3");
+assert("T3: Bypass segment colour = grey", BRANCH_COLOR[ZappiDrainBranch.Bypass], "#888");
+assert("T3: Disabled segment colour = neutral", BRANCH_COLOR[ZappiDrainBranch.Disabled], "#555");
+
+// --- summaryFor: pure decision logic (D01) ---
+
+// summaryFor: latest=undefined — all dashes, neutral classes.
+{
+  const r = summaryFor(undefined);
+  assert("summaryFor undefined: compensatedText", r.compensatedText, "—");
+  assert("summaryFor undefined: branchText", r.branchText, "—");
+  assert("summaryFor undefined: hardClampText", r.hardClampText, "—");
+  assert("summaryFor undefined: compensatedClass", r.compensatedClass, "big-number");
+  assert("summaryFor undefined: branchClass", r.branchClass, "big-number");
+  assert("summaryFor undefined: hardClampClass", r.hardClampClass, "big-number");
+}
+
+// summaryFor: Tighten + clamp engaged.
+{
+  const r = summaryFor(new ZappiDrainSnapshotWire(1500, ZappiDrainBranch.Tighten, true, 300, 1000, 200, BigInt(1000)));
+  assert("summaryFor Tighten: compensatedText", r.compensatedText, "1500 W");
+  assert("summaryFor Tighten: branchText", r.branchText, "Tighten");
+  assert("summaryFor Tighten: hardClampText", r.hardClampText, "Engaged");
+  assert("summaryFor Tighten: compensatedClass", r.compensatedClass, "big-number branch-tighten");
+  assert("summaryFor Tighten: branchClass", r.branchClass, "big-number branch-tighten");
+  assert("summaryFor Tighten: hardClampClass", r.hardClampClass, "big-number hard-clamp-engaged");
+}
+
+// summaryFor: Disabled → "—" instead of "0 W" (PR-ZDO-1-D05 / PR-ZDO-2-D02 contract).
+{
+  const r = summaryFor(new ZappiDrainSnapshotWire(0, ZappiDrainBranch.Disabled, false, 0, 1000, 200, BigInt(1000)));
+  assert("summaryFor Disabled: compensatedText is dash not 0 W", r.compensatedText, "—");
+  assert("summaryFor Disabled: branchText", r.branchText, "Disabled");
+  assert("summaryFor Disabled: hardClampText", r.hardClampText, "Disengaged");
+  assert("summaryFor Disabled: branchClass", r.branchClass, "big-number branch-disabled");
+}
+
+// summaryFor: Relax + clamp disengaged.
+{
+  const r = summaryFor(new ZappiDrainSnapshotWire(500, ZappiDrainBranch.Relax, false, 0, 1000, 200, BigInt(1000)));
+  assert("summaryFor Relax: compensatedText", r.compensatedText, "500 W");
+  assert("summaryFor Relax: branchText", r.branchText, "Relax");
+  assert("summaryFor Relax: hardClampText", r.hardClampText, "Disengaged");
+  assert("summaryFor Relax: hardClampClass", r.hardClampClass, "big-number hard-clamp-disengaged");
+}

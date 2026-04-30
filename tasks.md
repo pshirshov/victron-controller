@@ -33,7 +33,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`. Three PRs:
   PR-AS-A (additive infra, `21db585`), PR-AS-B (subscriber routing
   switch, `d8f5249`), PR-AS-C (delete the old types, `78abebe`).
-- [~] **M-ZAPPI-DRAIN-OBS** — Observability for the M-ZAPPI-DRAIN
+- [x] **M-ZAPPI-DRAIN-OBS** — Observability for the M-ZAPPI-DRAIN
   compensated-drain loop: three new HA broadcast sensors
   (`controller.zappi-drain.compensated-w` / `.tighten-active` /
   `.hard-clamp-active`) plus an in-dashboard Detail-tab chart with
@@ -389,7 +389,7 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
   `ZappiDrainSnapshotWire` / `ZappiDrainState` data blocks, and
   `WorldSnapshot.zappi_drain_state` field. Additive within v0.3.0.
   `scripts/regen-baboon.sh` + fix `convert.rs`. ≥ 2 tests.
-- [ ] **PR-ZDO-4 — Frontend rendering (Option C, frontend half)**.
+- [x] **PR-ZDO-4 — Frontend rendering (Option C, frontend half)**.
   New `<section id="zappi-drain-section">` above `#sensors` in
   `crates/shell/static/index.html`. Three big-number widgets +
   hand-rolled SVG sparkline (mirroring `web/src/chart.ts` idiom)
@@ -477,6 +477,66 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-ZDO-4 — Frontend rendering (Option C, frontend half)**
+  (M-ZAPPI-DRAIN-OBS, 2026-04-30) — New `<section
+  id="zappi-drain-section">` above `#sensors` in the Detail tab. Three
+  big-number widgets (drain W / branch label / hard-clamp Engaged
+  status) plus a hand-rolled SVG sparkline showing 30 minutes of
+  `compensated_drain_w` history with branch-coloured per-segment
+  polyline and dashed reference lines for `threshold_w` (orange) and
+  `hard_clamp_w` (red). Branch colour scheme: Tighten=red `#d33`,
+  Relax=green `#3a3`, Bypass=grey `#888`, Disabled=neutral `#555`.
+  Y-axis auto-scaling excludes Disabled samples from the max
+  calculation (per locked PR-ZDO-1-D05 / PR-ZDO-2-D02 contract:
+  Disabled-branch `compensated_drain_w = 0.0` is a placeholder, not
+  a real reading); the `compensated-w` big-number renders `—`
+  (not `0 W`) when `latest.branch == Disabled`. Disabled segments
+  in the polyline are drawn at y=0 with 50% opacity grey to indicate
+  the controller didn't run during those samples.
+  Pulled out a pure `summaryFor(latest)` decision helper to enable
+  unit-testing of the big-number rendering logic without a DOM —
+  matches the project's "tsc + esbuild only, no test runner" stance
+  (consistent with `fmtMpptOperationMode` from PR-ZD-5).
+  Adversarial review found 10 defects, all minor/nit/cosmetic. Three
+  actionable (D01 test rigor → extracted `summaryFor`; D02
+  tautological assertion → deleted; D07 dead conditional → cleaned
+  up); seven closed deferred or note-only (D03 cast workaround,
+  D04 single-sample edge, D05 label overlap, D06 inline style,
+  D08 Disabled-at-y=0 documented behaviour, D09 theoretical edge,
+  D10 ordering note).
+  Verification: `cd web && ./node_modules/.bin/tsc --noEmit -p .`
+  clean; `cargo test --workspace` → 572 passed (no backend changes;
+  count unchanged from PR-ZDO-3); `cargo clippy --workspace
+  --all-targets -- -D warnings` clean; `cargo build --target
+  armv7-unknown-linux-gnueabihf --release` green.
+  Notes / surprises:
+  - The pure `summaryFor` helper makes the rendering decisions
+    testable without jsdom. Locks the Disabled→`—` honest contract
+    in a unit test rather than relying on a code-comment + manual
+    verification. This pattern can be reused for future
+    DOM-mutating renderers.
+  - Branch colours chosen for semantic clarity (red=tighten=action,
+    green=relax=ok, grey=bypass=neutral, neutral=disabled=offline).
+    Tighten/Relax red-vs-green is the worst colour-blind pair, but
+    the branch tag's text label complements the colour so semantic
+    info is preserved.
+  - Refactor `summaryFor` extraction also serves as the documented
+    surface area for future PRs that want to display the snapshot
+    elsewhere (e.g. an ops page).
+  Constraints future work must respect:
+  - The Disabled→`—` invariant in `summaryFor` MUST be preserved.
+    A "fix" that displays `0 W` for Disabled would re-introduce
+    the dishonest-zero defect that PR-ZDO-2-D02 fixed.
+  - The chart's reference lines (threshold + hard-clamp) come from
+    `latest.threshold_w` / `latest.hard_clamp_w` (snapshotted at
+    capture time). If the operator retunes mid-window, the chart's
+    reference lines reflect the snapshot's value, not the current
+    knob — by design (locked: snapshotted-for-chart-consistency
+    rationale in PR-ZDO-1).
+  - Future renderers that consume `ZappiDrainState` MUST sort
+    `samples` by `captured_at_epoch_ms` at render time (PR-ZDO-1
+    risk: GX clock can jump backwards).
 
 - **PR-ZDO-3 — Wire format + dashboard data plumbing (Option C, backend
   half)** (M-ZAPPI-DRAIN-OBS, 2026-04-30) — Extends the baboon model
