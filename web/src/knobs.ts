@@ -46,6 +46,7 @@ export const CONFIG_GROUPS: ReadonlyArray<string> = [
   "Eddi",
   "Zappi calibration",
   "Weather-SoC planner",
+  "Actuator retry",
 ];
 
 // PR-rename-entities: keyed by the dotted display name (the user-facing
@@ -217,6 +218,9 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "zappi.battery-drain.hard-clamp-w": { kind: "int", min: 0, max: 10000, step: 25, default: 200, category: "config", group: "Zappi compensated drain" },
   // PR-ZDP-1: MPPT curtailment probe offset.
   "zappi.battery-drain.mppt-probe-w": { kind: "int", min: 0, max: 5000, step: 50, default: 500, category: "config", group: "Zappi compensated drain" },
+
+  // --- Config: PR-ACT-RETRY-1 universal actuator retry ---
+  "actuator.retry.s": { kind: "int", min: 10, max: 600, step: 1, default: 60, category: "config", group: "Actuator retry" },
 
   // --- Config: Zappi calibration ---
   "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5, category: "config", group: "Zappi calibration" },

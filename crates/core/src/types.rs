@@ -792,6 +792,8 @@ pub enum KnobId {
     /// voltage/current limited (mode 1), the relax target is pushed
     /// deeper than observed `-solar_export` by this amount. Default 500.
     ZappiBatteryDrainMpptProbeW,
+    /// PR-ACT-RETRY-1: universal actuator retry threshold (s). Default 60.
+    ActuatorRetryS,
 }
 
 /// Which branch of the compensated-drain controller fired this tick.

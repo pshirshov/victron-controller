@@ -10,6 +10,31 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Milestones (high-level)
 
+- [x] **M-ACTUATED-RETRY** — Universal retry for all five actuators
+  (grid_setpoint, input_current_limit, zappi_mode, eddi_mode,
+  schedule_0/1). Every controller's `if !changed { return; }` gate
+  doubles as dedup AND retry suppression — when the device doesn't
+  comply with a previously-issued command, the actuator sits at
+  Commanded forever and never re-fires. New `Actuated::needs_actuation`
+  predicate on `phase ∈ {Pending, Commanded}` AND time-since-target.since
+  exceeds threshold; new knob `actuator_retry_s` (default 60s); each
+  controller's gate becomes `if !changed && !needs_actuation(...) {
+  return; }`. Plan in
+  `./docs/drafts/20260501-2207-m-actuated-retry-plan.md`. One PR
+  (PR-ACT-RETRY-1).
+- [ ] **M-TYPED-SENSORS-META** — Cadence/staleness/origin/identifier
+  columns for the eddi.mode and zappi typed-sensor rows.
+  PR-EDDI-SENSORS-1 hardcoded `—` for these columns; this PR populates
+  from real config. Plan in
+  `./docs/drafts/20260501-2207-m-typed-sensors-meta-plan.md`. One PR
+  (PR-TS-META-1).
+- [ ] **M-DESYNTHETICS** — Audit and remove dashboard synthetic rows
+  (system.timezone, solar.sunrise, solar.sunset) plus the
+  `Actual::unknown(now)` boot-time since-stamp issue (D03 deferred from
+  PR-EDDI-SENSORS-1). Phase A audit checkpoint with orchestrator before
+  phase B conversions. Plan in
+  `./docs/drafts/20260501-2207-m-desynthetics-plan.md`. One PR
+  (PR-DESYN-1).
 - [x] **M-EDDI-SENSORS** — Eddi parser (`parse_eddi`) maps `sta=1` to
   Normal and everything else to Stopped, but the myenergi `sta` field
   is operational status, not mode — a Diverting Eddi (`sta=3`) reads
@@ -71,6 +96,48 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+
+---
+
+## Milestone M-ACTUATED-RETRY — PR breakdown
+
+Detail in `./docs/drafts/20260501-2207-m-actuated-retry-plan.md`. One
+PR; surface is small but cross-cutting (every actuator controller
+touches the gate).
+
+- [x] **PR-ACT-RETRY-1** — `Actuated::needs_actuation(now,
+  retry_threshold) -> bool` predicate; new knob `actuator_retry_s`
+  (default 60s) with full 11-layer registration; five controllers'
+  `!changed` gates extended to admit the retry path; matrix tests on
+  the predicate; per-controller integration test driving a retry.
+
+---
+
+## Milestone M-TYPED-SENSORS-META — PR breakdown
+
+Detail in `./docs/drafts/20260501-2207-m-typed-sensors-meta-plan.md`.
+
+- [ ] **PR-TS-META-1** — Extend `TypedSensorEnum` and
+  `TypedSensorZappi` wire types with `cadence_ms / staleness_ms /
+  origin / identifier`. Lift the typed-sensor freshness threshold to a
+  public constant in core. Populate from `cfg.myenergi.poll_period`
+  and the constant in `world_to_snapshot`. Render the values in the
+  dashboard sensors table.
+
+---
+
+## Milestone M-DESYNTHETICS — PR breakdown
+
+Detail in `./docs/drafts/20260501-2207-m-desynthetics-plan.md`.
+Phase-A audit is a synchronisation point with the orchestrator before
+phase-B conversions.
+
+- [ ] **PR-DESYN-1** — Phase A: enumerate every dashboard synthetic
+  row + hardcoded freshness/cadence/staleness/origin literal in audit
+  appendix on the plan doc; orchestrator review. Phase B: convert
+  `system.timezone`, `solar.sunrise`, `solar.sunset` to real-data
+  rows; render-side fix for `Actual::unknown(now)` boot-stamp issue;
+  drop hardcoded literals.
 
 ---
 
@@ -2218,3 +2285,92 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
     must use the `data-copy-from-sibling="true"` marker pattern, not
     `data-copy="..."`. The latter breaks on `"` characters — `esc()`
     only escapes `&`, `<`, `>`.
+
+- **PR-ACT-RETRY-1** (2026-05-01) — Universal retry path for all five
+  actuators (grid_setpoint, input_current_limit, zappi_mode, eddi_mode,
+  schedule_0/1). Plan in `./docs/drafts/20260501-2207-m-actuated-retry-plan.md`.
+
+  **Origin.** Field observation 2026-05-01 (post-PR-EDDI-SENSORS-1
+  diagnosis): every actuator controller's `if !changed { return; }`
+  gate doubles as both dedup AND retry suppression — once
+  `propose_target` saw the value before, it returns `changed=false` and
+  the controller never re-fires, even when the device hasn't complied.
+  The user's framing: "We should always reissue commands for all the
+  actuated values if the actuation does not happen."
+
+  **What shipped.**
+  - `Actuated::needs_actuation(now, retry_threshold) -> bool` —
+    returns true when `phase ∈ {Pending, Commanded}` AND `now -
+    target.since ≥ retry_threshold`. Pure phase + time check; the
+    "does actual match target?" question is delegated to `confirm_if`
+    (which already drives `→ Confirmed` with per-controller tolerance).
+  - New knob `actuator_retry_s: u32` (default 60s). Full 11-layer
+    registration per project CLAUDE.md. New "Actuator retry" group in
+    the dashboard knob table.
+  - All five actuator controllers' gates extended:
+    `if !changed && !world.<X>.needs_actuation(now, retry_threshold) {
+    return; }`. `should_actuate()` (the Leave/Set distinction in the
+    eddi controller) preserved as a separate guard.
+  - `mark_commanded` semantics extended to refresh `target.since` AND
+    deprecate `actual` on `Commanded → Commanded` retry-fire (was
+    previously a no-op outside Pending). Self-stabilising: each retry
+    advances target.since to now, so the next needs_actuation returns
+    false for another retry-window. Without this, the controller would
+    re-fire every tick after the first threshold-crossing.
+  - Two deadband filters (grid_setpoint, input_current_limit) gated
+    on `phase == Confirmed` so they no longer pre-empt the retry path
+    when phase is Pending/Commanded with mismatching actual.
+  - Observer-mode log spam closed: the per-tick "would be set"
+    `Effect::Log` is gated on `changed=true`, so retries don't
+    re-emit the same suppression notice every tick.
+
+  **Verification.**
+  - `cargo test --workspace` — all green (375 + 10 + 211 + ... ;
+    0 failed).
+  - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+  - `cd web && ./node_modules/.bin/tsc --noEmit -p .` — clean.
+
+  **Adversarial review.** Two rounds. Round 1 produced 5 defects.
+  D01 (major): deadband pre-empted retry for the two f64 actuators —
+  fixed by gating deadband early-return on `phase == Confirmed`.
+  D02 (major): existing test passed for the wrong reason (deadband
+  pre-empt, not needs_actuation) — fixed by adding a regression-lock
+  sibling test that hand-builds a stuck-Commanded grid_setpoint with
+  computed-within-deadband and asserts WriteDbus IS emitted; proven
+  via D01-fix-revert roundtrip. D03 (minor): missing test for
+  mark_commanded deprecate side-effect — added. D04 (minor):
+  observer-mode log spam — gated on `changed`. D05 (nit): knob in
+  wrong dashboard group — moved to new "Actuator retry" group. Round 2
+  verified all five fixes clean with no new defects.
+
+  **Surprises / notes for future work.**
+  - The `mark_commanded` semantic change (was no-op on Commanded, now
+    re-stamps target.since + deprecates actual) is load-bearing for
+    self-stabilising retry. Any future caller of `mark_commanded` on a
+    `Commanded` phase must understand the re-stamp as a *fresh* commit
+    point. The doc-comment on the function flags this.
+  - Deadband filters now suppress writes ONLY for Confirmed actuators.
+    A test that previously passed because of deadband may now pass for
+    a different reason (changed=false or needs_actuation=false in a
+    Pending/Commanded but unmoved actuator). `setpoint_deadband_suppresses_minor_changes`
+    was specifically reviewed; the assertion now holds because the
+    0.1 W nudge rounds to the same i32 setpoint, not because of the
+    deadband — pre-existing test, unchanged behaviour, but the
+    underlying mechanism is different.
+  - "Phase=Confirmed never demotes" is still an accepted invariant —
+    if actual drifts away from target while Confirmed, the controller
+    will not retry. Acceptable per the plan because confirm_if owns
+    the per-controller tolerance and a transient drift inside that
+    tolerance is the steady state. If a real "drifted Confirmed"
+    failure mode shows up in field, the fix is to add a phase
+    demotion path on confirm_if-mismatch — separate PR.
+
+  **Constraints future work must respect.**
+  - Adding a new actuator: the controller's actuation gate must
+    include the new retry-aware shape `!changed &&
+    !world.<X>.needs_actuation(now, retry_threshold)`, and
+    mark_commanded must run on the actuation push path so the retry
+    clock advances.
+  - The `actuator_retry_s` knob is cross-cutting (applies to all
+    actuators). If a per-actuator retry interval is ever needed,
+    introduce a per-actuator knob; do not overload this one.

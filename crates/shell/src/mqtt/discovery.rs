@@ -583,6 +583,8 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::ZappiBatteryDrainHardClampW, 25.0, Some("W")),
         // PR-ZDP-1: MPPT curtailment probe offset.
         number_knob(KnobId::ZappiBatteryDrainMpptProbeW, 50.0, Some("W")),
+        // PR-ACT-RETRY-1: universal actuator retry threshold (s).
+        number_knob(KnobId::ActuatorRetryS, 1.0, Some("s")),
 
         (KnobId::DischargeTime, "select", json!({"options": ["02:00", "23:00"]})),
         (KnobId::DebugFullCharge, "select", json!({"options": ["auto", "force", "forbid"]})),

@@ -941,6 +941,9 @@ pub struct KnobsDefaultsConfig {
     pub zappi_battery_drain_hard_clamp_w: Option<u32>,
     // --- PR-ZDP-1: MPPT curtailment probe ---
     pub zappi_battery_drain_mppt_probe_w: Option<u32>,
+
+    // --- PR-ACT-RETRY-1: universal actuator retry threshold ---
+    pub actuator_retry_s: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -1019,6 +1022,8 @@ impl KnobsDefaultsConfig {
         set!(zappi_battery_drain_hard_clamp_w);
         // PR-ZDP-1: MPPT curtailment probe.
         set!(zappi_battery_drain_mppt_probe_w);
+        // PR-ACT-RETRY-1: universal actuator retry threshold.
+        set!(actuator_retry_s);
     }
 }
 

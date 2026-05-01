@@ -22,7 +22,7 @@
 //! which controller" dispatch problem entirely.
 
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 
 use crate::Clock;
@@ -806,6 +806,8 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::ZappiBatteryDrainMpptProbeW, KnobValue::Uint32(v)) => {
             replace(&mut k.zappi_battery_drain_mppt_probe_w, v) != v
         }
+        // PR-ACT-RETRY-1.
+        (KnobId::ActuatorRetryS, KnobValue::Uint32(v)) => replace(&mut k.actuator_retry_s, v) != v,
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -969,6 +971,11 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::ZappiBatteryDrainMpptProbeW,
             value: V::Uint32(k.zappi_battery_drain_mppt_probe_w),
+        },
+        // PR-ACT-RETRY-1.
+        PublishPayload::Knob {
+            id: I::ActuatorRetryS,
+            value: V::Uint32(k.actuator_retry_s),
         },
     ]
 }
@@ -1642,9 +1649,14 @@ fn maybe_propose_setpoint(
     // via a controller bug; `i32::MIN - i32::MAX` panics in debug and
     // wraps in release. `i64::from(...) - i64::from(...)` cannot
     // overflow for any i32 inputs.
+    // PR-ACT-RETRY-1 D01: gate on phase=Confirmed. If phase is
+    // Pending/Commanded with mismatching actual, the deadband must NOT
+    // pre-empt — `needs_actuation` below has to run for the retry path.
     if let Some(current_target) = world.grid_setpoint.target.value {
         let delta = (i64::from(current_target) - i64::from(value)).abs();
-        if delta < i64::from(params.setpoint_retarget_deadband_w) {
+        if delta < i64::from(params.setpoint_retarget_deadband_w)
+            && world.grid_setpoint.target.phase == crate::tass::TargetPhase::Confirmed
+        {
             return;
         }
     }
@@ -1657,7 +1669,12 @@ fn maybe_propose_setpoint(
     // still resets every target to Unset, which prevents the A-06
     // stuck-Pending hazard when this path runs in observer mode.
     let changed = world.grid_setpoint.propose_target(value, owner, now);
-    if !changed {
+    // PR-ACT-RETRY-1: re-fire the write when actual still doesn't
+    // match target after `actuator_retry_s`. `confirm_if` upgrades to
+    // Confirmed when actual is within deadband, so phase ∈ {Pending,
+    // Commanded} past the threshold means "retry needed".
+    let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
+    if !changed && !world.grid_setpoint.needs_actuation(now, retry_threshold) {
         return;
     }
 
@@ -1672,13 +1689,20 @@ fn maybe_propose_setpoint(
     }));
 
     if !world.knobs.writes_enabled {
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            source: "observer",
-            message: format!(
-                "GridSetpoint would be set to {value} W (owner={owner:?}); suppressed by writes_enabled=false"
-            ),
-        });
+        // PR-ACT-RETRY-1 D04: gate the observer-mode log on `changed`
+        // so the retry path (changed=false but needs_actuation=true)
+        // doesn't spam the log every tick past the threshold. The
+        // ActuatedPhase publish above already surfaces the
+        // stuck-Pending state to the dashboard.
+        if changed {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "GridSetpoint would be set to {value} W (owner={owner:?}); suppressed by writes_enabled=false"
+                ),
+            });
+        }
         return;
     }
 
@@ -1797,8 +1821,13 @@ pub(crate) fn run_current_limit(
     let now = clock.monotonic();
     let params = topology.controller_params;
 
+    // PR-ACT-RETRY-1 D01: see `maybe_propose_setpoint` — gate the
+    // dead-band early-return on phase=Confirmed so the retry path runs
+    // when phase is Pending/Commanded with mismatching actual.
     if let Some(current_target) = world.input_current_limit.target.value {
-        if (current_target - value).abs() < params.current_limit_retarget_deadband_a {
+        if (current_target - value).abs() < params.current_limit_retarget_deadband_a
+            && world.input_current_limit.target.phase == crate::tass::TargetPhase::Confirmed
+        {
             return;
         }
     }
@@ -1809,7 +1838,9 @@ pub(crate) fn run_current_limit(
     let changed = world
         .input_current_limit
         .propose_target(value, Owner::CurrentLimitController, now);
-    if !changed {
+    // PR-ACT-RETRY-1.
+    let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
+    if !changed && !world.input_current_limit.needs_actuation(now, retry_threshold) {
         return;
     }
 
@@ -1820,13 +1851,16 @@ pub(crate) fn run_current_limit(
     }));
 
     if !world.knobs.writes_enabled {
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            source: "observer",
-            message: format!(
-                "InputCurrentLimit would be set to {value:.2} A; suppressed by writes_enabled=false"
-            ),
-        });
+        // PR-ACT-RETRY-1 D04: see `maybe_propose_setpoint`.
+        if changed {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "InputCurrentLimit would be set to {value:.2} A; suppressed by writes_enabled=false"
+                ),
+            });
+        }
         return;
     }
 
@@ -1982,6 +2016,10 @@ fn maybe_propose_schedule(
     now: Instant,
     effects: &mut Vec<Effect>,
 ) {
+    // Capture before the mutable borrow below — `actuated` reborrows
+    // through `&mut world.schedule_N` so `world.knobs` would conflict.
+    let writes_enabled = world.knobs.writes_enabled;
+    let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
     let actuated = if index == 0 {
         &mut world.schedule_0
     } else {
@@ -1999,7 +2037,8 @@ fn maybe_propose_schedule(
     // `writes_enabled`. The `Command::KillSwitch(true)` edge-trigger
     // still resets every target on observer→live.
     let changed = actuated.propose_target(spec, Owner::ScheduleController, now);
-    if !changed {
+    // PR-ACT-RETRY-1.
+    if !changed && !actuated.needs_actuation(now, retry_threshold) {
         return;
     }
 
@@ -2009,14 +2048,17 @@ fn maybe_propose_schedule(
         phase: actuated.target.phase,
     }));
 
-    if !world.knobs.writes_enabled {
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            source: "observer",
-            message: format!(
-                "Schedule{index} would be set to {spec:?}; suppressed by writes_enabled=false"
-            ),
-        });
+    if !writes_enabled {
+        // PR-ACT-RETRY-1 D04: see `maybe_propose_setpoint`.
+        if changed {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "Schedule{index} would be set to {spec:?}; suppressed by writes_enabled=false"
+                ),
+            });
+        }
         return;
     }
 
@@ -2115,7 +2157,9 @@ pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut
     let changed = world
         .zappi_mode
         .propose_target(desired, Owner::ZappiController, now);
-    if !changed {
+    // PR-ACT-RETRY-1.
+    let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
+    if !changed && !world.zappi_mode.needs_actuation(now, retry_threshold) {
         return;
     }
 
@@ -2126,13 +2170,16 @@ pub(crate) fn run_zappi_mode(world: &mut World, clock: &dyn Clock, effects: &mut
     }));
 
     if !world.knobs.writes_enabled {
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            source: "observer",
-            message: format!(
-                "ZappiMode would be set to {desired:?}; suppressed by writes_enabled=false"
-            ),
-        });
+        // PR-ACT-RETRY-1 D04: see `maybe_propose_setpoint`.
+        if changed {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "ZappiMode would be set to {desired:?}; suppressed by writes_enabled=false"
+                ),
+            });
+        }
         return;
     }
 
@@ -2198,9 +2245,16 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
     }));
 
     // Actuation gate: only fire `CallMyenergi` when the controller asked
-    // for `Set` AND the target value actually changed (idempotent dedup
-    // — repeat ticks with the same target don't re-fire).
-    if !out.action.should_actuate() || !changed {
+    // for `Set` AND (the target value actually changed OR the universal
+    // retry threshold has elapsed since the last propose / mark — see
+    // PR-ACT-RETRY-1). `should_actuate=Leave` short-circuits regardless;
+    // the retry path requires `Set` (we don't promote a `Leave` decision
+    // into a write just because actual disagrees).
+    let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
+    if !out.action.should_actuate() {
+        return;
+    }
+    if !changed && !world.eddi_mode.needs_actuation(now, retry_threshold) {
         return;
     }
 
@@ -2213,13 +2267,16 @@ pub(crate) fn run_eddi_mode(world: &mut World, clock: &dyn Clock, effects: &mut 
     world.bookkeeping.eddi_last_transition_at = Some(now);
 
     if !world.knobs.writes_enabled {
-        effects.push(Effect::Log {
-            level: LogLevel::Info,
-            source: "observer",
-            message: format!(
-                "EddiMode would be set to {desired:?}; suppressed by writes_enabled=false"
-            ),
-        });
+        // PR-ACT-RETRY-1 D04: see `maybe_propose_setpoint`.
+        if changed {
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                source: "observer",
+                message: format!(
+                    "EddiMode would be set to {desired:?}; suppressed by writes_enabled=false"
+                ),
+            });
+        }
         return;
     }
 
@@ -3701,6 +3758,253 @@ mod tests {
 
         assert_eq!(world.sensors.battery_soc.freshness, Freshness::Stale);
         assert_eq!(world.eddi_mode.target.value, Some(EddiMode::Stopped));
+    }
+
+    // ------------------------------------------------------------------
+    // PR-ACT-RETRY-1: universal actuator retry
+    // ------------------------------------------------------------------
+
+    /// Discrete actuator (eddi mode is an enum). After a write,
+    /// `actual` arrives mismatching `target`. Within
+    /// `actuator_retry_s`, no retry. Past it, the controller re-fires
+    /// the same `Effect::CallMyenergi(SetEddiMode(...))` and
+    /// `mark_commanded` updates `target.since`.
+    #[test]
+    fn eddi_mode_retries_after_threshold_when_actual_mismatches() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+        // SoC=58 is below disable_soc=94 → controller wants Stopped.
+        world.sensors.battery_soc.on_reading(58.0, c.monotonic);
+        // Pretend the device currently reports Normal — so the desired
+        // target Stopped differs from current_mode → action=Set(Stopped).
+        world
+            .typed_sensors
+            .eddi_mode
+            .on_reading(EddiMode::Normal, c.monotonic);
+
+        let retry_s = world.knobs.actuator_retry_s;
+
+        // Tick 1: controller fires the write.
+        let eff = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        assert!(
+            eff.iter().any(|e| matches!(
+                e,
+                Effect::CallMyenergi(MyenergiAction::SetEddiMode(EddiMode::Stopped))
+            )),
+            "first tick must fire SetEddiMode(Stopped)"
+        );
+        assert_eq!(world.eddi_mode.target.phase, TargetPhase::Commanded);
+        let since_after_first = world.eddi_mode.target.since;
+
+        // Re-feed actual=Normal so the mismatch persists (the device
+        // didn't comply). `on_reading` alone doesn't confirm; phase
+        // stays Commanded.
+        world
+            .typed_sensors
+            .eddi_mode
+            .on_reading(EddiMode::Normal, c.monotonic);
+
+        // Tick 2: same instant — within the retry window. No new write.
+        let eff = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        assert!(
+            !eff.iter().any(|e| matches!(
+                e,
+                Effect::CallMyenergi(MyenergiAction::SetEddiMode(_))
+            )),
+            "no retry within the threshold window"
+        );
+
+        // Tick 3: advance past the retry threshold — the controller
+        // must re-fire the same write.
+        let later = FixedClock::new(
+            c.monotonic + StdDuration::from_secs(u64::from(retry_s) + 1),
+            naive(12, 0),
+        );
+        // Refresh required sensors at `later` so freshness gates pass.
+        {
+            let ss = &mut world.sensors;
+            ss.battery_soc.on_reading(58.0, later.monotonic);
+            ss.battery_soh.on_reading(95.0, later.monotonic);
+            ss.battery_installed_capacity.on_reading(100.0, later.monotonic);
+            ss.battery_dc_power.on_reading(0.0, later.monotonic);
+            ss.mppt_power_0.on_reading(1500.0, later.monotonic);
+            ss.mppt_power_1.on_reading(1000.0, later.monotonic);
+            ss.soltaro_power.on_reading(500.0, later.monotonic);
+            ss.power_consumption.on_reading(1200.0, later.monotonic);
+            ss.evcharger_ac_power.on_reading(0.0, later.monotonic);
+        }
+        world
+            .typed_sensors
+            .eddi_mode
+            .on_reading(EddiMode::Normal, later.monotonic);
+
+        let eff = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
+        assert!(
+            eff.iter().any(|e| matches!(
+                e,
+                Effect::CallMyenergi(MyenergiAction::SetEddiMode(EddiMode::Stopped))
+            )),
+            "retry must fire SetEddiMode(Stopped) after the threshold elapses"
+        );
+        // mark_commanded updated target.since to the new clock.
+        assert!(
+            world.eddi_mode.target.since > since_after_first,
+            "mark_commanded must refresh target.since on retry"
+        );
+    }
+
+    /// f64-shaped actuator (grid setpoint). Confirmed phase blocks
+    /// retry even past `actuator_retry_s`. Two paths conspire to
+    /// suppress the write here: (a) the per-tick computed setpoint
+    /// matches the existing target exactly, so `propose_target`
+    /// returns `changed=false`; (b) phase=Confirmed, so
+    /// `needs_actuation` returns false. Either gate alone would
+    /// suppress the write; both being satisfied is the steady-state
+    /// invariant. The sibling `grid_setpoint_retries_after_threshold_*`
+    /// test exercises the `needs_actuation` gate in isolation (deadband
+    /// not applicable because phase != Confirmed).
+    #[test]
+    fn grid_setpoint_confirmed_phase_blocks_retry_past_threshold() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        seed_required_sensors(&mut world, c.monotonic);
+
+        // Tick 1: setpoint controller fires, target lands at Commanded.
+        let _ = process(&Event::Tick { at: c.monotonic }, &mut world, &c, &Topology::defaults());
+        let target_value = world.grid_setpoint.target.value.expect("target set");
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+
+        // Feed the actual readback at exactly the target — confirm_if
+        // (driven by `apply_sensor_reading`) promotes phase to Confirmed.
+        let _ = process(
+            &Event::Sensor(crate::types::SensorReading {
+                id: SensorId::GridSetpointActual,
+                value: f64::from(target_value),
+                at: c.monotonic,
+            }),
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert_eq!(
+            world.grid_setpoint.target.phase,
+            TargetPhase::Confirmed,
+            "matching readback must promote phase to Confirmed"
+        );
+
+        // Advance well past the retry threshold.
+        let retry_s = world.knobs.actuator_retry_s;
+        let later = FixedClock::new(
+            c.monotonic + StdDuration::from_secs(u64::from(retry_s) + 60),
+            naive(12, 1),
+        );
+        // Refresh required sensors so freshness gates still pass.
+        {
+            let ss = &mut world.sensors;
+            ss.battery_soc.on_reading(75.0, later.monotonic);
+            ss.battery_soh.on_reading(95.0, later.monotonic);
+            ss.battery_installed_capacity.on_reading(100.0, later.monotonic);
+            ss.battery_dc_power.on_reading(0.0, later.monotonic);
+            ss.mppt_power_0.on_reading(1500.0, later.monotonic);
+            ss.mppt_power_1.on_reading(1000.0, later.monotonic);
+            ss.soltaro_power.on_reading(500.0, later.monotonic);
+            ss.power_consumption.on_reading(1200.0, later.monotonic);
+            ss.grid_power.on_reading(500.0, later.monotonic);
+            ss.grid_voltage.on_reading(230.0, later.monotonic);
+            ss.grid_current.on_reading(2.0, later.monotonic);
+            ss.consumption_current.on_reading(5.0, later.monotonic);
+            ss.offgrid_power.on_reading(500.0, later.monotonic);
+            ss.offgrid_current.on_reading(2.2, later.monotonic);
+            ss.vebus_input_current.on_reading(0.0, later.monotonic);
+            ss.evcharger_ac_power.on_reading(0.0, later.monotonic);
+            ss.evcharger_ac_current.on_reading(0.0, later.monotonic);
+        }
+
+        let eff = process(&Event::Tick { at: later.monotonic }, &mut world, &later, &Topology::defaults());
+
+        assert!(
+            !eff.iter().any(|e| matches!(
+                e,
+                Effect::WriteDbus { target: DbusTarget::GridSetpoint, .. }
+            )),
+            "Confirmed phase must not retry, even past actuator_retry_s"
+        );
+        assert_eq!(
+            world.grid_setpoint.target.phase,
+            TargetPhase::Confirmed,
+            "phase must remain Confirmed across the retry window"
+        );
+    }
+
+    /// PR-ACT-RETRY-1 D01/D02 regression lock. Phase=Commanded with
+    /// mismatching actual: the deadband filter must NOT pre-empt the
+    /// retry path. Per-tick computed setpoint sits within the 25 W
+    /// deadband of the existing target, but actual is 500 W away from
+    /// target (well outside the 50 W confirm tolerance) so phase stays
+    /// Commanded. Past `actuator_retry_s`, `needs_actuation` must
+    /// return true and a fresh `Effect::WriteDbus(GridSetpoint, ...)`
+    /// must fire.
+    ///
+    /// Under pre-D01 (deadband early-return unconditional): the
+    /// dead-band match would early-return before `needs_actuation` is
+    /// ever consulted, no write fires, this test FAILS.
+    /// Under post-D01 (deadband gated on phase=Confirmed): phase is
+    /// Commanded, deadband doesn't pre-empt, `needs_actuation` returns
+    /// true past threshold, write fires, this test PASSES.
+    #[test]
+    fn grid_setpoint_retries_after_threshold_when_actual_mismatches_within_deadband() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // writes_enabled is required for WriteDbus emission.
+        world.knobs.writes_enabled = true;
+
+        // Hand-build a Commanded target at -1000 W with a mismatching
+        // actual (-500 W is 500 W outside the 50 W confirm tolerance).
+        let target_value: i32 = -1000;
+        assert!(world
+            .grid_setpoint
+            .propose_target(target_value, Owner::SetpointController, c.monotonic));
+        world.grid_setpoint.mark_commanded(c.monotonic);
+        world.grid_setpoint.on_reading(-500, c.monotonic);
+        // Sanity: confirm_if with the production tolerance must NOT
+        // promote — the test's premise depends on phase staying Commanded.
+        let tol = Topology::defaults().controller_params.setpoint_confirm_tolerance_w;
+        let promoted = world
+            .grid_setpoint
+            .confirm_if(|t, a| (*t - *a).abs() <= tol, c.monotonic);
+        assert!(!promoted, "actual must not promote to Confirmed");
+        assert_eq!(world.grid_setpoint.target.phase, TargetPhase::Commanded);
+
+        // Advance clock past actuator_retry_s.
+        let retry_s = world.knobs.actuator_retry_s;
+        let later_instant = c.monotonic + StdDuration::from_secs(u64::from(retry_s) + 5);
+
+        // Per-tick computed setpoint sits WITHIN the 25 W retarget
+        // deadband of the existing target. Under pre-D01 the deadband
+        // filter would early-return here.
+        let computed: i32 = -1010;
+        let deadband = Topology::defaults().controller_params.setpoint_retarget_deadband_w;
+        assert!((target_value - computed).abs() < deadband);
+
+        let mut effects: Vec<Effect> = Vec::new();
+        maybe_propose_setpoint(
+            &mut world,
+            computed,
+            Owner::SetpointController,
+            later_instant,
+            Topology::defaults().controller_params,
+            &mut effects,
+        );
+
+        let wrote = effects.iter().any(|e| matches!(
+            e,
+            Effect::WriteDbus { target: DbusTarget::GridSetpoint, .. }
+        ));
+        assert!(
+            wrote,
+            "retry path must emit WriteDbus when phase=Commanded with mismatching actual past retry threshold, even when computed value sits within the retarget deadband"
+        );
     }
 
     // ------------------------------------------------------------------

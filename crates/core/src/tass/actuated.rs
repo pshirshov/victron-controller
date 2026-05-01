@@ -46,12 +46,22 @@ impl<V> Actuated<V> {
     /// actual value (the old reading described the pre-write target; we
     /// just emitted the write so it's about to be replaced).
     ///
-    /// Idempotent no-op outside `Pending`. The `actual.deprecate` side
-    /// effect only fires on the write/commit path — observer-mode runs
-    /// that call [`Self::propose_target`] but do *not* emit the effect
-    /// must not call `mark_commanded` either (PR-SCHED0-D02).
+    /// On `Commanded` (the universal-retry path — PR-ACT-RETRY-1), the
+    /// phase doesn't change but `target.since` and the actual's
+    /// deprecation are refreshed to reflect the new write attempt.
+    /// This is what gives the retry loop pacing: the next
+    /// `needs_actuation` only returns true again after another
+    /// `retry_threshold` has elapsed.
+    ///
+    /// Idempotent no-op on `Unset` / `Confirmed`. The `actual.deprecate`
+    /// side effect only fires on the write/commit path — observer-mode
+    /// runs that call [`Self::propose_target`] but do *not* emit the
+    /// effect must not call `mark_commanded` either (PR-SCHED0-D02).
     pub fn mark_commanded(&mut self, now: Instant) {
-        if matches!(self.target.phase, TargetPhase::Pending) {
+        if matches!(
+            self.target.phase,
+            TargetPhase::Pending | TargetPhase::Commanded
+        ) {
             self.target.phase = TargetPhase::Commanded;
             self.target.since = now;
             self.actual.deprecate(now);
@@ -119,6 +129,25 @@ impl<V> Actuated<V> {
     /// [`Self::propose_target`]'s same-value check forever.
     pub fn reset_to_unset(&mut self, now: Instant) {
         self.target = Target::unset(now);
+    }
+
+    /// True when the controller should re-fire its actuation effect on
+    /// this tick because the previous fire didn't reach `Confirmed` and
+    /// enough time has elapsed to retry.
+    ///
+    /// Returns true iff `phase ∈ {Pending, Commanded}` AND `now -
+    /// target.since ≥ retry_threshold`. The value-equality check ("does
+    /// actual match target?") is deliberately delegated to `confirm_if`,
+    /// which owns per-controller tolerance (deadband for f64 actuators,
+    /// strict equality for enums/structs). By the time this method is
+    /// called, `phase=Confirmed` already means actual matches target, so
+    /// short-circuiting on phase is equivalent.
+    #[must_use]
+    pub fn needs_actuation(&self, now: Instant, retry_threshold: Duration) -> bool {
+        matches!(
+            self.target.phase,
+            TargetPhase::Pending | TargetPhase::Commanded
+        ) && now.saturating_duration_since(self.target.since) >= retry_threshold
     }
 }
 
@@ -204,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_commanded_is_noop_outside_pending() {
+    fn mark_commanded_is_noop_on_unset_and_confirmed() {
         let t0 = Instant::now();
         let mut e: Actuated<i32> = Actuated::new(t0);
         // From Unset
@@ -217,8 +246,56 @@ mod tests {
         e.on_reading(1, at(t0, 4));
         assert!(e.confirm_if(|t, a| t == a, at(t0, 5)));
         assert_eq!(e.target.phase, TargetPhase::Confirmed);
+        let since_before = e.target.since;
         e.mark_commanded(at(t0, 6));
         assert_eq!(e.target.phase, TargetPhase::Confirmed);
+        assert_eq!(
+            e.target.since, since_before,
+            "mark_commanded must not touch since on Confirmed"
+        );
+    }
+
+    /// PR-ACT-RETRY-1: `mark_commanded` on `Commanded` refreshes
+    /// `target.since` (the retry-pacing timestamp) and re-deprecates
+    /// any stale actual reading.
+    #[test]
+    fn mark_commanded_on_commanded_refreshes_since() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
+        assert_eq!(e.target.since, at(t0, 2));
+
+        // Re-fire (universal retry path).
+        e.mark_commanded(at(t0, 100));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
+        assert_eq!(e.target.since, at(t0, 100));
+    }
+
+    /// PR-ACT-RETRY-1 D03: `mark_commanded` on `Commanded` also
+    /// deprecates the actual side. The retry just re-emitted the
+    /// write, so any prior reading describes the pre-retry state and
+    /// must be marked `Deprecated` until a fresh post-retry readback
+    /// arrives. Without this side effect the dashboard's
+    /// confirmed-vs-stale signalling would lie across the retry.
+    #[test]
+    fn mark_commanded_on_commanded_deprecates_actual() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(100, Owner::SetpointController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
+        e.on_reading(100, at(t0, 5));
+        assert_eq!(e.actual.freshness, Freshness::Fresh);
+
+        // Re-fire on Commanded — actual must transition to Deprecated.
+        e.mark_commanded(at(t0, 65));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
+        assert_eq!(
+            e.actual.freshness,
+            Freshness::Deprecated,
+            "mark_commanded on Commanded must deprecate the actual side"
+        );
     }
 
     #[test]
@@ -439,6 +516,58 @@ mod tests {
         assert_eq!(e.actual.freshness, Freshness::Stale);
         assert_eq!(e.target.phase, target_phase_before);
         assert_eq!(e.target.since, target_since_before);
+    }
+
+    #[test]
+    fn needs_actuation_unset_returns_false() {
+        let t0 = Instant::now();
+        let e: Actuated<i32> = Actuated::new(t0);
+        assert!(!e.needs_actuation(at(t0, 1_000_000), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn needs_actuation_confirmed_returns_false() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
+        e.on_reading(1, at(t0, 3));
+        assert!(e.confirm_if(|t, a| t == a, at(t0, 4)));
+        assert!(!e.needs_actuation(at(t0, 1_000_000), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn needs_actuation_pending_below_threshold_returns_false() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 10));
+        assert!(!e.needs_actuation(at(t0, 40), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn needs_actuation_pending_at_or_above_threshold_returns_true() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 10));
+        assert!(e.needs_actuation(at(t0, 70), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn needs_actuation_commanded_below_threshold_returns_false() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 10));
+        e.mark_commanded(at(t0, 20));
+        assert!(!e.needs_actuation(at(t0, 50), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn needs_actuation_commanded_at_or_above_threshold_returns_true() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(1, Owner::SetpointController, at(t0, 10));
+        e.mark_commanded(at(t0, 20));
+        assert!(e.needs_actuation(at(t0, 80), Duration::from_secs(60)));
     }
 
     #[test]

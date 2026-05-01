@@ -1895,3 +1895,42 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `web/src/displayNames.ts:149-150`
 **Description:** `DISPLAY_NAMES` maps snake_case canonicals to dotted display names. The two new entries mapped `"eddi.mode" → "eddi.mode"` and `"zappi" → "zappi"` — pure tautologies, since the canonical key is already dotted.
 **Fix:** `web/src/displayNames.ts` — removed both pass-through entries and the explanatory comment block. The `??` fallback in `displayNameOf` returns the canonical key unchanged when the lookup misses; observable behaviour is identical.
+
+---
+
+## PR-ACT-RETRY-1 (M-ACTUATED-RETRY universal actuator retry)
+
+### [PR-ACT-RETRY-1-D01] Deadband filter pre-empts the retry path for grid_setpoint and input_current_limit
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:1652-1657` (`maybe_propose_setpoint`) and `crates/core/src/process.rs:1812-1816` (`run_current_limit`)
+**Description:** Both controllers gate the retry path behind an unconditional dead-band early-return that runs *before* `propose_target` and the new `!changed && !needs_actuation` gate. When the device is stuck at `Commanded` with mismatching `actual` (the exact failure mode this PR exists to fix) and the controller's natural per-tick output stays within `setpoint_retarget_deadband_w` (default 25 W) or `current_limit_retarget_deadband_a` (default 0.5 A) of the stuck target — the steady-state common case — the function returns at line 1655/1814 and `needs_actuation` is never consulted. Result: the two f64-shaped actuators (the "float-tolerance-doesn't-cause-eternal-retry" worry from the plan) are precisely the two that *cannot* retry under steady-state. The eddi/zappi/schedules controllers (no dead-band filter) retry correctly. Note the in-source comment at L1645–1646 reads "don't restart the phase cycle if the current target is within deadband and we're already confirmed", which describes the intended pre-PR behaviour; the retry refactor did not revisit it.
+**Fix:** `crates/core/src/process.rs` — both deadband early-returns now require `phase == Confirmed` to fire. In `maybe_propose_setpoint`, the integer-W deadband check (`delta < params.setpoint_retarget_deadband_w`) is now conjoined with `world.grid_setpoint.target.phase == crate::tass::TargetPhase::Confirmed`. Same pattern for `run_current_limit` against `world.input_current_limit.target.phase`. When phase ∈ {Pending, Commanded}, the deadband no longer pre-empts; the retry path runs. No existing tests broke — the regression-lock test from D02 confirms the fix.
+
+### [PR-ACT-RETRY-1-D02] grid_setpoint no-retry test does not actually verify the Confirmed-phase guard
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:3833-3904` (`grid_setpoint_does_not_retry_when_actual_within_deadband`)
+**Description:** The test asserts that no `Effect::WriteDbus { target: GridSetpoint, .. }` is emitted on the post-threshold tick. But the only thing this assertion exercises is the dead-band early-return at line 1652-1657 — the controller's per-tick computed setpoint at `later` lands within the 25 W deadband, so `maybe_propose_setpoint` returns at L1655 and `needs_actuation` is never called. The same assertion would pass if `needs_actuation` always returned `true`. This test is the one that should have failed and surfaced D01; instead it silently passes.
+**Fix:** `crates/core/src/process.rs` — renamed existing test to `grid_setpoint_confirmed_phase_blocks_retry_past_threshold` with updated docstring naming what it actually locks (Confirmed-phase + deadband co-blocking). Added sibling test `grid_setpoint_retries_after_threshold_when_actual_mismatches_within_deadband` that hand-builds a Commanded target at -1000 W with actual=-500 W (mismatch outside confirm tolerance), advances clock past `actuator_retry_s`, and calls `maybe_propose_setpoint` with computed setpoint within the deadband — asserts WriteDbus IS emitted. Regression-lock proven: with D01-fix reverted (phase guard removed), the new test fails at the WriteDbus assertion; with D01-fix applied, it passes.
+
+### [PR-ACT-RETRY-1-D03] mark_commanded re-stamping does not exercise the actual.deprecate side-effect
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/tass/actuated.rs:262-274` (`mark_commanded_on_commanded_refreshes_since`)
+**Description:** The new "Commanded → Commanded re-stamp" semantics in `mark_commanded` is covered by exactly one unit test, which asserts `target.phase` and `target.since` only. The other side-effect of the re-stamp — `actual.deprecate(now)` on a Fresh actual — is not asserted in any test. If a regression silently dropped the `actual.deprecate` call from the new branch, every existing test would still pass.
+**Fix:** `crates/core/src/tass/actuated.rs` — added sibling test `mark_commanded_on_commanded_deprecates_actual` that calls `propose_target → mark_commanded → on_reading(value)` (asserting Fresh), then calls `mark_commanded` a second time on the Commanded phase and asserts `actual.freshness == Deprecated`. Locks the side-effect that the existing `mark_commanded_on_commanded_refreshes_since` test does not cover.
+
+### [PR-ACT-RETRY-1-D04] Observer-mode emits one "would be set" log per controller per tick under stuck-Pending after threshold elapses
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs` (all five controllers' writes_enabled-false branches)
+**Description:** In observer mode, when a target sits at Pending from an earlier observer-mode run (no mark_commanded ran, target.since stuck at original propose timestamp), `needs_actuation` returns true on every tick once the retry threshold has elapsed because nothing in the observer-mode path advances target.since. The gate passes every tick → ActuatedPhase publish + Log emission, no mark_commanded → next tick same situation. Sustained log spam during long-running observer sessions.
+**Fix:** `crates/core/src/process.rs` — all five `writes_enabled-false` branches (in `maybe_propose_setpoint`, `run_current_limit`, `maybe_propose_schedule`, `run_zappi_mode`, `run_eddi_mode`) wrap `effects.push(Effect::Log {...})` in `if changed { ... }`. The early-return remains; only the per-tick log is suppressed for the retry path. ActuatedPhase publish before each branch keeps stuck-Pending visibility intact on the dashboard. `changed` was already in scope at all five sites.
+
+### [PR-ACT-RETRY-1-D05] Knob `actuator.retry.s` lands in dashboard group "Hard installation caps", which mis-classifies a retry-pacing tuning knob
+**Status:** resolved
+**Severity:** nit
+**Location:** `web/src/knobs.ts:222`
+**Description:** `actuator.retry.s` is a tuning knob controlling how aggressively the controller re-issues writes when the device doesn't comply; it is not a hard installation cap (that group's siblings are `grid.export.limit` / `grid.import.limit` / `inverter.safe-discharge.enable`, physical-limit settings keyed off installed hardware). Operators looking for "how often does the controller retry?" will not find it under "Hard installation caps".
+**Fix:** `web/src/knobs.ts` — introduced new "Actuator retry" group in `CONFIG_GROUPS` (no existing cross-cutting tuning group existed; all other tuning knobs live under per-subsystem groups like "Eddi", "Zappi calibration"). Updated `actuator.retry.s` entry's `group:` field from "Hard installation caps" to "Actuator retry". Single-entry group is acceptable because the knob is genuinely cross-cutting and has no subsystem peer.

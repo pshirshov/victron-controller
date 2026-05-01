@@ -214,6 +214,9 @@ export const entityDescriptions: Record<string, string> = {
   // PR-ZDP-1: MPPT curtailment probe offset.
   "zappi.battery-drain.mppt-probe-w":
     "Probe offset (W) added to the relax target when at least one MPPT reports voltage/current limited (mode 1 — curtailed by inverter). Lets the loop hill-climb toward potential production by demanding slightly more export than currently observed; the MPPT ramps up to meet the demand, eventually reaches MPP, op-mode flips to 2 (tracking), and the probe disengages. Set to 0 to disable probing entirely (loop reverts to PR-ZD-3 behaviour: relax target = -solar_export). Stale MPPT op-mode → no probe (conservative).",
+  // PR-ACT-RETRY-1: universal actuator retry threshold.
+  "actuator.retry.s":
+    "How long to wait after a write before re-issuing the same command when actual hasn't matched target. Applies to all actuated values (grid setpoint, current limit, zappi/eddi modes, schedules).",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

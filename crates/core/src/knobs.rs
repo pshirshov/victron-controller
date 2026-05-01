@@ -241,6 +241,15 @@ pub struct Knobs {
     /// the relax target is pushed deeper than observed `-solar_export`
     /// by this amount. Set to 0 to disable probing entirely.
     pub zappi_battery_drain_mppt_probe_w: u32,
+
+    /// PR-ACT-RETRY-1: universal actuator retry threshold (seconds).
+    /// When `phase ∈ {Pending, Commanded}` (i.e. `actual` still hasn't
+    /// matched `target` modulo per-controller tolerance) and at least
+    /// this many seconds have elapsed since the last `propose_target` /
+    /// `mark_commanded` updated `target.since`, controllers re-fire the
+    /// same write. Applies to all five actuated entities (grid
+    /// setpoint, input current limit, zappi/eddi modes, schedules).
+    pub actuator_retry_s: u32,
 }
 
 impl Knobs {
@@ -355,6 +364,11 @@ impl Knobs {
             // enough to push the inverter toward MPP without overshoot.
             // Set to 0 to disable probing (reverts to PR-ZD-3 behaviour).
             zappi_battery_drain_mppt_probe_w: 500,
+            // PR-ACT-RETRY-1: 60 s. Long enough to absorb a transient
+            // device firmware non-ack (Victron / myenergi typically
+            // settle within a few seconds), short enough that an
+            // operator-visible mismatch self-heals within a minute.
+            actuator_retry_s: 60,
         }
     }
 }
@@ -404,6 +418,8 @@ mod tests {
         assert!((k.zappi_battery_drain_kp - 1.0).abs() < f64::EPSILON);
         assert_eq!(k.zappi_battery_drain_target_w, 0);
         assert_eq!(k.zappi_battery_drain_hard_clamp_w, 200);
+        // PR-ACT-RETRY-1: universal retry threshold default 60 s.
+        assert_eq!(k.actuator_retry_s, 60);
     }
 
     #[test]

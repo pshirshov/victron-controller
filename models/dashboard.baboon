@@ -161,6 +161,12 @@ data Knobs {
   // voltage/current limited (mode 1 — curtailed), the relax target is
   // pushed deeper by this amount to create demand. Default 500.
   zappi_battery_drain_mppt_probe_w: i32
+  // PR-ACT-RETRY-1: universal actuator retry threshold (seconds).
+  // After issuing a write, if `actual` hasn't matched `target` within
+  // this many seconds, re-fire the same write. Applies to all five
+  // actuators (grid setpoint, current limit, zappi/eddi modes,
+  // schedules).
+  actuator_retry_s: i32
 }
 
 // 0.3.0 redefinition of `Bookkeeping` — `prev_ess_state` removed.

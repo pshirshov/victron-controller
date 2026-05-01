@@ -373,6 +373,8 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::ZappiBatteryDrainHardClampW => "zappi.battery-drain.hard-clamp-w",
         // PR-ZDP-1.
         KnobId::ZappiBatteryDrainMpptProbeW => "zappi.battery-drain.mppt-probe-w",
+        // PR-ACT-RETRY-1.
+        KnobId::ActuatorRetryS => "actuator.retry.s",
     }
 }
 
@@ -431,6 +433,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi.battery-drain.hard-clamp-w" => KnobId::ZappiBatteryDrainHardClampW,
         // PR-ZDP-1.
         "zappi.battery-drain.mppt-probe-w" => KnobId::ZappiBatteryDrainMpptProbeW,
+        // PR-ACT-RETRY-1.
+        "actuator.retry.s" => KnobId::ActuatorRetryS,
         _ => return None,
     })
 }
@@ -652,6 +656,12 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // PR-ZDP-1: MPPT probe offset range.
         KnobId::ZappiBatteryDrainMpptProbeW => (0.0, 5000.0),
 
+        // PR-ACT-RETRY-1: actuator retry threshold (s). 10..600 s —
+        // short enough that operator-visible mismatches self-heal
+        // within a minute or two; long enough to avoid hammering the
+        // device on transient non-acks.
+        KnobId::ActuatorRetryS => (10.0, 600.0),
+
         // Enums + bools don't use this table.
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
@@ -780,7 +790,9 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::ZappiBatteryDrainRelaxStepW
         | KnobId::ZappiBatteryDrainHardClampW
         // PR-ZDP-1.
-        | KnobId::ZappiBatteryDrainMpptProbeW => {
+        | KnobId::ZappiBatteryDrainMpptProbeW
+        // PR-ACT-RETRY-1.
+        | KnobId::ActuatorRetryS => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {

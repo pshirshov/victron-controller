@@ -979,6 +979,8 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         // PR-ZDP-1: MPPT probe offset.
         zappi_battery_drain_mppt_probe_w: i32::try_from(k.zappi_battery_drain_mppt_probe_w)
             .unwrap_or(i32::MAX),
+        // PR-ACT-RETRY-1: universal actuator retry threshold (s).
+        actuator_retry_s: i32::try_from(k.actuator_retry_s).unwrap_or(i32::MAX),
     }
 }
 
@@ -1208,6 +1210,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi_battery_drain_hard_clamp_w" => KnobId::ZappiBatteryDrainHardClampW,
         // PR-ZDP-1.
         "zappi_battery_drain_mppt_probe_w" => KnobId::ZappiBatteryDrainMpptProbeW,
+        // PR-ACT-RETRY-1.
+        "actuator_retry_s" => KnobId::ActuatorRetryS,
         _ => return None,
     })
 }

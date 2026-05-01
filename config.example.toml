@@ -380,3 +380,9 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # disable probing entirely (reverts to PR-ZD-3 behaviour).
 # zappi_battery_drain_mppt_probe_w         = 500
 
+# --- PR-ACT-RETRY-1: universal actuator retry threshold ---
+# How long to wait after a write before re-issuing the same command
+# when actual hasn't matched target. Applies to all actuated values
+# (grid setpoint, current limit, zappi/eddi modes, schedules).
+# actuator_retry_s                         = 60
+
