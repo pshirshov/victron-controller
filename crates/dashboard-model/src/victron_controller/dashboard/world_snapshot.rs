@@ -28,12 +28,9 @@ pub struct WorldSnapshot {
     pub decisions: Decisions,
     pub cores_state: CoresState,
     pub timers: Timers,
-    pub timezone: String,
     pub soc_chart: SocChart,
     pub scheduled_actions: ScheduledActions,
     pub pinned_registers: Vec<PinnedRegister>,
-    pub sunrise_local_iso: Option<String>,
-    pub sunset_local_iso: Option<String>,
     pub zappi_drain_state: ZappiDrainState,
     pub typed_sensors: TypedSensors,
 }
@@ -42,7 +39,7 @@ pub struct WorldSnapshot {
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        17
+        14
     }
 }
 
@@ -133,14 +130,6 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             {
                 let before = buffer.len();
                 crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                value.timezone.encode_ueba(ctx, &mut buffer)?;
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
                 value.soc_chart.encode_ueba(ctx, &mut buffer)?;
                 let after = buffer.len();
                 let length = after - before;
@@ -160,34 +149,6 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 crate::baboon_runtime::bin_tools::write_i32(&mut buffer, value.pinned_registers.len() as i32)?;
             for item in (value.pinned_registers).iter() {
                 item.encode_ueba(ctx, &mut buffer)?;
-            }
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.sunrise_local_iso {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
-            }
-                let after = buffer.len();
-                let length = after - before;
-                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
-            }
-            {
-                let before = buffer.len();
-                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
-                match &value.sunset_local_iso {
-                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
-                    v.encode_ueba(ctx, &mut buffer)?;
-                }
             }
                 let after = buffer.len();
                 let length = after - before;
@@ -227,26 +188,11 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             value.decisions.encode_ueba(ctx, writer)?;
             value.cores_state.encode_ueba(ctx, writer)?;
             value.timers.encode_ueba(ctx, writer)?;
-            value.timezone.encode_ueba(ctx, writer)?;
             value.soc_chart.encode_ueba(ctx, writer)?;
             value.scheduled_actions.encode_ueba(ctx, writer)?;
             crate::baboon_runtime::bin_tools::write_i32(writer, value.pinned_registers.len() as i32)?;
             for item in (value.pinned_registers).iter() {
                 item.encode_ueba(ctx, writer)?;
-            }
-            match &value.sunrise_local_iso {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
-            }
-            match &value.sunset_local_iso {
-                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
-                Some(v) => {
-                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
-                    v.encode_ueba(ctx, writer)?;
-                }
             }
             value.zappi_drain_state.encode_ueba(ctx, writer)?;
             value.typed_sensors.encode_ueba(ctx, writer)?;
@@ -279,20 +225,11 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
         let decisions = Decisions::decode_ueba(ctx, reader)?;
         let cores_state = CoresState::decode_ueba(ctx, reader)?;
         let timers = Timers::decode_ueba(ctx, reader)?;
-        let timezone = crate::baboon_runtime::bin_tools::read_string(reader)?;
         let soc_chart = SocChart::decode_ueba(ctx, reader)?;
         let scheduled_actions = ScheduledActions::decode_ueba(ctx, reader)?;
         let pinned_registers = {
             let count = crate::baboon_runtime::bin_tools::read_i32(reader)? as usize;
             (0..count).map(|_| Ok(PinnedRegister::decode_ueba(ctx, reader)?)).collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
-        };
-        let sunrise_local_iso = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
-        };
-        let sunset_local_iso = {
-            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
-            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
         let zappi_drain_state = ZappiDrainState::decode_ueba(ctx, reader)?;
         let typed_sensors = TypedSensors::decode_ueba(ctx, reader)?;
@@ -308,12 +245,9 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             decisions,
             cores_state,
             timers,
-            timezone,
             soc_chart,
             scheduled_actions,
             pinned_registers,
-            sunrise_local_iso,
-            sunset_local_iso,
             zappi_drain_state,
             typed_sensors,
         })

@@ -376,6 +376,14 @@ export function renderSensors(snap: WorldSnapshot) {
     const nameCell = mm
       ? `${entityLink(name, "sensor")} ${copyIcon(mm.identifier)}`
       : entityLink(name, "sensor");
+    // PR-DESYN-1: same boot-stamp guard as the typed-sensor rows
+    // (PR-EDDI-SENSORS-1, PR-TS-META-1). When the f64 sensor has never
+    // been observed, `since_epoch_ms` is the fresh-boot stamp — render
+    // "—" instead of "X seconds ago".
+    const sinceText =
+      act.freshness === "Unknown"
+        ? "—"
+        : fmtEpoch(act.since_epoch_ms as unknown as number);
     return {
       key: name,
       cells: [
@@ -383,9 +391,7 @@ export function renderSensors(snap: WorldSnapshot) {
         { cls: "mono", html: valText },
         {
           cls: `freshness-${act.freshness}`,
-          html: `${act.freshness} <span class="dim">(${fmtEpoch(
-            act.since_epoch_ms as unknown as number,
-          )})</span>`,
+          html: `${act.freshness} <span class="dim">(${sinceText})</span>`,
         },
         { cls: "mono", html: cadence },
         { cls: "mono", html: staleness },
@@ -394,62 +400,20 @@ export function renderSensors(snap: WorldSnapshot) {
     };
   });
 
-  // PR-tz-from-victron: synthetic row for the Victron-supplied display
-  // timezone. The wire field is a plain string (not an Actual<f64>), so
-  // it lives outside `snap.sensors`/`snap.sensors_meta` and is built
-  // here. Freshness is "Fresh" if the dashboard's snapshot was captured
-  // — `captured_at_epoch_ms` is the live-now stamp, and the controller
-  // updates `timezone` every D-Bus reseed (60 s on the settings
-  // service); we don't have a per-row timestamp, so we always show
-  // Fresh and pin staleness/cadence at static "informational" values.
-  const tz = (snap as unknown as { timezone?: string }).timezone ?? "Etc/UTC";
-  const tzKey = "system.timezone";
-  rows.push({
-    key: tzKey,
-    cells: [
-      { cls: "mono", html: entityLink(tzKey, "sensor") },
-      { cls: "mono", html: esc(tz) },
-      { cls: "freshness-Fresh", html: "Fresh" },
-      { cls: "mono", html: fmtDurationMs(60_000) },
-      { cls: "mono", html: fmtDurationMs(120_000) },
-      { cls: "mono", html: "D-Bus settings" },
-    ],
-  });
-
-  // PR-baseline-forecast: synthetic rows for today's sunrise/sunset.
-  // Wire fields are `opt[str]` — `null` means "Stale or never observed",
-  // rendered as an em-dash row with Stale class. The freshness window
-  // (3 h, see core::world::SUNRISE_SUNSET_FRESHNESS) is enforced
-  // server-side; the client just reflects what it received.
-  const sunriseStr = (snap as unknown as { sunrise_local_iso?: string | null })
-    .sunrise_local_iso ?? null;
-  const sunsetStr = (snap as unknown as { sunset_local_iso?: string | null })
-    .sunset_local_iso ?? null;
-  for (const [key, value] of [
-    ["solar.sunrise", sunriseStr],
-    ["solar.sunset", sunsetStr],
-  ] as Array<[string, string | null]>) {
-    const fresh = value !== null;
-    rows.push({
-      key,
-      cells: [
-        { cls: "mono", html: entityLink(key, "sensor") },
-        { cls: "mono", html: fresh ? esc(value as string) : "—" },
-        {
-          cls: fresh ? "freshness-Fresh" : "freshness-Stale",
-          html: fresh ? "Fresh" : "Stale",
-        },
-        { cls: "mono", html: fmtDurationMs(60 * 60 * 1000) },
-        { cls: "mono", html: fmtDurationMs(3 * 60 * 60 * 1000) },
-        { cls: "mono", html: "baseline forecast" },
-      ],
-    });
-  }
-
-  // PR-EDDI-SENSORS-1: synthetic rows for the typed-sensor wire block.
-  // These carry parsed values from non-f64 sources (myenergi Eddi/Zappi)
-  // alongside an `opt[str]` raw_json that the entity inspector surfaces
-  // in a "Raw response" panel.
+  // PR-EDDI-SENSORS-1 / PR-DESYN-1: typed-sensor wire block. Carries
+  // parsed values from non-f64 sources (myenergi Eddi/Zappi, plus
+  // string-valued rows for timezone / sunrise / sunset added in
+  // PR-DESYN-1) alongside an `opt[str]` raw_json that the entity
+  // inspector surfaces in a "Raw response" panel where applicable.
+  type TypedSensorStringWire = {
+    value: string | null | undefined;
+    freshness: string;
+    since_epoch_ms: number | bigint;
+    cadence_ms: number | bigint;
+    staleness_ms: number | bigint;
+    origin: string;
+    identifier: string;
+  };
   const ts = (snap as unknown as {
     typed_sensors?: {
       eddi_mode: {
@@ -472,6 +436,9 @@ export function renderSensors(snap: WorldSnapshot) {
         origin: string;
         identifier: string;
       };
+      timezone: TypedSensorStringWire;
+      sunrise: TypedSensorStringWire;
+      sunset: TypedSensorStringWire;
     };
   }).typed_sensors;
   if (ts) {
@@ -523,6 +490,42 @@ export function renderSensors(snap: WorldSnapshot) {
         { cls: "mono", html: esc(z.origin) },
       ],
     });
+
+    // PR-DESYN-1: timezone / sunrise / sunset previously hand-built
+    // here as synthetic rows. They now flow through the typed-sensor
+    // wire surface (`TypedSensorString`) so cadence / staleness /
+    // origin / identifier come from the convert layer rather than
+    // inline literals.
+    const stringRow = (
+      key: string,
+      s: TypedSensorStringWire,
+    ): KeyedRow => {
+      const sinceText =
+        s.freshness === "Unknown"
+          ? "—"
+          : fmtEpoch(s.since_epoch_ms as unknown as number);
+      const nameCell =
+        s.identifier === ""
+          ? entityLink(key, "sensor")
+          : `${entityLink(key, "sensor")} ${copyIcon(s.identifier)}`;
+      return {
+        key,
+        cells: [
+          { cls: "mono", html: nameCell },
+          { cls: "mono", html: s.value == null ? "—" : esc(s.value) },
+          {
+            cls: `freshness-${s.freshness}`,
+            html: `${esc(String(s.freshness))} <span class="dim">(${sinceText})</span>`,
+          },
+          { cls: "mono", html: fmtDurationMs(s.cadence_ms as unknown as number) },
+          { cls: "mono", html: fmtDurationMs(s.staleness_ms as unknown as number) },
+          { cls: "mono", html: esc(s.origin) },
+        ],
+      };
+    };
+    rows.push(stringRow("system.timezone", ts.timezone));
+    rows.push(stringRow("solar.sunrise", ts.sunrise));
+    rows.push(stringRow("solar.sunset", ts.sunset));
   }
 
   // Re-sort so the synthetic row lands alphabetically alongside the rest.
@@ -1029,9 +1032,21 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
 
   const sections: string[] = [descriptionSection(entityId, "sensor")];
 
-  // PR-EDDI-SENSORS-1: typed-sensor entries (eddi.mode, zappi) live on
-  // a sibling wire block, not in `snap.sensors`. They carry an
-  // `opt[str]` raw_json that surfaces in a "Raw response" panel below.
+  // PR-EDDI-SENSORS-1 / PR-DESYN-1: typed-sensor entries live on a
+  // sibling wire block, not in `snap.sensors`. The eddi.mode / zappi
+  // rows carry an `opt[str]` raw_json that surfaces in a "Raw
+  // response" panel; the PR-DESYN-1 string rows (timezone, sunrise,
+  // sunset) carry no raw body — their sources are local computations
+  // or D-Bus settings, not poll-driven JSON.
+  type TypedSensorStringInspectorWire = {
+    value: string | null | undefined;
+    freshness: string;
+    since_epoch_ms: number | bigint;
+    cadence_ms: number | bigint;
+    staleness_ms: number | bigint;
+    origin: string;
+    identifier: string;
+  };
   const ts = (snap as unknown as {
     typed_sensors?: {
       eddi_mode: {
@@ -1056,6 +1071,9 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
         identifier: string;
         raw_json: string | null | undefined;
       };
+      timezone: TypedSensorStringInspectorWire;
+      sunrise: TypedSensorStringInspectorWire;
+      sunset: TypedSensorStringInspectorWire;
     };
   }).typed_sensors;
 
@@ -1106,6 +1124,37 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
     return sections.filter(Boolean).join("");
   }
 
+  // PR-DESYN-1: string-valued typed sensors (timezone, sunrise,
+  // sunset). No "Raw response" panel — values are local computations
+  // (sunrise/sunset) or D-Bus settings (timezone), not poll bodies.
+  const stringEntityKey = (() => {
+    if (entityId === "system.timezone") return "timezone" as const;
+    if (entityId === "solar.sunrise") return "sunrise" as const;
+    if (entityId === "solar.sunset") return "sunset" as const;
+    return null;
+  })();
+  if (stringEntityKey !== null && ts) {
+    const s = ts[stringEntityKey];
+    const since = s.since_epoch_ms as unknown as number;
+    const ageText = s.freshness === "Unknown" ? "—" : esc(fmtEpoch(since));
+    const valText = s.value == null ? "—" : esc(s.value);
+    sections.push(
+      `<section><h3>Current value</h3>` +
+        `<table><tbody>` +
+        `<tr><th>value</th><td>${valText}</td></tr>` +
+        `<tr><th>freshness</th><td class="freshness-${esc(String(s.freshness))}">${esc(String(s.freshness))}</td></tr>` +
+        `<tr><th>age</th><td>${ageText}</td></tr>` +
+        `</tbody></table></section>`,
+    );
+    sections.push(originSection({
+      origin: s.origin,
+      identifier: s.identifier,
+      cadence_ms: s.cadence_ms as unknown as number,
+      staleness_ms: s.staleness_ms as unknown as number,
+    }));
+    return sections.filter(Boolean).join("");
+  }
+
   const a = sensors[entityId];
   const mm = meta[entityId];
 
@@ -1116,12 +1165,16 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
 
   const valText = a.value === null ? "—" : fmtNum(a.value, 2);
   const since = a.since_epoch_ms as unknown as number;
+  // PR-DESYN-1: same Unknown guard as the typed-sensor inspector
+  // branches; matches the table-row fix at the top of `renderSensors`.
+  const ageText =
+    a.freshness === "Unknown" ? "—" : esc(fmtEpoch(since));
   sections.push(
     `<section><h3>Current value</h3>` +
       `<table><tbody>` +
       `<tr><th>value</th><td>${valText}</td></tr>` +
       `<tr><th>freshness</th><td class="freshness-${esc(String(a.freshness))}">${esc(String(a.freshness))}</td></tr>` +
-      `<tr><th>age</th><td>${esc(fmtEpoch(since))}</td></tr>` +
+      `<tr><th>age</th><td>${ageText}</td></tr>` +
       `</tbody></table></section>`,
   );
 

@@ -1959,3 +1959,70 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `web/src/render.ts:1037-1051`
 **Description:** The `as unknown as { typed_sensors?: { eddi_mode: { ... }, zappi: { ... } } }` cast still lists only `value/freshness/since_epoch_ms/raw_json`, even though the wire model now carries `cadence_ms / staleness_ms / origin / identifier` and the parallel cast on lines 454-475 was updated. Not a runtime defect but a documentation drift between two casts of the same wire shape; makes D01's fix awkward to write.
 **Fix:** `web/src/render.ts` — mirrored `cadence_ms / staleness_ms / origin / identifier` onto both `eddi_mode` and `zappi` shapes inside the `renderSensorBody` cast. Now structurally identical to the row-construction cast at lines 454-475 (modulo `raw_json`, which only the popup needs).
+
+---
+
+## PR-DESYN-1 (M-DESYNTHETICS audit + remove dashboard synthetics)
+
+### [PR-DESYN-1-D01] Timezone freshness never decays; staleness window advertised but unenforced
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/dashboard/convert.rs:610-622` (`timezone_typed_sensor`)
+**Description:** Sets `freshness = Fresh` whenever `world.timezone_updated_at = Some(_)`, with no comparison against the advertised `staleness_ms = 120_000`. If the D-Bus settings reseed loop fails, the timezone row will display `Fresh` indefinitely while the underlying value is hours stale, defeating the entire point of `staleness_ms`. The eddi.mode / zappi rows decay through `Actual::tick()` which respects `freshness_myenergi`; the new string sensor reuses none of that machinery and ships a one-way `Some → Fresh` mapping.
+**Fix:** `convert.rs::timezone_typed_sensor` — freshness now derived from `now.saturating_duration_since(at) <= TIMEZONE_STALENESS`. `Some(at)` past the window emits `Stale` while preserving the last-known value; `None` yields `Unknown`. Single `Instant::now()` at top of function (also closes D02 here).
+
+### [PR-DESYN-1-D02] Two `Instant::now()` calls inside `sunrise_sunset_typed_sensor` create a freshness/value race
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dashboard/convert.rs:642,647`
+**Description:** `fresh_sunrise_sunset_impl` is called with `Instant::now()` at line 642 to compute the `value` (None when stale), and a second `Instant::now()` at line 647 is then compared against `SUNRISE_SUNSET_FRESHNESS` to compute the `freshness` field. Across the two reads `now` advances. At the freshness boundary, `_impl` may return `Some(iso)` while the second `now` pushes past the threshold and assigns `Stale`, producing `value=Some + freshness=Stale` — internally inconsistent.
+**Fix:** `convert.rs::sunrise_sunset_typed_sensor` — captured one `let now = std::time::Instant::now();` at the top and threaded into `fresh_sunrise_sunset_impl`. After D08's tuple-return refactor, the caller no longer makes a second comparison at all.
+
+### [PR-DESYN-1-D03] Advertised timezone cadence (60s) does not match actual reseed cadence (5s)
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dashboard/convert.rs:608` (timezone `TIMEZONE_CADENCE` const)
+**Description:** Cadence published is 60s ("matches per-route `Route::Timezone` reseed cadence"). But the per-route 60s is only the floor input to `compute_service_cadence`, which takes `min(cadence_for_route)` across all routes targeting the settings service. Test `service_cadence_is_min_over_routed_sensors` at `subscriber.rs:1628-1632` asserts the settings-service cadence is **5s**, driven by `GridSetpointActual`. The runtime reseeds timezone every 5s, not 60s.
+**Fix:** `convert.rs` — `TIMEZONE_CADENCE = Duration::from_secs(5)`, `TIMEZONE_STALENESS = Duration::from_secs(30)` (6× cadence). Doc comment pins to `subscriber.rs::service_cadence_is_min_over_routed_sensors` (driven by `GridSetpointActual` at 5 s) and justifies 30 s as a comfortable margin that still flips Stale within an operationally meaningful window.
+
+### [PR-DESYN-1-D04] No wire-format alignment test for the new timezone / sunrise / sunset typed sensors
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dashboard/convert.rs::tests` (around line 1433)
+**Description:** PR-TS-META-1 added `typed_sensor_staleness_matches_runtime_freshness_constant` to pin the eddi/zappi `staleness_ms` to `MYENERGI_TYPED_FRESHNESS`. The new sunrise/sunset row claims `staleness_ms = SUNRISE_SUNSET_FRESHNESS.as_millis() as i64` but no test asserts that. Future drift will silently desync wire/runtime.
+**Fix:** `convert.rs::tests` — extended `typed_sensor_staleness_matches_runtime_freshness_constant` (renamed plural). Asserts sunrise and sunset `staleness_ms == SUNRISE_SUNSET_FRESHNESS.as_millis() as i64`, plus timezone `staleness_ms == 30s` and `cadence_ms == 5s`. Future drift in any layer fails the test.
+
+### [PR-DESYN-1-D05] Internally inconsistent `value=Some("Etc/UTC") + freshness=Unknown` for never-reseeded timezone
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:614-616`
+**Description:** When the controller has never received a timezone D-Bus reading, `world.timezone == "Etc/UTC"` (safe default) and `world.timezone_updated_at == None`. The conversion emits `value: Some("Etc/UTC")` together with `freshness: Unknown`. Semantically incoherent: an Unknown reading should not surface a fabricated value.
+**Fix:** `convert.rs::timezone_typed_sensor` — `None` arm now emits `value: None`. Dashboard's `null → "—"` fallback handles never-seeded case.
+
+### [PR-DESYN-1-D06] `since_epoch_ms` for Unknown-state typed-sensor-string drifts forward each tick
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:612,652`
+**Description:** When `timezone_updated_at`/`sunrise_sunset_updated_at` are None, `since_epoch_ms = now_epoch` — recomputed at each `world_to_snapshot` call. The eddi/zappi convention pins `since_epoch_ms` via `Actual::unknown(now)` (boot Instant). Defeats the index.ts deep-equal change-detection optimisation for the Unknown branch.
+**Fix:** `convert.rs` — `since_epoch_ms = 0` sentinel for both timezone-Unknown and sunrise/sunset-Unknown branches. Stable across ticks (deep-equal change-detection works); dashboard's Unknown-guard renders "—" so sentinel is invisible to UI.
+
+### [PR-DESYN-1-D07] `BASELINE_CADENCE` is a magic literal not bound to its authoritative source
+**Status:** resolved (deferred)
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:637`
+**Description:** `BASELINE_CADENCE: Duration = Duration::from_secs(60 * 60)` magic literal whose justification lives only in a doc comment. If the baseline scheduler cadence in `crates/core/src/forecast/baseline.rs` changes, dashboard drifts silently.
+**Fix:** Closed deferred — the doc comment is sufficient documentation in the absence of a clean threading path. The baseline scheduler cadence is config-driven (`[forecast.baseline] cadence = "1h"`), so a deployment change in config wouldn't update the dashboard regardless. Threading through MetaContext is wider work; revisit if drift surfaces.
+
+### [PR-DESYN-1-D08] `_impl` arg `now` is now a test-only seam; production path duplicates its freshness comparison
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:638-651`
+**Description:** Post-PR-DESYN-1, the only production caller of `fresh_sunrise_sunset_impl` is `sunrise_sunset_typed_sensor`. That caller duplicates `_impl`'s freshness-window comparison (line 647-648 mirrors the `<= SUNRISE_SUNSET_FRESHNESS` check inside `_impl`). Two near-identical pieces of freshness logic must be kept in lockstep.
+**Fix:** `convert.rs::fresh_sunrise_sunset_impl` — Option A: widened return to `(Option<String>, Option<String>, Freshness, Option<Instant>)`. Sole caller `sunrise_sunset_typed_sensor` consumes freshness verdict and `since` Instant directly; threshold no longer encoded twice. 4 existing tests in `sunrise_sunset_freshness_tests` extended to also assert the new fields.
+
+### [PR-DESYN-1-D09] Stale aggregate doc comment on `typed_sensors_to_model` references obsolete 60s cadence
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/dashboard/convert.rs:533-538`
+**Description:** The aggregate doc comment introducing `typed_sensors_to_model` said "The timezone row is sourced from `world.timezone` (D-Bus settings reseed) with the per-route 60 s cadence pinned in `dbus::subscriber::cadence_for_route(Route::Timezone)`." After D03 the implementation pins `TIMEZONE_CADENCE = 5s`. Stale.
+**Fix:** `convert.rs:533-538` — replaced the misleading aggregate text with a one-line pointer to the per-helper docs (`timezone_typed_sensor`, `sunrise_sunset_typed_sensor`) which carry the authoritative cadence/staleness justification. Doc-only edit applied directly by orchestrator (no functional code change).

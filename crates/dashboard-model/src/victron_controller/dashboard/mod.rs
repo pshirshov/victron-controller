@@ -155,6 +155,8 @@ pub mod timers;
 pub use timers::*;
 pub mod typed_sensor_enum;
 pub use typed_sensor_enum::*;
+pub mod typed_sensor_string;
+pub use typed_sensor_string::*;
 pub mod typed_sensor_zappi;
 pub use typed_sensor_zappi::*;
 pub mod typed_sensors;

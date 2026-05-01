@@ -45,6 +45,7 @@ export * from './TargetPhase';
 export * from './Timer';
 export * from './Timers';
 export * from './TypedSensorEnum';
+export * from './TypedSensorString';
 export * from './TypedSensorZappi';
 export * from './TypedSensors';
 export * from './VersionInfo';

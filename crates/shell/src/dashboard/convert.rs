@@ -123,6 +123,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::timer::Ti
 use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
 use victron_controller_dashboard_model::victron_controller::dashboard::pinned_register::PinnedRegister as ModelPinnedRegister;
 use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensor_enum::TypedSensorEnum as ModelTypedSensorEnum;
+use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensor_string::TypedSensorString as ModelTypedSensorString;
 use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensor_zappi::TypedSensorZappi as ModelTypedSensorZappi;
 use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensors::TypedSensors as ModelTypedSensors;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
@@ -481,8 +482,8 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         decisions: decisions_to_model(&world.decisions),
         cores_state: cores_state_to_model(&world.cores_state),
         timers: timers_to_model(&world.timers),
-        // PR-tz-from-victron: surface the Victron-supplied display TZ.
-        timezone: world.timezone.clone(),
+        // PR-DESYN-1: timezone moved to `typed_sensors.timezone`; see
+        // `typed_sensors_to_model`.
         // PR-soc-chart / PR-soc-chart-segments: history + piecewise
         // projection. Reads the in-memory ring synchronously; safe to
         // call under the world-lock because the store has its own
@@ -502,23 +503,18 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         ),
         // PR-pinned-registers: per-register drift state.
         pinned_registers: pinned_registers_to_model(world),
-        // PR-baseline-forecast: today's sunrise/sunset. Returned as
-        // `None` when the world-state has never been seeded OR when the
-        // last successful update is older than
-        // `world::SUNRISE_SUNSET_FRESHNESS` (3 h). Both paths render
-        // the same em-dash row on the dashboard, which is the right
-        // call: from the operator's perspective "we don't know" and
-        // "we last knew this 12 h ago" are equivalent.
-        sunrise_local_iso: fresh_sunrise_sunset(world).0,
-        sunset_local_iso: fresh_sunrise_sunset(world).1,
+        // PR-DESYN-1: sunrise/sunset moved to
+        // `typed_sensors.{sunrise,sunset}`; see `typed_sensors_to_model`.
         // PR-ZDO-3: compensated-drain observability ring buffer + latest
         // snapshot. `latest` is None until the first controller tick runs;
         // `samples` is oldest-first (ring-buffer insertion order).
         zappi_drain_state: zappi_drain_state_to_model(&world.zappi_drain_state),
         // PR-EDDI-SENSORS-1: typed-sensor wire surface — Eddi mode and
         // Zappi state alongside the last raw response body for the
-        // entity inspector raw-response panel.
-        typed_sensors: typed_sensors_to_model(f, meta),
+        // entity inspector raw-response panel. PR-DESYN-1 added
+        // string-valued rows (timezone, sunrise, sunset) as the
+        // direct, non-synthetic source for the dashboard table.
+        typed_sensors: typed_sensors_to_model(world, meta, now_epoch),
     }
 }
 
@@ -533,10 +529,18 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
 /// `meta.controller_params.freshness_myenergi` (the runtime threshold
 /// — same value `apply_tick` feeds to `tick(at, …)`), guaranteeing the
 /// wire-advertised window matches runtime decay.
+///
+/// PR-DESYN-1: also emits `timezone`, `sunrise`, `sunset` rows.
+/// Cadence and staleness for these are documented on the per-row
+/// helpers (`timezone_typed_sensor`, `sunrise_sunset_typed_sensor`).
+/// The sunrise/sunset rows reuse `fresh_sunrise_sunset_impl` so the
+/// freshness decay matches `world::SUNRISE_SUNSET_FRESHNESS`.
 fn typed_sensors_to_model(
-    t: &victron_controller_core::world::TypedSensors,
+    world: &World,
     meta: &MetaContext,
+    now_epoch: i64,
 ) -> ModelTypedSensors {
+    let t = &world.typed_sensors;
     let eddi_value = t.eddi_mode.value.as_ref().map(|m| format!("{m:?}"));
     let zappi_mode = t
         .zappi_state
@@ -587,39 +591,136 @@ fn typed_sensors_to_model(
             origin,
             identifier: zappi_identifier,
         },
+        timezone: timezone_typed_sensor(world, now_epoch),
+        sunrise: sunrise_sunset_typed_sensor(world, /* is_sunrise = */ true, now_epoch),
+        sunset: sunrise_sunset_typed_sensor(world, /* is_sunrise = */ false, now_epoch),
     }
 }
 
-/// Today's sunrise / sunset as ISO-formatted local-time strings, OR
-/// `None` when the freshness window has elapsed (or values were never
-/// observed). See `world::SUNRISE_SUNSET_FRESHNESS` for the threshold.
-fn fresh_sunrise_sunset(world: &World) -> (Option<String>, Option<String>) {
-    use std::time::Instant;
-    fresh_sunrise_sunset_impl(
+/// PR-DESYN-1: project `world.timezone` into a typed-sensor row.
+///
+/// `TIMEZONE_CADENCE` reflects the actual settings-service reseed
+/// cadence. Determined at runtime by `compute_service_cadence` taking
+/// `min` over all routes targeting the settings service; the test
+/// `crates/shell/src/dbus/subscriber.rs::service_cadence_is_min_over_routed_sensors`
+/// pins this to 5 s (driven by `GridSetpointActual`). If a future
+/// change raises the settings min-cadence, update this constant in
+/// lockstep.
+///
+/// `TIMEZONE_STALENESS` (30 s) is 6× the cadence — a comfortable
+/// margin that still flips Stale within an operationally meaningful
+/// window if the D-Bus reseed actually wedges. Freshness is "Fresh"
+/// while within that window, "Stale" past it, and "Unknown" until
+/// the first reading lands. D01 + D02: a single `now: Instant` is
+/// captured at the top of the function and threaded through both the
+/// freshness comparison and `instant_to_epoch_ms` so the value and
+/// the freshness verdict come from one snapshot.
+fn timezone_typed_sensor(world: &World, _now_epoch: i64) -> ModelTypedSensorString {
+    const TIMEZONE_CADENCE: Duration = Duration::from_secs(5);
+    const TIMEZONE_STALENESS: Duration = Duration::from_secs(30);
+    let now = std::time::Instant::now();
+    let (value, fresh_state, since_epoch_ms) = match world.timezone_updated_at {
+        Some(at) if now.saturating_duration_since(at) <= TIMEZONE_STALENESS => {
+            (Some(world.timezone.clone()), Freshness::Fresh, instant_to_epoch_ms(at))
+        }
+        Some(at) => {
+            // Past the staleness window: surface the last-known value
+            // but advertise it as Stale so the dashboard greys it out.
+            (Some(world.timezone.clone()), Freshness::Stale, instant_to_epoch_ms(at))
+        }
+        // D05 + D06: never observed → no fabricated value, and pin
+        // since_epoch_ms to the 0 sentinel so deep-equal change
+        // detection on the dashboard side sees a stable value rather
+        // than `now_epoch` drifting forward each tick. The dashboard's
+        // Unknown-guard renders "—" in the since cell regardless.
+        None => (None, Freshness::Unknown, 0),
+    };
+    ModelTypedSensorString {
+        value,
+        freshness: freshness(fresh_state),
+        since_epoch_ms,
+        cadence_ms: TIMEZONE_CADENCE.as_millis() as i64,
+        staleness_ms: TIMEZONE_STALENESS.as_millis() as i64,
+        origin: "D-Bus settings".to_string(),
+        identifier: "com.victronenergy.settings:/Settings/System/TimeZone".to_string(),
+    }
+}
+
+/// PR-DESYN-1: project `world.sunrise` (or `world.sunset`) into a
+/// typed-sensor row. Freshness decays via `SUNRISE_SUNSET_FRESHNESS`
+/// (3 h) — we share the existing `fresh_sunrise_sunset_impl` so the
+/// wire-level "Stale" decision matches the in-process freshness
+/// threshold. Cadence matches the baseline forecast scheduler default
+/// (1 h). D02: a single `now: Instant` is captured at the top and
+/// passed into `fresh_sunrise_sunset_impl` so value and freshness
+/// agree at the threshold boundary. D08: `_impl` now returns the
+/// `(value, freshness, since)` triple; this caller no longer
+/// re-evaluates the staleness threshold.
+fn sunrise_sunset_typed_sensor(
+    world: &World,
+    is_sunrise: bool,
+    _now_epoch: i64,
+) -> ModelTypedSensorString {
+    use victron_controller_core::world::SUNRISE_SUNSET_FRESHNESS;
+    const BASELINE_CADENCE: Duration = Duration::from_secs(60 * 60);
+    let now = std::time::Instant::now();
+    let (sunrise_iso, sunset_iso, fresh_state, since) = fresh_sunrise_sunset_impl(
         world.sunrise_sunset_updated_at,
         world.sunrise,
         world.sunset,
-        Instant::now(),
-    )
+        now,
+    );
+    let value = if is_sunrise { sunrise_iso } else { sunset_iso };
+    // D06: when never observed, pin since_epoch_ms to the 0 sentinel
+    // so deep-equal change detection on the dashboard side sees a
+    // stable value across ticks. The dashboard's Unknown-guard
+    // renders "—" in the since cell regardless.
+    let since_epoch_ms = match since {
+        Some(at) => instant_to_epoch_ms(at),
+        None => 0,
+    };
+    ModelTypedSensorString {
+        value,
+        freshness: freshness(fresh_state),
+        since_epoch_ms,
+        cadence_ms: BASELINE_CADENCE.as_millis() as i64,
+        staleness_ms: SUNRISE_SUNSET_FRESHNESS.as_millis() as i64,
+        origin: "baseline forecast".to_string(),
+        identifier: String::new(),
+    }
 }
 
-/// Pure helper backing [`fresh_sunrise_sunset`] — split out so tests
-/// can drive `now` without poking into `Instant::now()`.
+/// Today's sunrise / sunset as ISO-formatted local-time strings, the
+/// derived `Freshness` verdict, and the `since` Instant when one
+/// exists. Returns `(None, None, Unknown, None)` when never observed,
+/// `(Some, Some, Fresh, Some)` while within
+/// `world::SUNRISE_SUNSET_FRESHNESS`, and `(None, None, Stale, Some)`
+/// past the window. Pure helper — tests can drive `now` without
+/// poking into `Instant::now()`. PR-DESYN-1 callers thread the actual
+/// `Instant` in directly. D08 (Option A): the freshness verdict and
+/// `since` Instant are returned alongside the values so the sole
+/// production caller doesn't re-encode the same threshold check.
 fn fresh_sunrise_sunset_impl(
     updated_at: Option<std::time::Instant>,
     sunrise: Option<chrono::NaiveDateTime>,
     sunset: Option<chrono::NaiveDateTime>,
     now: std::time::Instant,
-) -> (Option<String>, Option<String>) {
-    let fresh = match updated_at {
-        Some(at) => now.saturating_duration_since(at)
-            <= victron_controller_core::world::SUNRISE_SUNSET_FRESHNESS,
-        None => false,
-    };
-    if !fresh {
-        return (None, None);
+) -> (Option<String>, Option<String>, Freshness, Option<std::time::Instant>) {
+    match updated_at {
+        Some(at)
+            if now.saturating_duration_since(at)
+                <= victron_controller_core::world::SUNRISE_SUNSET_FRESHNESS =>
+        {
+            (
+                sunrise.map(|dt| dt.to_string()),
+                sunset.map(|dt| dt.to_string()),
+                Freshness::Fresh,
+                Some(at),
+            )
+        }
+        Some(at) => (None, None, Freshness::Stale, Some(at)),
+        None => (None, None, Freshness::Unknown, None),
     }
-    (sunrise.map(|dt| dt.to_string()), sunset.map(|dt| dt.to_string()))
 }
 
 /// Convert the per-timer observability state in `world.timers` into the
@@ -1359,16 +1460,20 @@ mod snapshot_new_sensors_tests {
         assert!(snap.sensors_meta.contains_key("mppt_1_operation_mode"));
     }
 
-    /// PR-TS-META-1 / D02: the wire-level `staleness_ms` advertised on
-    /// the typed-sensor block MUST equal the runtime decay threshold
-    /// (`ControllerParams::freshness_myenergi`, seeded from
-    /// `MYENERGI_TYPED_FRESHNESS`). Pin all three layers together so a
-    /// future drift in any one layer fails this test rather than
-    /// silently desynchronising operator-visible freshness from the
-    /// freshness the runtime actually applies.
+    /// PR-TS-META-1 / D02 + PR-DESYN-1 / D04: the wire-level
+    /// `staleness_ms` advertised on each typed-sensor block MUST equal
+    /// the runtime decay threshold for that sensor. For myenergi rows
+    /// that's `ControllerParams::freshness_myenergi` seeded from
+    /// `MYENERGI_TYPED_FRESHNESS`; for sunrise/sunset that's
+    /// `world::SUNRISE_SUNSET_FRESHNESS`; for timezone it's the local
+    /// `TIMEZONE_STALENESS` mirrored here as 30 s (kept in lockstep
+    /// with the const inside `timezone_typed_sensor`). Pinning every
+    /// row here means a future drift in any single layer fails this
+    /// test rather than silently desynchronising operator-visible
+    /// freshness from the freshness the runtime actually applies.
     #[test]
-    fn typed_sensor_staleness_matches_runtime_freshness_constant() {
-        use victron_controller_core::world::MYENERGI_TYPED_FRESHNESS;
+    fn typed_sensor_staleness_matches_runtime_freshness_constants() {
+        use victron_controller_core::world::{MYENERGI_TYPED_FRESHNESS, SUNRISE_SUNSET_FRESHNESS};
 
         let now = Instant::now();
         let world = World::fresh_boot(now);
@@ -1393,6 +1498,33 @@ mod snapshot_new_sensors_tests {
         assert_eq!(
             snap.typed_sensors.zappi.cadence_ms, expected_cadence,
             "zappi.cadence_ms must equal myenergi poll_period",
+        );
+
+        // PR-DESYN-1 / D04: sunrise + sunset rows share
+        // SUNRISE_SUNSET_FRESHNESS as their staleness threshold.
+        let expected_sun_staleness = SUNRISE_SUNSET_FRESHNESS.as_millis() as i64;
+        assert_eq!(
+            snap.typed_sensors.sunrise.staleness_ms, expected_sun_staleness,
+            "sunrise.staleness_ms must equal SUNRISE_SUNSET_FRESHNESS",
+        );
+        assert_eq!(
+            snap.typed_sensors.sunset.staleness_ms, expected_sun_staleness,
+            "sunset.staleness_ms must equal SUNRISE_SUNSET_FRESHNESS",
+        );
+
+        // PR-DESYN-1 / D04: timezone row's local TIMEZONE_STALENESS
+        // const lives inside `timezone_typed_sensor`. Mirror its value
+        // (30 s) here so a future drift in either site is caught.
+        let expected_tz_staleness = Duration::from_secs(30).as_millis() as i64;
+        assert_eq!(
+            snap.typed_sensors.timezone.staleness_ms, expected_tz_staleness,
+            "timezone.staleness_ms must equal local TIMEZONE_STALENESS (30 s)",
+        );
+        // And the matching cadence (5 s, settings-service min).
+        let expected_tz_cadence = Duration::from_secs(5).as_millis() as i64;
+        assert_eq!(
+            snap.typed_sensors.timezone.cadence_ms, expected_tz_cadence,
+            "timezone.cadence_ms must equal local TIMEZONE_CADENCE (5 s)",
         );
     }
 }
@@ -1546,7 +1678,7 @@ mod sunrise_sunset_freshness_tests {
         // Instant arithmetic that clippy flags as unchecked.
         let updated_at = Instant::now();
         let now = updated_at + Duration::from_secs(60);
-        let (sr, ss) = fresh_sunrise_sunset_impl(
+        let (sr, ss, fresh, since) = fresh_sunrise_sunset_impl(
             Some(updated_at),
             Some(dt(4, 30)),
             Some(dt(22, 0)),
@@ -1554,13 +1686,15 @@ mod sunrise_sunset_freshness_tests {
         );
         assert!(sr.is_some(), "sunrise should be fresh");
         assert!(ss.is_some());
+        assert_eq!(fresh, Freshness::Fresh);
+        assert_eq!(since, Some(updated_at));
     }
 
     #[test]
     fn stale_outside_window() {
         let updated_at = Instant::now();
         let now = updated_at + SUNRISE_SUNSET_FRESHNESS + Duration::from_secs(1);
-        let (sr, ss) = fresh_sunrise_sunset_impl(
+        let (sr, ss, fresh, since) = fresh_sunrise_sunset_impl(
             Some(updated_at),
             Some(dt(4, 30)),
             Some(dt(22, 0)),
@@ -1568,21 +1702,26 @@ mod sunrise_sunset_freshness_tests {
         );
         assert!(sr.is_none(), "sunrise should be stale");
         assert!(ss.is_none());
+        assert_eq!(fresh, Freshness::Stale);
+        assert_eq!(since, Some(updated_at));
     }
 
     #[test]
     fn never_observed_yields_none() {
         let now = Instant::now();
-        let (sr, ss) = fresh_sunrise_sunset_impl(None, Some(dt(4, 30)), Some(dt(22, 0)), now);
+        let (sr, ss, fresh, since) =
+            fresh_sunrise_sunset_impl(None, Some(dt(4, 30)), Some(dt(22, 0)), now);
         assert!(sr.is_none());
         assert!(ss.is_none());
+        assert_eq!(fresh, Freshness::Unknown);
+        assert_eq!(since, None);
     }
 
     #[test]
     fn fresh_but_polar_day_yields_none_for_each_missing_value() {
         let updated_at = Instant::now();
         let now = updated_at + Duration::from_secs(10);
-        let (sr, ss) = fresh_sunrise_sunset_impl(
+        let (sr, ss, fresh, since) = fresh_sunrise_sunset_impl(
             Some(updated_at),
             Some(dt(4, 30)),
             None,
@@ -1590,6 +1729,8 @@ mod sunrise_sunset_freshness_tests {
         );
         assert!(sr.is_some());
         assert!(ss.is_none());
+        assert_eq!(fresh, Freshness::Fresh);
+        assert_eq!(since, Some(updated_at));
     }
 }
 

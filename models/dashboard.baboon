@@ -258,9 +258,17 @@ data ZappiDrainState {
 // freshness lifecycle: it survives freshness decay so the operator
 // can paste the last successful body into a bug report even after the
 // reading goes Stale.
+//
+// PR-DESYN-1 (M-DESYNTHETICS): three new string-valued typed-sensor
+// rows — `timezone`, `sunrise`, `sunset` — replace inline synthetic
+// rows previously constructed in `web/src/render.ts`. They share the
+// new `TypedSensorString` shape (no `raw_json`, no upstream poll body).
 data TypedSensors {
   eddi_mode: TypedSensorEnum
   zappi: TypedSensorZappi
+  timezone: TypedSensorString
+  sunrise: TypedSensorString
+  sunset: TypedSensorString
 }
 
 data TypedSensorEnum {
@@ -287,6 +295,21 @@ data TypedSensorZappi {
   identifier: str
 }
 
+// PR-DESYN-1: shared shape for string-valued typed sensors that have
+// no upstream JSON body (timezone, sunrise, sunset). Mirrors
+// `TypedSensorEnum` minus the `raw_json` field — these values are
+// either pulled from D-Bus settings (timezone) or computed locally
+// (sunrise/sunset), so there's no raw response panel to surface.
+data TypedSensorString {
+  value: opt[str]
+  freshness: Freshness
+  since_epoch_ms: i64
+  cadence_ms: i64
+  staleness_ms: i64
+  origin: str
+  identifier: str
+}
+
 root data WorldSnapshot {
   captured_at_epoch_ms: i64
   captured_at_naive_iso: str
@@ -299,18 +322,13 @@ root data WorldSnapshot {
   decisions: Decisions
   cores_state: CoresState
   timers: Timers
-  timezone: str
   soc_chart: SocChart
   scheduled_actions: ScheduledActions
   // 0.3.0 addition (PR-pinned-registers). Sorted by `path` ascending
   // so the dashboard renders deterministically.
   pinned_registers: lst[PinnedRegister]
-  // PR-baseline-forecast: today's sunrise/sunset as ISO 8601 local-time
-  // strings (no offset suffix). `None` = Unknown OR Stale per
-  // `core::world::SUNRISE_SUNSET_FRESHNESS`; the dashboard uniformly
-  // renders an em-dash row for either case.
-  sunrise_local_iso: opt[str]
-  sunset_local_iso: opt[str]
+  // PR-DESYN-1: bare `timezone`, `sunrise_local_iso`, `sunset_local_iso`
+  // dropped — superseded by `typed_sensors.{timezone,sunrise,sunset}`.
   // PR-ZDO-3: compensated-drain observability. Populated on every tick
   // by `world_to_snapshot`; `latest` is None until the first controller
   // tick runs, `samples` is oldest-first (ring buffer insertion order).

@@ -128,18 +128,20 @@ function applySnapshot(snap: WorldSnapshot): void {
   // time-dependent and a wall-clock second has passed) re-run. On the
   // first call `prevSnapshot` is null and every renderer fires.
   const prev = prevSnapshot;
-  // Sensors table also surfaces synthetic rows for `timezone` and
-  // sunrise/sunset, plus uses `sensors_meta` for cadence/staleness/
-  // origin columns — and renders "X s ago" so it's time-dependent.
+  // Sensors table surfaces typed-sensor rows alongside the f64 ones.
+  // PR-DESYN-1: timezone / sunrise / sunset moved off the bare
+  // `WorldSnapshot` fields onto `typed_sensors`; the deep-equal on
+  // `typed_sensors` covers all five typed rows (eddi.mode, zappi,
+  // timezone, sunrise, sunset). Sensor rows render "X s ago" so they
+  // are time-dependent.
   const sensorsChanged =
     !prev
     || !deepEqual(prev.sensors, snap.sensors)
     || !deepEqual(prev.sensors_meta, snap.sensors_meta)
-    || prev.timezone !== snap.timezone
-    || (prev as unknown as { sunrise_local_iso?: string | null }).sunrise_local_iso
-       !== (snap as unknown as { sunrise_local_iso?: string | null }).sunrise_local_iso
-    || (prev as unknown as { sunset_local_iso?: string | null }).sunset_local_iso
-       !== (snap as unknown as { sunset_local_iso?: string | null }).sunset_local_iso;
+    || !deepEqual(
+      (prev as unknown as { typed_sensors?: unknown }).typed_sensors,
+      (snap as unknown as { typed_sensors?: unknown }).typed_sensors,
+    );
   if (sensorsChanged || tickedSecond) renderSensors(snap);
 
   if (!prev || !deepEqual(prev.decisions, snap.decisions)) renderDecisions(snap);

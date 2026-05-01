@@ -28,7 +28,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   from real config. Plan in
   `./docs/drafts/20260501-2207-m-typed-sensors-meta-plan.md`. One PR
   (PR-TS-META-1).
-- [ ] **M-DESYNTHETICS** — Audit and remove dashboard synthetic rows
+- [x] **M-DESYNTHETICS** — Audit and remove dashboard synthetic rows
   (system.timezone, solar.sunrise, solar.sunset) plus the
   `Actual::unknown(now)` boot-time since-stamp issue (D03 deferred from
   PR-EDDI-SENSORS-1). Phase A audit checkpoint with orchestrator before
@@ -132,7 +132,7 @@ Detail in `./docs/drafts/20260501-2207-m-desynthetics-plan.md`.
 Phase-A audit is a synchronisation point with the orchestrator before
 phase-B conversions.
 
-- [ ] **PR-DESYN-1** — Phase A: enumerate every dashboard synthetic
+- [x] **PR-DESYN-1** — Phase A: enumerate every dashboard synthetic
   row + hardcoded freshness/cadence/staleness/origin literal in audit
   appendix on the plan doc; orchestrator review. Phase B: convert
   `system.timezone`, `solar.sunrise`, `solar.sunset` to real-data
@@ -2449,3 +2449,116 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   - The `MetaContext` struct now has a `myenergi: MyenergiMeta`
     field. Test builders must populate it (existing test_meta
     helpers in convert.rs were updated; new ones must mirror).
+
+- **PR-DESYN-1** (2026-05-01) — Audit and removal of dashboard
+  synthetic sensor rows. Plan in
+  `./docs/drafts/20260501-2207-m-desynthetics-plan.md` (with Phase A
+  audit appendix).
+
+  **Origin.** User instruction following M-TYPED-SENSORS-META scope
+  discussion: "we should avoid synthetics as much as we can". The
+  dashboard sensors table synthesised three rows from non-Actual
+  state and hardcoded freshness/cadence/staleness/origin literals at
+  six call sites.
+
+  **What shipped.**
+  - **Phase A audit** identified three synthetic rows (system.timezone,
+    solar.sunrise, solar.sunset), six hardcoded duration literals,
+    two hardcoded origin strings, plus the deferred-from-PR-EDDI-SENSORS-1
+    `Actual::unknown(now)` boot-stamp issue affecting f64 rows.
+    Audit appendix lives at the bottom of the plan doc.
+  - **Phase B**: new `TypedSensorString` wire data type parallel to
+    `TypedSensorEnum` (minus `raw_json` — these rows have no upstream
+    JSON body). Three new typed sensors on `WorldSnapshot.typed_sensors`:
+    `timezone`, `sunrise`, `sunset`. Bare fields removed from
+    `WorldSnapshot` (timezone, sunrise_local_iso, sunset_local_iso) —
+    single-client deployment, no backward compat work.
+  - Convert helpers `timezone_typed_sensor` and
+    `sunrise_sunset_typed_sensor` populate the new fields with proper
+    cadence/staleness/origin/identifier. Timezone freshness now
+    decays via `now - timezone_updated_at <= TIMEZONE_STALENESS`
+    (was a one-way Some→Fresh mapping). Sunrise/sunset freshness uses
+    a unified `(value, freshness, since)` tuple from
+    `fresh_sunrise_sunset_impl` so the threshold is encoded once.
+  - Render: three synthetic rows replaced with typed-sensor-string
+    rows via local `stringRow` helper mirroring the eddi/zappi
+    structure. Three new branches in `renderSensorBody` for the new
+    entity ids, parallel to eddi.mode/zappi (no Raw response panel —
+    these have no raw payload).
+  - **f64 boot-stamp fix**: when freshness === "Unknown", the table
+    row freshness cell and the inspector age cell render "—" instead
+    of the boot-Instant epoch. Closes the deferred D03 from
+    PR-EDDI-SENSORS-1.
+  - **Cadence/staleness constants**: `TIMEZONE_CADENCE = 5s`
+    (matches settings-service `min(cadence)` per
+    `subscriber.rs::service_cadence_is_min_over_routed_sensors`,
+    driven by GridSetpointActual). `TIMEZONE_STALENESS = 30s` (6×
+    cadence, comfortable margin). Sunrise/sunset cadence = 1h
+    (`BASELINE_CADENCE`, baseline forecast scheduler default).
+    Sunrise/sunset staleness = `SUNRISE_SUNSET_FRESHNESS` (already a
+    public const).
+  - New regression test
+    `typed_sensor_staleness_matches_runtime_freshness_constants`
+    (renamed plural from PR-TS-META-1's singular form). Pins
+    sunrise/sunset staleness to `SUNRISE_SUNSET_FRESHNESS`, timezone
+    staleness/cadence to the local consts, plus the existing eddi/zappi
+    pins.
+  - `since_epoch_ms = 0` sentinel for Unknown-freshness branches —
+    stable across ticks (preserves index.ts deep-equal change-detection
+    optimisation); dashboard's Unknown-guard renders "—" so sentinel
+    invisible to UI.
+
+  **Verification.**
+  - `cargo test --workspace` — 597 tests, all green.
+  - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+  - `cd web && ./node_modules/.bin/tsc --noEmit -p .` — clean.
+  - Manual reload required to verify the three migrated rows render
+    correctly with proper metadata.
+
+  **Adversarial review.** Two rounds. Round 1 produced 8 defects.
+  D01 (major: timezone freshness never decayed), D02 (minor: race
+  between two `Instant::now()` calls), D03 (minor: cadence claim
+  60s vs actual 5s), D04 (minor: missing wire-format alignment
+  tests), D05+D06 (nits: incoherent value with Unknown freshness;
+  drifting since_epoch_ms), D08 (nit: duplicated freshness logic) —
+  all fixed. D07 closed-deferred (BASELINE_CADENCE doc comment
+  sufficient given config-driven nature). Round 2 verified all 7
+  fixes clean and surfaced D09 (nit: stale aggregate doc comment) —
+  fixed.
+
+  **Surprises / notes for future work.**
+  - Timezone cadence pinning was non-obvious. Per-route literal in
+    `subscriber.rs::cadence_for_route` is only the floor; the actual
+    runtime cadence is `compute_service_cadence` taking `min` over
+    all routes targeting the settings service. Currently 5s, driven
+    by GridSetpointActual. If future work raises the settings-service
+    min cadence, update `TIMEZONE_CADENCE` in lockstep — the new
+    test catches the drift.
+  - The `since_epoch_ms = 0` sentinel for Unknown-state typed sensors
+    is invisible to the UI today (Unknown-guard renders "—") but
+    represents a wire-level convention: 0 means "never observed",
+    distinct from "observed at boot". A future render-side change
+    that drops the Unknown-guard would expose 1970-01-01 dates;
+    re-add the guard then.
+  - `fresh_sunrise_sunset_impl`'s 4-tuple return is now the source
+    of truth for both sunrise/sunset value strings and the freshness
+    decision; threshold encoded once.
+  - The boot-Instant boot-stamp issue is now resolved render-side
+    across all sensor rows. The type-side fix (`Actual::since:
+    Option<Instant>`) was rejected as out-of-scope (wider blast
+    radius across all `Actual<T>` call-sites). Revisit if the
+    render-side guard ever hides a real bug.
+
+  **Constraints future work must respect.**
+  - Adding a new typed-sensor-string field: the wire shape is
+    `TypedSensorString { value, freshness, since_epoch_ms,
+    cadence_ms, staleness_ms, origin, identifier }`. Match the
+    `originSection` helper's expected shape in render.ts. The
+    convert layer must produce coherent (value, freshness, since)
+    triples — Unknown freshness = value None, since 0; Stale/Fresh =
+    value Some, since real epoch.
+  - Adding a new dashboard sensor row: do NOT synthesise. Add a
+    proper typed sensor with all four meta fields populated.
+  - Boot-stamp Unknown-guard pattern: when a sensor's freshness can
+    be Unknown (i.e. before the first observation), the render-side
+    must render the time portion as "—" not `fmtEpoch(...)`.
