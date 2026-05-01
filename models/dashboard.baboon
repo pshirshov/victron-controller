@@ -246,6 +246,33 @@ data ZappiDrainState {
   samples: lst[ZappiDrainSample]
 }
 
+// PR-EDDI-SENSORS-1: typed-sensor wire surface. Carries the parsed
+// values from `world.typed_sensors` (Eddi mode, Zappi state) plus the
+// last raw JSON body the poller saw. `raw_json` is sibling to the
+// freshness lifecycle: it survives freshness decay so the operator
+// can paste the last successful body into a bug report even after the
+// reading goes Stale.
+data TypedSensors {
+  eddi_mode: TypedSensorEnum
+  zappi: TypedSensorZappi
+}
+
+data TypedSensorEnum {
+  value: opt[str]
+  freshness: Freshness
+  since_epoch_ms: i64
+  raw_json: opt[str]
+}
+
+data TypedSensorZappi {
+  mode: opt[str]
+  status: opt[str]
+  plug_state: opt[str]
+  freshness: Freshness
+  since_epoch_ms: i64
+  raw_json: opt[str]
+}
+
 root data WorldSnapshot {
   captured_at_epoch_ms: i64
   captured_at_naive_iso: str
@@ -274,4 +301,7 @@ root data WorldSnapshot {
   // by `world_to_snapshot`; `latest` is None until the first controller
   // tick runs, `samples` is oldest-first (ring buffer insertion order).
   zappi_drain_state: ZappiDrainState
+  // PR-EDDI-SENSORS-1: typed-sensor wire surface for sensors-list
+  // rendering and entity-inspector raw-body popups.
+  typed_sensors: TypedSensors
 }

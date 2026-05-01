@@ -1842,3 +1842,56 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/controllers/setpoint.rs:723-735`
 **Description:** When MPPT op-mode flaps faster than the controller cadence, setpoint oscillates ±relax_step_w/tick. Each cycle exceeds the 25 W deadband → produces a D-Bus write per tick. Bounded; in the convergence-correct case (MPPT genuinely ramps up to meet demand), oscillation collapses as solar_export rises.
 **Fix:** Closed deferred. Bounded oscillation acceptable in the absence of evidence it harms convergence. EWMA / N-of-M majority filter is a future hardening if field deployment shows the flap dominates the convergence dynamics.
+
+---
+
+## PR-EDDI-SENSORS-1 (M-EDDI-SENSORS eddi parser + typed-sensor surfacing + raw capture)
+
+### [PR-EDDI-SENSORS-1-D01] Raw-response copy button breaks the inspector popup HTML on the first `"` in the JSON body
+**Status:** resolved
+**Severity:** major
+**Location:** `web/src/render.ts:1111` (`rawResponseSection`)
+**Description:** The "Raw response" panel renders the copy button as `<button class="copy-btn icon" data-copy="${esc(raw)}" title="Copy JSON">⧉</button>`. The escape helper `esc()` only replaces `&`, `<`, `>` — it does NOT escape ASCII double-quote `"`. The pretty-printed myenergi JSON body contains a `"` character on every key and string-typed value. The first such `"` terminates the `data-copy="…"` attribute, the rest of the JSON is parsed by the browser as additional attributes, and the resulting `data-copy` value ends up empty.
+**Fix:** `web/src/render.ts` — replaced `data-copy="${esc(raw)}"` on the raw-response button with a marker attribute `data-copy-from-sibling="true"`. Extended `installCopyHandler` to detect the marker and read text from the adjacent `<pre><code>` via `el.closest("details")?.querySelector("pre code")?.textContent`. The `esc()` contract is unchanged; existing `data-copy` consumers across the dashboard are unaffected.
+
+### [PR-EDDI-SENSORS-1-D02] Module-level docstring still claims `sta=1` is Normal and `sta=0` is Stopped, contradicting the new mapping
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/myenergi/types.rs:14-15`
+**Description:** The file-level `//!` block described the Eddi mapping as `"sta (status 1=Normal/0=Stopped — actually the mapping differs between firmwares; best-effort)"`. The function-level docstring on `parse_eddi` was updated correctly, but this older module-level comment was not, leaving contradictory documentation in the same file.
+**Fix:** `crates/shell/src/myenergi/types.rs:14-15` — replaced the parenthetical with `"sta — operational status; see `parse_eddi` for the sta→EddiMode inference"`. The function-level docstring is now the single source of truth for the mapping.
+
+### [PR-EDDI-SENSORS-1-D03] Sensors-table "since" timestamp for never-observed eddi.mode/zappi rows shows boot-time, not "—"
+**Status:** resolved (scoped to typed-sensor rows only; f64-row equivalent deferred)
+**Severity:** minor
+**Location:** `web/src/render.ts` synthetic typed-sensor rows + popup detail view; root cause `crates/core/src/tass/actual.rs:20-26` (`Actual::unknown` initialises `since: now`)
+**Description:** Before any eddi/zappi poll has ever returned, `world.typed_sensors.eddi_mode` is `Actual::unknown(now)` with `since = boot Instant`, freshness `Unknown`. The dashboard then renders `"Unknown (12 s ago)"` even though the dashboard has *never* observed a value.
+**Fix:** `web/src/render.ts` — at the two new typed-sensor row sites and the popup detail view, when `freshness === "Unknown"` the time portion is rendered as `"—"` instead of `fmtEpoch(since)`. One-line comment notes that existing f64 sensor rows have the same defect; deferred for scope (broader UX change with regression surface, separate PR).
+
+### [PR-EDDI-SENSORS-1-D04] `apply_typed_reading` clobbers `world.typed_sensors.{eddi,zappi}_raw_json` with `None` when a reading carries `raw_json: None`
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/process.rs:482,500`
+**Description:** The doc comment on `TypedSensors::eddi_raw_json` states the raw body "intentionally outlives freshness decay." But `apply_typed_reading` wrote `world.typed_sensors.{eddi,zappi}_raw_json = raw_json` unconditionally — any future emitter producing a `TypedReading::{Eddi,Zappi} { raw_json: None, … }` would erase the previously-latched body, silently regressing the "survives freshness decay" invariant.
+**Fix:** `crates/core/src/process.rs` — both `TypedReading::Zappi` and `TypedReading::Eddi` arms now gate the assignment on `if raw_json.is_some()`. `None` means "no new body this cycle"; the latched value is preserved. Comment block reasserts the invariant.
+
+### [PR-EDDI-SENSORS-1-D05] `parse_eddi`'s "unknown sta defaults to Normal" inverts the safety direction at the parser layer
+**Status:** resolved (deferred; per plan-doc decision §"Risks and assumptions")
+**Severity:** minor
+**Location:** `crates/shell/src/myenergi/types.rs:167-170`
+**Description:** The new mapping `0|6 ⇒ Stopped, _ ⇒ Normal` is correct for the documented sta codes (1/3/4/5). However, the catchall arm now reports `Normal` for any *unknown* sta value (e.g. a future firmware introducing `sta=7=ImmediateShutoffPlease`, or a malformed body where `sta` was tampered with). The previous parser reported Stopped for unknowns, which was the safe direction. The docstring acknowledges this and argues the safety net moves up to `EddiController` (Stale/Unknown freshness drives Stopped). This is true *for stale readings*, but a *fresh* reading carrying an unknown sta will be reported as Normal and the controller will not gate on freshness — it'll honour the (mis-)reported Normal. Combined with the absence of any `sta in {0..=6}` validity check, the parser silently accepts any byte the device sends.
+**Fix:** Closed deferred. Plan doc `docs/drafts/20260501-2030-m-eddi-sensors-plan.md` §"Risks and assumptions" explicitly accepts this risk: "Decision: Normal, per the docs-driven mapping. The controller's freshness-driven safety net is the actual safety layer." The popup work (this PR's Part D) is the verification mechanism — once deployed, the operator can paste real raw bodies and we tighten in a follow-up PR if firmware variants surface unknown sta values. Re-opening the safety question now would relitigate a locked plan decision.
+
+### [PR-EDDI-SENSORS-1-D06] Test coverage gap: no rendering test exercises the new typed-sensor synthetic rows or the popup raw-response panel
+**Status:** resolved (deferred; bundled into D01 fix verification)
+**Severity:** nit
+**Location:** `web/src/render.test.ts`
+**Description:** PR adds non-trivial render logic for two synthetic sensor rows and a "Raw response" inspector panel. `render.test.ts` has tests for unrelated PR branches but nothing exercising `renderSensors` for a snapshot whose `typed_sensors` block has missing/null components, nor anything exercising `rawResponseSection` for present/absent raw_json. The parser tests cover the Rust-side mapping but a regression in `renderSensors` (e.g., the D01 attribute-escape defect) would not be caught by any automated check.
+**Fix:** Closed deferred. The D01 fix removes the `data-copy` attribute path entirely (handler reads from sibling `<pre><code>` element), which closes the specific exploit vector D06 was concerned about. Broader render-test coverage for typed-sensor rows would be useful but is a wider testing-strategy investment that belongs in its own PR. The Rust-side parser tests + tsc + manual reload remain the verification path for this PR.
+
+### [PR-EDDI-SENSORS-1-D07] `displayNames.ts` entries `"eddi.mode": "eddi.mode"` and `"zappi": "zappi"` are pass-through identities and serve no rename purpose
+**Status:** resolved
+**Severity:** nit
+**Location:** `web/src/displayNames.ts:149-150`
+**Description:** `DISPLAY_NAMES` maps snake_case canonicals to dotted display names. The two new entries mapped `"eddi.mode" → "eddi.mode"` and `"zappi" → "zappi"` — pure tautologies, since the canonical key is already dotted.
+**Fix:** `web/src/displayNames.ts` — removed both pass-through entries and the explanatory comment block. The `??` fallback in `displayNameOf` returns the canonical key unchanged when the lookup misses; observable behaviour is identical.

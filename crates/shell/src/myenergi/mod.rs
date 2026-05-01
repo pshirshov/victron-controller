@@ -120,7 +120,11 @@ impl Client {
         Ok(Some(body))
     }
 
-    pub async fn poll_eddi(&self) -> Result<Option<EddiMode>> {
+    /// PR-EDDI-SENSORS-1: returns the parsed `EddiMode` *and* the raw
+    /// JSON body so the poller can stamp the body onto the typed
+    /// reading. The caller pretty-prints the body for the dashboard's
+    /// raw-response panel.
+    pub async fn poll_eddi(&self) -> Result<Option<(EddiMode, serde_json::Value)>> {
         if !self.has_credentials() {
             return Ok(None);
         }
@@ -128,7 +132,7 @@ impl Client {
             return Ok(None);
         };
         let body = self.get_json(&format!("/cgi-jstatus-E{serial}")).await?;
-        Ok(parse_eddi(&body))
+        Ok(parse_eddi(&body).map(|m| (m, body)))
     }
 
     // --- Writes ---
@@ -437,10 +441,12 @@ impl Poller {
                     let stamp = self.stamp_zappi_change(tuple, now);
                     if let Some(obs) = parse_zappi(&body, stamp) {
                         let session_kwh = obs.state.session_kwh;
+                        let raw = pretty_json(&body);
                         if tx
                             .send(Event::TypedSensor(TypedReading::Zappi {
                                 state: obs.state,
                                 at: now,
+                                raw_json: Some(raw),
                             }))
                             .await
                             .is_err()
@@ -477,9 +483,14 @@ impl Poller {
         }
 
         match self.client.poll_eddi().await {
-            Ok(Some(mode)) => {
+            Ok(Some((mode, body))) => {
+                let raw = pretty_json(&body);
                 if tx
-                    .send(Event::TypedSensor(TypedReading::Eddi { mode, at: now }))
+                    .send(Event::TypedSensor(TypedReading::Eddi {
+                        mode,
+                        at: now,
+                        raw_json: Some(raw),
+                    }))
                     .await
                     .is_err()
                 {}
@@ -512,6 +523,14 @@ impl Poller {
             }
         }
     }
+}
+
+/// PR-EDDI-SENSORS-1: pretty-print a myenergi response body for the
+/// dashboard's raw-response panel. Falls back to the default
+/// `Display` if `to_string_pretty` somehow fails (it shouldn't for a
+/// `serde_json::Value`).
+fn pretty_json(body: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(body).unwrap_or_else(|_| body.to_string())
 }
 
 // -----------------------------------------------------------------------------

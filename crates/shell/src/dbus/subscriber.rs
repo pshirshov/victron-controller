@@ -1384,6 +1384,7 @@ const _: fn() = || {
     let _ = TypedReading::Eddi {
         mode: victron_controller_core::myenergi::EddiMode::Stopped,
         at: Instant::now(),
+        raw_json: None,
     };
 };
 

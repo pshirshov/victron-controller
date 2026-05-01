@@ -1053,8 +1053,12 @@ pub struct SensorReading {
 /// when the upstream provider didn't return hourly data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypedReading {
-    Zappi { state: ZappiState, at: Instant },
-    Eddi { mode: EddiMode, at: Instant },
+    /// PR-EDDI-SENSORS-1: `raw_json` is the pretty-printed body the
+    /// poller saw on this poll cycle. Carried through to the dashboard
+    /// for the entity inspector raw-response panel; `None` when the
+    /// caller didn't capture or couldn't serialize it.
+    Zappi { state: ZappiState, at: Instant, raw_json: Option<String> },
+    Eddi { mode: EddiMode, at: Instant, raw_json: Option<String> },
     Forecast {
         provider: ForecastProvider,
         today_kwh: f64,

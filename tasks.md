@@ -10,6 +10,20 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Milestones (high-level)
 
+- [x] **M-EDDI-SENSORS** — Eddi parser (`parse_eddi`) maps `sta=1` to
+  Normal and everything else to Stopped, but the myenergi `sta` field
+  is operational status, not mode — a Diverting Eddi (`sta=3`) reads
+  out as Stopped, the controller's safety-direction Stopped target
+  matches the bad parse, and the actuated row falsely surfaces
+  `Confirmed Stopped`. Field evidence 2026-05-01: dashboard says
+  Stopped, HASS's separate myenergi integration says Normal, device is
+  physically diverting. Fix: invert the mapping per docs (`sta ∈ {0, 6}`
+  → Stopped, everything else → Normal); surface eddi_mode + zappi_state
+  as first-class sensor rows; capture last raw `cgi-jstatus-{Z,E}` JSON
+  body in-memory and expose via the entity inspector popup so the
+  operator can verify parser behaviour against ground truth. Plan in
+  `./docs/drafts/20260501-2030-m-eddi-sensors-plan.md`. One PR
+  (PR-EDDI-SENSORS-1).
 - [x] **M-AUDIT** — Drain the CRITICAL-tier of the 68 audit findings
   (A-01…A-68). All 8 CRITICAL findings closed 2026-04-24; remaining
   MAJOR/minor/nit backlog rolled into M-AUDIT-2.
@@ -57,6 +71,25 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+
+---
+
+## Milestone M-EDDI-SENSORS — PR breakdown
+
+Detail in `./docs/drafts/20260501-2030-m-eddi-sensors-plan.md`. One PR;
+the four parts (parser, raw-capture plumbing, sensor-list rendering,
+inspector popup) ship together because the wire-format extension is
+load-bearing for the rendering and popup work.
+
+- [x] **PR-EDDI-SENSORS-1** — Invert `parse_eddi`'s sta→EddiMode mapping
+  (`sta ∈ {0, 6}` → Stopped, else Normal); add `typed_sensors` block to
+  the wire model carrying `eddi_mode` + `zappi` rows with
+  `value/freshness/since/raw_json`; latch raw `cgi-jstatus-{E,Z}`
+  pretty-printed bodies on every successful poll into core
+  `world.typed_sensors` sibling fields; render two new sensor rows in
+  `#sensors-table` sorted alphabetically alongside the f64 rows; extend
+  the entity inspector popup with a "Raw response" panel + copy button
+  when raw_json is populated.
 
 ---
 
@@ -2080,3 +2113,108 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   --all-targets -- -D warnings`, `cargo build --target
   armv7-unknown-linux-gnueabihf --release`, `bash
   scripts/build-web.sh`.
+
+- **PR-EDDI-SENSORS-1** (2026-05-01) — Eddi parser fix + typed-sensor
+  surfacing in the dashboard sensors list + raw `cgi-jstatus-{Z,E}`
+  body capture exposed via the entity inspector popup. Plan in
+  `./docs/drafts/20260501-2030-m-eddi-sensors-plan.md`.
+
+  **Origin.** Field observation 2026-05-01: dashboard's actuated table
+  reported `eddi.mode.target = Stopped, EddiController, Confirmed,
+  actual = Stopped` while HASS's separate myenergi integration
+  reported the device in Normal and the device was physically
+  diverting. Root cause: `parse_eddi` was mapping `sta == 1 → Normal,
+  _ → Stopped`. The myenergi `sta` field on Eddi is the *operational
+  status*, not the *mode*. A Diverting Eddi (sta=3) was being
+  reported as `Stopped`; the controller's safety-direction Stopped
+  target then matched the bad parse and `confirm_if(target == actual)`
+  promoted the actuated row to `Confirmed Stopped` — both sides
+  internally consistent only because both were wrong.
+
+  **What shipped.**
+  - `parse_eddi` mapping inverted to `sta ∈ {0, 6} → Stopped,
+    everything else → Normal` per documented myenergi codes
+    (1=Paused, 3=Diverting, 4=Boost, 5=MaxTempReached, 6=Stopped).
+    Heuristic-from-docs; doc-comment notes the verification path is
+    the new entity-inspector popup. Six new tests (sta ∈ {0, 1, 3,
+    4, 5, 6}) plus the renamed-and-flipped
+    `parse_eddi_unknown_sta_defaults_to_normal_per_docs_mapping`.
+  - New wire-model block `WorldSnapshot.typed_sensors` carries
+    `eddi_mode: TypedSensorEnum { value, freshness, since_epoch_ms,
+    raw_json }` and `zappi: TypedSensorZappi { mode, status,
+    plug_state, freshness, since_epoch_ms, raw_json }`. Baboon model
+    edited in place (single client, no backward compat). Regen ran
+    via `scripts/regen-baboon.sh`.
+  - `TypedReading::Eddi` and `TypedReading::Zappi` extended with
+    `raw_json: Option<String>`. `world.typed_sensors` got sibling
+    fields `eddi_raw_json` / `zappi_raw_json` (the raw body
+    intentionally outlives freshness decay so the operator can paste
+    a stale-but-last-good body into a bug report; only `Some` writes
+    overwrite, `None` means "no new body this cycle"). The myenergi
+    poller pretty-prints the response body via
+    `serde_json::to_string_pretty` and stamps it onto every successful
+    typed reading; on poll error nothing is sent, so the latched body
+    persists.
+  - Dashboard `#sensors-table` gains two synthetic rows (`eddi.mode`
+    and `zappi`) sourced from `snap.typed_sensors`. The zappi row
+    surfaces a composite display value (`mode · status · plug-state`).
+    For both rows, when `freshness === "Unknown"` (boot-time, never
+    polled), the time portion renders as `—` instead of "12 s ago"
+    (D03 fix; scoped — the same defect on f64 rows is acknowledged
+    and deferred). Display names + descriptions registered.
+  - Entity inspector popup gains a `<details class="raw-response">`
+    panel for any sensor whose `typed_sensors` entry carries
+    `raw_json`. Pretty JSON in a `<pre><code>`, copy-to-clipboard
+    button. The copy handler reads from the sibling `<pre><code>`
+    element rather than a `data-copy=""` attribute (D01 fix —
+    multi-line JSON containing `"` would otherwise terminate the
+    attribute and break the popup). Panel omitted entirely when
+    `raw_json` is null (no orphan section).
+
+  **Verification.**
+  - `cargo test --workspace` → 364 + 10 + 211 = 585 tests pass; 1
+    ignored; 0 failed.
+  - `cargo clippy --workspace --all-targets -- -D warnings` → clean.
+  - `cd web && ./node_modules/.bin/tsc --noEmit -p .` → clean.
+
+  **Adversarial review.** Two rounds. Round 1 produced 7 defects.
+  Five fixed (D01 attribute-escape XSS in the copy button; D02
+  contradictory module-level docstring; D03 boot-time "since"
+  timestamp on Unknown freshness; D04 unconditional clobber of
+  latched raw_json by `None` readings; D07 pass-through
+  `displayNames.ts` entries). Two closed deferred (D05 unknown-sta
+  defaults to Normal — locked in plan-doc as accepted risk, with
+  EddiController's freshness gate as the safety net; D06 missing
+  render tests — D01 fix removed the specific exploit vector, broader
+  testing investment deferred). Round 2 verified all five fixes clean
+  with no new defects.
+
+  **Surprises / notes for future work.**
+  - The `parse_eddi` mapping is heuristic; verification path now
+    exists (operator clicks the eddi.mode sensor, copies the raw
+    body, pastes into a follow-up). If firmware variants surface
+    unknown `sta` values that should map to Stopped, refine here.
+  - `Actual::unknown(now)` stamps the boot Instant onto every
+    never-observed sensor — shows up as misleading "12 s ago" age.
+    Fixed for the two new typed-sensor rows; deferred for the f64
+    rows (wider UX change, separate PR).
+  - Single composite `zappi` row was the design choice over three
+    separate rows (zappi.mode / zappi.status / zappi.plug-state).
+    Wire model keeps the three fields addressable should we ever
+    want to split.
+  - The "raw body intentionally outlives freshness decay" invariant
+    is now load-bearing in `apply_typed_reading` (None means "no new
+    body, don't clear"). Future emitters of `TypedReading::Eddi` /
+    `TypedReading::Zappi` must respect this — passing `raw_json:
+    None` is the explicit way to leave the latched body alone.
+
+  **Constraints future work must respect.**
+  - Adding a new typed-sensor wire field touches: baboon model + regen
+    → core types (TypedReading) → core world (TypedSensors) → core
+    process (apply_typed_reading) → shell poller → shell convert →
+    web render → web display names + descriptions → web inspector
+    popup. Same registration-checklist discipline as knobs/actuators.
+  - Inspector-popup copy buttons that need to copy multi-line text
+    must use the `data-copy-from-sibling="true"` marker pattern, not
+    `data-copy="..."`. The latter breaks on `"` characters — `esc()`
+    only escapes `&`, `<`, `>`.

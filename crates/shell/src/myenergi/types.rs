@@ -11,8 +11,8 @@
 //!
 //! - **Zappi**: `zmo` (mode 1/2/3/4), `sta` (status 1/3/5), `pst`
 //!   (plug state A/B1/B2/C1/C2/F), session `che` (kWh).
-//! - **Eddi**: `sta` (status 1=Normal/0=Stopped — actually the mapping
-//!   differs between firmwares; best-effort).
+//! - **Eddi**: `sta` — operational status; see `parse_eddi` for the
+//!   sta→EddiMode inference.
 //!
 //! Note on timestamps: myenergi reports `dat`/`tim` in UTC, but the
 //! core's wait-timeout math runs against `Clock::monotonic()`. Mixing
@@ -138,18 +138,35 @@ pub fn parse_zappi_signature(
     ))
 }
 
-/// Extract the Eddi mode from the `sta` field. This is firmware-
-/// dependent; the mapping below matches the modern devices:
+/// Extract the Eddi mode from the `sta` field.
 ///
-/// - `sta = 1` ⇒ Normal (diverting)
-/// - `sta = 0` or `3` ⇒ Stopped
-/// - anything else ⇒ Stopped (safe direction)
+/// Important: `sta` is the *operational status*, not the *mode*. The
+/// device exposes mode (Normal/Stopped) only indirectly — we infer it
+/// from the operational status code. Documented codes:
+///
+/// - `0` — Stopped
+/// - `1` — Paused (mode is Normal, no surplus right now)
+/// - `3` — Diverting (mode is Normal, dumping power)
+/// - `4` — Boost (mode is Normal, manual / scheduled boost)
+/// - `5` — Hot / max-temp reached (mode is Normal)
+/// - `6` — Stopped
+///
+/// Mapping: `sta ∈ {0, 6}` ⇒ Stopped; everything else (including
+/// undocumented codes) ⇒ Normal. This is heuristic-from-docs and will
+/// be verified against real device captures once the entity inspector
+/// popup surfaces raw bodies (PR-EDDI-SENSORS-1, Part D).
+///
+/// Defaulting unknown codes to Normal looks unsafe at the parser layer
+/// but is acceptable: the EddiController gates on freshness, and
+/// `Stale`/`Unknown` freshness drives the actuator to the safe-Stopped
+/// direction one layer up. The parser only governs what we report when
+/// we *do* have a fresh reading.
 pub fn parse_eddi(body: &serde_json::Value) -> Option<EddiMode> {
     let entry = body.get("eddi").and_then(|v| v.as_array())?.first()?;
     let sta = u8::try_from(entry.get("sta")?.as_u64()?).ok()?;
     Some(match sta {
-        1 => EddiMode::Normal,
-        _ => EddiMode::Stopped,
+        0 | 6 => EddiMode::Stopped,
+        _ => EddiMode::Normal,
     })
 }
 
@@ -246,6 +263,9 @@ mod tests {
 
     #[test]
     fn parse_eddi_sta_1_is_normal() {
+        // sta=1 is "Paused under Normal mode" — not an explicit Normal
+        // indicator. The device is in Normal mode but has no surplus
+        // right now, so it isn't actively diverting.
         let b = json!({"eddi":[{"sta": 1}]});
         assert_eq!(parse_eddi(&b), Some(EddiMode::Normal));
     }
@@ -257,9 +277,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_eddi_unknown_sta_is_stopped_safe_default() {
-        let b = json!({"eddi":[{"sta": 99}]});
+    fn parse_eddi_sta_3_is_normal_diverting() {
+        let b = json!({"eddi":[{"sta": 3}]});
+        assert_eq!(parse_eddi(&b), Some(EddiMode::Normal));
+    }
+
+    #[test]
+    fn parse_eddi_sta_4_is_normal_boost() {
+        let b = json!({"eddi":[{"sta": 4}]});
+        assert_eq!(parse_eddi(&b), Some(EddiMode::Normal));
+    }
+
+    #[test]
+    fn parse_eddi_sta_5_is_normal_max_temp() {
+        let b = json!({"eddi":[{"sta": 5}]});
+        assert_eq!(parse_eddi(&b), Some(EddiMode::Normal));
+    }
+
+    #[test]
+    fn parse_eddi_sta_6_is_stopped() {
+        let b = json!({"eddi":[{"sta": 6}]});
         assert_eq!(parse_eddi(&b), Some(EddiMode::Stopped));
+    }
+
+    #[test]
+    fn parse_eddi_unknown_sta_defaults_to_normal_per_docs_mapping() {
+        // Parser-layer default for unknown sta values is Normal: the
+        // documented mapping says any non-Stopped operational status
+        // implies the mode is Normal. The safety net for genuinely-bad
+        // readings sits one layer up — the EddiController drives the
+        // actuator to safe-Stopped on Stale/Unknown freshness.
+        let b = json!({"eddi":[{"sta": 99}]});
+        assert_eq!(parse_eddi(&b), Some(EddiMode::Normal));
     }
 
     #[test]

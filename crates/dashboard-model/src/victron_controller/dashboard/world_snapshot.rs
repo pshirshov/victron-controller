@@ -10,6 +10,7 @@ use crate::victron_controller::dashboard::sensor_meta::SensorMeta;
 use crate::victron_controller::dashboard::sensors::Sensors;
 use crate::victron_controller::dashboard::soc_chart::SocChart;
 use crate::victron_controller::dashboard::timers::Timers;
+use crate::victron_controller::dashboard::typed_sensors::TypedSensors;
 use crate::victron_controller::dashboard::zappi_drain_state::ZappiDrainState;
 use std::collections::BTreeMap;
 
@@ -34,13 +35,14 @@ pub struct WorldSnapshot {
     pub sunrise_local_iso: Option<String>,
     pub sunset_local_iso: Option<String>,
     pub zappi_drain_state: ZappiDrainState,
+    pub typed_sensors: TypedSensors,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        16
+        17
     }
 }
 
@@ -199,6 +201,14 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.typed_sensors.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -239,6 +249,7 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 }
             }
             value.zappi_drain_state.encode_ueba(ctx, writer)?;
+            value.typed_sensors.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -284,6 +295,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
         let zappi_drain_state = ZappiDrainState::decode_ueba(ctx, reader)?;
+        let typed_sensors = TypedSensors::decode_ueba(ctx, reader)?;
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -303,6 +315,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             sunrise_local_iso,
             sunset_local_iso,
             zappi_drain_state,
+            typed_sensors,
         })
     }
 }

@@ -107,6 +107,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::target_ph
 use victron_controller_dashboard_model::victron_controller::dashboard::timer::Timer as ModelTimer;
 use victron_controller_dashboard_model::victron_controller::dashboard::timers::Timers as ModelTimers;
 use victron_controller_dashboard_model::victron_controller::dashboard::pinned_register::PinnedRegister as ModelPinnedRegister;
+use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensor_enum::TypedSensorEnum as ModelTypedSensorEnum;
+use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensor_zappi::TypedSensorZappi as ModelTypedSensorZappi;
+use victron_controller_dashboard_model::victron_controller::dashboard::typed_sensors::TypedSensors as ModelTypedSensors;
 use victron_controller_dashboard_model::victron_controller::dashboard::world_snapshot::WorldSnapshot;
 // PR-ZDO-3: compensated-drain observability wire types.
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_branch::ZappiDrainBranch as ModelZappiDrainBranch;
@@ -497,6 +500,49 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         // snapshot. `latest` is None until the first controller tick runs;
         // `samples` is oldest-first (ring-buffer insertion order).
         zappi_drain_state: zappi_drain_state_to_model(&world.zappi_drain_state),
+        // PR-EDDI-SENSORS-1: typed-sensor wire surface — Eddi mode and
+        // Zappi state alongside the last raw response body for the
+        // entity inspector raw-response panel.
+        typed_sensors: typed_sensors_to_model(f),
+    }
+}
+
+/// PR-EDDI-SENSORS-1: map `world.typed_sensors` onto the wire-format
+/// `TypedSensors` block. `raw_json` is sourced from sibling fields
+/// that intentionally outlive freshness decay — see the comment on
+/// `TypedSensors` in `core::world`.
+fn typed_sensors_to_model(t: &victron_controller_core::world::TypedSensors) -> ModelTypedSensors {
+    let eddi_value = t.eddi_mode.value.as_ref().map(|m| format!("{m:?}"));
+    let zappi_mode = t
+        .zappi_state
+        .value
+        .as_ref()
+        .map(|z| format!("{:?}", z.zappi_mode));
+    let zappi_status = t
+        .zappi_state
+        .value
+        .as_ref()
+        .map(|z| format!("{:?}", z.zappi_status));
+    let zappi_plug = t
+        .zappi_state
+        .value
+        .as_ref()
+        .map(|z| format!("{:?}", z.zappi_plug_state));
+    ModelTypedSensors {
+        eddi_mode: ModelTypedSensorEnum {
+            value: eddi_value,
+            freshness: freshness(t.eddi_mode.freshness),
+            since_epoch_ms: instant_to_epoch_ms(t.eddi_mode.since),
+            raw_json: t.eddi_raw_json.clone(),
+        },
+        zappi: ModelTypedSensorZappi {
+            mode: zappi_mode,
+            status: zappi_status,
+            plug_state: zappi_plug,
+            freshness: freshness(t.zappi_state.freshness),
+            since_epoch_ms: instant_to_epoch_ms(t.zappi_state.since),
+            raw_json: t.zappi_raw_json.clone(),
+        },
     }
 }
 

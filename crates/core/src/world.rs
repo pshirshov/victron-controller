@@ -201,6 +201,15 @@ pub struct TypedSensors {
     /// Consulted by `forecast_fusion` only when no cloud provider is
     /// fresh — see that module for the fallback gate.
     pub forecast_baseline: Option<ForecastSnapshot>,
+    /// PR-EDDI-SENSORS-1: last raw `cgi-jstatus-E*` body the poller
+    /// saw, pretty-printed. Sibling to `eddi_mode` (rather than nested
+    /// inside `Actual<EddiMode>`) because it intentionally outlives
+    /// freshness decay — the operator wants the last good body to
+    /// paste into a bug report even after the reading goes Stale.
+    pub eddi_raw_json: Option<String>,
+    /// PR-EDDI-SENSORS-1: same shape as `eddi_raw_json` for the Zappi
+    /// `cgi-jstatus-Z*` body.
+    pub zappi_raw_json: Option<String>,
 }
 
 impl TypedSensors {
@@ -213,6 +222,8 @@ impl TypedSensors {
             forecast_forecast_solar: None,
             forecast_open_meteo: None,
             forecast_baseline: None,
+            eddi_raw_json: None,
+            zappi_raw_json: None,
         }
     }
 

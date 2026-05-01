@@ -446,6 +446,71 @@ export function renderSensors(snap: WorldSnapshot) {
     });
   }
 
+  // PR-EDDI-SENSORS-1: synthetic rows for the typed-sensor wire block.
+  // These carry parsed values from non-f64 sources (myenergi Eddi/Zappi)
+  // alongside an `opt[str]` raw_json that the entity inspector surfaces
+  // in a "Raw response" panel.
+  const ts = (snap as unknown as {
+    typed_sensors?: {
+      eddi_mode: {
+        value: string | null | undefined;
+        freshness: string;
+        since_epoch_ms: number | bigint;
+      };
+      zappi: {
+        mode: string | null | undefined;
+        status: string | null | undefined;
+        plug_state: string | null | undefined;
+        freshness: string;
+        since_epoch_ms: number | bigint;
+      };
+    };
+  }).typed_sensors;
+  if (ts) {
+    const ev = ts.eddi_mode;
+    // Existing f64 sensor rows have the same boot-time defect; deferred for scope (PR-EDDI-SENSORS-1).
+    const evSinceText = ev.freshness === "Unknown"
+      ? "—"
+      : fmtEpoch(ev.since_epoch_ms as unknown as number);
+    rows.push({
+      key: "eddi.mode",
+      cells: [
+        { cls: "mono", html: entityLink("eddi.mode", "sensor") },
+        { cls: "mono", html: ev.value == null ? "—" : esc(ev.value) },
+        {
+          cls: `freshness-${ev.freshness}`,
+          html: `${esc(String(ev.freshness))} <span class="dim">(${evSinceText})</span>`,
+        },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+      ],
+    });
+
+    const z = ts.zappi;
+    const zParts = [z.mode, z.status, z.plug_state].filter(
+      (p): p is string => p != null,
+    );
+    const zVal = zParts.length === 0 ? "—" : esc(zParts.join(" · "));
+    const zSinceText = z.freshness === "Unknown"
+      ? "—"
+      : fmtEpoch(z.since_epoch_ms as unknown as number);
+    rows.push({
+      key: "zappi",
+      cells: [
+        { cls: "mono", html: entityLink("zappi", "sensor") },
+        { cls: "mono", html: zVal },
+        {
+          cls: `freshness-${z.freshness}`,
+          html: `${esc(String(z.freshness))} <span class="dim">(${zSinceText})</span>`,
+        },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: `<span class="dim">—</span>` },
+      ],
+    });
+  }
+
   // Re-sort so the synthetic row lands alphabetically alongside the rest.
   rows.sort((a, b) =>
     displayNameOfTyped(a.key, "sensor").localeCompare(displayNameOfTyped(b.key, "sensor")),
@@ -947,10 +1012,69 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
     string,
     { origin: string; identifier: string; cadence_ms: number; staleness_ms: number } | undefined
   >;
+
+  const sections: string[] = [descriptionSection(entityId, "sensor")];
+
+  // PR-EDDI-SENSORS-1: typed-sensor entries (eddi.mode, zappi) live on
+  // a sibling wire block, not in `snap.sensors`. They carry an
+  // `opt[str]` raw_json that surfaces in a "Raw response" panel below.
+  const ts = (snap as unknown as {
+    typed_sensors?: {
+      eddi_mode: {
+        value: string | null | undefined;
+        freshness: string;
+        since_epoch_ms: number | bigint;
+        raw_json: string | null | undefined;
+      };
+      zappi: {
+        mode: string | null | undefined;
+        status: string | null | undefined;
+        plug_state: string | null | undefined;
+        freshness: string;
+        since_epoch_ms: number | bigint;
+        raw_json: string | null | undefined;
+      };
+    };
+  }).typed_sensors;
+
+  if (entityId === "eddi.mode" && ts) {
+    const ev = ts.eddi_mode;
+    const valText = ev.value == null ? "—" : esc(ev.value);
+    const since = ev.since_epoch_ms as unknown as number;
+    // Existing f64 sensor rows have the same boot-time defect; deferred for scope (PR-EDDI-SENSORS-1).
+    const ageText = ev.freshness === "Unknown" ? "—" : esc(fmtEpoch(since));
+    sections.push(
+      `<section><h3>Current value</h3>` +
+        `<table><tbody>` +
+        `<tr><th>value</th><td>${valText}</td></tr>` +
+        `<tr><th>freshness</th><td class="freshness-${esc(String(ev.freshness))}">${esc(String(ev.freshness))}</td></tr>` +
+        `<tr><th>age</th><td>${ageText}</td></tr>` +
+        `</tbody></table></section>`,
+    );
+    sections.push(rawResponseSection(ev.raw_json));
+    return sections.filter(Boolean).join("");
+  }
+  if (entityId === "zappi" && ts) {
+    const z = ts.zappi;
+    const since = z.since_epoch_ms as unknown as number;
+    const ageText = z.freshness === "Unknown" ? "—" : esc(fmtEpoch(since));
+    sections.push(
+      `<section><h3>Current value</h3>` +
+        `<table><tbody>` +
+        `<tr><th>mode</th><td>${z.mode == null ? "—" : esc(z.mode)}</td></tr>` +
+        `<tr><th>status</th><td>${z.status == null ? "—" : esc(z.status)}</td></tr>` +
+        `<tr><th>plug_state</th><td>${z.plug_state == null ? "—" : esc(z.plug_state)}</td></tr>` +
+        `<tr><th>freshness</th><td class="freshness-${esc(String(z.freshness))}">${esc(String(z.freshness))}</td></tr>` +
+        `<tr><th>age</th><td>${ageText}</td></tr>` +
+        `</tbody></table></section>`,
+    );
+    sections.push(rawResponseSection(z.raw_json));
+    return sections.filter(Boolean).join("");
+  }
+
   const a = sensors[entityId];
   const mm = meta[entityId];
 
-  const sections: string[] = [descriptionSection(entityId, "sensor")];
   if (!a) {
     sections.push(`<section><p>no sensor "${esc(entityId)}" in snapshot</p></section>`);
     return sections.filter(Boolean).join("");
@@ -980,6 +1104,20 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
     );
   }
   return sections.filter(Boolean).join("");
+}
+
+/// PR-EDDI-SENSORS-1: render the "Raw response" panel for typed
+/// sensors that captured the upstream JSON body. Returns an empty
+/// string when raw_json is absent — silent absence rather than a
+/// "no data" placeholder, per the PR brief.
+function rawResponseSection(raw: string | null | undefined): string {
+  if (raw == null) return "";
+  return (
+    `<section><details class="raw-response" open>` +
+    `<summary>Raw response <button class="copy-btn icon" data-copy-from-sibling="true" title="Copy JSON">⧉</button></summary>` +
+    `<pre><code>${esc(raw)}</code></pre>` +
+    `</details></section>`
+  );
 }
 
 function renderKnobBody(entityId: string, snap: WorldSnapshot): string {
@@ -1319,7 +1457,12 @@ export function installCopyHandler() {
   document.addEventListener("click", (ev) => {
     const el = (ev.target as HTMLElement).closest(".copy-btn") as HTMLButtonElement | null;
     if (!el) return;
-    const value = el.getAttribute("data-copy") ?? "";
+    // Multi-line JSON cannot round-trip through a `data-copy` attribute
+    // (the first `"` terminates the attribute); the raw-response button
+    // opts into reading its sibling <pre><code> textContent instead.
+    const value = el.hasAttribute("data-copy-from-sibling")
+      ? (el.closest("details")?.querySelector("pre code")?.textContent ?? "")
+      : (el.getAttribute("data-copy") ?? "");
     doCopy(value).then(
       (ok) => flashButton(el, ok ? "copied" : "failed", ok),
     );

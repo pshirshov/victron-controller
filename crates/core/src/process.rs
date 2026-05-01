@@ -475,8 +475,16 @@ fn apply_schedule_readback(
 
 fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Effect>) {
     match r {
-        TypedReading::Zappi { state, at } => {
+        TypedReading::Zappi { state, at, raw_json } => {
             world.typed_sensors.zappi_state.on_reading(state, at);
+            // PR-EDDI-SENSORS-1: only overwrite the latched body when
+            // this poll carried one — `None` means "no new body this
+            // cycle", not "clear the body". The latched value
+            // intentionally outlives freshness decay so the operator
+            // can paste the last good body into a bug report.
+            if raw_json.is_some() {
+                world.typed_sensors.zappi_raw_json = raw_json;
+            }
             // Mirror onto the actuated side so confirm_if can promote
             // Pending/Commanded → Confirmed when the device's reported
             // mode matches the controller's target. Without this hook
@@ -491,8 +499,12 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
                 }));
             }
         }
-        TypedReading::Eddi { mode, at } => {
+        TypedReading::Eddi { mode, at, raw_json } => {
             world.typed_sensors.eddi_mode.on_reading(mode, at);
+            // PR-EDDI-SENSORS-1: same latch-on-Some logic as Zappi above.
+            if raw_json.is_some() {
+                world.typed_sensors.eddi_raw_json = raw_json;
+            }
             // Same mirror as Zappi above.
             world.eddi_mode.on_reading(mode, at);
             if world.eddi_mode.confirm_if(|t, a| t == a, at) {
@@ -3796,6 +3808,7 @@ mod tests {
             &Event::TypedSensor(TypedReading::Zappi {
                 state,
                 at: c.monotonic,
+                raw_json: None,
             }),
             &mut world,
             &c,

@@ -635,6 +635,7 @@ proptest! {
                     session_kwh: 0.0,
                 },
                 at: t0 + Duration::from_secs(delta_s),
+                raw_json: None,
             }),
             &mut world,
             &clock,

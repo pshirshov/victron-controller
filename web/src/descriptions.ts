@@ -52,6 +52,12 @@ export const entityDescriptions: Record<string, string> = {
   "solar.mppt.1.mode.operation":
     "Operation mode of MPPT charger 1 (com.victronenergy.solarcharger.ttyS2, DI 274). 0=Off, 1=Voltage-or-current-limited (curtailed by inverter), 2=MPPT-tracking (running unconstrained). Observability only — not coupled into the control loop.",
 
+  // --- Typed sensors (PR-EDDI-SENSORS-1) ---
+  "eddi.mode":
+    "Eddi mode reported by the device on the most recent myenergi cgi-jstatus-E poll. Inferred from the operational status code (`sta`): 0/6 → Stopped, anything else → Normal. The actuated row eddi.mode.target is what the controller wants; this row is what the device says it's doing. Click to see the raw response body the parser saw.",
+  "zappi":
+    "Zappi state reported by the device on the most recent myenergi cgi-jstatus-Z poll: charge mode (zmo), operational status (sta), plug state (pst). The actuated row evcharger.mode.target is what the controller wants; this row is what the device says it's doing. Click to see the raw response body the parser saw.",
+
   // --- Controller observables (PR-ZDO-2) ---
   "controller.zappi-drain.compensated-w":
     "Compensated battery drain (W) the M-ZAPPI-DRAIN soft loop saw on the most recent controller tick. max(0, -battery_dc_power - heat_pump - cooker). Broadcast-only — also visible on the Detail tab chart.",

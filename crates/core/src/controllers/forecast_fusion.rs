@@ -236,6 +236,8 @@ mod tests {
             forecast_forecast_solar: fs.map(snap),
             forecast_open_meteo: om.map(snap),
             forecast_baseline: None,
+            eddi_raw_json: None,
+            zappi_raw_json: None,
         }
     }
 
@@ -398,6 +400,8 @@ mod tests {
             forecast_forecast_solar: fs.map(|h| snap_hourly(0.0, h)),
             forecast_open_meteo: om.map(|h| snap_hourly(0.0, h)),
             forecast_baseline: None,
+            eddi_raw_json: None,
+            zappi_raw_json: None,
         }
     }
 
@@ -476,6 +480,8 @@ mod tests {
             forecast_forecast_solar: fs.map(snap),
             forecast_open_meteo: om.map(snap),
             forecast_baseline: baseline.map(snap),
+            eddi_raw_json: None,
+            zappi_raw_json: None,
         }
     }
 
@@ -492,6 +498,8 @@ mod tests {
             forecast_forecast_solar: fs.map(|h| snap_hourly(0.0, h)),
             forecast_open_meteo: om.map(|h| snap_hourly(0.0, h)),
             forecast_baseline: baseline.map(|h| snap_hourly(0.0, h)),
+            eddi_raw_json: None,
+            zappi_raw_json: None,
         }
     }
 
