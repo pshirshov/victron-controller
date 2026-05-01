@@ -1934,3 +1934,28 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `web/src/knobs.ts:222`
 **Description:** `actuator.retry.s` is a tuning knob controlling how aggressively the controller re-issues writes when the device doesn't comply; it is not a hard installation cap (that group's siblings are `grid.export.limit` / `grid.import.limit` / `inverter.safe-discharge.enable`, physical-limit settings keyed off installed hardware). Operators looking for "how often does the controller retry?" will not find it under "Hard installation caps".
 **Fix:** `web/src/knobs.ts` — introduced new "Actuator retry" group in `CONFIG_GROUPS` (no existing cross-cutting tuning group existed; all other tuning knobs live under per-subsystem groups like "Eddi", "Zappi calibration"). Updated `actuator.retry.s` entry's `group:` field from "Hard installation caps" to "Actuator retry". Single-entry group is acceptable because the knob is genuinely cross-cutting and has no subsystem peer.
+
+---
+
+## PR-TS-META-1 (M-TYPED-SENSORS-META typed-sensor metadata columns)
+
+### [PR-TS-META-1-D01] Entity-inspector popup for `eddi.mode` / `zappi` does not surface the new origin/identifier/cadence/staleness metadata
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.ts:1054-1086`
+**Description:** `renderSensorBody` short-circuits for `entityId === "eddi.mode"` and `entityId === "zappi"`, returning after rendering only "Current value" + "Raw response" sections. The Origin section (origin, identifier, cadence, stale after) that f64 sensors get on lines 1108-1118 is never produced for typed sensors, even though the wire model now carries those exact fields. The narrow type cast on lines 1037-1051 also still only declares `value/freshness/since_epoch_ms/raw_json`, omitting the four new fields. This is the central UX feature the PR exists to add (operator visibility into cadence/staleness/origin) and it lands on the table row but not on the inspector popup that the operator opens to drill into a sensor.
+**Fix:** `web/src/render.ts` — extracted the f64 path's Origin block into a small helper `originSection({ origin, identifier, cadence_ms, staleness_ms })` called from all three sites (f64 path passes `mm`; both typed-sensor early-return branches pass `ts.eddi_mode.*` / `ts.zappi.*`). The helper renders "—" and skips `copyIcon` when `identifier === ""` (covers the `unwrap_or("")` zero-length-serial path). f64 inspector behaviour preserved bit-for-bit; typed-sensor popups now show origin / identifier / cadence / stale-after parallel to the f64 layout.
+
+### [PR-TS-META-1-D02] No regression test pinning the wire/runtime freshness alignment invariant
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/dashboard/convert.rs` (test module around line 1265)
+**Description:** The plan flagged this as the critical invariant: "staleness_ms reported on wire MUST equal threshold the runtime decay uses". The convert reads from `meta.controller_params.freshness_myenergi`, the constant `MYENERGI_TYPED_FRESHNESS` seeds `ControllerParams::defaults()`, and `process.rs:1036-1037` ticks both typed sensors against `p.freshness_myenergi`. All three are aligned today, but no test pins it. If a future change introduces a literal in `process.rs` (regressing the threading) or fans out to per-device thresholds, the wire-advertised value silently drifts from the actual runtime decay window.
+**Fix:** `crates/shell/src/dashboard/convert.rs` — added `typed_sensor_staleness_matches_runtime_freshness_constant` test in `mod snapshot_new_sensors_tests` that constructs a snapshot with `meta.controller_params: ControllerParams::defaults()` and asserts both `snap.typed_sensors.eddi_mode.staleness_ms` and `snap.typed_sensors.zappi.staleness_ms` equal `MYENERGI_TYPED_FRESHNESS.as_millis() as i64`. Also pins `cadence_ms` against `meta.myenergi.poll_period`. A future drift in any of the three layers (constant, ControllerParams seeding, convert read-site) fails this test rather than silently advertising the wrong freshness window.
+
+### [PR-TS-META-1-D03] Inspector type cast for typed sensors lacks the new fields
+**Status:** resolved
+**Severity:** nit
+**Location:** `web/src/render.ts:1037-1051`
+**Description:** The `as unknown as { typed_sensors?: { eddi_mode: { ... }, zappi: { ... } } }` cast still lists only `value/freshness/since_epoch_ms/raw_json`, even though the wire model now carries `cadence_ms / staleness_ms / origin / identifier` and the parallel cast on lines 454-475 was updated. Not a runtime defect but a documentation drift between two casts of the same wire shape; makes D01's fix awkward to write.
+**Fix:** `web/src/render.ts` — mirrored `cadence_ms / staleness_ms / origin / identifier` onto both `eddi_mode` and `zappi` shapes inside the `renderSensorBody` cast. Now structurally identical to the row-construction cast at lines 454-475 (modulo `raw_json`, which only the popup needs).

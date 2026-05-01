@@ -7,13 +7,19 @@ pub struct TypedSensorEnum {
     #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
     pub since_epoch_ms: i64,
     pub raw_json: Option<String>,
+    #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
+    pub cadence_ms: i64,
+    #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
+    pub staleness_ms: i64,
+    pub origin: String,
+    pub identifier: String,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for TypedSensorEnum {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        2
+        4
     }
 }
 
@@ -53,6 +59,24 @@ impl crate::baboon_runtime::BaboonBinEncode for TypedSensorEnum {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            value.cadence_ms.encode_ueba(ctx, &mut buffer)?;
+            value.staleness_ms.encode_ueba(ctx, &mut buffer)?;
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.origin.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.identifier.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -72,6 +96,10 @@ impl crate::baboon_runtime::BaboonBinEncode for TypedSensorEnum {
                     v.encode_ueba(ctx, writer)?;
                 }
             }
+            value.cadence_ms.encode_ueba(ctx, writer)?;
+            value.staleness_ms.encode_ueba(ctx, writer)?;
+            value.origin.encode_ueba(ctx, writer)?;
+            value.identifier.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -93,11 +121,19 @@ impl crate::baboon_runtime::BaboonBinDecode for TypedSensorEnum {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
         };
+        let cadence_ms = crate::baboon_runtime::bin_tools::read_i64(reader)?;
+        let staleness_ms = crate::baboon_runtime::bin_tools::read_i64(reader)?;
+        let origin = crate::baboon_runtime::bin_tools::read_string(reader)?;
+        let identifier = crate::baboon_runtime::bin_tools::read_string(reader)?;
         Ok(TypedSensorEnum {
             value,
             freshness,
             since_epoch_ms,
             raw_json,
+            cadence_ms,
+            staleness_ms,
+            origin,
+            identifier,
         })
     }
 }

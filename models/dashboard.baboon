@@ -268,6 +268,10 @@ data TypedSensorEnum {
   freshness: Freshness
   since_epoch_ms: i64
   raw_json: opt[str]
+  cadence_ms: i64
+  staleness_ms: i64
+  origin: str
+  identifier: str
 }
 
 data TypedSensorZappi {
@@ -277,6 +281,10 @@ data TypedSensorZappi {
   freshness: Freshness
   since_epoch_ms: i64
   raw_json: opt[str]
+  cadence_ms: i64
+  staleness_ms: i64
+  origin: str
+  identifier: str
 }
 
 root data WorldSnapshot {

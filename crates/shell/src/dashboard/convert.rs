@@ -72,6 +72,21 @@ pub struct MetaContext {
     /// `battery_nominal_voltage_v`) for the projection's capacity_wh
     /// computation.
     pub hardware: HardwareParams,
+    /// PR-TS-META-1: poll period + serials for the myenergi cloud poller.
+    /// Fed into the typed-sensor wire surface so the dashboard can
+    /// surface cadence/identifier alongside the existing freshness state.
+    pub myenergi: MyenergiMeta,
+}
+
+/// PR-TS-META-1: shell-side projection of `MyenergiConfig` containing
+/// only the bits the dashboard's typed-sensor rows need (poll cadence
+/// and per-device serials). Decouples the convert layer from the full
+/// `MyenergiConfig`, which also carries credentials and the write-enable flag.
+#[derive(Debug, Clone)]
+pub struct MyenergiMeta {
+    pub poll_period: Duration,
+    pub eddi_serial: Option<String>,
+    pub zappi_serial: Option<String>,
 }
 
 use victron_controller_dashboard_model::victron_controller::dashboard::mode::Mode as ModelMode;
@@ -503,7 +518,7 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         // PR-EDDI-SENSORS-1: typed-sensor wire surface — Eddi mode and
         // Zappi state alongside the last raw response body for the
         // entity inspector raw-response panel.
-        typed_sensors: typed_sensors_to_model(f),
+        typed_sensors: typed_sensors_to_model(f, meta),
     }
 }
 
@@ -511,7 +526,17 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
 /// `TypedSensors` block. `raw_json` is sourced from sibling fields
 /// that intentionally outlive freshness decay — see the comment on
 /// `TypedSensors` in `core::world`.
-fn typed_sensors_to_model(t: &victron_controller_core::world::TypedSensors) -> ModelTypedSensors {
+///
+/// PR-TS-META-1: also populates `cadence_ms`, `staleness_ms`, `origin`,
+/// and `identifier` so the dashboard sensors table renders the same
+/// metadata it shows for f64 sensors. `staleness_ms` is read from
+/// `meta.controller_params.freshness_myenergi` (the runtime threshold
+/// — same value `apply_tick` feeds to `tick(at, …)`), guaranteeing the
+/// wire-advertised window matches runtime decay.
+fn typed_sensors_to_model(
+    t: &victron_controller_core::world::TypedSensors,
+    meta: &MetaContext,
+) -> ModelTypedSensors {
     let eddi_value = t.eddi_mode.value.as_ref().map(|m| format!("{m:?}"));
     let zappi_mode = t
         .zappi_state
@@ -528,12 +553,27 @@ fn typed_sensors_to_model(t: &victron_controller_core::world::TypedSensors) -> M
         .value
         .as_ref()
         .map(|z| format!("{:?}", z.zappi_plug_state));
+    let cadence_ms = meta.myenergi.poll_period.as_millis() as i64;
+    let staleness_ms = meta.controller_params.freshness_myenergi.as_millis() as i64;
+    let origin = "myenergi cloud".to_string();
+    let eddi_identifier = format!(
+        "cgi-jstatus-E{}",
+        meta.myenergi.eddi_serial.as_deref().unwrap_or(""),
+    );
+    let zappi_identifier = format!(
+        "cgi-jstatus-Z{}",
+        meta.myenergi.zappi_serial.as_deref().unwrap_or(""),
+    );
     ModelTypedSensors {
         eddi_mode: ModelTypedSensorEnum {
             value: eddi_value,
             freshness: freshness(t.eddi_mode.freshness),
             since_epoch_ms: instant_to_epoch_ms(t.eddi_mode.since),
             raw_json: t.eddi_raw_json.clone(),
+            cadence_ms,
+            staleness_ms,
+            origin: origin.clone(),
+            identifier: eddi_identifier,
         },
         zappi: ModelTypedSensorZappi {
             mode: zappi_mode,
@@ -542,6 +582,10 @@ fn typed_sensors_to_model(t: &victron_controller_core::world::TypedSensors) -> M
             freshness: freshness(t.zappi_state.freshness),
             since_epoch_ms: instant_to_epoch_ms(t.zappi_state.since),
             raw_json: t.zappi_raw_json.clone(),
+            cadence_ms,
+            staleness_ms,
+            origin,
+            identifier: zappi_identifier,
         },
     }
 }
@@ -1235,6 +1279,11 @@ mod snapshot_new_sensors_tests {
             cooker_topic: cooker_topic.map(str::to_owned),
             soc_history: crate::dashboard::soc_history::SocHistoryStore::new(),
             hardware: HardwareParams::defaults(),
+            myenergi: MyenergiMeta {
+                poll_period: Duration::from_secs(15),
+                eddi_serial: None,
+                zappi_serial: None,
+            },
         }
     }
 
@@ -1309,6 +1358,43 @@ mod snapshot_new_sensors_tests {
         assert!(snap.sensors_meta.contains_key("mppt_0_operation_mode"));
         assert!(snap.sensors_meta.contains_key("mppt_1_operation_mode"));
     }
+
+    /// PR-TS-META-1 / D02: the wire-level `staleness_ms` advertised on
+    /// the typed-sensor block MUST equal the runtime decay threshold
+    /// (`ControllerParams::freshness_myenergi`, seeded from
+    /// `MYENERGI_TYPED_FRESHNESS`). Pin all three layers together so a
+    /// future drift in any one layer fails this test rather than
+    /// silently desynchronising operator-visible freshness from the
+    /// freshness the runtime actually applies.
+    #[test]
+    fn typed_sensor_staleness_matches_runtime_freshness_constant() {
+        use victron_controller_core::world::MYENERGI_TYPED_FRESHNESS;
+
+        let now = Instant::now();
+        let world = World::fresh_boot(now);
+        let meta = test_meta(None, None);
+        let snap = world_to_snapshot(&world, &meta);
+
+        let expected_staleness = MYENERGI_TYPED_FRESHNESS.as_millis() as i64;
+        assert_eq!(
+            snap.typed_sensors.eddi_mode.staleness_ms, expected_staleness,
+            "eddi_mode.staleness_ms must equal MYENERGI_TYPED_FRESHNESS",
+        );
+        assert_eq!(
+            snap.typed_sensors.zappi.staleness_ms, expected_staleness,
+            "zappi.staleness_ms must equal MYENERGI_TYPED_FRESHNESS",
+        );
+
+        let expected_cadence = meta.myenergi.poll_period.as_millis() as i64;
+        assert_eq!(
+            snap.typed_sensors.eddi_mode.cadence_ms, expected_cadence,
+            "eddi_mode.cadence_ms must equal myenergi poll_period",
+        );
+        assert_eq!(
+            snap.typed_sensors.zappi.cadence_ms, expected_cadence,
+            "zappi.cadence_ms must equal myenergi poll_period",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1331,6 +1417,11 @@ mod zappi_drain_state_tests {
             cooker_topic: None,
             soc_history: crate::dashboard::soc_history::SocHistoryStore::new(),
             hardware: HardwareParams::defaults(),
+            myenergi: MyenergiMeta {
+                poll_period: Duration::from_secs(15),
+                eddi_serial: None,
+                zappi_serial: None,
+            },
         }
     }
 

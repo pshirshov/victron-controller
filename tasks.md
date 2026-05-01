@@ -22,7 +22,7 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   return; }`. Plan in
   `./docs/drafts/20260501-2207-m-actuated-retry-plan.md`. One PR
   (PR-ACT-RETRY-1).
-- [ ] **M-TYPED-SENSORS-META** — Cadence/staleness/origin/identifier
+- [x] **M-TYPED-SENSORS-META** — Cadence/staleness/origin/identifier
   columns for the eddi.mode and zappi typed-sensor rows.
   PR-EDDI-SENSORS-1 hardcoded `—` for these columns; this PR populates
   from real config. Plan in
@@ -117,7 +117,7 @@ touches the gate).
 
 Detail in `./docs/drafts/20260501-2207-m-typed-sensors-meta-plan.md`.
 
-- [ ] **PR-TS-META-1** — Extend `TypedSensorEnum` and
+- [x] **PR-TS-META-1** — Extend `TypedSensorEnum` and
   `TypedSensorZappi` wire types with `cadence_ms / staleness_ms /
   origin / identifier`. Lift the typed-sensor freshness threshold to a
   public constant in core. Populate from `cfg.myenergi.poll_period`
@@ -2374,3 +2374,78 @@ Detail in `./docs/drafts/20260425-1947-pr-actuated-as-sensors.md`.
   - The `actuator_retry_s` knob is cross-cutting (applies to all
     actuators). If a per-actuator retry interval is ever needed,
     introduce a per-actuator knob; do not overload this one.
+
+- **PR-TS-META-1** (2026-05-01) — Cadence/staleness/origin/identifier
+  metadata for the eddi.mode and zappi typed-sensor rows. Plan in
+  `./docs/drafts/20260501-2207-m-typed-sensors-meta-plan.md`.
+
+  **Origin.** PR-EDDI-SENSORS-1 added the two typed-sensor rows with
+  hardcoded `—` cells in the cadence/staleness/origin columns because
+  `sensors_meta` is keyed by `SensorId` and typed sensors have no entry.
+  User flagged: "we should avoid synthetics as much as we can".
+
+  **What shipped.**
+  - New public constant `MYENERGI_TYPED_FRESHNESS: Duration = 300s`
+    in `crates/core/src/world.rs`, next to `SUNRISE_SUNSET_FRESHNESS`.
+    Single constant for both eddi and zappi — the runtime uses one
+    `freshness_myenergi` for both `tick(at, ...)` calls in
+    `process.rs:1036-1037`.
+  - `ControllerParams::defaults()` now reads `freshness_myenergi`
+    from the new constant — single source of truth.
+  - Wire model: `TypedSensorEnum` and `TypedSensorZappi` extended
+    with `cadence_ms / staleness_ms / origin / identifier`. Regenerated.
+  - New `MyenergiMeta { poll_period, eddi_serial, zappi_serial }`
+    struct on `MetaContext` in convert.rs. Populated from
+    `cfg.myenergi` in main.rs. Decouples the convert layer from
+    `MyenergiConfig`'s credentials/URL/write-enable concerns.
+  - `typed_sensors_to_model` populates the four new fields:
+    `cadence_ms` from `meta.myenergi.poll_period`, `staleness_ms`
+    from `meta.controller_params.freshness_myenergi` (so wire/runtime
+    stay aligned even if config overrides), `origin = "myenergi
+    cloud"`, identifier from `cgi-jstatus-{E,Z}<serial>` with empty-
+    serial fallback.
+  - Render: row construction in `renderSensors` reads the four
+    fields; `renderSensorBody` (popup) extracted the f64 Origin
+    block into `originSection` helper called from all three sites
+    (f64 path + both typed-sensor branches). Helper handles
+    empty-identifier without crashing.
+
+  **Verification.**
+  - `cargo test --workspace` — all green (375+10+212; 0 failed).
+  - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+  - `cd web && ./node_modules/.bin/tsc --noEmit -p .` — clean.
+  - Manual reload required to verify columns render correctly.
+
+  **Adversarial review.** Two rounds. Round 1 produced 3 defects (D01
+  minor: popup didn't surface metadata; D02 minor: no test for
+  wire/runtime alignment invariant; D03 nit: type cast missing
+  fields). All three fixed. Round 2 verified clean with no new
+  defects.
+
+  **Surprises / notes for future work.**
+  - The wire/runtime freshness alignment is now pinned by
+    `typed_sensor_staleness_matches_runtime_freshness_constant` in
+    `convert.rs::snapshot_new_sensors_tests`. A future change that
+    drifts any of the three layers (`MYENERGI_TYPED_FRESHNESS` →
+    `ControllerParams::defaults().freshness_myenergi` → both
+    `tick(...)` calls in process.rs → `meta.controller_params.
+    freshness_myenergi` in convert) will fail this test.
+  - `originSection` helper in render.ts is now the single source for
+    rendering origin/identifier/cadence/staleness across f64 and
+    typed sensors. New sensor types should call it.
+  - Identifier construction is `format!("cgi-jstatus-E{}",
+    serial.unwrap_or(""))` — non-panicking, produces non-empty
+    string even when serial is None. Helper still has an
+    empty-identifier branch (defensive only; unreachable in
+    production today).
+
+  **Constraints future work must respect.**
+  - Adding a new typed-sensor wire field: the `sensors_meta` block
+    is keyed by `SensorId`; typed sensors are NOT keyed there. New
+    typed sensors carry their own meta fields on the
+    `TypedSensor*` wire types directly. The render-side helper
+    `originSection` consumes a unified `{ origin, identifier,
+    cadence_ms, staleness_ms }` shape — match it.
+  - The `MetaContext` struct now has a `myenergi: MyenergiMeta`
+    field. Test builders must populate it (existing test_meta
+    helpers in convert.rs were updated; new ones must mirror).

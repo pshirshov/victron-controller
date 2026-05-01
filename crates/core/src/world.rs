@@ -170,6 +170,15 @@ impl Sensors {
 pub const SUNRISE_SUNSET_FRESHNESS: std::time::Duration =
     std::time::Duration::from_secs(3 * 60 * 60);
 
+/// PR-TS-META-1: canonical freshness window for typed sensors fed by the
+/// myenergi cloud poller (Eddi mode, Zappi state). Both the runtime
+/// `tick(at, …)` decay (via [`crate::topology::ControllerParams::freshness_myenergi`])
+/// and the dashboard's wire-level `staleness_ms` route through this
+/// constant so the operator-visible threshold cannot drift from the
+/// runtime threshold.
+pub const MYENERGI_TYPED_FRESHNESS: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
 /// Per-provider forecast snapshot.
 ///
 /// PR-soc-chart-solar: `hourly_kwh` carries per-hour estimates starting

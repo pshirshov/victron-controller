@@ -9,14 +9,22 @@ export class TypedSensorZappi implements BaboonGeneratedLatest {
     private readonly _freshness: Freshness;
     private readonly _since_epoch_ms: bigint;
     private readonly _raw_json: string | undefined;
+    private readonly _cadence_ms: bigint;
+    private readonly _staleness_ms: bigint;
+    private readonly _origin: string;
+    private readonly _identifier: string;
 
-    constructor(mode: string | undefined, status: string | undefined, plug_state: string | undefined, freshness: Freshness, since_epoch_ms: bigint, raw_json: string | undefined) {
+    constructor(mode: string | undefined, status: string | undefined, plug_state: string | undefined, freshness: Freshness, since_epoch_ms: bigint, raw_json: string | undefined, cadence_ms: bigint, staleness_ms: bigint, origin: string, identifier: string) {
         this._mode = mode
         this._status = status
         this._plug_state = plug_state
         this._freshness = freshness
         this._since_epoch_ms = since_epoch_ms
         this._raw_json = raw_json
+        this._cadence_ms = cadence_ms
+        this._staleness_ms = staleness_ms
+        this._origin = origin
+        this._identifier = identifier
     }
 
     public get mode(): string | undefined {
@@ -37,6 +45,18 @@ export class TypedSensorZappi implements BaboonGeneratedLatest {
     public get raw_json(): string | undefined {
         return this._raw_json;
     }
+    public get cadence_ms(): bigint {
+        return this._cadence_ms;
+    }
+    public get staleness_ms(): bigint {
+        return this._staleness_ms;
+    }
+    public get origin(): string {
+        return this._origin;
+    }
+    public get identifier(): string {
+        return this._identifier;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -45,29 +65,41 @@ export class TypedSensorZappi implements BaboonGeneratedLatest {
             plug_state: this._plug_state !== undefined ? this._plug_state : undefined,
             freshness: this._freshness,
             since_epoch_ms: this._since_epoch_ms,
-            raw_json: this._raw_json !== undefined ? this._raw_json : undefined
+            raw_json: this._raw_json !== undefined ? this._raw_json : undefined,
+            cadence_ms: this._cadence_ms,
+            staleness_ms: this._staleness_ms,
+            origin: this._origin,
+            identifier: this._identifier
         };
     }
 
-    public with(overrides: {mode?: string | undefined; status?: string | undefined; plug_state?: string | undefined; freshness?: Freshness; since_epoch_ms?: bigint; raw_json?: string | undefined}): TypedSensorZappi {
+    public with(overrides: {mode?: string | undefined; status?: string | undefined; plug_state?: string | undefined; freshness?: Freshness; since_epoch_ms?: bigint; raw_json?: string | undefined; cadence_ms?: bigint; staleness_ms?: bigint; origin?: string; identifier?: string}): TypedSensorZappi {
         return new TypedSensorZappi(
             'mode' in overrides ? overrides.mode! : this._mode,
             'status' in overrides ? overrides.status! : this._status,
             'plug_state' in overrides ? overrides.plug_state! : this._plug_state,
             'freshness' in overrides ? overrides.freshness! : this._freshness,
             'since_epoch_ms' in overrides ? overrides.since_epoch_ms! : this._since_epoch_ms,
-            'raw_json' in overrides ? overrides.raw_json! : this._raw_json
+            'raw_json' in overrides ? overrides.raw_json! : this._raw_json,
+            'cadence_ms' in overrides ? overrides.cadence_ms! : this._cadence_ms,
+            'staleness_ms' in overrides ? overrides.staleness_ms! : this._staleness_ms,
+            'origin' in overrides ? overrides.origin! : this._origin,
+            'identifier' in overrides ? overrides.identifier! : this._identifier
         );
     }
 
-    public static fromPlain(obj: {mode: string | undefined; status: string | undefined; plug_state: string | undefined; freshness: Freshness; since_epoch_ms: bigint; raw_json: string | undefined}): TypedSensorZappi {
+    public static fromPlain(obj: {mode: string | undefined; status: string | undefined; plug_state: string | undefined; freshness: Freshness; since_epoch_ms: bigint; raw_json: string | undefined; cadence_ms: bigint; staleness_ms: bigint; origin: string; identifier: string}): TypedSensorZappi {
         return new TypedSensorZappi(
             obj.mode,
             obj.status,
             obj.plug_state,
             obj.freshness,
             obj.since_epoch_ms,
-            obj.raw_json
+            obj.raw_json,
+            obj.cadence_ms,
+            obj.staleness_ms,
+            obj.origin,
+            obj.identifier
         );
     }
 
@@ -151,6 +183,22 @@ export class TypedSensorZappi_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            BinTools.writeI64(buffer, value.cadence_ms);
+            BinTools.writeI64(buffer, value.staleness_ms);
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeString(buffer, value.origin);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeString(buffer, value.identifier);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -180,6 +228,10 @@ export class TypedSensorZappi_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 BinTools.writeString(writer, value.raw_json);
             }
+            BinTools.writeI64(writer, value.cadence_ms);
+            BinTools.writeI64(writer, value.staleness_ms);
+            BinTools.writeString(writer, value.origin);
+            BinTools.writeString(writer, value.identifier);
         }
     }
     
@@ -191,7 +243,7 @@ export class TypedSensorZappi_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 4; i++) {
+            for (let i = 0; i < 6; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -202,6 +254,10 @@ export class TypedSensorZappi_UEBACodec {
         const freshness = Freshness_UEBACodec.instance.decode(ctx, reader);
         const since_epoch_ms = BinTools.readI64(reader);
         const raw_json = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
+        const cadence_ms = BinTools.readI64(reader);
+        const staleness_ms = BinTools.readI64(reader);
+        const origin = BinTools.readString(reader);
+        const identifier = BinTools.readString(reader);
         return new TypedSensorZappi(
             mode,
             status,
@@ -209,6 +265,10 @@ export class TypedSensorZappi_UEBACodec {
             freshness,
             since_epoch_ms,
             raw_json,
+            cadence_ms,
+            staleness_ms,
+            origin,
+            identifier,
         );
     }
 

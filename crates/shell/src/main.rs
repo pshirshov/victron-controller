@@ -212,6 +212,11 @@ async fn main() -> Result<()> {
         cooker_topic: cfg.zigbee2mqtt.cooker_topic.clone(),
         soc_history: Arc::clone(&soc_history),
         hardware: topology.hardware,
+        myenergi: victron_controller_shell::dashboard::convert::MyenergiMeta {
+            poll_period: cfg.myenergi.poll_period,
+            eddi_serial: cfg.myenergi.eddi_serial.clone(),
+            zappi_serial: cfg.myenergi.zappi_serial.clone(),
+        },
     };
     let mut world_seed = World::fresh_boot(Instant::now());
     // Apply config-file knob defaults on top of `Knobs::safe_defaults`.

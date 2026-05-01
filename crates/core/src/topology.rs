@@ -50,7 +50,7 @@ impl ControllerParams {
             setpoint_retarget_deadband_w: 25,
             current_limit_confirm_tolerance_a: 0.5,
             current_limit_retarget_deadband_a: 0.5,
-            freshness_myenergi: Duration::from_secs(300),
+            freshness_myenergi: crate::world::MYENERGI_TYPED_FRESHNESS,
             freshness_forecast: Duration::from_secs(12 * 60 * 60),
         }
     }

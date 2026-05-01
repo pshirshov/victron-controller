@@ -456,6 +456,10 @@ export function renderSensors(snap: WorldSnapshot) {
         value: string | null | undefined;
         freshness: string;
         since_epoch_ms: number | bigint;
+        cadence_ms: number | bigint;
+        staleness_ms: number | bigint;
+        origin: string;
+        identifier: string;
       };
       zappi: {
         mode: string | null | undefined;
@@ -463,6 +467,10 @@ export function renderSensors(snap: WorldSnapshot) {
         plug_state: string | null | undefined;
         freshness: string;
         since_epoch_ms: number | bigint;
+        cadence_ms: number | bigint;
+        staleness_ms: number | bigint;
+        origin: string;
+        identifier: string;
       };
     };
   }).typed_sensors;
@@ -475,15 +483,18 @@ export function renderSensors(snap: WorldSnapshot) {
     rows.push({
       key: "eddi.mode",
       cells: [
-        { cls: "mono", html: entityLink("eddi.mode", "sensor") },
+        {
+          cls: "mono",
+          html: `${entityLink("eddi.mode", "sensor")} ${copyIcon(ev.identifier)}`,
+        },
         { cls: "mono", html: ev.value == null ? "—" : esc(ev.value) },
         {
           cls: `freshness-${ev.freshness}`,
           html: `${esc(String(ev.freshness))} <span class="dim">(${evSinceText})</span>`,
         },
-        { cls: "mono", html: `<span class="dim">—</span>` },
-        { cls: "mono", html: `<span class="dim">—</span>` },
-        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: fmtDurationMs(ev.cadence_ms as unknown as number) },
+        { cls: "mono", html: fmtDurationMs(ev.staleness_ms as unknown as number) },
+        { cls: "mono", html: esc(ev.origin) },
       ],
     });
 
@@ -498,15 +509,18 @@ export function renderSensors(snap: WorldSnapshot) {
     rows.push({
       key: "zappi",
       cells: [
-        { cls: "mono", html: entityLink("zappi", "sensor") },
+        {
+          cls: "mono",
+          html: `${entityLink("zappi", "sensor")} ${copyIcon(z.identifier)}`,
+        },
         { cls: "mono", html: zVal },
         {
           cls: `freshness-${z.freshness}`,
           html: `${esc(String(z.freshness))} <span class="dim">(${zSinceText})</span>`,
         },
-        { cls: "mono", html: `<span class="dim">—</span>` },
-        { cls: "mono", html: `<span class="dim">—</span>` },
-        { cls: "mono", html: `<span class="dim">—</span>` },
+        { cls: "mono", html: fmtDurationMs(z.cadence_ms as unknown as number) },
+        { cls: "mono", html: fmtDurationMs(z.staleness_ms as unknown as number) },
+        { cls: "mono", html: esc(z.origin) },
       ],
     });
   }
@@ -1024,6 +1038,10 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
         value: string | null | undefined;
         freshness: string;
         since_epoch_ms: number | bigint;
+        cadence_ms: number | bigint;
+        staleness_ms: number | bigint;
+        origin: string;
+        identifier: string;
         raw_json: string | null | undefined;
       };
       zappi: {
@@ -1032,6 +1050,10 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
         plug_state: string | null | undefined;
         freshness: string;
         since_epoch_ms: number | bigint;
+        cadence_ms: number | bigint;
+        staleness_ms: number | bigint;
+        origin: string;
+        identifier: string;
         raw_json: string | null | undefined;
       };
     };
@@ -1051,6 +1073,12 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
         `<tr><th>age</th><td>${ageText}</td></tr>` +
         `</tbody></table></section>`,
     );
+    sections.push(originSection({
+      origin: ev.origin,
+      identifier: ev.identifier,
+      cadence_ms: ev.cadence_ms as unknown as number,
+      staleness_ms: ev.staleness_ms as unknown as number,
+    }));
     sections.push(rawResponseSection(ev.raw_json));
     return sections.filter(Boolean).join("");
   }
@@ -1068,6 +1096,12 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
         `<tr><th>age</th><td>${ageText}</td></tr>` +
         `</tbody></table></section>`,
     );
+    sections.push(originSection({
+      origin: z.origin,
+      identifier: z.identifier,
+      cadence_ms: z.cadence_ms as unknown as number,
+      staleness_ms: z.staleness_ms as unknown as number,
+    }));
     sections.push(rawResponseSection(z.raw_json));
     return sections.filter(Boolean).join("");
   }
@@ -1092,18 +1126,34 @@ function renderSensorBody(entityId: string, snap: WorldSnapshot): string {
   );
 
   if (mm) {
-    const ident = esc(mm.identifier);
-    sections.push(
-      `<section><h3>Origin</h3>` +
-        `<table><tbody>` +
-        `<tr><th>origin</th><td>${esc(mm.origin)}</td></tr>` +
-        `<tr><th>identifier</th><td>${ident} ${copyIcon(mm.identifier)}</td></tr>` +
-        `<tr><th>cadence</th><td>${esc(fmtDurationMs(mm.cadence_ms))}</td></tr>` +
-        `<tr><th>stale after</th><td>${esc(fmtDurationMs(mm.staleness_ms))}</td></tr>` +
-        `</tbody></table></section>`,
-    );
+    sections.push(originSection(mm));
   }
   return sections.filter(Boolean).join("");
+}
+
+// Shared "Origin" block for sensor inspector popups. Used by both the
+// f64 path (sensors_meta) and typed-sensor branches (eddi.mode/zappi).
+// Skips the copy icon when identifier is empty (typed sensors with
+// no upstream serial fall through `unwrap_or("")` in convert).
+function originSection(m: {
+  origin: string;
+  identifier: string;
+  cadence_ms: number;
+  staleness_ms: number;
+}): string {
+  const identCell =
+    m.identifier === ""
+      ? "—"
+      : `${esc(m.identifier)} ${copyIcon(m.identifier)}`;
+  return (
+    `<section><h3>Origin</h3>` +
+    `<table><tbody>` +
+    `<tr><th>origin</th><td>${esc(m.origin)}</td></tr>` +
+    `<tr><th>identifier</th><td>${identCell}</td></tr>` +
+    `<tr><th>cadence</th><td>${esc(fmtDurationMs(m.cadence_ms))}</td></tr>` +
+    `<tr><th>stale after</th><td>${esc(fmtDurationMs(m.staleness_ms))}</td></tr>` +
+    `</tbody></table></section>`
+  );
 }
 
 /// PR-EDDI-SENSORS-1: render the "Raw response" panel for typed
