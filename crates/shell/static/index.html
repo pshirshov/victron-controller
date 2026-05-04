@@ -47,41 +47,31 @@
       <div id="soc-chart"></div>
     </section>
 
-    <!-- PR-WSOC-EDIT-1: editable 6×2 weather-SoC lookup-table widget.
-         Promoted from Detail to Control tab; renders 6 inline boundary
-         inputs above a 3-column grouped table whose Warm/Cold cells
-         each open the entity-inspector modal as a 4-field cell editor.
+    <!-- PR-WSOC-EDIT-2: flat 9-column × 6-row editable weather-SoC
+         lookup-table widget. Each per-field cell, each kWh boundary in
+         a row label, and the shared "12 °C" temperature header are
+         independently clickable single-knob-edit targets routed
+         through the entity-inspector modal.
          See render.ts::renderWeatherSocTable for the layout. -->
     <section id="weather-soc-table">
       <h2>Weather-SoC table</h2>
-      <div class="weathersoc-boundaries"></div>
       <div class="table-wrap">
         <table id="weather-soc-table-table">
           <thead>
             <tr>
               <th rowspan="2">Bucket</th>
-              <th>Warm (today_temp &gt; winter threshold)</th>
-              <th>Cold (today_temp ≤ winter threshold)</th>
+              <th colspan="4">Warm (&gt;<a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
+              <th colspan="4">Cold (≤<a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
             </tr>
             <tr>
-              <th class="wsoc-col-headers">
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a>
-              </th>
-              <th class="wsoc-col-headers">
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a>
-                /
-                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a>
-              </th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a></th>
+              <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a></th>
             </tr>
           </thead>
           <tbody></tbody>

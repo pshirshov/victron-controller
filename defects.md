@@ -2139,3 +2139,21 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `web/src/knobs.ts:282-302`
 **Description:** `KNOB_SPEC` is declared `export const` then mutated by a top-level loop. TS permits this; stylistically inconsistent with the rest of the file. Module-init order is implicit; a consumer reading `KNOB_SPEC[<cell-key>]` from an earlier-loaded module's top-level statement would see `undefined`.
 **Fix:** Closed deferred — current consumers all access `KNOB_SPEC` via function calls (after module-init), and the inline-mutation pattern is contained to one file. Refactor to a frozen `{...HAND_WRITTEN, ...generated}` object would be cleaner but is style-only.
+
+---
+
+## PR-WSOC-EDIT-2
+
+### [PR-WSOC-EDIT-2-D01] Re-opening single-knob-edit for the same id after a knob-modal transition leaves the modal wedged
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.ts` (`renderSingleKnobEditModalBody` `alreadyOpen` check ~L1875)
+**Description:** Sequence: (a) operator opens single-knob-edit modal for `weathersoc.threshold.energy.low`. (b) Without closing, clicks an `exp/bat/dis/ext` sub-header anchor (`data-entity-type="knob"`) → `renderEntityModal` falls through to `renderKnobBody` and overwrites `bodyEl.innerHTML`, but leaves `bodyEl.dataset.singleknobKnob` and `dataset.singleknobHandlersInstalled` intact. (c) Clicks the same boundary `low` anchor again → `alreadyOpen` evaluates true, live-refresh branch queries `[data-singleknob-field]` (null — wrong body content now), bails. Modal wedged with stale knob-body content.
+**Fix:** `web/src/render.ts::renderSingleKnobEditModalBody` — `alreadyOpen` short-circuit now requires BOTH the dataset match AND `bodyEl.querySelector("[data-singleknob-field]")` returning a non-null element. If a non-single-knob render replaced the body, the second condition is false and the function falls through to the full rebuild branch. Type-transition concern stays local to single-knob-edit.
+
+### [PR-WSOC-EDIT-2-D02] Defensive enum branch in `saveSingleKnobEdit` emits payload missing `knob_name`
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.ts:855-862`
+**Description:** Defensive enum dispatch path's `else` branch dispatched `send({ [spec.cmdVariant]: { value: v } })` without `knob_name`. Today unreachable, but a future enum knob added to single-knob-edit would silently produce a malformed command.
+**Fix:** `web/src/render.ts::saveSingleKnobEdit` — `else` branch replaced with `throw new Error(\`single-knob-edit doesn't support cmdVariant ${spec.cmdVariant} for knob ${dotted}\`)`. Hard fail beats silent malformed payload; the comment above the branch already stated this is unsupported.

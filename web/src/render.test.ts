@@ -15,6 +15,8 @@ import {
   BRANCH_CSS_CLASS,
   summaryFor,
   buildWeatherSocTableRows,
+  type EntityType,
+  type WeatherSocBoundariesLike,
   type WeatherSocTableLike,
 } from "./render.js";
 import { KNOB_SPEC, WEATHER_SOC_DEFAULTS } from "./knobs.js";
@@ -173,12 +175,14 @@ assert("T3: Disabled segment colour = neutral", BRANCH_COLOR[ZappiDrainBranch.Di
   assert("summaryFor Relax: hardClampClass", r.hardClampClass, "big-number hard-clamp-disengaged");
 }
 
-// --- PR-WSOC-EDIT-1: buildWeatherSocTableRows ----------------------------
+// --- PR-WSOC-EDIT-2: buildWeatherSocTableRows ----------------------------
 //
-// 3-column shape (Bucket | Warm group | Cold group). Each group cell is
-// a single clickable target wrapped as `entity-link` with
-// `data-entity-id="<bucket>.<temp>"` and
-// `data-entity-type="weathersoc-cell"`.
+// 9-column flat shape (Bucket label | 4 warm cells | 4 cold cells).
+// Every cell 1..8 is wrapped as `entity-link` with
+// `data-entity-id="weathersoc.table.<bucket>.<temp>.<field>"` and
+// `data-entity-type="single-knob-edit"`. Bucket-label cell embeds
+// kWh-boundary anchors (also single-knob-edit) for the row's
+// boundaries.
 
 function cell(exp: number, bat: number, dis: number, ext: boolean) {
   return { export_soc_threshold: exp, battery_soc_target: bat, discharge_soc_target: dis, extended: ext };
@@ -203,70 +207,250 @@ const wsocDefaults: WeatherSocTableLike = {
   very_dim_cold: cell(100, 100, 30, true),
 };
 
+// PR-WSOC-EDIT-2: boundary defaults from KNOB_SPEC. The renderer reads
+// these off `snap.knobs.weathersoc_*` at runtime; the test exercises
+// the row-builder with the canonical defaults.
+const wsocBoundaries: WeatherSocBoundariesLike = {
+  low: 8,
+  ok: 15,
+  high: 30,
+  tooMuch: 45,
+  verySunny: 67.5,
+};
+
 {
-  const rows = buildWeatherSocTableRows(wsocDefaults);
+  const rows = buildWeatherSocTableRows(wsocDefaults, wsocBoundaries);
   // Six bucket rows in canonical order (most sun → least).
   assert("wsoc rows: 6 buckets", String(rows.length), "6");
   const expectedKeys = ["very_sunny", "sunny", "mid", "low", "dim", "very_dim"];
   rows.forEach((r, i) => {
     assert(`wsoc rows[${i}] key`, r.key, expectedKeys[i]);
-    // 3-column shape: Label, Warm-group cell, Cold-group cell.
-    assert(`wsoc rows[${i}] cell count`, String(r.cells.length), "3");
+    // 9-column flat shape: bucket label + 4 warm cells + 4 cold cells.
+    assert(`wsoc rows[${i}] cell count`, String(r.cells.length), "9");
   });
 
-  // PR-WSOC-EDIT-1: weathersoc_table_widget_groups_open_modal_with_correct_id
-  // — each group cell is wrapped as entity-link with
-  //   data-entity-id="<bucket>.<temp>" and data-entity-type="weathersoc-cell".
+  // PR-WSOC-EDIT-2: each cell 1..8 carries data-entity-type="single-knob-edit"
+  // and the matching dotted entity-id.
   const vs = rows[0];
-  assert("wsoc very_sunny label", vs.cells[0].html, "VerySunny");
-  // Warm group: contains the dotted modal id and the inline values.
+  // Bucket label cell starts with the bucket name.
   assertBool(
-    "wsoc very_sunny warm cell carries entity-link wrapper",
-    vs.cells[1].html.includes('data-entity-type="weathersoc-cell"'),
+    "wsoc very_sunny label starts with VerySunny",
+    vs.cells[0].html.startsWith("VerySunny ("),
+    true,
+  );
+  // VerySunny row label embeds the very-sunny boundary anchor.
+  assertBool(
+    "wsoc very_sunny label embeds very-sunny boundary anchor",
+    vs.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.very-sunny"'),
     true,
   );
   assertBool(
-    "wsoc very_sunny warm cell carries data-entity-id=very-sunny.warm",
-    vs.cells[1].html.includes('data-entity-id="very-sunny.warm"'),
-    true,
-  );
-  assertBool(
-    "wsoc very_sunny warm cell renders 35/100/20/—",
-    vs.cells[1].html.includes("35 / 100 / 20 / —"),
-    true,
-  );
-  assertBool(
-    "wsoc very_sunny cold cell carries data-entity-id=very-sunny.cold",
-    vs.cells[2].html.includes('data-entity-id="very-sunny.cold"'),
+    "wsoc very_sunny label includes > glyph (escaped)",
+    vs.cells[0].html.includes("&gt;"),
     true,
   );
 
-  // Low row: cold group renders bat=100 (was 90 pre-PR-WSOC-EDIT-1)
-  // and extended=true.
+  // Per-field warm cells: cell[1] = exp=35, cell[2] = bat=100, cell[3] = dis=20, cell[4] = ext (false → —).
+  const vsFieldsWarm: ReadonlyArray<[string, string]> = [
+    ["export-soc-threshold", "35"],
+    ["battery-soc-target", "100"],
+    ["discharge-soc-target", "20"],
+    ["extended", "—"],
+  ];
+  vsFieldsWarm.forEach(([field, formatted], idx) => {
+    const c = vs.cells[1 + idx].html;
+    assertBool(
+      `wsoc very_sunny warm cell[${1 + idx}] carries single-knob-edit`,
+      c.includes('data-entity-type="single-knob-edit"'),
+      true,
+    );
+    assertBool(
+      `wsoc very_sunny warm cell[${1 + idx}] dotted id`,
+      c.includes(`data-entity-id="weathersoc.table.very-sunny.warm.${field}"`),
+      true,
+    );
+    assertBool(
+      `wsoc very_sunny warm cell[${1 + idx}] formatted value ${formatted}`,
+      c.includes(`>${formatted}<`),
+      true,
+    );
+  });
+  // Cold side: cell[5..8] = exp=80, bat=100, dis=30, ext=—.
+  const vsFieldsCold: ReadonlyArray<[string, string]> = [
+    ["export-soc-threshold", "80"],
+    ["battery-soc-target", "100"],
+    ["discharge-soc-target", "30"],
+    ["extended", "—"],
+  ];
+  vsFieldsCold.forEach(([field, formatted], idx) => {
+    const c = vs.cells[5 + idx].html;
+    assertBool(
+      `wsoc very_sunny cold cell[${5 + idx}] dotted id`,
+      c.includes(`data-entity-id="weathersoc.table.very-sunny.cold.${field}"`),
+      true,
+    );
+    assertBool(
+      `wsoc very_sunny cold cell[${5 + idx}] formatted value ${formatted}`,
+      c.includes(`>${formatted}<`),
+      true,
+    );
+  });
+
+  // Low row: cell[0] embeds BOTH …energy.ok and …energy.high anchors.
   const lo = rows[3];
-  assert("wsoc low label", lo.cells[0].html, "Low");
   assertBool(
-    "wsoc low warm renders 100/100/30/— (extended off)",
-    lo.cells[1].html.includes("100 / 100 / 30 / —"),
+    "wsoc low label embeds ok boundary anchor",
+    lo.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.ok"'),
     true,
   );
   assertBool(
-    "wsoc low cold renders 100/100/30/✓ (PR-WSOC-EDIT-1: bat=100 not 90)",
-    lo.cells[2].html.includes("100 / 100 / 30 / ✓"),
+    "wsoc low label embeds high boundary anchor",
+    lo.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.high"'),
+    true,
+  );
+  // Low.warm: 100/100/30/— → cells[1..4].
+  assertBool(
+    "wsoc low warm cell[1] export-soc-threshold=100",
+    lo.cells[1].html.includes(`data-entity-id="weathersoc.table.low.warm.export-soc-threshold"`)
+      && lo.cells[1].html.includes(">100<"),
+    true,
+  );
+  assertBool(
+    "wsoc low warm cell[4] extended=— (false)",
+    lo.cells[4].html.includes(`data-entity-id="weathersoc.table.low.warm.extended"`)
+      && lo.cells[4].html.includes(">—<"),
+    true,
+  );
+  // Low.cold: 100/100/30/✓ — bat=100 (PR-WSOC-EDIT-1) and ext=true.
+  assertBool(
+    "wsoc low cold cell[6] battery-soc-target=100",
+    lo.cells[6].html.includes(`data-entity-id="weathersoc.table.low.cold.battery-soc-target"`)
+      && lo.cells[6].html.includes(">100<"),
+    true,
+  );
+  assertBool(
+    "wsoc low cold cell[8] extended=✓",
+    lo.cells[8].html.includes(`data-entity-id="weathersoc.table.low.cold.extended"`)
+      && lo.cells[8].html.includes(">✓<"),
     true,
   );
 
-  // VeryDim row: both group cells render ✓.
-  const vd = rows[5];
-  assert("wsoc very_dim label", vd.cells[0].html, "VeryDim");
+  // Sunny row label embeds BOTH …too-much and …very-sunny.
+  const sunny = rows[1];
   assertBool(
-    "wsoc very_dim warm extended true",
-    vd.cells[1].html.includes("100 / 100 / 30 / ✓"),
+    "wsoc sunny label embeds too-much",
+    sunny.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.too-much"'),
     true,
   );
   assertBool(
-    "wsoc very_dim cold extended true",
-    vd.cells[2].html.includes("100 / 100 / 30 / ✓"),
+    "wsoc sunny label embeds very-sunny",
+    sunny.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.very-sunny"'),
+    true,
+  );
+
+  // Mid row label embeds BOTH …high and …too-much.
+  const mid = rows[2];
+  assertBool(
+    "wsoc mid label embeds high",
+    mid.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.high"'),
+    true,
+  );
+  assertBool(
+    "wsoc mid label embeds too-much",
+    mid.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.too-much"'),
+    true,
+  );
+
+  // Dim row label embeds BOTH …low and …ok.
+  const dim = rows[4];
+  assertBool(
+    "wsoc dim label embeds low",
+    dim.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.low"'),
+    true,
+  );
+  assertBool(
+    "wsoc dim label embeds ok",
+    dim.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.ok"'),
+    true,
+  );
+
+  // VeryDim row label embeds …low + ≤ glyph.
+  const vd = rows[5];
+  assertBool(
+    "wsoc very_dim label embeds low",
+    vd.cells[0].html.includes('data-entity-id="weathersoc.threshold.energy.low"'),
+    true,
+  );
+  assertBool(
+    "wsoc very_dim label includes ≤ glyph",
+    vd.cells[0].html.includes("≤"),
+    true,
+  );
+  // Both very_dim group cells (warm + cold extended=✓).
+  assertBool(
+    "wsoc very_dim warm cell[4] extended=✓",
+    vd.cells[4].html.includes(`data-entity-id="weathersoc.table.very-dim.warm.extended"`)
+      && vd.cells[4].html.includes(">✓<"),
+    true,
+  );
+  assertBool(
+    "wsoc very_dim cold cell[8] extended=✓",
+    vd.cells[8].html.includes(`data-entity-id="weathersoc.table.very-dim.cold.extended"`)
+      && vd.cells[8].html.includes(">✓<"),
+    true,
+  );
+
+  // 48-cell coverage: every (bucket, temp, field) triple appears as a
+  // dotted entity-id substring in the right row.
+  const bucketKebabs = ["very-sunny", "sunny", "mid", "low", "dim", "very-dim"] as const;
+  let cellCoverage = 0;
+  bucketKebabs.forEach((bk, ridx) => {
+    const html = rows[ridx].cells.slice(1, 9).map((c) => c.html).join(" ");
+    for (const temp of ["warm", "cold"] as const) {
+      for (const field of ["export-soc-threshold", "battery-soc-target", "discharge-soc-target", "extended"]) {
+        const dotted = `weathersoc.table.${bk}.${temp}.${field}`;
+        assertBool(
+          `wsoc cell coverage: ${dotted}`,
+          html.includes(`data-entity-id="${dotted}"`),
+          true,
+        );
+        cellCoverage++;
+      }
+    }
+  });
+  assert("wsoc 48-cell coverage", String(cellCoverage), "48");
+
+  // single-knob-edit marker count across cells 1..8 of all 6 rows = 48.
+  let markerCount = 0;
+  rows.forEach((r) => {
+    for (let i = 1; i <= 8; i++) {
+      const matches = r.cells[i].html.match(/data-entity-type="single-knob-edit"/g);
+      if (matches) markerCount += matches.length;
+    }
+  });
+  assert("wsoc single-knob-edit marker count = 48", String(markerCount), "48");
+}
+
+// PR-WSOC-EDIT-2: EntityType union compile-time check — the union now
+// admits "single-knob-edit". An assignment with the legacy
+// "weathersoc-cell" value would fail tsc, which is the implicit
+// negative assertion the spec calls for.
+{
+  const _t: EntityType = "single-knob-edit";
+  void _t;
+}
+
+// PR-WSOC-EDIT-2 / D08: descriptionForCellKnob fallback — cell knobs
+// fall through to the column-header surrogate. Exercised indirectly
+// here via the descriptions table (`descriptionForCellKnob` is module-
+// private in render.ts).
+{
+  const surrogate = (entityDescriptions as Record<string, string>)[
+    "weathersoc.table.battery-soc-target"
+  ];
+  assertBool(
+    "description fallback surrogate present for low.cold.battery-soc-target",
+    typeof surrogate === "string" && surrogate.length > 0,
     true,
   );
 }
@@ -317,9 +501,10 @@ const wsocDefaults: WeatherSocTableLike = {
   }
 }
 
-// PR-WSOC-EDIT-1: weathersoc_boundaries_section_renders_six_inputs_with_current_values
-// — assert that all 6 boundary knob KNOB_SPEC entries are present (the
-// inline-input row reads from these for min/max/step/default).
+// PR-WSOC-EDIT-2: assert that all 6 boundary knob KNOB_SPEC entries
+// are present. The single-knob-edit modal reads these for min/max/step/
+// default when the operator clicks a kWh anchor in a row label or the
+// shared 12 °C header.
 {
   const expected = [
     "weathersoc.threshold.energy.low",
@@ -334,8 +519,10 @@ const wsocDefaults: WeatherSocTableLike = {
   }
 }
 
-// PR-WSOC-EDIT-1: renderEntityModal_weathersoc_column_header_shows_description
-// — the 4 column-header dotted ids each yield non-empty descriptions.
+// PR-WSOC-EDIT-2: column-header surrogate ids each yield non-empty
+// descriptions. Sub-headers (entity-type="knob") use them directly;
+// cell knobs (entity-type="single-knob-edit") fall back to them via
+// `descriptionForCellKnob`.
 {
   const headers = [
     "weathersoc.table.export-soc-threshold",

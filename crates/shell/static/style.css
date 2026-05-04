@@ -674,6 +674,13 @@ footer {
 #entity-modal-body td {
   font-family: ui-monospace, monospace;
 }
+/* PR-WSOC-EDIT-2: marker class on the single-knob-edit modal's inner
+   table. Inherits the generic #entity-modal-body table layout — kept
+   distinct from sibling tables so future per-grid styling can attach
+   without touching the read-only modal arms. */
+.single-knob-edit-grid {
+  /* no overrides — inherits #entity-modal-body table */
+}
 .entity-link {
   cursor: pointer;
   text-decoration: underline dotted var(--muted) 1px;

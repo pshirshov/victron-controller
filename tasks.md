@@ -76,6 +76,16 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   survive). Read-only dashboard widget for v1; per-cell editing comes
   later. Plan in `./docs/drafts/20260504-1530-m-wsoc-table-plan.md`.
   One PR (PR-WSOC-TABLE-1).
+- [x] **M-WSOC-EDIT-2** — Refactor Weather-SoC widget UX from
+  PR-WSOC-EDIT-1's grouped-modal layout into per-field popups +
+  inline boundary editing. 9-column × 6-row grid; each cell + each
+  kWh boundary number embedded in row labels + the "12" winter-temp
+  value in column headers becomes individually clickable, opening a
+  uniform single-knob-edit modal. Boundaries strip above the grid is
+  deleted; its function absorbed into row-label inline anchors. Pure
+  web-UX refactor — Rust side unchanged. Plan in
+  `./docs/drafts/20260504-1815-pr-wsoc-edit-2-plan.md`. One PR
+  (PR-WSOC-EDIT-2).
 - [x] **M-WSOC-EDIT** — Promote the read-only Weather-SoC widget from
   PR-WSOC-TABLE-1 into a fully editable control surface. 48 cell
   fields become flat HA-addressable knobs via single
@@ -119,6 +129,29 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+
+---
+
+## Milestone M-WSOC-EDIT-2 — PR breakdown
+
+Detail in `./docs/drafts/20260504-1815-pr-wsoc-edit-2-plan.md`. One
+PR; pure web-UX refactor (no Rust changes).
+
+- [x] **PR-WSOC-EDIT-2** — D01..D10 in plan doc.
+  (1) HTML rewrite: 9-column thead, no boundaries strip, `12` in
+  group headers clickable. (2) `buildWeatherSocTableRows` 9-cell
+  shape; row labels carry inline `entity-link` anchors for boundary
+  knobs. (3) Delete `renderBoundaryInputs`. (4) Replace
+  `renderWeatherSocCellModalBody` + handlers with
+  `renderSingleKnobEditModalBody` + `installSingleKnobEditHandlers`
+  + `saveSingleKnobEdit` + `clearSingleKnobEditModal`. (5)
+  EntityType `"weathersoc-cell"` → `"single-knob-edit"`. (6)
+  `index.ts` clean-up + `clearSingleKnobEditModal` import. (7)
+  Live boundary values plumbed into row labels via `boundaries`
+  arg to `buildWeatherSocTableRows`. (8) Description fallback for
+  cell knobs via `descriptionForCellKnob` helper. (9) Test
+  updates (9-cell shape, 48-cell coverage, EntityType union check).
+  (10) style.css cleanup + `.single-knob-edit-grid` rule.
 
 ---
 
@@ -688,6 +721,70 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-WSOC-EDIT-2 — Per-field popups + inline boundary editing in
+  Weather-SoC widget** (M-WSOC-EDIT-2, 2026-05-04) — Operator
+  reported PR-WSOC-EDIT-1's UX as "abysmal": 4-field grouped modal
+  edits all fields at once, separate boundaries strip is visually
+  disconnected from the cells. This PR rewrites the widget UX:
+  flat 9-column × 6-row grid; each `<td>` for `exp/bat/dis/ext`
+  independently clickable opening a single-field popup; boundary
+  kWh values inline in row labels (e.g. "Sunny (45–67.5)" with
+  both 45 and 67.5 individually clickable); winter-temp inline in
+  column-band headers ("Warm (>12 °C)" / "Cold (≤12 °C)") with
+  shared anchor; 6-input boundaries strip deleted. Every click-
+  target opens a uniform single-knob-edit modal — 1 input +
+  default hint + revert + Save/Cancel — with the dispatch
+  consolidating around a new `entity-type="single-knob-edit"`
+  arm replacing the per-PR `weathersoc-cell` arm. Live boundary
+  values plumbed into row labels via `readBoundaries(snap)` so
+  edits reflect immediately on the next snapshot. Pure web-UX
+  refactor — Rust side, KNOB_SPEC, drift fixture, bat=100
+  invariant, all 48 cell knobs unchanged. Verification:
+  `cargo test --workspace` 218 passed (Rust no-delta), clippy
+  clean, `tsc --noEmit -p web` clean, `bundle.js` 272.5 kB
+  rebuilt. Adversarial review: 2 minor defects, both resolved
+  (D01: modal type-transition wedge fixed via integrity check on
+  `alreadyOpen` short-circuit; D02: defensive enum branch missing
+  `knob_name` replaced with `throw new Error` — fail loud beats
+  silent malformed payload).
+  Notes / surprises:
+  - **`alreadyOpen` integrity check** — the `dataset.singleknobKnob
+    === dotted` short-circuit alone wasn't sufficient: a transition
+    through a non-single-knob render (e.g. clicking an
+    `entity-type="knob"` sub-header) overwrites `bodyEl.innerHTML`
+    but leaves dataset attributes intact. Fix: AND with
+    `bodyEl.querySelector("[data-singleknob-field]")` non-null. The
+    type-transition concern stays local to single-knob-edit; no need
+    to clear dataset on every non-single-knob dispatch.
+  - **Per-PR `cmdVariant` policy divergence** — `dispatchKnobValue`
+    in `knobs.ts` accepts any non-SetMode enum cmdVariant by
+    emitting `{ [cmdVariant]: { value } }` (the per-knob enum
+    convention); single-knob-edit now hard-fails the same case via
+    `throw new Error`. Today no enum is wired through single-knob-
+    edit; if added later, the future engineer must explicitly
+    extend the dispatch instead of relying on a default that may
+    not match the wire shape.
+  - **Live boundary values, not KNOB_SPEC defaults** —
+    `buildWeatherSocTableRows(table, boundaries)` consumes
+    boundaries from `snap.knobs.*` snake fields. Prevents stale
+    labels after operator edits.
+  - **`weathersoc.threshold.winter-temperature` is `kind: "float"`**
+    in KNOB_SPEC, so `SetFloatKnob` dispatch works (no special-case
+    integer handling needed).
+  - **Description fallback** for cell knobs strips `<bucket>.<temp>.`
+    and looks up the column-header surrogate
+    (`weathersoc.table.<field>`). 48 distinct prose entries weren't
+    needed; one description per field is enough.
+  - **Dataset attribute casing** — `data-singleknob-knob`,
+    `-field`, `-default`, `-revert`, `-handlers-installed`,
+    `-last-snap`. CamelCase access via `dataset.singleknobKnob`
+    etc. Reviewer specifically checked for casing mismatches; none
+    found.
+  - **`render.test.ts` is type-checked-only** (deferred D02b on
+    PR-WSOC-EDIT-1) — top-level `assert(...)` calls are not
+    executed. The compile passes; runtime correctness is verified
+    by hand at integration time.
 
 - **PR-WSOC-EDIT-1 — Editable Weather-SoC table widget** (M-WSOC-EDIT,
   2026-05-04) — Promoted the read-only table from PR-WSOC-TABLE-1

@@ -27,12 +27,13 @@ import { KNOB_SPEC, type KnobSpec } from "./knobs.js";
 
 // Entity types recognised by the inspector dispatcher.
 //
-// PR-WSOC-EDIT-1 added `"weathersoc-cell"` — the only INTERACTIVE entry
-// in this union (every other arm renders a read-only modal body). The
-// cell-edit modal carries 4 inputs + Save/Cancel buttons; the
-// `entityId` for this type encodes `"<bucket>.<temp>"` (e.g.
-// `"low.cold"`), which the modal-body renderer parses to look up the
-// 4 cell fields from `KNOB_SPEC` + the snapshot.
+// PR-WSOC-EDIT-2 replaces `"weathersoc-cell"` with `"single-knob-edit"`
+// — the only INTERACTIVE entry in this union (every other arm renders
+// a read-only modal body). The single-knob-edit modal carries one
+// input (number / checkbox) + default hint + revert button +
+// Save/Cancel; `entityId` is the dotted KNOB_SPEC key the modal
+// targets. Used for the 48 weather-SoC cell knobs, the 6 boundary
+// kWh knobs, and the shared winter-temperature knob.
 export type EntityType =
   | "sensor"
   | "knob"
@@ -42,7 +43,7 @@ export type EntityType =
   | "forecast"
   | "core"
   | "timer"
-  | "weathersoc-cell";
+  | "single-knob-edit";
 
 // --- incremental update primitives ---------------------------------------
 
@@ -973,8 +974,8 @@ function renderTimerBody(entityId: string, snap: WorldSnapshot): string {
 /// the current snapshot. Idempotent — safe to call on every
 /// applySnapshot while the modal is open so the body refreshes live.
 ///
-/// PR-WSOC-EDIT-1: the `weathersoc-cell` arm is the only INTERACTIVE
-/// modal body — its `<input>` elements must NOT be clobbered by a
+/// PR-WSOC-EDIT-2: the `single-knob-edit` arm is the only INTERACTIVE
+/// modal body — its `<input>` element must NOT be clobbered by a
 /// snapshot arriving while the user is editing. The renderer
 /// preserves any input value that has focus or already differs from
 /// the snapshot value (mirrors the `renderKnobs` focus-preservation
@@ -990,8 +991,8 @@ export function renderEntityModal(
   if (!titleEl || !bodyEl) return;
   titleEl.textContent = `${type}: ${entityId}`;
 
-  if (type === "weathersoc-cell") {
-    renderWeatherSocCellModalBody(entityId, snap, bodyEl);
+  if (type === "single-knob-edit") {
+    renderSingleKnobEditModalBody(entityId, snap, bodyEl);
     return;
   }
 
@@ -1572,31 +1573,17 @@ export function renderForecasts(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
-// --- PR-WSOC-EDIT-1: weather-SoC 6×2 lookup-table widget (editable) -----
+// --- PR-WSOC-EDIT-2: weather-SoC 9×6 flat editable lookup-table widget --
 //
 // PR-WSOC-TABLE-1 introduced this widget read-only on the Detail tab.
-// PR-WSOC-EDIT-1 promotes it to the Control tab and makes every cell
-// individually editable via the entity-inspector modal (one row per
-// bucket × 2 group cells per row, each group cell rendering 4 inline
-// values; click → modal edits all 4 fields). The 6 boundary knobs are
-// rendered inline above the cell grid via `renderBoundaryInputs`.
-
-/// PR-WSOC-EDIT-1: bucket order in the rendered table. Top-down reads
-/// "most sun → least sun". `kebab` is the wire form used in MQTT topic
-/// tails and KNOB_SPEC keys (`weathersoc.table.<bucket>.<temp>.<field>`).
-/// `wireField` are the snake_case field names on `snap.knobs.weather_soc_table`.
-const WEATHER_SOC_BUCKETS: ReadonlyArray<{
-  key: string; label: string;
-  kebab: "very-sunny" | "sunny" | "mid" | "low" | "dim" | "very-dim";
-  warm: string; cold: string;
-}> = [
-  { key: "very_sunny", label: "VerySunny", kebab: "very-sunny", warm: "very_sunny_warm", cold: "very_sunny_cold" },
-  { key: "sunny", label: "Sunny", kebab: "sunny", warm: "sunny_warm", cold: "sunny_cold" },
-  { key: "mid", label: "Mid", kebab: "mid", warm: "mid_warm", cold: "mid_cold" },
-  { key: "low", label: "Low", kebab: "low", warm: "low_warm", cold: "low_cold" },
-  { key: "dim", label: "Dim", kebab: "dim", warm: "dim_warm", cold: "dim_cold" },
-  { key: "very_dim", label: "VeryDim", kebab: "very-dim", warm: "very_dim_warm", cold: "very_dim_cold" },
-];
+// PR-WSOC-EDIT-1 promoted it to the Control tab with a 3-column grouped
+// layout + inline boundary-input strip + per-cell 4-field modal.
+// PR-WSOC-EDIT-2 flattens the layout to 9 columns × 6 rows: each
+// per-field cell, each kWh boundary number embedded in a row label,
+// and the shared "12 °C" temperature header are independently
+// clickable single-knob-edit targets routed through the
+// `single-knob-edit` modal arm. The boundary-input strip is gone —
+// its function is absorbed into the row-label kWh anchors.
 
 /// PR-WSOC-TABLE-1: minimal per-cell shape used by the renderer. Mirrors
 /// the wire model `WeatherSocCell`; kept structural so the test harness
@@ -1609,157 +1596,239 @@ export type WeatherSocCellLike = {
 };
 export type WeatherSocTableLike = Record<string, WeatherSocCellLike>;
 
-/// PR-WSOC-EDIT-1: 6 boundary knobs rendered inline above the cell grid.
-/// Order: low (8), ok (15), high (30), too-much (45), very-sunny (67.5),
-/// winter-temperature (12 °C). Each is a `[snakeKey, dottedKey, label]`
-/// triple — the snake key reads from `snap.knobs[…]`; the dotted key
-/// resolves to the KNOB_SPEC entry; the label is the inline column
-/// header.
-const WEATHER_SOC_BOUNDARY_INPUTS: ReadonlyArray<[string, string, string]> = [
-  ["weathersoc_low_energy_threshold", "weathersoc.threshold.energy.low", "low"],
-  ["weathersoc_ok_energy_threshold", "weathersoc.threshold.energy.ok", "ok"],
-  ["weathersoc_high_energy_threshold", "weathersoc.threshold.energy.high", "high"],
-  ["weathersoc_too_much_energy_threshold", "weathersoc.threshold.energy.too-much", "too-much"],
-  ["weathersoc_very_sunny_threshold", "weathersoc.threshold.energy.very-sunny", "very-sunny"],
-  ["weathersoc_winter_temperature_threshold", "weathersoc.threshold.winter-temperature", "winter °C"],
+/// PR-WSOC-EDIT-2: live boundary numbers piped into bucket row labels.
+/// Read from `snap.knobs.weathersoc_*` snake names by
+/// `renderWeatherSocTable`; KNOB_SPEC defaults are fallback only. Each
+/// kWh number in the row label renders as an `entity-link` anchor that
+/// opens the single-knob-edit modal for the matching boundary knob.
+export type WeatherSocBoundariesLike = {
+  low: number;
+  ok: number;
+  high: number;
+  tooMuch: number;
+  verySunny: number;
+};
+
+/// PR-WSOC-EDIT-2: per-field metadata, one entry per of the 4 cell
+/// fields. Drives both the row builder (cell index 1..4 / 5..8) and
+/// the dispatched dotted knob_name suffix.
+const WEATHER_SOC_CELL_FIELDS: ReadonlyArray<{
+  snake: keyof WeatherSocCellLike;
+  kebab: "export-soc-threshold" | "battery-soc-target" | "discharge-soc-target" | "extended";
+  kind: "float" | "bool";
+}> = [
+  { snake: "export_soc_threshold", kebab: "export-soc-threshold", kind: "float" },
+  { snake: "battery_soc_target", kebab: "battery-soc-target", kind: "float" },
+  { snake: "discharge_soc_target", kebab: "discharge-soc-target", kind: "float" },
+  { snake: "extended", kebab: "extended", kind: "bool" },
 ];
 
-/// PR-WSOC-EDIT-1: format a cell's 4 values inline as
-/// `35 / 100 / 20 / —`. Bool field renders ✓ / —.
-function fmtCellInline(c: WeatherSocCellLike): string {
-  const fmt = (v: number): string => {
-    if (Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-9) {
-      return String(Math.round(v));
-    }
-    return v.toFixed(1);
-  };
-  const ext = c.extended ? "✓" : "—";
-  return `${fmt(c.export_soc_threshold)} / ${fmt(c.battery_soc_target)} / ${fmt(c.discharge_soc_target)} / ${ext}`;
+/// PR-WSOC-EDIT-2: format a single numeric cell field (`exp`, `bat`,
+/// `dis`). Integer if it round-trips cleanly, else 1-decimal. Bool is
+/// formatted via the caller (✓ / —).
+function fmtCellField(value: number, isBool: false): string;
+function fmtCellField(value: boolean, isBool: true): string;
+function fmtCellField(value: number | boolean, isBool: boolean): string {
+  if (isBool) return value ? "✓" : "—";
+  const v = value as number;
+  if (Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-9) {
+    return String(Math.round(v));
+  }
+  return v.toFixed(1);
 }
 
-/// PR-WSOC-EDIT-1: pure row-builder, factored out so it can be unit-
-/// tested without a DOM. Returns one `KeyedRow` per bucket (6 rows).
-/// Each row has 3 cells: bucket label, Warm group (clickable), Cold
-/// group (clickable). The group cells are wrapped as entity-link with
-/// `data-entity-id="<bucket>.<temp>"` and
-/// `data-entity-type="weathersoc-cell"` so the inspector dispatcher
-/// opens the cell-edit modal.
-export function buildWeatherSocTableRows(table: WeatherSocTableLike): KeyedRow[] {
-  const wrap = (kebab: string, temp: "warm" | "cold", inline: string): string => {
-    const id = `${kebab}.${temp}`;
-    return `<a class="entity-link mono" data-entity-id="${esc(id)}" data-entity-type="weathersoc-cell">${esc(inline)}</a>`;
-  };
-  return WEATHER_SOC_BUCKETS.map((b) => {
+/// PR-WSOC-EDIT-2: format a boundary kWh number for a row label —
+/// integer if clean, else 1-decimal. Same rule as `fmtCellField`,
+/// pulled out so the row-label and cell-content code can share it.
+function fmtBoundary(v: number): string {
+  if (Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-9) {
+    return String(Math.round(v));
+  }
+  return v.toFixed(1);
+}
+
+/// PR-WSOC-EDIT-2: build the bucket-label HTML (cell[0]) for a row.
+/// Each kWh number is wrapped as an `entity-link` anchor with
+/// `data-entity-type="single-knob-edit"` pointing at the matching
+/// boundary knob. `>` / `≤` glyphs flow through `esc(...)`.
+function bucketLabelHtml(
+  bucketLabel: string,
+  inner: string,
+): string {
+  return `${bucketLabel} (${inner})`;
+}
+
+/// Anchor for a boundary kWh number inside a bucket label.
+function boundaryAnchor(dotted: string, value: number): string {
+  return `<a class="entity-link mono" data-entity-id="${esc(dotted)}" data-entity-type="single-knob-edit">${esc(fmtBoundary(value))}</a>`;
+}
+
+/// Anchor for a per-field cell (cells 1..4 / 5..8) — wraps a single
+/// formatted value as a single-knob-edit click target.
+function cellAnchor(dotted: string, formatted: string): string {
+  return `<a class="entity-link mono" data-entity-id="${esc(dotted)}" data-entity-type="single-knob-edit">${esc(formatted)}</a>`;
+}
+
+/// PR-WSOC-EDIT-2: pure row-builder, factored out so it can be unit-
+/// tested without a DOM. Returns one `KeyedRow` per bucket (6 rows,
+/// 9 cells each: bucket label + 4 warm-cell anchors + 4 cold-cell
+/// anchors). Each cell 1..8 is its own clickable single-knob-edit
+/// target keyed by the dotted KNOB_SPEC id
+/// `weathersoc.table.<bucket-kebab>.<warm|cold>.<field-kebab>`.
+export function buildWeatherSocTableRows(
+  table: WeatherSocTableLike,
+  boundaries: WeatherSocBoundariesLike,
+): KeyedRow[] {
+  // PR-WSOC-EDIT-2: row-label kWh anchors per the locked design:
+  //   VerySunny (>67.5)
+  //   Sunny     (45–67.5)
+  //   Mid       (30–45)
+  //   Low       (15–30)
+  //   Dim       (8–15)
+  //   VeryDim   (≤8)
+  // dotted ids:
+  //   .energy.low / .ok / .high / .too-much / .very-sunny
+  const aLow = boundaryAnchor("weathersoc.threshold.energy.low", boundaries.low);
+  const aOk = boundaryAnchor("weathersoc.threshold.energy.ok", boundaries.ok);
+  const aHigh = boundaryAnchor("weathersoc.threshold.energy.high", boundaries.high);
+  const aTooMuch = boundaryAnchor("weathersoc.threshold.energy.too-much", boundaries.tooMuch);
+  const aVerySunny = boundaryAnchor("weathersoc.threshold.energy.very-sunny", boundaries.verySunny);
+  const labels: ReadonlyArray<{ html: string; key: string; kebab: string; warm: string; cold: string }> = [
+    { key: "very_sunny", kebab: "very-sunny", warm: "very_sunny_warm", cold: "very_sunny_cold",
+      html: bucketLabelHtml("VerySunny", `${esc(">")}${aVerySunny}`) },
+    { key: "sunny", kebab: "sunny", warm: "sunny_warm", cold: "sunny_cold",
+      html: bucketLabelHtml("Sunny", `${aTooMuch}–${aVerySunny}`) },
+    { key: "mid", kebab: "mid", warm: "mid_warm", cold: "mid_cold",
+      html: bucketLabelHtml("Mid", `${aHigh}–${aTooMuch}`) },
+    { key: "low", kebab: "low", warm: "low_warm", cold: "low_cold",
+      html: bucketLabelHtml("Low", `${aOk}–${aHigh}`) },
+    { key: "dim", kebab: "dim", warm: "dim_warm", cold: "dim_cold",
+      html: bucketLabelHtml("Dim", `${aLow}–${aOk}`) },
+    { key: "very_dim", kebab: "very-dim", warm: "very_dim_warm", cold: "very_dim_cold",
+      html: bucketLabelHtml("VeryDim", `${esc("≤")}${aLow}`) },
+  ];
+  return labels.map((b) => {
     const warm = table[b.warm];
     const cold = table[b.cold];
+    const fieldCells = (cell: WeatherSocCellLike, temp: "warm" | "cold") =>
+      WEATHER_SOC_CELL_FIELDS.map((f) => {
+        const dotted = `weathersoc.table.${b.kebab}.${temp}.${f.kebab}`;
+        const formatted = f.kind === "bool"
+          ? fmtCellField(cell[f.snake] as boolean, true)
+          : fmtCellField(cell[f.snake] as number, false);
+        return { cls: "mono", html: cellAnchor(dotted, formatted) };
+      });
     return {
       key: b.key,
       cells: [
-        { cls: "mono", html: b.label },
-        { cls: "mono", html: wrap(b.kebab, "warm", fmtCellInline(warm)) },
-        { cls: "mono", html: wrap(b.kebab, "cold", fmtCellInline(cold)) },
+        { cls: "mono", html: b.html },
+        ...fieldCells(warm, "warm"),
+        ...fieldCells(cold, "cold"),
       ],
     };
   });
 }
 
-// --- PR-WSOC-EDIT-1: boundary-input row -----------------------------------
+// --- PR-WSOC-EDIT-2: single-knob-edit modal dispatcher ------------------
 
-/// PR-WSOC-EDIT-1 / D03: module-level dispatcher reference. Has to live
-/// at module scope so the modal click-handler (bound once on `bodyEl`)
-/// can reach it without a closure over a stale `sendCommand`. Use sites
-/// must explicitly null-check it (see `saveWeatherSocCellEdits` and the
-/// boundary-set click handler).
-let weatherSocSendCommand: ((cmd: unknown) => void) | null = null;
+/// PR-WSOC-EDIT-2: module-level dispatcher reference, set by
+/// `renderWeatherSocTable`. The single-knob-edit modal handler (bound
+/// once on `bodyEl`) reads it at click-time so a stale closure can't
+/// fire after a new `sendCommand` has been seeded. Use sites must
+/// null-check; bail when unset.
+let singleKnobSendCommand: ((cmd: unknown) => void) | null = null;
 
-/// PR-WSOC-EDIT-1: render 6 inline number inputs (5 kWh + 1 °C) into
-/// the `<div class="weathersoc-boundaries">` container. Each input has
-/// a "set" button that dispatches a `SetFloatKnob` command. Inputs are
-/// keyed by snake-case knob name; subsequent renders only update the
-/// `value` attribute when the input is NOT focused (mirrors the
-/// keyed-row focus-preservation discipline used by `renderKnobs`).
-function renderBoundaryInputs(snap: WorldSnapshot): void {
-  const container = document.querySelector(".weathersoc-boundaries") as HTMLElement | null;
-  if (!container) return;
-  const knobs = snap.knobs as unknown as Record<string, unknown>;
-
-  if (container.childElementCount === 0) {
-    // First render: build all six inputs once.
-    const fragments: string[] = [];
-    fragments.push('<div class="weathersoc-boundaries-row">');
-    for (const [snakeKey, dottedKey, label] of WEATHER_SOC_BOUNDARY_INPUTS) {
-      const spec = KNOB_SPEC[dottedKey];
-      const cur = knobs[snakeKey];
-      const val = typeof cur === "number" ? cur : (spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.default : 0);
-      const min = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.min : 0;
-      const max = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.max : 100;
-      const step = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.step : 1;
-      fragments.push(
-        `<label class="weathersoc-boundary-input">` +
-          `<span class="dim">${esc(label)}</span> ` +
-          `<input type="number" data-wsoc-boundary="${esc(dottedKey)}" min="${min}" max="${max}" step="${step}" value="${val}">` +
-          `<button class="secondary" data-wsoc-boundary-set="${esc(dottedKey)}">set</button>` +
-        `</label>`,
-      );
-    }
-    fragments.push("</div>");
-    container.innerHTML = fragments.join("");
-  } else {
-    // Subsequent renders: refresh values, but skip focused inputs.
-    for (const [snakeKey, dottedKey] of WEATHER_SOC_BOUNDARY_INPUTS) {
-      const input = container.querySelector(
-        `input[data-wsoc-boundary="${cssEscape(dottedKey)}"]`,
-      ) as HTMLInputElement | null;
-      if (!input) continue;
-      if (document.activeElement === input) continue;
-      const cur = knobs[snakeKey];
-      if (typeof cur === "number" && Number(input.value) !== cur) {
-        input.value = String(cur);
-      }
-    }
+/// PR-WSOC-EDIT-2: pull the live current value for a dotted knob name
+/// out of the snapshot. Cell knobs ride inside `weather_soc_table`
+/// (look up via the `<bucket>_<temp>` snake key); flat boundary /
+/// winter-temp knobs live as scalar fields on `snap.knobs[<snake>]`.
+/// Returns `undefined` when nothing in the snapshot matches the id.
+function currentValueFor(
+  dotted: string,
+  snap: WorldSnapshot,
+): number | boolean | undefined {
+  const knobs = toPlain(snap.knobs);
+  // Cell-knob form: `weathersoc.table.<bucket>.<warm|cold>.<field>`.
+  const cellMatch = dotted.match(/^weathersoc\.table\.([a-z-]+)\.(warm|cold)\.([a-z-]+)$/);
+  if (cellMatch) {
+    const tableRaw = knobs["weather_soc_table"] as unknown;
+    if (!tableRaw || typeof tableRaw !== "object") return undefined;
+    const tablePlain = toPlain(tableRaw) as Record<string, unknown>;
+    const bucketSnake = cellMatch[1].replace(/-/g, "_");
+    const cellKey = `${bucketSnake}_${cellMatch[2]}`;
+    const cellRaw = tablePlain[cellKey];
+    if (!cellRaw || typeof cellRaw !== "object") return undefined;
+    const cell = toPlain(cellRaw) as Record<string, unknown>;
+    const fieldKey = cellMatch[3].replace(/-/g, "_");
+    const v = cell[fieldKey];
+    if (typeof v === "number" || typeof v === "boolean") return v;
+    return undefined;
   }
+  // Boundary / winter-temp knobs: dotted → snake_case scalar field.
+  const snake = dottedToSnake(dotted);
+  const v = (knobs as Record<string, unknown>)[snake];
+  if (typeof v === "number" || typeof v === "boolean") return v;
+  return undefined;
+}
 
-  // D03: track install state on the container dataset rather than a
-  // module-level flag, so HMR / DOM replacement doesn't leave a stale
-  // "installed" assertion on a fresh container.
-  if (container.dataset.wsocBoundariesInstalled !== "1") {
-    container.dataset.wsocBoundariesInstalled = "1";
-    container.addEventListener("click", (ev) => {
-      const btn = (ev.target as HTMLElement | null)?.closest(
-        "button[data-wsoc-boundary-set]",
-      ) as HTMLButtonElement | null;
-      if (!btn) return;
-      const send = weatherSocSendCommand;
-      if (!send) return;
-      const dottedKey = btn.getAttribute("data-wsoc-boundary-set");
-      if (!dottedKey) return;
-      const input = container.querySelector(
-        `input[data-wsoc-boundary="${cssEscape(dottedKey)}"]`,
-      ) as HTMLInputElement | null;
-      if (!input) return;
-      const v = parseFloat(input.value);
-      if (!isFinite(v)) return;
-      send({ SetFloatKnob: { knob_name: dottedKey, value: v } });
-    });
+/// PR-WSOC-EDIT-2: dotted boundary knob name → snake_case `snap.knobs`
+/// key. Limited to the boundary + winter-temperature knobs that can
+/// open the single-knob-edit modal alongside the 48 cell knobs.
+function dottedToSnake(dotted: string): string {
+  switch (dotted) {
+    case "weathersoc.threshold.energy.low": return "weathersoc_low_energy_threshold";
+    case "weathersoc.threshold.energy.ok": return "weathersoc_ok_energy_threshold";
+    case "weathersoc.threshold.energy.high": return "weathersoc_high_energy_threshold";
+    case "weathersoc.threshold.energy.too-much": return "weathersoc_too_much_energy_threshold";
+    case "weathersoc.threshold.energy.very-sunny": return "weathersoc_very_sunny_threshold";
+    case "weathersoc.threshold.winter-temperature": return "weathersoc_winter_temperature_threshold";
+    default: return "";
   }
 }
 
-/// Minimal CSS attribute-selector escaper. The dotted keys contain `.`
-/// which is a class-selector token in CSS — escape it so
-/// `querySelector('[data-wsoc-boundary="weathersoc.threshold.energy.low"]')`
-/// works without surprise.
-function cssEscape(s: string): string {
-  return s.replace(/[.\\]/g, "\\$&");
+/// PR-WSOC-EDIT-2 / D08: per-cell knob description fallback. Cell
+/// knobs (`weathersoc.table.<bucket>.<temp>.<field>`) reuse the
+/// column-header surrogate description (`weathersoc.table.<field>`).
+/// Boundary / winter-temp knobs read their description directly.
+function descriptionForCellKnob(dotted: string): string {
+  const m = dotted.match(/^weathersoc\.table\.[a-z-]+\.(?:warm|cold)\.(.+)$/);
+  if (m) {
+    return (entityDescriptions as Record<string, string>)[`weathersoc.table.${m[1]}`] ?? "";
+  }
+  return (entityDescriptions as Record<string, string>)[dotted] ?? "";
 }
 
-/// PR-WSOC-EDIT-1: DOM-mutating renderer. Now takes `sendCommand` so
-/// it can wire up the boundary inputs' "set" buttons and stash the
-/// dispatcher for the cell-edit modal.
+/// PR-WSOC-EDIT-2: read the per-knob boundaries off the snapshot.
+/// Falls back to `KNOB_SPEC` defaults so a snapshot missing a field
+/// still renders something sensible. Used by `renderWeatherSocTable`
+/// and exposed for tests via `buildWeatherSocTableRows`.
+function readBoundaries(snap: WorldSnapshot): WeatherSocBoundariesLike {
+  const knobs = toPlain(snap.knobs);
+  const read = (snake: string, dotted: string): number => {
+    const v = (knobs as Record<string, unknown>)[snake];
+    if (typeof v === "number") return v;
+    const spec = KNOB_SPEC[dotted];
+    if (spec && spec.kind !== "bool" && spec.kind !== "enum") return spec.default;
+    return 0;
+  };
+  return {
+    low: read("weathersoc_low_energy_threshold", "weathersoc.threshold.energy.low"),
+    ok: read("weathersoc_ok_energy_threshold", "weathersoc.threshold.energy.ok"),
+    high: read("weathersoc_high_energy_threshold", "weathersoc.threshold.energy.high"),
+    tooMuch: read("weathersoc_too_much_energy_threshold", "weathersoc.threshold.energy.too-much"),
+    verySunny: read("weathersoc_very_sunny_threshold", "weathersoc.threshold.energy.very-sunny"),
+  };
+}
+
+/// PR-WSOC-EDIT-2: DOM-mutating renderer. Takes `sendCommand` so it
+/// can stash the dispatcher for the single-knob-edit modal handler.
+/// The flat 9-column layout reads boundaries off `snap.knobs.*` so
+/// the row labels track operator edits next snapshot.
 export function renderWeatherSocTable(
   snap: WorldSnapshot,
   sendCommand?: (cmd: unknown) => void,
 ): void {
-  if (sendCommand) weatherSocSendCommand = sendCommand;
+  if (sendCommand) singleKnobSendCommand = sendCommand;
   const tbody = document.querySelector("#weather-soc-table-table tbody") as HTMLElement | null;
   if (!tbody) return;
   const k = toPlain(snap.knobs);
@@ -1775,194 +1844,148 @@ export function renderWeatherSocTable(
       tableFlat[k] = toPlain(cell) as unknown as WeatherSocCellLike;
     }
   }
-  updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat));
-  renderBoundaryInputs(snap);
+  const boundaries = readBoundaries(snap);
+  updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat, boundaries));
 }
 
-// --- PR-WSOC-EDIT-1: cell-edit modal body --------------------------------
+// --- PR-WSOC-EDIT-2: single-knob-edit modal body ------------------------
 
-/// Map a `<bucket>.<temp>` entityId to the underlying snake-case field
-/// names on `snap.knobs.weather_soc_table`. Returns null on unknown id.
-function wsocCellSnakeKey(entityId: string): string | null {
-  const parts = entityId.split(".");
-  if (parts.length !== 2) return null;
-  const [bucket, temp] = parts;
-  // bucket dashes → snake.
-  const bucketSnake = bucket.replace(/-/g, "_");
-  if (temp !== "warm" && temp !== "cold") return null;
-  return `${bucketSnake}_${temp}`;
-}
-
-/// Read the 4 current cell values from `snap.knobs.weather_soc_table`.
-/// Returns null when the table or cell isn't present.
-function readWeatherSocCell(
-  entityId: string,
-  snap: WorldSnapshot,
-): WeatherSocCellLike | null {
-  const k = toPlain(snap.knobs);
-  const tableRaw = k["weather_soc_table"] as unknown;
-  if (!tableRaw || typeof tableRaw !== "object") return null;
-  const tablePlain = toPlain(tableRaw) as Record<string, unknown>;
-  const snakeKey = wsocCellSnakeKey(entityId);
-  if (!snakeKey) return null;
-  const cellRaw = tablePlain[snakeKey];
-  if (!cellRaw || typeof cellRaw !== "object") return null;
-  return toPlain(cellRaw) as unknown as WeatherSocCellLike;
-}
-
-/// Cell-field metadata for the modal body — display label, snake-case
-/// reader on `WeatherSocCellLike`, kebab-case wire form for the
-/// dispatched knob_name, and `kind` ("float" or "bool").
-const WEATHER_SOC_CELL_FIELDS: ReadonlyArray<{
-  label: string;
-  snake: keyof WeatherSocCellLike;
-  kebab: string;
-  kind: "float" | "bool";
-}> = [
-  { label: "exp", snake: "export_soc_threshold", kebab: "export-soc-threshold", kind: "float" },
-  { label: "bat", snake: "battery_soc_target", kebab: "battery-soc-target", kind: "float" },
-  { label: "dis", snake: "discharge_soc_target", kebab: "discharge-soc-target", kind: "float" },
-  { label: "extended", snake: "extended", kebab: "extended", kind: "bool" },
-];
-
-/// PR-WSOC-EDIT-1: render the cell-edit modal body into `bodyEl`. The
-/// body contains 4 inputs (3 number + 1 checkbox), per-row defaults,
-/// per-row reset buttons, and a Save / Cancel footer. Subsequent calls
-/// from `applySnapshot` only update inputs that are NOT focused and
-/// that match the snapshot (mirror the boundary-input dirty-input
-/// rule so an in-progress edit isn't clobbered by a snapshot tick).
-function renderWeatherSocCellModalBody(
-  entityId: string,
+/// PR-WSOC-EDIT-2: render the single-knob-edit modal body into
+/// `bodyEl`. The body contains description prose, one input (number or
+/// checkbox), a default hint, a revert button, and Save/Cancel.
+/// Subsequent calls from `applySnapshot` only update the input when
+/// it is NOT focused and still matches the previously-stamped snapshot
+/// value (mirrors the `renderKnobs` focus-preservation discipline so
+/// in-progress edits aren't clobbered by snapshot ticks).
+function renderSingleKnobEditModalBody(
+  dotted: string,
   snap: WorldSnapshot,
   bodyEl: HTMLElement,
 ): void {
-  const cell = readWeatherSocCell(entityId, snap);
-  if (!cell) {
-    bodyEl.innerHTML = `<section><p>No cell <code>${esc(entityId)}</code> in snapshot.</p></section>`;
+  const spec = KNOB_SPEC[dotted];
+  if (!spec) {
+    bodyEl.innerHTML = `<section><p>Unknown knob <code>${esc(dotted)}</code>.</p></section>`;
     return;
   }
-  // Determine if the modal is already rendered for this cell. The
-  // dataset id check lets `applySnapshot` re-call this function on
-  // every snapshot tick without throwing away the user's in-progress
-  // edits.
-  const alreadyOpen = bodyEl.dataset.wsocCellId === entityId;
-  // D01: install the click handler at most once per `bodyEl`. The
-  // handler reads the current cell-id from `bodyEl.dataset.wsocCellId`
-  // rather than capturing it via closure, so a rebuild for a different
-  // cell can update the dataset without leaving the previous closure
-  // armed against a stale entityId.
-  installWeatherSocCellModalHandlers(bodyEl);
+  const cur = currentValueFor(dotted, snap);
+  const desc = descriptionForCellKnob(dotted);
+
+  installSingleKnobEditHandlers(bodyEl);
+
+  // D01: the `singleknobKnob` dataset stamp can survive a non-single-knob
+  // re-render (e.g. `renderKnobBody` overwriting `innerHTML` while the
+  // dataset entries persist). Require BOTH the dataset match AND the input
+  // still being present in the DOM — otherwise fall through to the full
+  // rebuild branch so we don't wedge on stale knob-body content.
+  const inputStillPresent = !!bodyEl.querySelector("[data-singleknob-field]");
+  const alreadyOpen = bodyEl.dataset.singleknobKnob === dotted && inputStillPresent;
   if (!alreadyOpen) {
-    bodyEl.dataset.wsocCellId = entityId;
-    const rows = WEATHER_SOC_CELL_FIELDS.map((f) => {
-      const dotted = `weathersoc.table.${entityId}.${f.kebab}`;
-      const spec = KNOB_SPEC[dotted];
-      const cur = cell[f.snake];
-      if (f.kind === "float") {
-        const min = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.min : 0;
-        const max = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.max : 100;
-        const step = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.step : 1;
-        const def = spec && spec.kind !== "bool" && spec.kind !== "enum" ? spec.default : 0;
-        return (
-          `<tr>` +
-            `<td>${esc(f.label)}</td>` +
-            `<td><input type="number" data-wsoc-field="${esc(f.snake)}" min="${min}" max="${max}" step="${step}" value="${cur as number}"></td>` +
-            `<td class="dim">[default: ${def}]</td>` +
-            `<td><button class="copy-btn icon" data-wsoc-revert="${esc(f.snake)}" data-wsoc-default="${def}" title="Reset to default (${def})">↺</button></td>` +
-          `</tr>`
-        );
-      }
-      const def = spec && spec.kind === "bool" ? spec.default : false;
-      const checked = cur ? " checked" : "";
-      return (
-        `<tr>` +
-          `<td>${esc(f.label)}</td>` +
-          `<td><input type="checkbox" data-wsoc-field="${esc(f.snake)}"${checked}></td>` +
-          `<td class="dim">[default: ${def}]</td>` +
-          `<td><button class="copy-btn icon" data-wsoc-revert="${esc(f.snake)}" data-wsoc-default="${def}" title="Reset to default (${def})">↺</button></td>` +
-        `</tr>`
-      );
-    }).join("");
+    bodyEl.dataset.singleknobKnob = dotted;
+    const descSection = desc
+      ? `<section><p style="color:var(--muted);margin:0">${esc(desc)}</p></section>`
+      : "";
+    let inputHtml: string;
+    let defStr: string;
+    if (spec.kind === "bool") {
+      defStr = spec.default ? "true" : "false";
+      const checked = (cur === undefined ? spec.default : (cur as boolean)) ? " checked" : "";
+      inputHtml = `<input type="checkbox" data-singleknob-field${checked}>`;
+    } else if (spec.kind === "enum") {
+      // single-knob-edit isn't currently aimed at enum knobs (the 56
+      // click-targets are float/bool only). Defensive fallback.
+      defStr = spec.default;
+      const v = cur === undefined ? spec.default : String(cur);
+      inputHtml = `<input type="text" data-singleknob-field value="${esc(v)}">`;
+    } else {
+      // float / int — both ride `SetFloatKnob` per the existing convention.
+      defStr = String(spec.default);
+      const v = cur === undefined ? spec.default : (cur as number);
+      inputHtml = `<input type="number" data-singleknob-field min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${v}">`;
+    }
+    const escDef = esc(defStr);
     bodyEl.innerHTML =
-      `<section><table class="cell-edit-grid"><tbody>${rows}</tbody></table>` +
+      `${descSection}` +
+      `<section><table class="single-knob-edit-grid"><tbody>` +
+        `<tr>` +
+          `<td class="mono">${esc(dotted)}</td>` +
+          `<td>${inputHtml}</td>` +
+          `<td class="dim">[default: ${escDef}]</td>` +
+          `<td><button class="copy-btn icon" data-singleknob-revert data-singleknob-default="${escDef}" title="Reset to default (${escDef})">↺</button></td>` +
+        `</tr>` +
+      `</tbody></table>` +
       `<footer style="margin-top: 8px; display: flex; gap: 8px; justify-content: flex-end;">` +
-        `<button id="wsoc-cell-cancel">Cancel</button>` +
-        `<button id="wsoc-cell-save">Save</button>` +
+        `<button id="single-knob-cancel">Cancel</button>` +
+        `<button id="single-knob-save">Save</button>` +
       `</footer></section>`;
-    // Re-stamp last-snap baselines after the rebuild so the dirty-input
-    // rule sees the values that just landed in the DOM.
-    stampWeatherSocCellLastSnap(bodyEl);
+    stampSingleKnobLastSnap(bodyEl, spec);
     return;
   }
-  // Live-refresh: update inputs whose value isn't focused and matches
-  // the snapshot's prior value (i.e. the user hasn't started editing).
-  for (const f of WEATHER_SOC_CELL_FIELDS) {
-    const sel = `[data-wsoc-field="${cssEscape(String(f.snake))}"]`;
-    const input = bodyEl.querySelector(sel) as HTMLInputElement | null;
-    if (!input) continue;
-    if (document.activeElement === input) continue;
-    if (f.kind === "float") {
-      const cur = cell[f.snake] as number;
-      // Dirty-input rule: only refresh when the input still matches the
-      // previously-seen snapshot value (or has been just opened). We
-      // approximate "previously-seen" by stamping the snapshot value
-      // into the dataset on each refresh; if the user has typed a new
-      // value, `dataset.wsocLastSnap` will mismatch the input and we
-      // leave it alone.
-      const lastSnap = input.dataset.wsocLastSnap;
-      if (lastSnap !== undefined && Number(input.value) !== Number(lastSnap)) {
-        input.dataset.wsocLastSnap = String(cur);
-        continue;
-      }
-      if (Number(input.value) !== cur) input.value = String(cur);
-      input.dataset.wsocLastSnap = String(cur);
-    } else {
-      const cur = cell[f.snake] as boolean;
-      const lastSnap = input.dataset.wsocLastSnap;
-      if (lastSnap !== undefined && (input.checked ? "true" : "false") !== lastSnap) {
-        input.dataset.wsocLastSnap = String(cur);
-        continue;
-      }
-      if (input.checked !== cur) input.checked = cur;
-      input.dataset.wsocLastSnap = String(cur);
+  // Live-refresh branch: update the input only when not focused AND it
+  // still matches the previously-stamped snapshot value.
+  const input = bodyEl.querySelector("[data-singleknob-field]") as HTMLInputElement | null;
+  if (!input) return;
+  if (document.activeElement === input) return;
+  if (spec.kind === "bool") {
+    const live = (cur === undefined ? spec.default : (cur as boolean));
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && (input.checked ? "true" : "false") !== last) {
+      input.dataset.singleknobLastSnap = String(live);
+      return;
     }
+    if (input.checked !== live) input.checked = live;
+    input.dataset.singleknobLastSnap = String(live);
+  } else if (spec.kind === "enum") {
+    const live = cur === undefined ? spec.default : String(cur);
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && input.value !== last) {
+      input.dataset.singleknobLastSnap = live;
+      return;
+    }
+    if (input.value !== live) input.value = live;
+    input.dataset.singleknobLastSnap = live;
+  } else {
+    const live = cur === undefined ? spec.default : (cur as number);
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && Number(input.value) !== Number(last)) {
+      input.dataset.singleknobLastSnap = String(live);
+      return;
+    }
+    if (Number(input.value) !== live) input.value = String(live);
+    input.dataset.singleknobLastSnap = String(live);
   }
 }
 
-/// Stamp last-snap baselines on every field input. Pulled out of the
+/// Stamp last-snap baseline on the single input. Pulled out of the
 /// install path so a rebuild can re-baseline without re-binding the
 /// click handler.
-function stampWeatherSocCellLastSnap(bodyEl: HTMLElement): void {
-  for (const f of WEATHER_SOC_CELL_FIELDS) {
-    const sel = `[data-wsoc-field="${cssEscape(String(f.snake))}"]`;
-    const input = bodyEl.querySelector(sel) as HTMLInputElement | null;
-    if (!input) continue;
-    input.dataset.wsocLastSnap = f.kind === "float" ? input.value : (input.checked ? "true" : "false");
+function stampSingleKnobLastSnap(bodyEl: HTMLElement, spec: KnobSpec): void {
+  const input = bodyEl.querySelector("[data-singleknob-field]") as HTMLInputElement | null;
+  if (!input) return;
+  if (spec.kind === "bool") {
+    input.dataset.singleknobLastSnap = input.checked ? "true" : "false";
+  } else {
+    input.dataset.singleknobLastSnap = input.value;
   }
 }
 
-/// D01: bind the cell-modal click handler ONCE per `bodyEl`. The handler
-/// reads `bodyEl.dataset.wsocCellId` at dispatch time so it always
-/// targets the currently-open cell, never a stale closure-captured one.
-/// D03: track install state on `bodyEl.dataset.wsocModalHandlersInstalled`
-/// rather than a module-level flag — survives HMR cleanly because a
-/// fresh `bodyEl` has no dataset entry.
-function installWeatherSocCellModalHandlers(bodyEl: HTMLElement): void {
-  if (bodyEl.dataset.wsocModalHandlersInstalled === "1") return;
-  bodyEl.dataset.wsocModalHandlersInstalled = "1";
+/// PR-WSOC-EDIT-2: bind the single-knob-edit click handler ONCE per
+/// `bodyEl`. The handler reads `bodyEl.dataset.singleknobKnob` at
+/// dispatch time so it always targets the currently-open knob, never
+/// a stale closure-captured one. Latched on
+/// `bodyEl.dataset.singleknobHandlersInstalled` so a fresh `bodyEl`
+/// (HMR / DOM replacement) gets a clean install.
+function installSingleKnobEditHandlers(bodyEl: HTMLElement): void {
+  if (bodyEl.dataset.singleknobHandlersInstalled === "1") return;
+  bodyEl.dataset.singleknobHandlersInstalled = "1";
   bodyEl.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement | null;
     if (!target) return;
-    // Read the entity-id from the dataset on every dispatch so
-    // subsequent rebuilds for a different cell are routed correctly.
-    const entityId = bodyEl.dataset.wsocCellId;
-    if (!entityId) return;
-    const revertBtn = target.closest("button[data-wsoc-revert]") as HTMLButtonElement | null;
+    const dotted = bodyEl.dataset.singleknobKnob;
+    if (!dotted) return;
+    const revertBtn = target.closest("button[data-singleknob-revert]") as HTMLButtonElement | null;
     if (revertBtn) {
-      const snake = revertBtn.getAttribute("data-wsoc-revert") || "";
-      const def = revertBtn.getAttribute("data-wsoc-default") || "";
-      const sel = `[data-wsoc-field="${cssEscape(snake)}"]`;
-      const input = bodyEl.querySelector(sel) as HTMLInputElement | null;
+      const def = revertBtn.getAttribute("data-singleknob-default") || "";
+      const input = bodyEl.querySelector("[data-singleknob-field]") as HTMLInputElement | null;
       if (!input) return;
       if (input.type === "checkbox") {
         input.checked = def === "true";
@@ -1971,15 +1994,13 @@ function installWeatherSocCellModalHandlers(bodyEl: HTMLElement): void {
       }
       return;
     }
-    if (target.id === "wsoc-cell-cancel") {
-      // Forward a click on the modal close button so the central
-      // close-handler in `index.ts` clears `openEntityId`.
+    if (target.id === "single-knob-cancel") {
       const closeBtn = document.getElementById("entity-modal-close");
       if (closeBtn) (closeBtn as HTMLButtonElement).click();
       return;
     }
-    if (target.id === "wsoc-cell-save") {
-      saveWeatherSocCellEdits(entityId, bodyEl);
+    if (target.id === "single-knob-save") {
+      saveSingleKnobEdit(bodyEl);
       const closeBtn = document.getElementById("entity-modal-close");
       if (closeBtn) (closeBtn as HTMLButtonElement).click();
       return;
@@ -1987,46 +2008,61 @@ function installWeatherSocCellModalHandlers(bodyEl: HTMLElement): void {
   });
 }
 
-/// D05: clear modal state so a subsequent open of the same cell triggers
-/// a full rebuild rather than a live-refresh that leaves stale unsaved
-/// input values in place. Exported and called from `closeEntityInspector`
-/// in `index.ts`. Idempotent — safe to call when no cell modal is open
-/// or when the body element doesn't exist yet.
-export function clearWeatherSocCellModal(): void {
+/// PR-WSOC-EDIT-2: clear modal state so a subsequent open of the same
+/// knob triggers a full rebuild rather than a live-refresh that leaves
+/// stale unsaved input values in place. Exported and called from
+/// `closeEntityInspector` in `index.ts`. Idempotent.
+export function clearSingleKnobEditModal(): void {
   const bodyEl = document.getElementById("entity-modal-body") as HTMLElement | null;
   if (!bodyEl) return;
-  if (!bodyEl.dataset.wsocCellId) return;
-  bodyEl.dataset.wsocCellId = "";
+  if (!bodyEl.dataset.singleknobKnob) return;
+  bodyEl.dataset.singleknobKnob = "";
   bodyEl.innerHTML = "";
 }
 
-/// PR-WSOC-EDIT-1: dispatch a per-field `Set{Float,Bool}Knob` command
-/// for every input whose value differs from the snapshot's
-/// last-observed value (stamped as `data-wsoc-last-snap`). This avoids
-/// publishing untouched fields back to retained MQTT.
-function saveWeatherSocCellEdits(entityId: string, bodyEl: HTMLElement): void {
-  // D03: snapshot the dispatcher into a local so a future invocation
-  // without `sendCommand` doesn't silently use a stale closure. Bail if
-  // the dispatcher wasn't seeded by `renderWeatherSocTable` yet.
-  const send = weatherSocSendCommand;
+/// PR-WSOC-EDIT-2: dispatch ONE Set{Float,Bool}Knob command IFF the
+/// input value differs from the previously-stamped snapshot value.
+/// Avoids publishing untouched values back to retained MQTT.
+/// `SetFloatKnob` covers `int` knobs too per the existing convention.
+function saveSingleKnobEdit(bodyEl: HTMLElement): void {
+  const send = singleKnobSendCommand;
   if (!send) return;
-  for (const f of WEATHER_SOC_CELL_FIELDS) {
-    const sel = `[data-wsoc-field="${cssEscape(String(f.snake))}"]`;
-    const input = bodyEl.querySelector(sel) as HTMLInputElement | null;
-    if (!input) continue;
-    const dotted = `weathersoc.table.${entityId}.${f.kebab}`;
-    if (f.kind === "float") {
-      const v = parseFloat(input.value);
-      if (!isFinite(v)) continue;
-      const last = input.dataset.wsocLastSnap;
-      if (last !== undefined && Number(last) === v) continue;
-      send({ SetFloatKnob: { knob_name: dotted, value: v } });
+  const dotted = bodyEl.dataset.singleknobKnob;
+  if (!dotted) return;
+  const spec = KNOB_SPEC[dotted];
+  if (!spec) return;
+  const input = bodyEl.querySelector("[data-singleknob-field]") as HTMLInputElement | null;
+  if (!input) return;
+  if (spec.kind === "bool") {
+    const v = input.checked;
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && (last === "true") === v) return;
+    send({ SetBoolKnob: { knob_name: dotted, value: v } });
+  } else if (spec.kind === "enum") {
+    const v = input.value;
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && last === v) return;
+    // single-knob-edit currently doesn't open enum knobs; defensive
+    // path emits the same shape as the renderKnobs enum dispatcher.
+    if (spec.cmdVariant === "SetMode") {
+      send({ SetMode: { knob_name: dotted, value: v } });
     } else {
-      const v = input.checked;
-      const last = input.dataset.wsocLastSnap;
-      if (last !== undefined && (last === "true") === v) continue;
-      send({ SetBoolKnob: { knob_name: dotted, value: v } });
+      // D02: hard fail rather than dispatch a payload missing
+      // `knob_name`. single-knob-edit currently only opens float/bool
+      // knobs; the SetMode path above is the sole defensive enum case.
+      // A future enum cmdVariant added to single-knob-edit MUST be wired
+      // explicitly here, not silently round-tripped through a malformed
+      // command.
+      throw new Error(
+        `single-knob-edit doesn't support cmdVariant ${spec.cmdVariant} for knob ${dotted}`,
+      );
     }
+  } else {
+    const v = parseFloat(input.value);
+    if (!isFinite(v)) return;
+    const last = input.dataset.singleknobLastSnap;
+    if (last !== undefined && Number(last) === v) return;
+    send({ SetFloatKnob: { knob_name: dotted, value: v } });
   }
 }
 

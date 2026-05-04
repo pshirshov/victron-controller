@@ -3,7 +3,7 @@
 
 import { ConnectionManager, DEFAULT_CONFIG } from "./manager.js";
 import {
-  clearWeatherSocCellModal,
+  clearSingleKnobEditModal,
   installBookkeepingEditHandler,
   installCopyHandler,
   renderActuated,
@@ -228,13 +228,13 @@ function closeEntityInspector(): void {
   openEntityType = null;
   const modal = document.getElementById("entity-modal");
   if (modal) modal.setAttribute("hidden", "");
-  // D05: clear weather-SoC cell-modal body state (dataset id +
-  // innerHTML) so a subsequent open of the same cell rebuilds from
-  // scratch. Without this, the `alreadyOpen` short-circuit takes the
-  // live-refresh branch and any stale unsaved input values persist
-  // across open/close cycles. Helper is a no-op when no cell modal
-  // was open.
-  clearWeatherSocCellModal();
+  // PR-WSOC-EDIT-2: clear single-knob-edit modal body state (dataset
+  // id + innerHTML) so a subsequent open of the same knob rebuilds
+  // from scratch. Without this, the `alreadyOpen` short-circuit takes
+  // the live-refresh branch and any stale unsaved input value
+  // persists across open/close cycles. Helper is a no-op when no
+  // single-knob-edit modal was open.
+  clearSingleKnobEditModal();
 }
 
 const VALID_TYPES: ReadonlySet<EntityType> = new Set([
@@ -246,8 +246,10 @@ const VALID_TYPES: ReadonlySet<EntityType> = new Set([
   "forecast",
   "core",
   "timer",
-  // PR-WSOC-EDIT-1: weather-SoC cell-edit modal.
-  "weathersoc-cell",
+  // PR-WSOC-EDIT-2: single-knob-edit modal (covers all 56
+  // weather-SoC click-targets — 48 cells + 6 boundary kWh + 1
+  // winter-temperature header).
+  "single-knob-edit",
 ]);
 
 function installEntityInspectorHandlers(): void {
