@@ -676,6 +676,16 @@ pub struct World {
     /// are seeded once at startup from `[[dbus_pinned_registers]]`;
     /// `run_pinned_registers` is a no-op when the map is empty.
     pub pinned_registers: std::collections::BTreeMap<std::sync::Arc<str>, PinnedRegisterEntity>,
+
+    /// PR-WSOC-ACTIVE-1: the (bucket, temp) cell the WeatherSocPlanner
+    /// is currently driving from. Set by `run_weather_soc` after each
+    /// successful evaluation; cleared (left as `None`) when the planner
+    /// skips because of stale forecast / unusable outdoor temperature.
+    /// Pure observability — no controller reads from this. Surfaced on
+    /// the wire as `WorldSnapshot.weather_soc_active` for the dashboard
+    /// to highlight the active 4-cell group in the Weather-SoC widget.
+    pub weather_soc_active:
+        Option<(crate::weather_soc_addr::EnergyBucket, crate::weather_soc_addr::TempCol)>,
 }
 
 impl World {
@@ -709,6 +719,7 @@ impl World {
             sunset: None,
             sunrise_sunset_updated_at: None,
             pinned_registers: std::collections::BTreeMap::new(),
+            weather_soc_active: None,
         }
     }
 }

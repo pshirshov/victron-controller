@@ -2408,6 +2408,9 @@ pub(crate) fn run_weather_soc(
                         .map_or("None".to_string(), |v| format!("{v:.1}°C")),
                 ),
         );
+        // PR-WSOC-ACTIVE-1: clear active-cell highlight when the
+        // planner skips — the dashboard renders no group highlighted.
+        world.weather_soc_active = None;
         return;
     }
 
@@ -2440,6 +2443,8 @@ pub(crate) fn run_weather_soc(
                 format!("{}", freshness_threshold.as_secs()),
             ),
         );
+        // PR-WSOC-ACTIVE-1: same as the temp-skip path above.
+        world.weather_soc_active = None;
         return;
     };
 
@@ -2463,6 +2468,18 @@ pub(crate) fn run_weather_soc(
         clock,
     );
     world.decisions.weather_soc = Some(d.decision.clone());
+    // PR-WSOC-ACTIVE-1: cache the active classification for the
+    // dashboard widget. Cold/Warm derived from the planner's `cold`
+    // flag (boundary-at-threshold counts as Cold per the planner's
+    // own contract).
+    world.weather_soc_active = Some((
+        d.bucket,
+        if d.cold {
+            crate::weather_soc_addr::TempCol::Cold
+        } else {
+            crate::weather_soc_addr::TempCol::Warm
+        },
+    ));
 
     // PR-gamma-hold-redesign: write the planner's per-tick derivations
     // into the four bookkeeping slots. The `*_mode = Weather` default

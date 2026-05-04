@@ -550,3 +550,74 @@ const wsocBoundaries: WeatherSocBoundariesLike = {
   }
   assert("48 cell knobs in KNOB_SPEC", String(count), "48");
 }
+
+// --- PR-WSOC-ACTIVE-1: active-cell highlight ----------------------------
+
+{
+  // No active classification → no cell carries the highlight class.
+  const rows = buildWeatherSocTableRows(wsocDefaults, wsocBoundaries, null);
+  const html = rows.map((r) => r.cells.map((c) => c.html).join("")).join("");
+  assertBool(
+    "no active → no weather-soc-active class",
+    html.includes("weather-soc-active"),
+    false,
+  );
+}
+
+{
+  // Active = (low, cold). The 4 cold cells of the Low row carry the
+  // highlight class; the warm cells of the same row do not, and no
+  // cells of any other row carry it.
+  const rows = buildWeatherSocTableRows(wsocDefaults, wsocBoundaries, {
+    bucket: "low",
+    cold: true,
+  });
+  const lowRow = rows.find((r) => r.key === "low")!;
+  // Cold cells = indices 5..8 of the 9-cell row.
+  for (let i = 5; i <= 8; i++) {
+    assertBool(
+      `low.cold cell[${i}] carries weather-soc-active`,
+      lowRow.cells[i].html.includes("weather-soc-active"),
+      true,
+    );
+  }
+  // Warm cells = indices 1..4 — must NOT carry the class.
+  for (let i = 1; i <= 4; i++) {
+    assertBool(
+      `low.warm cell[${i}] does NOT carry weather-soc-active`,
+      lowRow.cells[i].html.includes("weather-soc-active"),
+      false,
+    );
+  }
+  // No other row's cells carry the class.
+  let strayCount = 0;
+  rows.filter((r) => r.key !== "low").forEach((r) => {
+    r.cells.forEach((c) => {
+      if (c.html.includes("weather-soc-active")) strayCount++;
+    });
+  });
+  assert("non-low rows carry no active class", String(strayCount), "0");
+}
+
+{
+  // Active = (mid, warm) — symmetric check on the warm side.
+  const rows = buildWeatherSocTableRows(wsocDefaults, wsocBoundaries, {
+    bucket: "mid",
+    cold: false,
+  });
+  const midRow = rows.find((r) => r.key === "mid")!;
+  for (let i = 1; i <= 4; i++) {
+    assertBool(
+      `mid.warm cell[${i}] carries weather-soc-active`,
+      midRow.cells[i].html.includes("weather-soc-active"),
+      true,
+    );
+  }
+  for (let i = 5; i <= 8; i++) {
+    assertBool(
+      `mid.cold cell[${i}] does NOT carry weather-soc-active`,
+      midRow.cells[i].html.includes("weather-soc-active"),
+      false,
+    );
+  }
+}

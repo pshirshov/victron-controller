@@ -165,6 +165,8 @@ pub mod v0_1_0;
 pub mod v0_2_0;
 pub mod version_info;
 pub use version_info::*;
+pub mod weather_soc_active;
+pub use weather_soc_active::*;
 pub mod weather_soc_cell;
 pub use weather_soc_cell::*;
 pub mod weather_soc_table;

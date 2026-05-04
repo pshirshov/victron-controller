@@ -11,6 +11,7 @@ use crate::victron_controller::dashboard::sensors::Sensors;
 use crate::victron_controller::dashboard::soc_chart::SocChart;
 use crate::victron_controller::dashboard::timers::Timers;
 use crate::victron_controller::dashboard::typed_sensors::TypedSensors;
+use crate::victron_controller::dashboard::weather_soc_active::WeatherSocActive;
 use crate::victron_controller::dashboard::zappi_drain_state::ZappiDrainState;
 use std::collections::BTreeMap;
 
@@ -33,13 +34,14 @@ pub struct WorldSnapshot {
     pub pinned_registers: Vec<PinnedRegister>,
     pub zappi_drain_state: ZappiDrainState,
     pub typed_sensors: TypedSensors,
+    pub weather_soc_active: Option<WeatherSocActive>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for WorldSnapshot {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        14
+        15
     }
 }
 
@@ -170,6 +172,20 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.weather_soc_active {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -196,6 +212,13 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
             }
             value.zappi_drain_state.encode_ueba(ctx, writer)?;
             value.typed_sensors.encode_ueba(ctx, writer)?;
+            match &value.weather_soc_active {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
         }
         Ok(())
     }
@@ -233,6 +256,10 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
         };
         let zappi_drain_state = ZappiDrainState::decode_ueba(ctx, reader)?;
         let typed_sensors = TypedSensors::decode_ueba(ctx, reader)?;
+        let weather_soc_active = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(WeatherSocActive::decode_ueba(ctx, reader)?) }
+        };
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -250,6 +277,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             pinned_registers,
             zappi_drain_state,
             typed_sensors,
+            weather_soc_active,
         })
     }
 }

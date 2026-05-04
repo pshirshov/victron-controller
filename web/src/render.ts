@@ -1664,9 +1664,23 @@ function boundaryAnchor(dotted: string, value: number): string {
 }
 
 /// Anchor for a per-field cell (cells 1..4 / 5..8) — wraps a single
-/// formatted value as a single-knob-edit click target.
-function cellAnchor(dotted: string, formatted: string): string {
-  return `<a class="entity-link mono" data-entity-id="${esc(dotted)}" data-entity-type="single-knob-edit">${esc(formatted)}</a>`;
+/// formatted value as a single-knob-edit click target. `active=true`
+/// adds the `weather-soc-active` class so the dashboard widget can
+/// highlight the cell-group the WeatherSocPlanner is currently driving
+/// from (PR-WSOC-ACTIVE-1).
+function cellAnchor(dotted: string, formatted: string, active: boolean): string {
+  const extra = active ? " weather-soc-active" : "";
+  return `<a class="entity-link mono${extra}" data-entity-id="${esc(dotted)}" data-entity-type="single-knob-edit">${esc(formatted)}</a>`;
+}
+
+/// PR-WSOC-ACTIVE-1: the (bucket, temp) cell the WeatherSocPlanner is
+/// currently active in. Sourced from `snap.weather_soc_active` (which
+/// comes from `world.weather_soc_active` cached in core after each
+/// successful `evaluate_weather_soc`). `bucket` is kebab-case;
+/// `cold=true` matches the cold temperature column.
+export interface WeatherSocActiveLike {
+  bucket: string;
+  cold: boolean;
 }
 
 /// PR-WSOC-EDIT-2: pure row-builder, factored out so it can be unit-
@@ -1678,6 +1692,7 @@ function cellAnchor(dotted: string, formatted: string): string {
 export function buildWeatherSocTableRows(
   table: WeatherSocTableLike,
   boundaries: WeatherSocBoundariesLike,
+  active?: WeatherSocActiveLike | null,
 ): KeyedRow[] {
   // PR-WSOC-EDIT-2: row-label kWh anchors per the locked design:
   //   VerySunny (>67.5)
@@ -1710,20 +1725,27 @@ export function buildWeatherSocTableRows(
   return labels.map((b) => {
     const warm = table[b.warm];
     const cold = table[b.cold];
-    const fieldCells = (cell: WeatherSocCellLike, temp: "warm" | "cold") =>
+    // PR-WSOC-ACTIVE-1: the planner reports its active classification
+    // as { bucket: kebab, cold: bool }. A row is "warm-active" when
+    // `active.bucket === b.kebab && !active.cold`; "cold-active" when
+    // `active.bucket === b.kebab && active.cold`. Each individual cell
+    // 1..4 / 5..8 gets the highlight class only on the matching side.
+    const warmActive = !!active && active.bucket === b.kebab && !active.cold;
+    const coldActive = !!active && active.bucket === b.kebab && active.cold;
+    const fieldCells = (cell: WeatherSocCellLike, temp: "warm" | "cold", isActive: boolean) =>
       WEATHER_SOC_CELL_FIELDS.map((f) => {
         const dotted = `weathersoc.table.${b.kebab}.${temp}.${f.kebab}`;
         const formatted = f.kind === "bool"
           ? fmtCellField(cell[f.snake] as boolean, true)
           : fmtCellField(cell[f.snake] as number, false);
-        return { cls: "mono", html: cellAnchor(dotted, formatted) };
+        return { cls: "mono", html: cellAnchor(dotted, formatted, isActive) };
       });
     return {
       key: b.key,
       cells: [
         { cls: "mono", html: b.html },
-        ...fieldCells(warm, "warm"),
-        ...fieldCells(cold, "cold"),
+        ...fieldCells(warm, "warm", warmActive),
+        ...fieldCells(cold, "cold", coldActive),
       ],
     };
   });
@@ -1845,7 +1867,19 @@ export function renderWeatherSocTable(
     }
   }
   const boundaries = readBoundaries(snap);
-  updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat, boundaries));
+  // PR-WSOC-ACTIVE-1: read the planner's active classification off the
+  // snapshot. The wire field is `WeatherSocActive { bucket, cold }`;
+  // class instances flatten through toPlain. Null when the planner
+  // skipped (no fresh forecast / unusable temp) — no group highlighted.
+  const activeRaw = (snap as unknown as { weather_soc_active?: unknown }).weather_soc_active;
+  let active: WeatherSocActiveLike | null = null;
+  if (activeRaw && typeof activeRaw === "object") {
+    const flat = toPlain(activeRaw) as Record<string, unknown>;
+    if (typeof flat.bucket === "string" && typeof flat.cold === "boolean") {
+      active = { bucket: flat.bucket, cold: flat.cold };
+    }
+  }
+  updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat, boundaries, active));
 }
 
 // --- PR-WSOC-EDIT-2: single-knob-edit modal body ------------------------

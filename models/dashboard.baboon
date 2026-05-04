@@ -378,4 +378,19 @@ root data WorldSnapshot {
   // PR-EDDI-SENSORS-1: typed-sensor wire surface for sensors-list
   // rendering and entity-inspector raw-body popups.
   typed_sensors: TypedSensors
+  // PR-WSOC-ACTIVE-1: the (bucket, temp) cell the WeatherSocPlanner is
+  // currently driving from. None when fused forecast is missing or
+  // `outdoor_temperature` is not Fresh / the planner has not yet
+  // evaluated this boot. Used by the dashboard widget to highlight the
+  // active 4-cell group.
+  weather_soc_active: opt[WeatherSocActive]
+}
+
+// PR-WSOC-ACTIVE-1: identifies the cell currently active in the
+// WeatherSoc lookup-table model. `bucket` is kebab-case
+// (`very-sunny` | `sunny` | `mid` | `low` | `dim` | `very-dim`); `cold`
+// is true for the cold (≤ winter-temperature-threshold) column.
+data WeatherSocActive {
+  bucket: str
+  cold: bit
 }

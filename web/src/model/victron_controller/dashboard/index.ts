@@ -49,6 +49,7 @@ export * from './TypedSensorString';
 export * from './TypedSensorZappi';
 export * from './TypedSensors';
 export * from './VersionInfo';
+export * from './WeatherSocActive';
 export * from './WeatherSocCell';
 export * from './WeatherSocTable';
 export * from './WorldSnapshot';

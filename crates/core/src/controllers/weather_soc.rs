@@ -125,6 +125,12 @@ pub struct WeatherSocDecision {
     pub disable_night_grid_discharge: bool,
     pub charge_battery_extended: bool,
     pub decision: Decision,
+    /// PR-WSOC-ACTIVE-1: the (bucket, cold) cell the planner picked.
+    /// `cold = true` means the temperature column was the cold one
+    /// (today_temp <= winter_temperature_threshold_c). Surfaced by the
+    /// dashboard widget to highlight the active 4-cell group.
+    pub bucket: EnergyBucket,
+    pub cold: bool,
 }
 
 /// PR-WSOC-TABLE-1: pick the 12-cell table cell for a given
@@ -256,6 +262,8 @@ pub fn evaluate_weather_soc(
         disable_night_grid_discharge,
         charge_battery_extended,
         decision,
+        bucket,
+        cold,
     }
 }
 

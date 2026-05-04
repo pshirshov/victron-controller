@@ -687,6 +687,20 @@ footer {
   text-underline-offset: 3px;
   color: inherit;
 }
+/* PR-WSOC-ACTIVE-1: highlight the 4-cell group the WeatherSocPlanner
+   is currently driving from. Soft accent tint on the cell anchor
+   itself plus a left/top border accent on the parent <td> via
+   :has(.weather-soc-active) so the whole 4-cell group reads as one
+   active block. Subtle by design — operator-readable but not loud. */
+.weather-soc-active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  font-weight: 600;
+}
+td:has(> .weather-soc-active),
+td:has(> a > .weather-soc-active) {
+  outline: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: -1px;
+}
 .entity-link:hover {
   color: var(--accent);
 }

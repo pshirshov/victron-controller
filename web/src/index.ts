@@ -174,9 +174,19 @@ function applySnapshot(snap: WorldSnapshot): void {
         !== snap.knobs.weathersoc_very_sunny_threshold)
     || (prev.knobs.weathersoc_winter_temperature_threshold
         !== snap.knobs.weathersoc_winter_temperature_threshold);
+  // PR-WSOC-ACTIVE-1: also re-render when the active-cell highlight
+  // moves (operator edits a boundary, sensor freshness flips, today's
+  // fused forecast crosses a bucket boundary).
+  const wsocActiveChanged =
+    !prev
+    || !deepEqual(
+      (prev as unknown as { weather_soc_active?: unknown }).weather_soc_active,
+      (snap as unknown as { weather_soc_active?: unknown }).weather_soc_active,
+    );
   if (
     !prev
     || wsocBoundariesChanged
+    || wsocActiveChanged
     || !deepEqual(
       (prev.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,
       (snap.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,

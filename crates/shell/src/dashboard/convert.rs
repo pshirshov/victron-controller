@@ -135,6 +135,7 @@ use victron_controller_dashboard_model::victron_controller::dashboard::zappi_dra
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_sample::ZappiDrainSample as ModelZappiDrainSample;
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_snapshot_wire::ZappiDrainSnapshotWire as ModelZappiDrainSnapshotWire;
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_state::ZappiDrainState as ModelZappiDrainState;
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_active::WeatherSocActive as ModelWeatherSocActive;
 
 // --- enums ----------------------------------------------------------------
 
@@ -518,6 +519,15 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
         // string-valued rows (timezone, sunrise, sunset) as the
         // direct, non-synthetic source for the dashboard table.
         typed_sensors: typed_sensors_to_model(world, meta, now_epoch),
+        // PR-WSOC-ACTIVE-1: dashboard widget reads this to highlight
+        // the 4-cell group the planner is currently driving from. None
+        // when the planner skipped (stale forecast / unusable temp).
+        weather_soc_active: world.weather_soc_active.map(|(bucket, temp)| {
+            ModelWeatherSocActive {
+                bucket: bucket.kebab().to_string(),
+                cold: matches!(temp, victron_controller_core::weather_soc_addr::TempCol::Cold),
+            }
+        }),
     }
 }
 
