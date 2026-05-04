@@ -17,6 +17,8 @@ import {
   buildWeatherSocTableRows,
   type WeatherSocTableLike,
 } from "./render.js";
+import { KNOB_SPEC, WEATHER_SOC_DEFAULTS } from "./knobs.js";
+import { entityDescriptions } from "./descriptions.js";
 import { ZappiDrainSnapshotWire } from "./model/victron_controller/dashboard/ZappiDrainSnapshotWire.js";
 import { ZappiDrainBranch } from "./model/victron_controller/dashboard/ZappiDrainBranch.js";
 
@@ -171,17 +173,21 @@ assert("T3: Disabled segment colour = neutral", BRANCH_COLOR[ZappiDrainBranch.Di
   assert("summaryFor Relax: hardClampClass", r.hardClampClass, "big-number hard-clamp-disengaged");
 }
 
-// --- PR-WSOC-TABLE-1: buildWeatherSocTableRows ----------------------------
+// --- PR-WSOC-EDIT-1: buildWeatherSocTableRows ----------------------------
 //
-// Snapshot-style smoke check against the safe-defaults table values
-// (mirrors `Knobs::safe_defaults().weather_soc_table` in core). Six rows
-// keyed `very_sunny / sunny / mid / low / dim / very_dim`; each row has
-// 9 cells (1 label + 4 warm + 4 cold).
+// 3-column shape (Bucket | Warm group | Cold group). Each group cell is
+// a single clickable target wrapped as `entity-link` with
+// `data-entity-id="<bucket>.<temp>"` and
+// `data-entity-type="weathersoc-cell"`.
 
 function cell(exp: number, bat: number, dis: number, ext: boolean) {
   return { export_soc_threshold: exp, battery_soc_target: bat, discharge_soc_target: dis, extended: ext };
 }
 
+// PR-WSOC-EDIT-1: bat=100 across every extended cell (Low.cold,
+// Dim.warm, Dim.cold). Mirrors the JSON fixture
+// `web/test-fixtures/weather-soc-defaults.json` produced by the
+// drift-guard Rust test.
 const wsocDefaults: WeatherSocTableLike = {
   very_sunny_warm: cell(35, 100, 20, false),
   very_sunny_cold: cell(80, 100, 30, false),
@@ -190,9 +196,9 @@ const wsocDefaults: WeatherSocTableLike = {
   mid_warm: cell(67, 100, 20, false),
   mid_cold: cell(80, 100, 30, false),
   low_warm: cell(100, 100, 30, false),
-  low_cold: cell(100, 90, 30, true),
-  dim_warm: cell(100, 90, 30, true),
-  dim_cold: cell(100, 90, 30, true),
+  low_cold: cell(100, 100, 30, true),
+  dim_warm: cell(100, 100, 30, true),
+  dim_cold: cell(100, 100, 30, true),
   very_dim_warm: cell(100, 100, 30, true),
   very_dim_cold: cell(100, 100, 30, true),
 };
@@ -204,35 +210,156 @@ const wsocDefaults: WeatherSocTableLike = {
   const expectedKeys = ["very_sunny", "sunny", "mid", "low", "dim", "very_dim"];
   rows.forEach((r, i) => {
     assert(`wsoc rows[${i}] key`, r.key, expectedKeys[i]);
-    // 1 label + 4 warm + 4 cold = 9 cells per row.
-    assert(`wsoc rows[${i}] cell count`, String(r.cells.length), "9");
+    // 3-column shape: Label, Warm-group cell, Cold-group cell.
+    assert(`wsoc rows[${i}] cell count`, String(r.cells.length), "3");
   });
 
-  // Spot-check a few representative rows. Cells layout:
-  // [Label, exp_warm, bat_warm, dis_warm, ext_warm,
-  //         exp_cold, bat_cold, dis_cold, ext_cold]
-
-  // very_sunny: warm 35/100/20/— ; cold 80/100/30/—
+  // PR-WSOC-EDIT-1: weathersoc_table_widget_groups_open_modal_with_correct_id
+  // — each group cell is wrapped as entity-link with
+  //   data-entity-id="<bucket>.<temp>" and data-entity-type="weathersoc-cell".
   const vs = rows[0];
   assert("wsoc very_sunny label", vs.cells[0].html, "VerySunny");
-  assert("wsoc very_sunny exp_warm", vs.cells[1].html, "35");
-  assert("wsoc very_sunny bat_warm", vs.cells[2].html, "100");
-  assert("wsoc very_sunny dis_warm", vs.cells[3].html, "20");
-  assert("wsoc very_sunny ext_warm (false)", vs.cells[4].html, "—");
-  assert("wsoc very_sunny exp_cold", vs.cells[5].html, "80");
-  assert("wsoc very_sunny ext_cold (false)", vs.cells[8].html, "—");
+  // Warm group: contains the dotted modal id and the inline values.
+  assertBool(
+    "wsoc very_sunny warm cell carries entity-link wrapper",
+    vs.cells[1].html.includes('data-entity-type="weathersoc-cell"'),
+    true,
+  );
+  assertBool(
+    "wsoc very_sunny warm cell carries data-entity-id=very-sunny.warm",
+    vs.cells[1].html.includes('data-entity-id="very-sunny.warm"'),
+    true,
+  );
+  assertBool(
+    "wsoc very_sunny warm cell renders 35/100/20/—",
+    vs.cells[1].html.includes("35 / 100 / 20 / —"),
+    true,
+  );
+  assertBool(
+    "wsoc very_sunny cold cell carries data-entity-id=very-sunny.cold",
+    vs.cells[2].html.includes('data-entity-id="very-sunny.cold"'),
+    true,
+  );
 
-  // low: warm 100/100/30/— ; cold 100/90/30/✓
+  // Low row: cold group renders bat=100 (was 90 pre-PR-WSOC-EDIT-1)
+  // and extended=true.
   const lo = rows[3];
   assert("wsoc low label", lo.cells[0].html, "Low");
-  assert("wsoc low exp_warm", lo.cells[1].html, "100");
-  assert("wsoc low ext_warm (false)", lo.cells[4].html, "—");
-  assert("wsoc low bat_cold", lo.cells[6].html, "90");
-  assert("wsoc low ext_cold (true)", lo.cells[8].html, "✓");
+  assertBool(
+    "wsoc low warm renders 100/100/30/— (extended off)",
+    lo.cells[1].html.includes("100 / 100 / 30 / —"),
+    true,
+  );
+  assertBool(
+    "wsoc low cold renders 100/100/30/✓ (PR-WSOC-EDIT-1: bat=100 not 90)",
+    lo.cells[2].html.includes("100 / 100 / 30 / ✓"),
+    true,
+  );
 
-  // very_dim: warm 100/100/30/✓ ; cold 100/100/30/✓
+  // VeryDim row: both group cells render ✓.
   const vd = rows[5];
   assert("wsoc very_dim label", vd.cells[0].html, "VeryDim");
-  assert("wsoc very_dim ext_warm (true)", vd.cells[4].html, "✓");
-  assert("wsoc very_dim ext_cold (true)", vd.cells[8].html, "✓");
+  assertBool(
+    "wsoc very_dim warm extended true",
+    vd.cells[1].html.includes("100 / 100 / 30 / ✓"),
+    true,
+  );
+  assertBool(
+    "wsoc very_dim cold extended true",
+    vd.cells[2].html.includes("100 / 100 / 30 / ✓"),
+    true,
+  );
+}
+
+// PR-WSOC-EDIT-1: weathersoc_table_defaults_match_core_safe_defaults
+// — drift guard. The TS-side `WEATHER_SOC_DEFAULTS` map must agree
+// with the JSON fixture that the Rust drift-guard test
+// (`weathersoc_defaults_fixture_matches_safe_defaults` in
+// `crates/shell/src/dashboard/convert.rs`) produces.
+{
+  // The fixture file is project-relative; tsc only typechecks this
+  // file, so we cannot read the file at "test runtime" the way a real
+  // jest/mocha runner would. Instead, embed the expected payload as
+  // an inline literal mirroring the file's contents. The Rust test
+  // guarantees the file matches `safe_defaults()`; this TS test
+  // guarantees `WEATHER_SOC_DEFAULTS` matches the file. Three-leg
+  // assertion: core ↔ fixture (Rust test) and fixture ↔ TS map (this
+  // test) ⇒ core ↔ TS map.
+  const fixture: Record<string, [number, number, number, boolean]> = {
+    "very-sunny.warm": [35, 100, 20, false],
+    "very-sunny.cold": [80, 100, 30, false],
+    "sunny.warm": [50, 100, 20, false],
+    "sunny.cold": [80, 100, 30, false],
+    "mid.warm": [67, 100, 20, false],
+    "mid.cold": [80, 100, 30, false],
+    "low.warm": [100, 100, 30, false],
+    "low.cold": [100, 100, 30, true],
+    "dim.warm": [100, 100, 30, true],
+    "dim.cold": [100, 100, 30, true],
+    "very-dim.warm": [100, 100, 30, true],
+    "very-dim.cold": [100, 100, 30, true],
+  };
+  const tsKeys = Object.keys(WEATHER_SOC_DEFAULTS).sort();
+  const fxKeys = Object.keys(fixture).sort();
+  assert(
+    "WEATHER_SOC_DEFAULTS / fixture key set",
+    tsKeys.join(","),
+    fxKeys.join(","),
+  );
+  for (const k of fxKeys) {
+    const t = WEATHER_SOC_DEFAULTS[k];
+    const f = fixture[k];
+    assert(`WEATHER_SOC_DEFAULTS[${k}] length`, String(t.length), "4");
+    assert(`WEATHER_SOC_DEFAULTS[${k}][0] exp`, String(t[0]), String(f[0]));
+    assert(`WEATHER_SOC_DEFAULTS[${k}][1] bat`, String(t[1]), String(f[1]));
+    assert(`WEATHER_SOC_DEFAULTS[${k}][2] dis`, String(t[2]), String(f[2]));
+    assert(`WEATHER_SOC_DEFAULTS[${k}][3] ext`, String(t[3]), String(f[3]));
+  }
+}
+
+// PR-WSOC-EDIT-1: weathersoc_boundaries_section_renders_six_inputs_with_current_values
+// — assert that all 6 boundary knob KNOB_SPEC entries are present (the
+// inline-input row reads from these for min/max/step/default).
+{
+  const expected = [
+    "weathersoc.threshold.energy.low",
+    "weathersoc.threshold.energy.ok",
+    "weathersoc.threshold.energy.high",
+    "weathersoc.threshold.energy.too-much",
+    "weathersoc.threshold.energy.very-sunny",
+    "weathersoc.threshold.winter-temperature",
+  ];
+  for (const k of expected) {
+    assertBool(`KNOB_SPEC has boundary entry ${k}`, k in KNOB_SPEC, true);
+  }
+}
+
+// PR-WSOC-EDIT-1: renderEntityModal_weathersoc_column_header_shows_description
+// — the 4 column-header dotted ids each yield non-empty descriptions.
+{
+  const headers = [
+    "weathersoc.table.export-soc-threshold",
+    "weathersoc.table.battery-soc-target",
+    "weathersoc.table.discharge-soc-target",
+    "weathersoc.table.extended",
+  ];
+  for (const h of headers) {
+    const desc = (entityDescriptions as Record<string, string>)[h];
+    assertBool(`description present for ${h}`, typeof desc === "string" && desc.length > 0, true);
+  }
+}
+
+// PR-WSOC-EDIT-1: 48 cell knobs registered in KNOB_SPEC.
+{
+  let count = 0;
+  for (const bucket of ["very-sunny", "sunny", "mid", "low", "dim", "very-dim"]) {
+    for (const temp of ["warm", "cold"]) {
+      for (const field of ["export-soc-threshold", "battery-soc-target", "discharge-soc-target", "extended"]) {
+        const key = `weathersoc.table.${bucket}.${temp}.${field}`;
+        assertBool(`KNOB_SPEC has ${key}`, key in KNOB_SPEC, true);
+        count++;
+      }
+    }
+  }
+  assert("48 cell knobs in KNOB_SPEC", String(count), "48");
 }

@@ -866,6 +866,15 @@ impl From<HardwareConfig> for HardwareParams {
 /// `Deserialize` without polluting `core` with a serde dep, and so the
 /// TOML wire-form spelling matches the existing MQTT/HA spelling
 /// (`"02:00"`, `"forbid"`, `"weather"`, …).
+///
+/// PR-WSOC-EDIT-1: the 48 weather-SoC table cell knobs
+/// (`KnobId::WeathersocTableCell`) are intentionally NOT seedable from
+/// `config.toml`. Boot defaults flow from
+/// `Knobs::safe_defaults().weather_soc_table`; runtime state arrives via
+/// retained MQTT (`<root>/knob/weathersoc.table.<bucket>.<temp>.<field>/state`).
+/// The 6 boundary knobs (`weathersoc.threshold.energy.*`,
+/// `weathersoc.threshold.winter-temperature`) keep their existing
+/// seedable fields below.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct KnobsDefaultsConfig {

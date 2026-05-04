@@ -1,0 +1,14 @@
+{
+  "very-sunny.warm": [35.0,100.0,20.0,false],
+  "very-sunny.cold": [80.0,100.0,30.0,false],
+  "sunny.warm": [50.0,100.0,20.0,false],
+  "sunny.cold": [80.0,100.0,30.0,false],
+  "mid.warm": [67.0,100.0,20.0,false],
+  "mid.cold": [80.0,100.0,30.0,false],
+  "low.warm": [100.0,100.0,30.0,false],
+  "low.cold": [100.0,100.0,30.0,true],
+  "dim.warm": [100.0,100.0,30.0,true],
+  "dim.cold": [100.0,100.0,30.0,true],
+  "very-dim.warm": [100.0,100.0,30.0,true],
+  "very-dim.cold": [100.0,100.0,30.0,true]
+}

@@ -798,6 +798,20 @@ pub enum KnobId {
     ZappiBatteryDrainMpptProbeW,
     /// PR-ACT-RETRY-1: universal actuator retry threshold (s). Default 60.
     ActuatorRetryS,
+
+    /// PR-WSOC-EDIT-1: per-cell knob in the 6×2 weather-SoC lookup
+    /// table. Externally surfaces as 48 distinct addressable knobs
+    /// (12 cells × 4 fields), each with its own MQTT topic / HA entity
+    /// / KNOB_SPEC entry; internally one variant carries the address
+    /// triple so every plumbing layer (knob_name, knob_id_from_name,
+    /// knob_range, parse_knob_value, apply_knob, all_knob_publish_payloads,
+    /// HA discovery) is one programmatic match arm rather than 48
+    /// hand-rolled lines.
+    WeathersocTableCell {
+        bucket: crate::weather_soc_addr::EnergyBucket,
+        temp: crate::weather_soc_addr::TempCol,
+        field: crate::weather_soc_addr::CellField,
+    },
 }
 
 /// Which branch of the compensated-drain controller fired this tick.

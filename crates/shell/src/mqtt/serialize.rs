@@ -317,70 +317,97 @@ fn parse_bookkeeping_value(key: BookkeepingKey, body: &str) -> Option<Bookkeepin
 // -----------------------------------------------------------------------------
 
 #[allow(clippy::too_many_lines)]
-pub fn knob_name(id: KnobId) -> &'static str {
+pub fn knob_name(id: KnobId) -> String {
     match id {
-        KnobId::ForceDisableExport => "grid.export.force-disable",
-        KnobId::ExportSocThreshold => "battery.soc.threshold.export.forced-value",
-        KnobId::DischargeSocTarget => "battery.soc.target.discharge.forced-value",
-        KnobId::BatterySocTarget => "battery.soc.target.charge.forced-value",
-        KnobId::FullChargeDischargeSocTarget => "battery.soc.target.full-charge.discharge",
-        KnobId::FullChargeExportSocThreshold => "battery.soc.threshold.full-charge.export",
-        KnobId::DischargeTime => "battery.discharge.time",
-        KnobId::DebugFullCharge => "debug.full-charge.mode",
-        KnobId::PessimismMultiplierModifier => "forecast.pessimism.modifier",
-        KnobId::DisableNightGridDischarge => "grid.night.discharge.disable.forced-value",
-        KnobId::ChargeCarBoost => "evcharger.boost.enable",
+        KnobId::ForceDisableExport => "grid.export.force-disable".to_string(),
+        KnobId::ExportSocThreshold => "battery.soc.threshold.export.forced-value".to_string(),
+        KnobId::DischargeSocTarget => "battery.soc.target.discharge.forced-value".to_string(),
+        KnobId::BatterySocTarget => "battery.soc.target.charge.forced-value".to_string(),
+        KnobId::FullChargeDischargeSocTarget => "battery.soc.target.full-charge.discharge".to_string(),
+        KnobId::FullChargeExportSocThreshold => "battery.soc.threshold.full-charge.export".to_string(),
+        KnobId::DischargeTime => "battery.discharge.time".to_string(),
+        KnobId::DebugFullCharge => "debug.full-charge.mode".to_string(),
+        KnobId::PessimismMultiplierModifier => "forecast.pessimism.modifier".to_string(),
+        KnobId::DisableNightGridDischarge => "grid.night.discharge.disable.forced-value".to_string(),
+        KnobId::ChargeCarBoost => "evcharger.boost.enable".to_string(),
         // PR-auto-extended-charge: tri-state mode replaces the legacy
         // bool topic `evcharger.extended.enable`.
-        KnobId::ChargeCarExtendedMode => "evcharger.extended.mode",
-        KnobId::ZappiCurrentTarget => "evcharger.current.target",
-        KnobId::ZappiLimit => "evcharger.session.limit",
-        KnobId::ZappiEmergencyMargin => "evcharger.current.margin",
-        KnobId::GridExportLimitW => "grid.export.limit",
-        KnobId::GridImportLimitW => "grid.import.limit",
-        KnobId::AllowBatteryToCar => "battery.export.car.allow",
-        KnobId::EddiEnableSoc => "eddi.soc.enable",
-        KnobId::EddiDisableSoc => "eddi.soc.disable",
-        KnobId::EddiDwellS => "eddi.dwell.seconds",
-        KnobId::WeathersocWinterTemperatureThreshold => "weathersoc.threshold.winter-temperature",
-        KnobId::WeathersocLowEnergyThreshold => "weathersoc.threshold.energy.low",
-        KnobId::WeathersocOkEnergyThreshold => "weathersoc.threshold.energy.ok",
-        KnobId::WeathersocHighEnergyThreshold => "weathersoc.threshold.energy.high",
-        KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc.threshold.energy.too-much",
+        KnobId::ChargeCarExtendedMode => "evcharger.extended.mode".to_string(),
+        KnobId::ZappiCurrentTarget => "evcharger.current.target".to_string(),
+        KnobId::ZappiLimit => "evcharger.session.limit".to_string(),
+        KnobId::ZappiEmergencyMargin => "evcharger.current.margin".to_string(),
+        KnobId::GridExportLimitW => "grid.export.limit".to_string(),
+        KnobId::GridImportLimitW => "grid.import.limit".to_string(),
+        KnobId::AllowBatteryToCar => "battery.export.car.allow".to_string(),
+        KnobId::EddiEnableSoc => "eddi.soc.enable".to_string(),
+        KnobId::EddiDisableSoc => "eddi.soc.disable".to_string(),
+        KnobId::EddiDwellS => "eddi.dwell.seconds".to_string(),
+        KnobId::WeathersocWinterTemperatureThreshold => "weathersoc.threshold.winter-temperature".to_string(),
+        KnobId::WeathersocLowEnergyThreshold => "weathersoc.threshold.energy.low".to_string(),
+        KnobId::WeathersocOkEnergyThreshold => "weathersoc.threshold.energy.ok".to_string(),
+        KnobId::WeathersocHighEnergyThreshold => "weathersoc.threshold.energy.high".to_string(),
+        KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc.threshold.energy.too-much".to_string(),
         // PR-WSOC-TABLE-1: bucket-boundary kWh knob.
-        KnobId::WeathersocVerySunnyThreshold => "weathersoc.threshold.energy.very-sunny",
-        KnobId::ForecastDisagreementStrategy => "forecast.disagreement.strategy",
-        KnobId::ChargeBatteryExtendedMode => "schedule.extended.charge.mode",
+        KnobId::WeathersocVerySunnyThreshold => "weathersoc.threshold.energy.very-sunny".to_string(),
+        KnobId::ForecastDisagreementStrategy => "forecast.disagreement.strategy".to_string(),
+        KnobId::ChargeBatteryExtendedMode => "schedule.extended.charge.mode".to_string(),
         // PR-gamma-hold-redesign — four mode selectors.
-        KnobId::ExportSocThresholdMode => "battery.soc.threshold.export.mode",
-        KnobId::DischargeSocTargetMode => "battery.soc.target.discharge.mode",
-        KnobId::BatterySocTargetMode => "battery.soc.target.charge.mode",
-        KnobId::DisableNightGridDischargeMode => "grid.night.discharge.disable.mode",
-        KnobId::InverterSafeDischargeEnable => "inverter.safe-discharge.enable",
+        KnobId::ExportSocThresholdMode => "battery.soc.threshold.export.mode".to_string(),
+        KnobId::DischargeSocTargetMode => "battery.soc.target.discharge.mode".to_string(),
+        KnobId::BatterySocTargetMode => "battery.soc.target.charge.mode".to_string(),
+        KnobId::DisableNightGridDischargeMode => "grid.night.discharge.disable.mode".to_string(),
+        KnobId::InverterSafeDischargeEnable => "inverter.safe-discharge.enable".to_string(),
         // PR-baseline-forecast: 4 runtime knobs.
-        KnobId::BaselineWinterStartMmDd => "forecast.baseline.winter.start.mmdd",
-        KnobId::BaselineWinterEndMmDd => "forecast.baseline.winter.end.mmdd",
-        KnobId::BaselineWhPerHourWinter => "forecast.baseline.wh-per-hour.winter",
-        KnobId::BaselineWhPerHourSummer => "forecast.baseline.wh-per-hour.summer",
+        KnobId::BaselineWinterStartMmDd => "forecast.baseline.winter.start.mmdd".to_string(),
+        KnobId::BaselineWinterEndMmDd => "forecast.baseline.winter.end.mmdd".to_string(),
+        KnobId::BaselineWhPerHourWinter => "forecast.baseline.wh-per-hour.winter".to_string(),
+        KnobId::BaselineWhPerHourSummer => "forecast.baseline.wh-per-hour.summer".to_string(),
         // PR-keep-batteries-charged.
-        KnobId::KeepBatteriesChargedDuringFullCharge => "ess.full-charge.keep-batteries-charged",
-        KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min",
-        KnobId::FullChargeDeferToNextSunday => "full-charge.defer-to-next-sunday",
-        KnobId::FullChargeSnapBackMaxWeekday => "full-charge.snap-back-max-weekday",
+        KnobId::KeepBatteriesChargedDuringFullCharge => "ess.full-charge.keep-batteries-charged".to_string(),
+        KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min".to_string(),
+        KnobId::FullChargeDeferToNextSunday => "full-charge.defer-to-next-sunday".to_string(),
+        KnobId::FullChargeSnapBackMaxWeekday => "full-charge.snap-back-max-weekday".to_string(),
         // PR-ZD-2: compensated battery-drain feedback loop.
-        KnobId::ZappiBatteryDrainThresholdW => "zappi.battery-drain.threshold-w",
-        KnobId::ZappiBatteryDrainRelaxStepW => "zappi.battery-drain.relax-step-w",
-        KnobId::ZappiBatteryDrainKp => "zappi.battery-drain.kp",
-        KnobId::ZappiBatteryDrainTargetW => "zappi.battery-drain.target-w",
-        KnobId::ZappiBatteryDrainHardClampW => "zappi.battery-drain.hard-clamp-w",
+        KnobId::ZappiBatteryDrainThresholdW => "zappi.battery-drain.threshold-w".to_string(),
+        KnobId::ZappiBatteryDrainRelaxStepW => "zappi.battery-drain.relax-step-w".to_string(),
+        KnobId::ZappiBatteryDrainKp => "zappi.battery-drain.kp".to_string(),
+        KnobId::ZappiBatteryDrainTargetW => "zappi.battery-drain.target-w".to_string(),
+        KnobId::ZappiBatteryDrainHardClampW => "zappi.battery-drain.hard-clamp-w".to_string(),
         // PR-ZDP-1.
-        KnobId::ZappiBatteryDrainMpptProbeW => "zappi.battery-drain.mppt-probe-w",
+        KnobId::ZappiBatteryDrainMpptProbeW => "zappi.battery-drain.mppt-probe-w".to_string(),
         // PR-ACT-RETRY-1.
-        KnobId::ActuatorRetryS => "actuator.retry.s",
+        KnobId::ActuatorRetryS => "actuator.retry.s".to_string(),
+        // PR-WSOC-EDIT-1: programmatic arm — one match arm covers all
+        // 48 cell knobs. Format mirrors the dotted naming convention:
+        // `weathersoc.table.<bucket>.<temp>.<field>`.
+        KnobId::WeathersocTableCell { bucket, temp, field } => {
+            format!(
+                "weathersoc.table.{}.{}.{}",
+                bucket.kebab(),
+                temp.kebab(),
+                field.kebab(),
+            )
+        }
     }
 }
 
 fn knob_id_from_name(n: &str) -> Option<KnobId> {
+    // PR-WSOC-EDIT-1: parse cell knobs first via prefix split. The
+    // dotted form is `weathersoc.table.<bucket>.<temp>.<field>`; bucket
+    // and field tokens contain hyphens (not dots), so a 5-segment
+    // split-on-`.` round-trips through `from_kebab` cleanly.
+    if let Some(rest) = n.strip_prefix("weathersoc.table.") {
+        let parts: Vec<&str> = rest.split('.').collect();
+        if parts.len() == 3 {
+            use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+            let bucket = EnergyBucket::from_kebab(parts[0])?;
+            let temp = TempCol::from_kebab(parts[1])?;
+            let field = CellField::from_kebab(parts[2])?;
+            return Some(KnobId::WeathersocTableCell { bucket, temp, field });
+        }
+        // future-proof: any new shape under this prefix needs an arm above
+        return None;
+    }
     Some(match n {
         "grid.export.force-disable" => KnobId::ForceDisableExport,
         "battery.soc.threshold.export.forced-value" => KnobId::ExportSocThreshold,
@@ -668,6 +695,19 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // device on transient non-acks.
         KnobId::ActuatorRetryS => (10.0, 600.0),
 
+        // PR-WSOC-EDIT-1: programmatic per-cell range. The three float
+        // fields share the SoC range 0..100 (%); the bool `Extended`
+        // field returns None (handled in the catch-all below).
+        KnobId::WeathersocTableCell { field, .. } => {
+            use victron_controller_core::weather_soc_addr::CellField;
+            match field {
+                CellField::ExportSocThreshold
+                | CellField::BatterySocTarget
+                | CellField::DischargeSocTarget => (0.0, 100.0),
+                CellField::Extended => return None,
+            }
+        }
+
         // Enums + bools don't use this table.
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
@@ -866,6 +906,19 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
                 None
             }
         },
+        // PR-WSOC-EDIT-1: programmatic per-cell parse. Three float
+        // fields go through `parse_ranged_float` (range gated by
+        // `knob_range`); the bool `Extended` field goes through
+        // `parse_bool`.
+        KnobId::WeathersocTableCell { field, .. } => {
+            use victron_controller_core::weather_soc_addr::CellField;
+            match field {
+                CellField::ExportSocThreshold
+                | CellField::BatterySocTarget
+                | CellField::DischargeSocTarget => parse_ranged_float(id, body).map(KnobValue::Float),
+                CellField::Extended => parse_bool(body).map(KnobValue::Bool),
+            }
+        }
     }
 }
 
@@ -1700,10 +1753,74 @@ mod tests {
         for id in ids {
             let name = knob_name(id);
             assert_eq!(
-                knob_id_from_name(name),
+                knob_id_from_name(&name),
                 Some(id),
                 "round-trip failed for {id:?}: name={name:?}"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // PR-WSOC-EDIT-1: round-trip + parse tests for the 48 cell knobs.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn knob_name_round_trips_for_all_48_weathersoc_table_cells() {
+        use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let mut count = 0;
+        for &bucket in EnergyBucket::ALL {
+            for &temp in TempCol::ALL {
+                for &field in CellField::ALL {
+                    let id = KnobId::WeathersocTableCell { bucket, temp, field };
+                    let name = knob_name(id);
+                    assert!(
+                        name.starts_with("weathersoc.table."),
+                        "wrong prefix: {name}"
+                    );
+                    assert_eq!(
+                        knob_id_from_name(&name),
+                        Some(id),
+                        "round-trip failed for {id:?}: name={name:?}"
+                    );
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 48);
+    }
+
+    #[test]
+    fn parse_knob_value_weathersoc_table_cell_float_in_range() {
+        use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let id = KnobId::WeathersocTableCell {
+            bucket: EnergyBucket::VerySunny,
+            temp: TempCol::Warm,
+            field: CellField::ExportSocThreshold,
+        };
+        match parse_knob_value(id, "55") {
+            Some(KnobValue::Float(f)) => assert!((f - 55.0).abs() < f64::EPSILON),
+            other => panic!("unexpected: {other:?}"),
+        }
+        // Out of range — rejected.
+        assert!(parse_knob_value(id, "150").is_none());
+        assert!(parse_knob_value(id, "-1").is_none());
+    }
+
+    #[test]
+    fn parse_knob_value_weathersoc_table_cell_extended_bool() {
+        use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let id = KnobId::WeathersocTableCell {
+            bucket: EnergyBucket::Dim,
+            temp: TempCol::Cold,
+            field: CellField::Extended,
+        };
+        match parse_knob_value(id, "true") {
+            Some(KnobValue::Bool(true)) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+        match parse_knob_value(id, "false") {
+            Some(KnobValue::Bool(false)) => {}
+            other => panic!("unexpected: {other:?}"),
         }
     }
 }

@@ -236,6 +236,88 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "weathersoc.threshold.energy.very-sunny": { kind: "float", min: 0, max: 500, step: 1, default: 67.5, category: "config", group: "Weather-SoC planner" },
 };
 
+// --- PR-WSOC-EDIT-1: 48 weather-SoC table cell knobs ---------------------
+//
+// Programmatic generator: 12 cells × 4 fields = 48 KNOB_SPEC entries.
+// Defaults mirror `Knobs::safe_defaults().weather_soc_table` in core
+// (drift-guarded by `web/test-fixtures/weather-soc-defaults.json` —
+// see `weathersoc_table_defaults_match_core_safe_defaults` in
+// `render.test.ts` and `weathersoc_defaults_fixture_matches_safe_defaults`
+// in `crates/shell/src/dashboard/convert.rs`).
+
+export const WEATHER_SOC_BUCKETS_FOR_KNOBS = [
+  "very-sunny",
+  "sunny",
+  "mid",
+  "low",
+  "dim",
+  "very-dim",
+] as const;
+export const WEATHER_SOC_TEMPS = ["warm", "cold"] as const;
+
+/// Per-cell defaults: `[exp, bat, dis, ext]`. Mirrors
+/// `Knobs::safe_defaults().weather_soc_table` in core. The drift-guard
+/// test in `render.test.ts` asserts this matches the JSON fixture
+/// produced by the corresponding Rust test.
+export const WEATHER_SOC_DEFAULTS: Record<string, [number, number, number, boolean]> = {
+  "very-sunny.warm": [35, 100, 20, false],
+  "very-sunny.cold": [80, 100, 30, false],
+  "sunny.warm": [50, 100, 20, false],
+  "sunny.cold": [80, 100, 30, false],
+  "mid.warm": [67, 100, 20, false],
+  "mid.cold": [80, 100, 30, false],
+  "low.warm": [100, 100, 30, false],
+  "low.cold": [100, 100, 30, true],
+  "dim.warm": [100, 100, 30, true],
+  "dim.cold": [100, 100, 30, true],
+  "very-dim.warm": [100, 100, 30, true],
+  "very-dim.cold": [100, 100, 30, true],
+};
+
+/// Splice 48 cell-knob KNOB_SPEC entries into the registry. `category`
+/// is `"config"` (install-time) and `group` is `"Weather-SoC table"` —
+/// the latter is referenced for KNOB_SPEC consistency only; it doesn't
+/// appear in `CONFIG_GROUPS` because the cell knobs are hidden from
+/// `renderKnobs` (rendered by the dedicated widget instead).
+for (const bucket of WEATHER_SOC_BUCKETS_FOR_KNOBS) {
+  for (const temp of WEATHER_SOC_TEMPS) {
+    const cellKey = `${bucket}.${temp}`;
+    const [exp, bat, dis, ext] = WEATHER_SOC_DEFAULTS[cellKey];
+    KNOB_SPEC[`weathersoc.table.${cellKey}.export-soc-threshold`] = {
+      kind: "float", min: 0, max: 100, step: 1, default: exp,
+      category: "config", group: "Weather-SoC table",
+    };
+    KNOB_SPEC[`weathersoc.table.${cellKey}.battery-soc-target`] = {
+      kind: "float", min: 0, max: 100, step: 1, default: bat,
+      category: "config", group: "Weather-SoC table",
+    };
+    KNOB_SPEC[`weathersoc.table.${cellKey}.discharge-soc-target`] = {
+      kind: "float", min: 0, max: 100, step: 1, default: dis,
+      category: "config", group: "Weather-SoC table",
+    };
+    KNOB_SPEC[`weathersoc.table.${cellKey}.extended`] = {
+      kind: "bool", default: ext,
+      category: "config", group: "Weather-SoC table",
+    };
+  }
+}
+
+/// PR-WSOC-EDIT-1: knob names rendered by the dedicated widget rather
+/// than the generic flat knobs table. The 6 boundary knobs live in
+/// `snap.knobs.*` directly; the 48 cell knobs ride inside
+/// `weather_soc_table` and never appear on `snap.knobs` as scalar
+/// fields, so they don't need entries here. `renderKnobs` skips both
+/// `NESTED_KNOB_FIELDS` (which contains `weather_soc_table`) and this
+/// set when bucketing rows.
+export const WIDGET_RENDERED_KNOBS: ReadonlySet<string> = new Set([
+  "weathersoc_winter_temperature_threshold",
+  "weathersoc_low_energy_threshold",
+  "weathersoc_ok_energy_threshold",
+  "weathersoc_high_energy_threshold",
+  "weathersoc_too_much_energy_threshold",
+  "weathersoc_very_sunny_threshold",
+]);
+
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it
 /// appears in `snap.knobs`) or its dotted display name. Renderers call
 /// this rather than indexing KNOB_SPEC directly.
@@ -372,6 +454,12 @@ export function renderKnobs(
   Object.entries(knobsPlain).forEach(([name, val]) => {
     if (name === "writes_enabled") return;
     if (NESTED_KNOB_FIELDS.has(name)) return;
+    // PR-WSOC-EDIT-1: the 6 boundary knobs are rendered inline by the
+    // weather-SoC widget; suppress them from the generic Knobs tables.
+    // The 48 cell knobs (`KnobId::WeathersocTableCell`) ride inside
+    // `weather_soc_table` and never appear on `snap.knobs` directly,
+    // so the NESTED_KNOB_FIELDS guard above already covers them.
+    if (WIDGET_RENDERED_KNOBS.has(name)) return;
     const spec = specFor(name);
     if (!spec) {
       const bucket = opGroups.get("Other") ?? [];

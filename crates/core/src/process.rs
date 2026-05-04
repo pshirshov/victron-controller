@@ -812,6 +812,41 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         }
         // PR-ACT-RETRY-1.
         (KnobId::ActuatorRetryS, KnobValue::Uint32(v)) => replace(&mut k.actuator_retry_s, v) != v,
+        // PR-WSOC-EDIT-1: programmatic per-cell write — one arm covers
+        // 48 distinct addressable knobs (12 cells × 4 fields). The
+        // (field, value) pair routes to the right field on the cell
+        // resolved by `(bucket, temp)`; type mismatch (e.g. Float →
+        // Extended bool) falls through to the catch-all warn.
+        (KnobId::WeathersocTableCell { bucket, temp, field }, value) => {
+            use crate::controllers::weather_soc::cell_mut;
+            use crate::weather_soc_addr::CellField;
+            let cell = cell_mut(&mut k.weather_soc_table, bucket, temp);
+            match (field, value) {
+                (CellField::ExportSocThreshold, KnobValue::Float(v)) => {
+                    replace(&mut cell.export_soc_threshold, v) != v
+                }
+                (CellField::BatterySocTarget, KnobValue::Float(v)) => {
+                    replace(&mut cell.battery_soc_target, v) != v
+                }
+                (CellField::DischargeSocTarget, KnobValue::Float(v)) => {
+                    replace(&mut cell.discharge_soc_target, v) != v
+                }
+                (CellField::Extended, KnobValue::Bool(v)) => {
+                    replace(&mut cell.extended, v) != v
+                }
+                _ => {
+                    effects.push(Effect::Log {
+                        level: LogLevel::Warn,
+                        source: "process::command",
+                        message: format!(
+                            "apply_knob: WeathersocTableCell field/value mismatch — silently dropped \
+                             (schema drift?) bucket={bucket:?} temp={temp:?} field={field:?} value={value:?}"
+                        ),
+                    });
+                    false
+                }
+            }
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -837,7 +872,7 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
     use KnobId as I;
     use KnobValue as V;
     let k = knobs;
-    vec![
+    let mut out: Vec<PublishPayload> = vec![
         PublishPayload::Knob { id: I::ForceDisableExport, value: V::Bool(k.force_disable_export) },
         PublishPayload::Knob { id: I::ExportSocThreshold, value: V::Float(k.export_soc_threshold) },
         PublishPayload::Knob { id: I::DischargeSocTarget, value: V::Float(k.discharge_soc_target) },
@@ -986,7 +1021,36 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
             id: I::ActuatorRetryS,
             value: V::Uint32(k.actuator_retry_s),
         },
-    ]
+    ];
+    // PR-WSOC-EDIT-1: append the 48 cell knobs. Programmatic
+    // enumeration over the cartesian product
+    // EnergyBucket::ALL × TempCol::ALL × CellField::ALL — single source
+    // of truth for the bucket / column / field set.
+    {
+        use crate::controllers::weather_soc::cell_mut;
+        use crate::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        // `cell_mut` takes `&mut`; for read-only enumeration we go
+        // through a temporary clone of the table so we get an owned
+        // `WeatherSocCell` to read each field from. The clone is cheap
+        // (36 f64 + 12 bool).
+        let mut tmp = k.weather_soc_table;
+        for &bucket in EnergyBucket::ALL {
+            for &temp in TempCol::ALL {
+                let cell = *cell_mut(&mut tmp, bucket, temp);
+                for &field in CellField::ALL {
+                    let id = I::WeathersocTableCell { bucket, temp, field };
+                    let value = match field {
+                        CellField::ExportSocThreshold => V::Float(cell.export_soc_threshold),
+                        CellField::BatterySocTarget => V::Float(cell.battery_soc_target),
+                        CellField::DischargeSocTarget => V::Float(cell.discharge_soc_target),
+                        CellField::Extended => V::Bool(cell.extended),
+                    };
+                    out.push(PublishPayload::Knob { id, value });
+                }
+            }
+        }
+    }
+    out
 }
 
 fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topology) {
@@ -5249,6 +5313,129 @@ mod tests {
         let mut world = World::fresh_boot(c.monotonic);
         send_knob(&mut world, KnobId::ZappiBatteryDrainMpptProbeW, KnobValue::Uint32(750));
         assert_eq!(world.knobs.zappi_battery_drain_mppt_probe_w, 750);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-WSOC-EDIT-1: apply_knob routing for the 48 weather-SoC table
+    // cell knobs (one programmatic arm, four field shapes).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_knob_weathersoc_table_cell_routes_export_soc_threshold() {
+        use crate::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Sunny.warm export-soc-threshold: default 50 → write 42.
+        send_knob(
+            &mut world,
+            KnobId::WeathersocTableCell {
+                bucket: EnergyBucket::Sunny,
+                temp: TempCol::Warm,
+                field: CellField::ExportSocThreshold,
+            },
+            KnobValue::Float(42.0),
+        );
+        assert!(
+            (world.knobs.weather_soc_table.sunny_warm.export_soc_threshold - 42.0).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn apply_knob_weathersoc_table_cell_routes_battery_soc_target() {
+        use crate::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // Low.cold battery-soc-target: default 100 → write 85.
+        send_knob(
+            &mut world,
+            KnobId::WeathersocTableCell {
+                bucket: EnergyBucket::Low,
+                temp: TempCol::Cold,
+                field: CellField::BatterySocTarget,
+            },
+            KnobValue::Float(85.0),
+        );
+        assert!(
+            (world.knobs.weather_soc_table.low_cold.battery_soc_target - 85.0).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn apply_knob_weathersoc_table_cell_routes_discharge_soc_target() {
+        use crate::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // VeryDim.cold discharge-soc-target: default 30 → write 25.
+        send_knob(
+            &mut world,
+            KnobId::WeathersocTableCell {
+                bucket: EnergyBucket::VeryDim,
+                temp: TempCol::Cold,
+                field: CellField::DischargeSocTarget,
+            },
+            KnobValue::Float(25.0),
+        );
+        assert!(
+            (world.knobs.weather_soc_table.very_dim_cold.discharge_soc_target - 25.0).abs()
+                < f64::EPSILON
+        );
+    }
+
+    #[test]
+    fn apply_knob_weathersoc_table_cell_routes_extended() {
+        use crate::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        // VerySunny.warm extended: default false → write true.
+        send_knob(
+            &mut world,
+            KnobId::WeathersocTableCell {
+                bucket: EnergyBucket::VerySunny,
+                temp: TempCol::Warm,
+                field: CellField::Extended,
+            },
+            KnobValue::Bool(true),
+        );
+        assert!(world.knobs.weather_soc_table.very_sunny_warm.extended);
+    }
+
+    #[test]
+    fn all_knob_publish_payloads_includes_48_weathersoc_table_cells() {
+        use crate::weather_soc_addr::CellField;
+        let k = crate::knobs::Knobs::safe_defaults();
+        let payloads = all_knob_publish_payloads(&k);
+        let cell_payloads: Vec<_> = payloads
+            .iter()
+            .filter_map(|p| match p {
+                PublishPayload::Knob {
+                    id: KnobId::WeathersocTableCell { bucket, temp, field },
+                    value,
+                } => Some((*bucket, *temp, *field, *value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cell_payloads.len(), 48, "expected 48 cell knob payloads");
+
+        let floats = cell_payloads
+            .iter()
+            .filter(|(_, _, _, v)| matches!(v, KnobValue::Float(_)))
+            .count();
+        let bools = cell_payloads
+            .iter()
+            .filter(|(_, _, _, v)| matches!(v, KnobValue::Bool(_)))
+            .count();
+        // 12 cells × 3 float fields = 36; 12 cells × 1 bool field = 12.
+        assert_eq!(floats, 36, "36 Float payloads (3 float fields × 12 cells)");
+        assert_eq!(bools, 12, "12 Bool payloads (Extended × 12 cells)");
+
+        // Spot-check: every (bucket, temp) pair appears exactly 4 times,
+        // and every CellField appears exactly 12 times.
+        for &field in CellField::ALL {
+            let n = cell_payloads.iter().filter(|(_, _, f, _)| *f == field).count();
+            assert_eq!(n, 12, "field {field:?}");
+        }
     }
 
     // ------------------------------------------------------------------

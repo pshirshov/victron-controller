@@ -154,6 +154,37 @@ const DISPLAY_NAMES: Record<string, string> = {
   baseline: "forecast.baseline",
 };
 
+// PR-WSOC-EDIT-1: 48 cell knobs. The dashboard receives the cell knobs
+// as dotted MQTT names (see `knob_name` in the Rust shell), and the
+// dashboard's own snake_case canonical for them is the dotted form
+// itself (the cells never appear as struct fields on `snap.knobs`).
+// These entries make `displayNameOfTyped(<dotted>, "knob")` resolve to
+// the same dotted KNOB_SPEC key, so the entity inspector + KNOB_SPEC
+// lookup agree.
+const WEATHER_SOC_BUCKETS_FOR_NAMES = [
+  "very-sunny",
+  "sunny",
+  "mid",
+  "low",
+  "dim",
+  "very-dim",
+] as const;
+const WEATHER_SOC_TEMPS_FOR_NAMES = ["warm", "cold"] as const;
+const WEATHER_SOC_FIELDS_FOR_NAMES = [
+  "export-soc-threshold",
+  "battery-soc-target",
+  "discharge-soc-target",
+  "extended",
+] as const;
+for (const bucket of WEATHER_SOC_BUCKETS_FOR_NAMES) {
+  for (const temp of WEATHER_SOC_TEMPS_FOR_NAMES) {
+    for (const field of WEATHER_SOC_FIELDS_FOR_NAMES) {
+      const dotted = `weathersoc.table.${bucket}.${temp}.${field}`;
+      DISPLAY_NAMES[dotted] = dotted;
+    }
+  }
+}
+
 // Per-type overrides for collision keys. When the same canonical name
 // appears in multiple entity classes, the dotted display name differs
 // (e.g. `zappi_mode` actuated → `evcharger.mode.target` vs decision

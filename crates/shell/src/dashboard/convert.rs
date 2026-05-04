@@ -1336,6 +1336,22 @@ pub fn command_to_event(cmd: &ModelCommand, at: std::time::Instant) -> Option<Ev
 /// serializer's table to keep one wire vocabulary. Kept here so the
 /// dashboard + MQTT subscribers can evolve independently if needed.
 fn knob_id_from_name(n: &str) -> Option<KnobId> {
+    // PR-WSOC-EDIT-1: cell knobs arrive in dotted form
+    // `weathersoc.table.<bucket>.<temp>.<field>`; mirror the MQTT-layer
+    // parser. The dashboard sends these via `SetFloatKnob` /
+    // `SetBoolKnob` with the dotted name on `knob_name`.
+    if let Some(rest) = n.strip_prefix("weathersoc.table.") {
+        let parts: Vec<&str> = rest.split('.').collect();
+        if parts.len() == 3 {
+            use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+            let bucket = EnergyBucket::from_kebab(parts[0])?;
+            let temp = TempCol::from_kebab(parts[1])?;
+            let field = CellField::from_kebab(parts[2])?;
+            return Some(KnobId::WeathersocTableCell { bucket, temp, field });
+        }
+        // future-proof: any new shape under this prefix needs an arm above
+        return None;
+    }
     Some(match n {
         "force_disable_export" => KnobId::ForceDisableExport,
         "export_soc_threshold" => KnobId::ExportSocThreshold,
@@ -1563,6 +1579,141 @@ mod snapshot_new_sensors_tests {
         assert_eq!(
             snap.typed_sensors.timezone.cadence_ms, expected_tz_cadence,
             "timezone.cadence_ms must equal local TIMEZONE_CADENCE (5 s)",
+        );
+    }
+}
+
+/// PR-WSOC-EDIT-1: build a deterministic JSON object whose entries
+/// mirror `Knobs::safe_defaults().weather_soc_table`, keyed by the
+/// dotted `<bucket>.<temp>` token (matching the TS
+/// `WEATHER_SOC_DEFAULTS` map). Each value is the 4-tuple
+/// `[exp, bat, dis, ext]`. Used by the Rust drift-guard test below
+/// AND by the TS `weathersoc_table_defaults_match_core_safe_defaults`
+/// test, which loads the on-disk fixture.
+#[cfg(test)]
+fn weathersoc_defaults_fixture_json() -> String {
+    use serde_json::{json, Value};
+    use victron_controller_core::controllers::weather_soc::cell_mut as core_cell_mut;
+    use victron_controller_core::weather_soc_addr::{EnergyBucket, TempCol};
+    let mut t = victron_controller_core::knobs::Knobs::safe_defaults().weather_soc_table;
+    // Use a Vec<(String, Value)> so insertion order is bucket-major /
+    // temp-minor — matches `EnergyBucket::ALL × TempCol::ALL` and the
+    // TS-side ordering for byte-stable output.
+    let mut entries: Vec<(String, Value)> = Vec::with_capacity(12);
+    for &bucket in EnergyBucket::ALL {
+        for &temp in TempCol::ALL {
+            let cell = *core_cell_mut(&mut t, bucket, temp);
+            let key = format!("{}.{}", bucket.kebab(), temp.kebab());
+            entries.push((
+                key,
+                json!([
+                    cell.export_soc_threshold,
+                    cell.battery_soc_target,
+                    cell.discharge_soc_target,
+                    cell.extended,
+                ]),
+            ));
+        }
+    }
+    // Manual emit so we control key order (serde_json::Map preserves
+    // insertion order under the `preserve_order` feature, but the
+    // workspace doesn't enable it). Keys + values are simple enough
+    // that hand-formatting is straightforward.
+    use std::fmt::Write;
+    let mut s = String::from("{\n");
+    for (i, (k, v)) in entries.iter().enumerate() {
+        let comma = if i + 1 == entries.len() { "" } else { "," };
+        let _ = writeln!(s, "  {}: {}{}", serde_json::to_string(k).unwrap(), v, comma);
+    }
+    s.push_str("}\n");
+    s
+}
+
+#[cfg(test)]
+mod weathersoc_table_cell_parse_tests {
+    use super::*;
+    use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+
+    /// PR-WSOC-EDIT-1: the dashboard's name parser handles the dotted
+    /// cell-knob form via the same parsing rules as the MQTT layer.
+    #[test]
+    fn knob_id_from_name_parses_weathersoc_table_cell_dotted() {
+        let cases: &[(&str, KnobId)] = &[
+            (
+                "weathersoc.table.very-sunny.warm.export-soc-threshold",
+                KnobId::WeathersocTableCell {
+                    bucket: EnergyBucket::VerySunny,
+                    temp: TempCol::Warm,
+                    field: CellField::ExportSocThreshold,
+                },
+            ),
+            (
+                "weathersoc.table.dim.cold.battery-soc-target",
+                KnobId::WeathersocTableCell {
+                    bucket: EnergyBucket::Dim,
+                    temp: TempCol::Cold,
+                    field: CellField::BatterySocTarget,
+                },
+            ),
+            (
+                "weathersoc.table.low.warm.discharge-soc-target",
+                KnobId::WeathersocTableCell {
+                    bucket: EnergyBucket::Low,
+                    temp: TempCol::Warm,
+                    field: CellField::DischargeSocTarget,
+                },
+            ),
+            (
+                "weathersoc.table.very-dim.cold.extended",
+                KnobId::WeathersocTableCell {
+                    bucket: EnergyBucket::VeryDim,
+                    temp: TempCol::Cold,
+                    field: CellField::Extended,
+                },
+            ),
+        ];
+        for (name, expected) in cases {
+            let got = knob_id_from_name(name);
+            assert_eq!(got, Some(*expected), "name={name}");
+        }
+
+        // Malformed cases — wrong segment count, unknown token.
+        assert_eq!(knob_id_from_name("weathersoc.table.foo.warm.extended"), None);
+        assert_eq!(knob_id_from_name("weathersoc.table.dim.cold"), None);
+        assert_eq!(
+            knob_id_from_name("weathersoc.table.dim.cold.bogus-field"),
+            None
+        );
+    }
+
+    /// PR-WSOC-EDIT-1: drift-guard. Serialises the safe-defaults table
+    /// to JSON via `weathersoc_defaults_fixture_json()` and asserts it
+    /// equals the on-disk fixture at `web/test-fixtures/weather-soc-defaults.json`.
+    /// The TS test reads the same file, so any change to
+    /// `WeatherSocTable::safe_defaults()` MUST be mirrored in the
+    /// fixture (regenerate by piping `weathersoc_defaults_fixture_json()`
+    /// output into the file when this test fails).
+    #[test]
+    fn weathersoc_defaults_fixture_matches_safe_defaults() {
+        let expected = super::weathersoc_defaults_fixture_json();
+        // CARGO_MANIFEST_DIR points at the shell crate dir; the fixture
+        // lives at the workspace root + `/web/test-fixtures/...`.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR set during cargo test");
+        let path = std::path::Path::new(&manifest_dir)
+            .join("../../web/test-fixtures/weather-soc-defaults.json");
+        let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "could not read {} ({e}). Regenerate via: \
+                 update web/test-fixtures/weather-soc-defaults.json with the \
+                 expected content shown by re-running this test.",
+                path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "drift between Knobs::safe_defaults().weather_soc_table and \
+             web/test-fixtures/weather-soc-defaults.json. Expected content:\n{expected}"
         );
     }
 }

@@ -169,9 +169,19 @@ export const entityDescriptions: Record<string, string> = {
   // `1.5 × too_much` hard-coded multiplier).
   "weathersoc.threshold.energy.very-sunny":
     "Forecast total energy threshold (kWh) above which weathersoc treats the day as VerySunny — the most aggressive export-bias bucket of the 6×2 lookup table. Replaces the legacy `1.5 × too_much` hard-coded multiplier; default 67.5.",
-  // PR-WSOC-TABLE-1: read-only 6×2 lookup table on the dashboard.
+  // PR-WSOC-EDIT-1: editable 6×2 lookup table on the dashboard.
   "weathersoc.table":
-    "Weather-SoC 6×2 lookup table. Six energy buckets (VerySunny / Sunny / Mid / Low / Dim / VeryDim, gated by `weathersoc.threshold.energy.*` knobs) × two temperature columns (warm / cold, gated by `weathersoc.threshold.winter-temperature`). Each cell carries `export_soc_threshold`, `battery_soc_target`, `discharge_soc_target`, `extended`. Defaults flow from `Knobs::safe_defaults()` and reproduce the previous cascading ladder bit-for-bit; per-cell editing is a future PR (read-only here for v1).",
+    "Weather-SoC 6×2 lookup table. Six energy buckets (VerySunny / Sunny / Mid / Low / Dim / VeryDim, gated by `weathersoc.threshold.energy.*` knobs) × two temperature columns (warm / cold, gated by `weathersoc.threshold.winter-temperature`). Each cell carries `export_soc_threshold`, `battery_soc_target`, `discharge_soc_target`, `extended` — operator-editable per-cell on the Control tab as of PR-WSOC-EDIT-1.",
+  // PR-WSOC-EDIT-1: column-header descriptions surfaced via the entity
+  // inspector when the operator clicks a column-label token.
+  "weathersoc.table.export-soc-threshold":
+    "SoC above which we permit export this day. 100 = no export.",
+  "weathersoc.table.battery-soc-target":
+    "Daytime SoC target the planner drives the battery toward.",
+  "weathersoc.table.discharge-soc-target":
+    "Overnight discharge floor.",
+  "weathersoc.table.extended":
+    "Force-charge battery to target overnight via grid (cheap window).",
 
   // --- Knobs (ops) ---
   "writes-enabled":

@@ -138,7 +138,7 @@ async fn publish_knobs(client: &AsyncClient, topic_root: &str) -> Result<usize> 
     let mut count = 0;
     for (id, component, extra) in knob_schemas() {
         let name = knob_name(id);
-        let ha_name = ha_safe(name);
+        let ha_name = ha_safe(&name);
         let state_topic = format!("{topic_root}/knob/{name}/state");
         let command_topic = format!("{topic_root}/knob/{name}/set");
         let unique_id = format!("{NODE_ID}_knob_{ha_name}");
@@ -539,9 +539,38 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
     }
 }
 
+/// PR-WSOC-EDIT-1: programmatic enumeration of the 48 weather-SoC
+/// table cell knob schemas (12 cells × 4 fields). Three fields are
+/// floats with the SoC range 0..100 and step 1.0; the fourth
+/// (`Extended`) is a switch with payload_on/off `true`/`false`. The
+/// schema list is a flat splice into `knob_schemas()` below.
+fn weathersoc_table_knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
+    use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+    let mut schemas = Vec::with_capacity(48);
+    for &bucket in EnergyBucket::ALL {
+        for &temp in TempCol::ALL {
+            for &field in CellField::ALL {
+                let id = KnobId::WeathersocTableCell { bucket, temp, field };
+                if field.is_float() {
+                    schemas.push(number_knob(id, 1.0, Some("%")));
+                } else {
+                    // Extended bool — switch entity, mirroring the other
+                    // bool knob entries in `knob_schemas()`.
+                    schemas.push((
+                        id,
+                        "switch",
+                        json!({"payload_on": "true", "payload_off": "false"}),
+                    ));
+                }
+            }
+        }
+    }
+    schemas
+}
+
 /// Per-knob schema: (id, HA component, extras like min/max/step/options).
 fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
-    vec![
+    let mut schemas = vec![
         (KnobId::ForceDisableExport, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::DisableNightGridDischarge, "switch", json!({"payload_on": "true", "payload_off": "false"})),
         (KnobId::ChargeCarBoost, "switch", json!({"payload_on": "true", "payload_off": "false"})),
@@ -653,7 +682,10 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             "select",
             json!({"options": ["weather", "forced"]}),
         ),
-    ]
+    ];
+    // PR-WSOC-EDIT-1: append the 48 cell knob schemas.
+    schemas.extend(weathersoc_table_knob_schemas());
+    schemas
 }
 
 #[cfg(test)]
@@ -683,5 +715,32 @@ mod tests {
             });
             assert!(found, "knob_schemas() missing entry for {id:?}");
         }
+    }
+
+    /// PR-WSOC-EDIT-1: every (bucket, temp, field) triple appears in
+    /// `knob_schemas()` with the right component type — `number` for
+    /// the three SoC float fields, `switch` for the `Extended` bool.
+    #[test]
+    fn knob_schemas_includes_all_48_weathersoc_table_cells() {
+        use victron_controller_core::weather_soc_addr::{CellField, EnergyBucket, TempCol};
+        let schemas = knob_schemas();
+        let mut count = 0;
+        for &bucket in EnergyBucket::ALL {
+            for &temp in TempCol::ALL {
+                for &field in CellField::ALL {
+                    let target = KnobId::WeathersocTableCell { bucket, temp, field };
+                    let expected_component = if field.is_float() { "number" } else { "switch" };
+                    let found = schemas.iter().any(|(id, component, _)| {
+                        *id == target && *component == expected_component
+                    });
+                    assert!(
+                        found,
+                        "knob_schemas() missing {target:?} (expected component {expected_component})"
+                    );
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 48);
     }
 }

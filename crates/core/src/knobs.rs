@@ -303,15 +303,20 @@ pub struct WeatherSocTable {
 }
 
 impl WeatherSocTable {
-    /// Defaults reproduce the legacy cascading ladder bit-for-bit:
+    /// Defaults — operator preference 2026-05-04 (PR-WSOC-EDIT-1):
+    /// `bat=100` across every extended cell. The earlier
+    /// PR-WSOC-TABLE-1 defaults reproduced the legacy cascade
+    /// bit-for-bit including the `bat=90` cap on Low.cold / Dim.warm /
+    /// Dim.cold; this PR severs that coupling — the `extended` bit no
+    /// longer implies a 90% cap.
     ///
     /// | Bucket    | Warm: exp / bat / dis / ext | Cold: exp / bat / dis / ext |
     /// |-----------|-----------------------------|-----------------------------|
     /// | VerySunny | 35 / 100 / 20 / no          | 80 / 100 / 30 / no          |
     /// | Sunny     | 50 / 100 / 20 / no          | 80 / 100 / 30 / no          |
     /// | Mid       | 67 / 100 / 20 / no          | 80 / 100 / 30 / no          |
-    /// | Low       | 100 / 100 / 30 / no         | 100 / 90 / 30 / yes         |
-    /// | Dim       | 100 / 90 / 30 / yes         | 100 / 90 / 30 / yes         |
+    /// | Low       | 100 / 100 / 30 / no         | 100 / 100 / 30 / yes        |
+    /// | Dim       | 100 / 100 / 30 / yes        | 100 / 100 / 30 / yes        |
     /// | VeryDim   | 100 / 100 / 30 / yes        | 100 / 100 / 30 / yes        |
     #[must_use]
     pub fn safe_defaults() -> Self {
@@ -342,7 +347,9 @@ impl WeatherSocTable {
         };
         let dim_warm = WeatherSocCell {
             export_soc_threshold: 100.0,
-            battery_soc_target: 90.0,
+            // PR-WSOC-EDIT-1: bat=100 (was 90). The `extended` bit no
+            // longer implies a 90% cap.
+            battery_soc_target: 100.0,
             discharge_soc_target: 30.0,
             extended: true,
         };
@@ -368,10 +375,13 @@ impl WeatherSocTable {
         let mid_cold = very_sunny_cold;
         let low_cold = WeatherSocCell {
             export_soc_threshold: 100.0,
-            battery_soc_target: 90.0,
+            // PR-WSOC-EDIT-1: bat=100 (was 90).
+            battery_soc_target: 100.0,
             discharge_soc_target: 30.0,
             extended: true,
         };
+        // PR-WSOC-EDIT-1: dim_cold matches low_cold (both bat=100,
+        // ext=true). Was identical with bat=90 before this PR.
         let dim_cold = low_cold;
         let very_dim_cold = WeatherSocCell {
             export_soc_threshold: 100.0,
@@ -613,15 +623,17 @@ mod tests {
         expect(t.sunny_warm, 50.0, 100.0, 20.0, false);
         expect(t.mid_warm, 67.0, 100.0, 20.0, false);
         expect(t.low_warm, 100.0, 100.0, 30.0, false);
-        expect(t.dim_warm, 100.0, 90.0, 30.0, true);
+        // PR-WSOC-EDIT-1: bat=100 (was 90).
+        expect(t.dim_warm, 100.0, 100.0, 30.0, true);
         expect(t.very_dim_warm, 100.0, 100.0, 30.0, true);
 
         // Cold column.
         expect(t.very_sunny_cold, 80.0, 100.0, 30.0, false);
         expect(t.sunny_cold, 80.0, 100.0, 30.0, false);
         expect(t.mid_cold, 80.0, 100.0, 30.0, false);
-        expect(t.low_cold, 100.0, 90.0, 30.0, true);
-        expect(t.dim_cold, 100.0, 90.0, 30.0, true);
+        // PR-WSOC-EDIT-1: bat=100 (was 90) on Low.cold and Dim.cold.
+        expect(t.low_cold, 100.0, 100.0, 30.0, true);
+        expect(t.dim_cold, 100.0, 100.0, 30.0, true);
         expect(t.very_dim_cold, 100.0, 100.0, 30.0, true);
     }
 

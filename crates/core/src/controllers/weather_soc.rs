@@ -28,22 +28,24 @@
 //!   prior cascade's rung-7 semantics where the full-charge-required
 //!   override didn't touch the night-discharge bit).
 //!
-//! # Default cell table (cascade-equivalent)
+//! # Default cell table
 //!
 //! | Bucket    | Warm: exp / bat / dis / ext | Cold: exp / bat / dis / ext |
 //! |-----------|-----------------------------|-----------------------------|
 //! | VerySunny | 35 / 100 / 20 / no          | 80 / 100 / 30 / no          |
 //! | Sunny     | 50 / 100 / 20 / no          | 80 / 100 / 30 / no          |
 //! | Mid       | 67 / 100 / 20 / no          | 80 / 100 / 30 / no          |
-//! | Low       | 100 / 100 / 30 / no         | 100 / 90 / 30 / yes         |
-//! | Dim       | 100 / 90 / 30 / yes         | 100 / 90 / 30 / yes         |
+//! | Low       | 100 / 100 / 30 / no         | 100 / 100 / 30 / yes        |
+//! | Dim       | 100 / 100 / 30 / yes        | 100 / 100 / 30 / yes        |
 //! | VeryDim   | 100 / 100 / 30 / yes        | 100 / 100 / 30 / yes        |
 //!
-//! These defaults — built into `WeatherSocTable::safe_defaults()` —
-//! reproduce the legacy cascade bit-for-bit for any input strictly
-//! inside a bucket. The 11 retained `evaluate_weather_soc` tests pin
-//! this equivalence; 12 cell tests + 4 override/boundary tests pin the
-//! new model directly.
+//! These defaults are operator-tunable (PR-WSOC-EDIT-1: per-cell knobs).
+//! PR-WSOC-TABLE-1 originally seeded the table to reproduce the legacy
+//! cascade bit-for-bit; PR-WSOC-EDIT-1 normalises `bat=100` across the
+//! three previously `bat=90` cells (Low.cold / Dim.warm / Dim.cold), so
+//! the `extended` bit no longer implies a 90% cap. Cell-pinning tests
+//! and three of the cascade-equivalence tests carry the updated
+//! expectations; the rest are unchanged.
 //!
 //! # Stacked override (former rung 7 of the cascade)
 //!
@@ -62,6 +64,11 @@
 use crate::Clock;
 use crate::knobs::{WeatherSocCell, WeatherSocTable};
 use crate::types::Decision;
+// PR-WSOC-EDIT-1: cell-addressing vocabulary (EnergyBucket lived here
+// pre-PR; moved to crates/core/src/weather_soc_addr.rs and re-exported
+// from this module for backwards-compat with existing call sites).
+pub use crate::weather_soc_addr::EnergyBucket;
+use crate::weather_soc_addr::TempCol;
 
 /// Inputs — two aggregates from the forecast stack plus thresholds.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,42 +88,6 @@ pub struct WeatherSocInputGlobals {
     pub ok_energy_threshold_kwh: f64,
     pub high_energy_threshold_kwh: f64,
     pub too_much_energy_threshold_kwh: f64,
-}
-
-/// PR-WSOC-TABLE-1: 6 buckets along the energy axis. Boundary semantics
-/// (closed at top, open at bottom for adjacent pairs) reproduce the
-/// legacy `<=`/`>` cascade behaviour:
-///
-/// - VerySunny: `today_energy > very_sunny_threshold`
-/// - Sunny: `(too_much, very_sunny_threshold]`
-/// - Mid: `(high, too_much]`
-/// - Low: `(ok, high]`
-/// - Dim: `(low, ok]`
-/// - VeryDim: `<= low`
-///
-/// `today_energy == high` lands in Low (the legacy
-/// `exact_energy_threshold_counts_as_below` test pinned this).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnergyBucket {
-    VerySunny,
-    Sunny,
-    Mid,
-    Low,
-    Dim,
-    VeryDim,
-}
-
-impl EnergyBucket {
-    fn label(self) -> &'static str {
-        match self {
-            Self::VerySunny => "VerySunny",
-            Self::Sunny => "Sunny",
-            Self::Mid => "Mid",
-            Self::Low => "Low",
-            Self::Dim => "Dim",
-            Self::VeryDim => "VeryDim",
-        }
-    }
 }
 
 /// PR-WSOC-TABLE-1: classify `today_energy` into one of the six
@@ -172,6 +143,31 @@ fn pick_cell(table: &WeatherSocTable, bucket: EnergyBucket, cold: bool) -> Weath
         (EnergyBucket::Dim, true) => table.dim_cold,
         (EnergyBucket::VeryDim, false) => table.very_dim_warm,
         (EnergyBucket::VeryDim, true) => table.very_dim_cold,
+    }
+}
+
+/// PR-WSOC-EDIT-1: mutable-borrow counterpart to `pick_cell`. Used by
+/// `apply_knob`'s `KnobId::WeathersocTableCell` arm to route a single
+/// `(bucket, temp, field)` write to the right cell field.
+#[must_use]
+pub fn cell_mut(
+    table: &mut WeatherSocTable,
+    bucket: EnergyBucket,
+    temp: TempCol,
+) -> &mut WeatherSocCell {
+    match (bucket, temp) {
+        (EnergyBucket::VerySunny, TempCol::Warm) => &mut table.very_sunny_warm,
+        (EnergyBucket::VerySunny, TempCol::Cold) => &mut table.very_sunny_cold,
+        (EnergyBucket::Sunny, TempCol::Warm) => &mut table.sunny_warm,
+        (EnergyBucket::Sunny, TempCol::Cold) => &mut table.sunny_cold,
+        (EnergyBucket::Mid, TempCol::Warm) => &mut table.mid_warm,
+        (EnergyBucket::Mid, TempCol::Cold) => &mut table.mid_cold,
+        (EnergyBucket::Low, TempCol::Warm) => &mut table.low_warm,
+        (EnergyBucket::Low, TempCol::Cold) => &mut table.low_cold,
+        (EnergyBucket::Dim, TempCol::Warm) => &mut table.dim_warm,
+        (EnergyBucket::Dim, TempCol::Cold) => &mut table.dim_cold,
+        (EnergyBucket::VeryDim, TempCol::Warm) => &mut table.very_dim_warm,
+        (EnergyBucket::VeryDim, TempCol::Cold) => &mut table.very_dim_cold,
     }
 }
 
@@ -397,7 +393,10 @@ mod tests {
             today_energy_kwh: 30.0, // ≤ 80 high; > 20 ok
         };
         let d = evaluate(&input);
-        assert!((d.battery_soc_target - 90.0).abs() < f64::EPSILON);
+        // Operator preference 2026-05-04 (PR-WSOC-EDIT-1): Low.cold /
+        // Dim cells charge to 100, not 90; the extended bit no longer
+        // implies a 90 % cap.
+        assert!((d.battery_soc_target - 100.0).abs() < f64::EPSILON);
         assert!(d.charge_battery_extended);
         assert!(d.disable_night_grid_discharge);
     }
@@ -414,7 +413,10 @@ mod tests {
             today_energy_kwh: 15.0,    // ≤ 20 ok
         };
         let d = evaluate(&input);
-        assert!((d.battery_soc_target - 90.0).abs() < f64::EPSILON);
+        // Operator preference 2026-05-04 (PR-WSOC-EDIT-1): Low.cold /
+        // Dim cells charge to 100, not 90; the extended bit no longer
+        // implies a 90 % cap.
+        assert!((d.battery_soc_target - 100.0).abs() < f64::EPSILON);
         assert!(d.charge_battery_extended);
         assert!(d.disable_night_grid_discharge);
     }
@@ -603,22 +605,25 @@ mod tests {
     #[test]
     fn cell_low_cold() {
         // 25 ∈ (15, 30] → Low; 5 → cold.
+        // PR-WSOC-EDIT-1: bat=100 (was 90).
         let d = evaluate(&input_at(25.0, 5.0, false));
-        assert_outputs(&d, 100.0, 90.0, 30.0, true, true);
+        assert_outputs(&d, 100.0, 100.0, 30.0, true, true);
     }
 
     #[test]
     fn cell_dim_warm() {
         // 12 ∈ (8, 15] → Dim; 25 → warm.
+        // PR-WSOC-EDIT-1: bat=100 (was 90).
         let d = evaluate(&input_at(12.0, 25.0, false));
-        assert_outputs(&d, 100.0, 90.0, 30.0, true, true);
+        assert_outputs(&d, 100.0, 100.0, 30.0, true, true);
     }
 
     #[test]
     fn cell_dim_cold() {
         // 12 ∈ (8, 15] → Dim; 5 → cold.
+        // PR-WSOC-EDIT-1: bat=100 (was 90).
         let d = evaluate(&input_at(12.0, 5.0, false));
-        assert_outputs(&d, 100.0, 90.0, 30.0, true, true);
+        assert_outputs(&d, 100.0, 100.0, 30.0, true, true);
     }
 
     #[test]

@@ -2072,3 +2072,70 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/core/src/controllers/weather_soc.rs` (no test exists)
 **Description:** None of the 30 tests asserts on `d.decision.summary` or any `with_factor` string. A regression printing `cold` as `warm` or swapping `bucket.label()` for the wrong constant goes uncaught.
 **Fix:** Closed deferred — string-shape regression is low-impact and would be obvious on first dashboard reload. Cascade-equivalence outputs are pinned (12 cell tests + 4 boundary tests + 3 override tests); the summary is operator narrative, not a controller output. Revisit if narrative drift becomes a problem.
+
+---
+
+## PR-WSOC-EDIT-1
+
+### [PR-WSOC-EDIT-1-D01] Cell-edit modal accumulates duplicate click handlers across re-opens for different cells
+**Status:** resolved
+**Severity:** major
+**Location:** `web/src/render.ts:1840-1877, 1915-1956`
+**Description:** `installWeatherSocCellModalHandlers` calls `bodyEl.addEventListener("click", ...)` every time the modal is opened for a *different* cell (the rebuild branch, gated by `bodyEl.dataset.wsocCellId === entityId`). Each new listener captures the new `entityId` via closure. The listeners bound on previous opens are never removed because the listener is bound on `bodyEl` itself, not on its children — `bodyEl.innerHTML = ...` clears descendants but not listeners on `bodyEl`. Reproducer: open Low.cold modal → close → open Dim.warm modal → click Save. Both listeners fire, the first writes Dim.warm's input values to `weathersoc.table.low.cold.*` topics, the second writes them to `weathersoc.table.dim.warm.*`. Silent retained-MQTT corruption of a previously-viewed cell.
+**Fix:** `web/src/render.ts` — `installWeatherSocCellModalHandlers` signature changed from `(entityId, bodyEl)` to `(bodyEl)` and is now idempotent (gated by `bodyEl.dataset.wsocModalHandlersInstalled`). Click handler reads `bodyEl.dataset.wsocCellId` at dispatch time; no closure capture of entityId. Save / Cancel / Revert handlers all read from dataset. Last-snap baseline stamping extracted into `stampWeatherSocCellLastSnap` for the rebuild path.
+
+### [PR-WSOC-EDIT-1-D02] Drift-guard fixture file untracked; TS-side guard is inert (no JS test runner)
+**Status:** under fix
+**Severity:** major
+**Location:** `web/test-fixtures/weather-soc-defaults.json` (untracked); `web/src/render.test.ts` (assertions never executed)
+**Description:** Two related defects: (1) `git status` shows `web/test-fixtures/` as **untracked**. The Rust drift-guard `weathersoc_defaults_fixture_matches_safe_defaults` reads this file via `std::fs::read_to_string` and panics if missing — so as soon as the PR is committed without `git add`-ing the fixture, the test will fail in CI / fresh checkouts. (2) The TS-side "drift guard" embeds an inline-literal copy and compares only against `WEATHER_SOC_DEFAULTS`. Combined with the project having no JS test runner (`tsc --noEmit` only type-checks), all top-level `assert(...)` statements in `render.test.ts` are NEVER executed. The "three-leg assertion" comment in the diff is misleading; the TS leg never runs.
+**Fix:** D02a (orchestrator action): `git add web/test-fixtures/weather-soc-defaults.json` before committing. D02b (test runner): closed deferred — installing a JS runner is wider-scope work tracked separately. The Rust-side drift guard alone covers the fixture↔core leg; the TS-side `render.test.ts` will remain type-checked-only until a runner is added.
+
+### [PR-WSOC-EDIT-1-D03] `weatherSocSendCommand` module-level singleton blocks re-binding across renders
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.ts:1668, 1749-1753`
+**Description:** `weatherSocSendCommand` is a module-level `let` populated by `renderWeatherSocTable(snap, sendCommand)`. The current code path always passes `sendCommand`, so this works in practice, but the API contract is fragile: any future re-call without `sendCommand` reuses a stale closure. Same applies to `weatherSocBoundariesInstalled` — module-level latch that survives DOM replacement.
+**Fix:** `web/src/render.ts` — replaced `weatherSocBoundariesInstalled` (module-level) with `container.dataset.wsocBoundariesInstalled = "1"` latch on the `.weathersoc-boundaries` element; same dataset-latch pattern (`bodyEl.dataset.wsocModalHandlersInstalled`) for the modal handler from D01. `weatherSocSendCommand` retained module-level (the once-bound modal click handler needs a stable reference) but use sites snapshot it into a local `const send` and bail when null, so a future absent dispatcher fails fast instead of using a stale closure.
+
+### [PR-WSOC-EDIT-1-D04] Memory file `project_weathersoc_table.md` not updated for the new bat=100 invariant or flat-knob plumbing
+**Status:** resolved
+**Severity:** minor
+**Location:** `~/.claude/projects/-home-pavel-work-victron-controller/memory/project_weathersoc_table.md`
+**Description:** The file still said "model the 12 cells as a structured baboon table (**not 48 flat knobs**)" — directly contradicting PR-WSOC-EDIT-1, which DOES introduce 48 flat-addressable knobs (`KnobId::WeathersocTableCell`). Didn't mention the bat=100 normalisation, popup-modal UX, relocation Detail → Control, or column-header click-through.
+**Fix:** Memory file rewritten by orchestrator. Frontmatter description updated to reflect both shipped PRs. Body now records: (a) 48 flat HA-addressable knobs via `KnobId::WeathersocTableCell { bucket, temp, field }`, programmatic plumbing one match arm per layer; (b) `bat=100` across all extended cells; (c) per-cell popup modal via `#entity-modal` with `EntityType="weathersoc-cell"`; (d) widget on Control tab above `<section id="knobs">`; (e) `knob_name → String`, drift-guard fixture pattern, dirty-input rule, and the maintenance contract for future cell-field additions.
+
+### [PR-WSOC-EDIT-1-D05] `bodyEl.dataset.wsocCellId` is never cleared on modal close, leaking dirty inputs
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/render.ts:1839-1879`, `web/src/index.ts:225-229`
+**Description:** `closeEntityInspector` hid the modal but didn't clear `bodyEl.dataset.wsocCellId` or `bodyEl.innerHTML`. Reproducer: open Low.cold → type "95" into exp without saving → close → re-open Low.cold. The `alreadyOpen` check would be true → renderer entered the live-refresh branch instead of rebuild. The user saw their unsaved "95" still in the input.
+**Fix:** New exported helper `clearWeatherSocCellModal()` in `web/src/render.ts` clears `bodyEl.dataset.wsocCellId` and resets `bodyEl.innerHTML`; called from `closeEntityInspector` in `web/src/index.ts` after `hidden` is set. Idempotent / no-op when no cell modal was open.
+
+### [PR-WSOC-EDIT-1-D06] Hidden `return None` after `weathersoc.table.` prefix-match blocks future fallback parsers
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:340-352`, `crates/shell/src/dashboard/convert.rs:1339-1352`
+**Description:** Both `knob_id_from_name` parsers stripped the prefix and then `return None` if `parts.len() != 3`, hiding control-flow from future arms below.
+**Fix:** Added the comment `// future-proof: any new shape under this prefix needs an arm above` immediately above the `return None` in both files. No code change.
+
+### [PR-WSOC-EDIT-1-D07] Stale doc comment in `all_knob_publish_payloads` says `12 × 4 f64s` (should be 36 f64 + 12 bool)
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:1033-1035`
+**Description:** Comment said "The clone is cheap (12 × 4 f64s + 12 bools)." Cells have 3 f64 + 1 bool.
+**Fix:** Replaced with "The clone is cheap (36 f64 + 12 bool)" in `crates/core/src/process.rs`.
+
+### [PR-WSOC-EDIT-1-D08] Column-header `<span>` markup deviates from existing `<a>` entity-link pattern
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/static/index.html:65-82`
+**Description:** Headers used `<span class="entity-link">` while every other entity-link site emits `<a>`. Cursor wasn't pointer by default; a11y treated as text.
+**Fix:** Eight `<span>` tokens (`exp`/`bat`/`dis`/`ext` × Warm/Cold) converted to `<a class="entity-link mono" href="javascript:void(0)" data-entity-id=… data-entity-type="knob">` in `crates/shell/static/index.html`. Click handling unchanged (already operates on `closest(".entity-link")`).
+
+### [PR-WSOC-EDIT-1-D09] `KNOB_SPEC` cell entries inserted via top-level `for` loop mutating an `export const`
+**Status:** resolved (deferred)
+**Severity:** nit
+**Location:** `web/src/knobs.ts:282-302`
+**Description:** `KNOB_SPEC` is declared `export const` then mutated by a top-level loop. TS permits this; stylistically inconsistent with the rest of the file. Module-init order is implicit; a consumer reading `KNOB_SPEC[<cell-key>]` from an earlier-loaded module's top-level statement would see `undefined`.
+**Fix:** Closed deferred — current consumers all access `KNOB_SPEC` via function calls (after module-init), and the inline-mutation pattern is contained to one file. Refactor to a frozen `{...HAND_WRITTEN, ...generated}` object would be cleaner but is style-only.

@@ -3,6 +3,7 @@
 
 import { ConnectionManager, DEFAULT_CONFIG } from "./manager.js";
 import {
+  clearWeatherSocCellModal,
   installBookkeepingEditHandler,
   installCopyHandler,
   renderActuated,
@@ -156,16 +157,32 @@ function applySnapshot(snap: WorldSnapshot): void {
   if (!prev || !deepEqual(prev.forecasts, snap.forecasts) || tickedSecond) renderForecasts(snap);
   // Knobs: structural only. Pure (sendCommand handler unchanged).
   if (!prev || !deepEqual(prev.knobs, snap.knobs)) renderKnobs(snap, sendCommand);
-  // PR-WSOC-TABLE-1: read-only 6×2 weather-SoC lookup-table widget.
-  // Re-render only when the table value itself changes.
+  // PR-WSOC-EDIT-1: editable 6×2 weather-SoC lookup-table widget.
+  // Re-render whenever the table OR any of the 6 boundary knobs
+  // change so the inline boundary inputs stay current.
+  const wsocBoundariesChanged =
+    !prev
+    || (prev.knobs.weathersoc_low_energy_threshold
+        !== snap.knobs.weathersoc_low_energy_threshold)
+    || (prev.knobs.weathersoc_ok_energy_threshold
+        !== snap.knobs.weathersoc_ok_energy_threshold)
+    || (prev.knobs.weathersoc_high_energy_threshold
+        !== snap.knobs.weathersoc_high_energy_threshold)
+    || (prev.knobs.weathersoc_too_much_energy_threshold
+        !== snap.knobs.weathersoc_too_much_energy_threshold)
+    || (prev.knobs.weathersoc_very_sunny_threshold
+        !== snap.knobs.weathersoc_very_sunny_threshold)
+    || (prev.knobs.weathersoc_winter_temperature_threshold
+        !== snap.knobs.weathersoc_winter_temperature_threshold);
   if (
     !prev
+    || wsocBoundariesChanged
     || !deepEqual(
       (prev.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,
       (snap.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,
     )
   ) {
-    renderWeatherSocTable(snap);
+    renderWeatherSocTable(snap, sendCommand);
   }
   // Schedule: "in 4h 23m" → time-dependent.
   if (
@@ -211,6 +228,13 @@ function closeEntityInspector(): void {
   openEntityType = null;
   const modal = document.getElementById("entity-modal");
   if (modal) modal.setAttribute("hidden", "");
+  // D05: clear weather-SoC cell-modal body state (dataset id +
+  // innerHTML) so a subsequent open of the same cell rebuilds from
+  // scratch. Without this, the `alreadyOpen` short-circuit takes the
+  // live-refresh branch and any stale unsaved input values persist
+  // across open/close cycles. Helper is a no-op when no cell modal
+  // was open.
+  clearWeatherSocCellModal();
 }
 
 const VALID_TYPES: ReadonlySet<EntityType> = new Set([
@@ -222,6 +246,8 @@ const VALID_TYPES: ReadonlySet<EntityType> = new Set([
   "forecast",
   "core",
   "timer",
+  // PR-WSOC-EDIT-1: weather-SoC cell-edit modal.
+  "weathersoc-cell",
 ]);
 
 function installEntityInspectorHandlers(): void {

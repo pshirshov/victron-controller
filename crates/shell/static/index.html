@@ -47,6 +47,48 @@
       <div id="soc-chart"></div>
     </section>
 
+    <!-- PR-WSOC-EDIT-1: editable 6×2 weather-SoC lookup-table widget.
+         Promoted from Detail to Control tab; renders 6 inline boundary
+         inputs above a 3-column grouped table whose Warm/Cold cells
+         each open the entity-inspector modal as a 4-field cell editor.
+         See render.ts::renderWeatherSocTable for the layout. -->
+    <section id="weather-soc-table">
+      <h2>Weather-SoC table</h2>
+      <div class="weathersoc-boundaries"></div>
+      <div class="table-wrap">
+        <table id="weather-soc-table-table">
+          <thead>
+            <tr>
+              <th rowspan="2">Bucket</th>
+              <th>Warm (today_temp &gt; winter threshold)</th>
+              <th>Cold (today_temp ≤ winter threshold)</th>
+            </tr>
+            <tr>
+              <th class="wsoc-col-headers">
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a>
+              </th>
+              <th class="wsoc-col-headers">
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.battery-soc-target" data-entity-type="knob">bat</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.discharge-soc-target" data-entity-type="knob">dis</a>
+                /
+                <a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.extended" data-entity-type="knob">ext</a>
+              </th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="knobs">
       <h2>Knobs</h2>
       <div id="kill-switch" class="kill-switch"></div>
@@ -124,37 +166,6 @@
               <th>Today (kWh)</th>
               <th>Tomorrow (kWh)</th>
               <th>Fetched</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- PR-WSOC-TABLE-1: read-only 6×2 weather-SoC lookup-table widget.
-         Rendered by `renderWeatherSocTable` in render.ts. The 12 cells
-         carry (export_soc_threshold, battery_soc_target,
-         discharge_soc_target, extended) and are NOT individually
-         editable in v1 — defaults flow from `Knobs::safe_defaults()`. -->
-    <section id="weather-soc-table">
-      <h2>Weather-SoC table</h2>
-      <div class="table-wrap">
-        <table id="weather-soc-table-table">
-          <thead>
-            <tr>
-              <th rowspan="2">Bucket</th>
-              <th colspan="4">Warm (today_temp &gt; winter threshold)</th>
-              <th colspan="4">Cold (today_temp ≤ winter threshold)</th>
-            </tr>
-            <tr>
-              <th>exp</th>
-              <th>bat</th>
-              <th>dis</th>
-              <th>ext</th>
-              <th>exp</th>
-              <th>bat</th>
-              <th>dis</th>
-              <th>ext</th>
             </tr>
           </thead>
           <tbody></tbody>

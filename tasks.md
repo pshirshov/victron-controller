@@ -76,6 +76,19 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   survive). Read-only dashboard widget for v1; per-cell editing comes
   later. Plan in `./docs/drafts/20260504-1530-m-wsoc-table-plan.md`.
   One PR (PR-WSOC-TABLE-1).
+- [x] **M-WSOC-EDIT** — Promote the read-only Weather-SoC widget from
+  PR-WSOC-TABLE-1 into a fully editable control surface. 48 cell
+  fields become flat HA-addressable knobs via single
+  `KnobId::WeathersocTableCell { bucket, temp, field }` variant
+  (programmatic plumbing). bat defaults normalise to 100 in three
+  cells (Low.cold, Dim.warm, Dim.cold) — operator preference; severs
+  prior `extended ⇒ bat=90` coupling. Click-cell popup modal with
+  defaults + revert. 6 boundary knobs hidden from the flat Knobs
+  table and rendered inline above the cell grid. Column headers
+  clickable → entity-inspector modal with descriptions. Widget
+  relocates Detail → Control tab. Plan in
+  `./docs/drafts/20260504-1700-pr-wsoc-edit-1-plan.md`. One PR
+  (PR-WSOC-EDIT-1).
 - [x] **M-AS** — Unify actuated-readback ingestion with the sensor
   pipeline; collapse `Event::Readback`/`apply_readback`/`Route::*Readback`
   into `Route::Sensor` + `Event::ScheduleReadback`. Plan in
@@ -106,6 +119,30 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+
+---
+
+## Milestone M-WSOC-EDIT — PR breakdown
+
+Detail in `./docs/drafts/20260504-1700-pr-wsoc-edit-1-plan.md`. One PR;
+spans core types/process + shell mqtt/discovery/convert + web
+widget+modal+drift-guard.
+
+- [x] **PR-WSOC-EDIT-1** — D01..D17 in plan doc.
+  (1) bat defaults 100 across all extended cells; 3 retained tests
+  updated. (2) `KnobId::WeathersocTableCell { bucket, temp, field }`
+  variant + sibling enums `TempCol`/`CellField` + `EnergyBucket::ALL`
+  / `kebab` / `from_kebab` helpers. (3) Programmatic plumbing per
+  layer (knob_name returns String now). (4) HA discovery emits 48
+  entities. (5) Widget relocates Detail → Control above Knobs;
+  3-column grouped layout; clickable cell groups open
+  `#entity-modal` with new `"weathersoc-cell"` EntityType arm; 4
+  inputs + defaults + per-field revert + Save/Cancel; only changed
+  fields dispatched. (6) Boundary knobs hidden from `renderKnobs`
+  via `WIDGET_RENDERED_KNOBS`; rendered inline above cell grid. (7)
+  Column headers clickable → entity-inspector w/ descriptions. (8)
+  Drift-guard JSON fixture between Rust safe_defaults and TS
+  KNOB_SPEC defaults.
 
 ---
 
@@ -651,6 +688,105 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-WSOC-EDIT-1 — Editable Weather-SoC table widget** (M-WSOC-EDIT,
+  2026-05-04) — Promoted the read-only table from PR-WSOC-TABLE-1
+  into a fully editable control surface. 48 cell-fields became flat
+  HA-addressable knobs via a single `KnobId::WeathersocTableCell {
+  bucket: EnergyBucket, temp: TempCol, field: CellField }` variant
+  with associated data — internally one programmatic match arm per
+  plumbing layer (`apply_knob`, `knob_name`, `knob_id_from_name`,
+  `knob_range`, `parse_knob_value`), externally HA sees 48 distinct
+  entities (36 number + 12 switch) at
+  `weathersoc.table.<bucket>.<temp>.<field>`. The `EnergyBucket` enum
+  relocated to a new `crates/core/src/weather_soc_addr.rs` module
+  alongside new sibling enums `TempCol` and `CellField` plus
+  `kebab()` / `from_kebab()` helpers + `ALL` const slices. Cell-edit
+  UX is a popup modal via the existing `#entity-modal` infrastructure
+  with a new `EntityType="weathersoc-cell"` arm — clicking any cell
+  group opens a modal with 4 inputs (3 numeric + 1 checkbox), each
+  showing `[default: X]` and a per-field "Revert" button, plus
+  Save/Cancel; Save dispatches only changed fields. The 6 boundary
+  knobs (`weathersoc.threshold.energy.{low,ok,high,too-much,
+  very-sunny}` + `weathersoc.threshold.winter-temperature`) hidden
+  from the flat Knobs table via a new `WIDGET_RENDERED_KNOBS` set
+  and rendered inline above the cell grid as direct number inputs +
+  "set" buttons. Column headers (`exp/bat/dis/ext`) clickable via
+  `<a class="entity-link mono">` with `entity-type="knob"`, opening
+  the entity-inspector modal with descriptions sourced from new
+  `descriptions.ts` entries. Widget moved from Detail tab to Control
+  tab above `<section id="knobs">`. `knob_name` return type
+  changed `&'static str → String` to support the runtime-formatted
+  cell names; cascade through `discovery.rs` and `process.rs`. `bat`
+  defaults normalised to 100 across all 12 cells (Low.cold /
+  Dim.warm / Dim.cold changed from 90 → 100); three retained
+  cascade-equivalence tests' `bat` assertions updated with per-test
+  comments naming "operator preference 2026-05-04 (PR-WSOC-EDIT-1)";
+  cascade equivalence is now intentionally relaxed in those three
+  cells — `extended=true` no longer implies `bat=90`. Drift guard
+  between Rust `WeatherSocTable::safe_defaults()` and TS
+  `WEATHER_SOC_DEFAULTS`: a Rust test in
+  `crates/shell/src/dashboard/convert.rs` writes
+  `web/test-fixtures/weather-soc-defaults.json` from the safe-defaults
+  table and asserts equality; the TS-side `WEATHER_SOC_DEFAULTS`
+  literal mirrors the fixture content. (Note: TS-side assertions are
+  type-checked only — the project has no JS test runner — so the
+  Rust leg is the load-bearing check; D02b deferred until a runner is
+  added.) Verification: `cargo test --workspace` → 406 + 10 + 218
+  passed (1 ignored), `cargo clippy --workspace --all-targets --
+  -D warnings` clean, `tsc --noEmit -p web` clean,
+  `scripts/build-web.sh` produces `bundle.js` 272.2 kB. Test count
+  delta: 12 retained cascade-equivalence + cell-pinning tests'
+  assertions updated for `bat=100`; 12 new tests across core
+  (apply_knob × 4 CellField, payloads enumeration count,
+  weather_soc_addr enum round-trips), shell (knob_name round-trip
+  for 48 cells, `parse_knob_value` float + bool, discovery cell
+  schemas, dashboard parse, drift fixture). Adversarial review
+  produced 9 defects (2 major, 3 minor, 4 nit); D01–D08 fixed
+  (duplicate-handler bug eliminated via idempotent dataset-latch
+  pattern; drift fixture committed; module-level singletons replaced
+  with DOM-element dataset latches; modal close clears state; nit
+  comments + markup tidied). D02b and D09 closed deferred.
+  Notes / surprises:
+  - **`KnobId: Copy` survives** the new associated-data variant —
+    `EnergyBucket`, `TempCol`, `CellField` are all C-like and
+    trivially Copy. Verified by clean `cargo build` across all 60+
+    existing call-sites that pass `KnobId` by value.
+  - **`knob_name → String`** cascaded through `discovery.rs` and
+    `process.rs::all_knob_publish_payloads`. All current uses
+    immediately format the value into a topic; mechanical change.
+  - **`ha_safe` signature** also adjusted — `String` parameter became
+    `&str` to take the formatted `knob_name(...)` borrow without an
+    extra clone.
+  - **Modal lifecycle is dataset-latch driven.**
+    `bodyEl.dataset.wsocModalHandlersInstalled` (D01 fix),
+    `container.dataset.wsocBoundariesInstalled` (D03 fix),
+    `bodyEl.dataset.wsocCellId` (cell identity).
+    `clearWeatherSocCellModal()` clears state on close. The pattern
+    is robust against HMR / DOM replacement; module-level state
+    minimised.
+  - **Cell-edit modal "save only changed fields"** computes the diff
+    against `bodyEl.dataset.wsocLastSnap` stamped at modal-open or
+    rebuild; debounced under the dirty-input rule (focused / changed
+    inputs are not clobbered when a snapshot arrives).
+  - **Drift fixture is the contract.** If a future PR adds a
+    `CellField` variant or changes a default, the fixture-vs-
+    `safe_defaults()` Rust test fails first; update both
+    `WEATHER_SOC_DEFAULTS` (TS) and the fixture together.
+  - **Plan doc** `docs/drafts/20260504-1700-pr-wsoc-edit-1-plan.md`.
+    The v1 plan at `docs/drafts/20260504-1530-m-wsoc-table-plan.md`
+    stays unchanged as historical reference.
+  - **Memory** `~/.claude/projects/.../memory/project_weathersoc_table.md`
+    rewritten to reflect v2: 48 flat HA-addressable knobs (NOT the
+    "structured-only" v1 design), bat=100 invariant, popup-modal UX,
+    Control-tab placement.
+  - **Config.toml seeding skipped for cell knobs** — `safe_defaults()`
+    seeds boot, retained MQTT carries runtime state. Documented as a
+    one-line note in `crates/shell/src/config.rs`.
+  - **`render.test.ts` assertions are type-checked only** — the
+    project has no JS test runner. Documented as a known-limitation
+    deferred defect (D02b). Future work could install
+    `node --test` + tsx loader to make the assertions executable.
 
 - **PR-WSOC-TABLE-1 — Weather-SoC lookup-table redesign** (M-WSOC-TABLE,
   2026-05-04) — Replaced `evaluate_weather_soc`'s rung cascade with a
