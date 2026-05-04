@@ -231,6 +231,9 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
   "weathersoc.threshold.energy.ok": { kind: "float", min: 0, max: 500, step: 1, default: 15, category: "config", group: "Weather-SoC planner" },
   "weathersoc.threshold.energy.high": { kind: "float", min: 0, max: 500, step: 1, default: 30, category: "config", group: "Weather-SoC planner" },
   "weathersoc.threshold.energy.too-much": { kind: "float", min: 0, max: 500, step: 1, default: 45, category: "config", group: "Weather-SoC planner" },
+  // PR-WSOC-TABLE-1: bucket-boundary knob for the 6×2 lookup table.
+  // Default 67.5 matches the legacy `1.5 × too_much` (45 × 1.5) crossover.
+  "weathersoc.threshold.energy.very-sunny": { kind: "float", min: 0, max: 500, step: 1, default: 67.5, category: "config", group: "Weather-SoC planner" },
 };
 
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it
@@ -328,6 +331,9 @@ function dispatchKnobValue(name: string, spec: KnobSpec, value: unknown) {
   }
 }
 
+// Knobs whose value is a structured nested type (rendered by a dedicated widget, not the flat knobs table).
+const NESTED_KNOB_FIELDS = new Set(["weather_soc_table"]);
+
 export function renderKnobs(
   snap: WorldSnapshot,
   sendCommand: (cmd: unknown) => void,
@@ -365,6 +371,7 @@ export function renderKnobs(
       : (snap.knobs as unknown as Record<string, unknown>);
   Object.entries(knobsPlain).forEach(([name, val]) => {
     if (name === "writes_enabled") return;
+    if (NESTED_KNOB_FIELDS.has(name)) return;
     const spec = specFor(name);
     if (!spec) {
       const bucket = opGroups.get("Other") ?? [];

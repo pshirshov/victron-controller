@@ -167,6 +167,48 @@ data Knobs {
   // actuators (grid setpoint, current limit, zappi/eddi modes,
   // schedules).
   actuator_retry_s: i32
+  // PR-WSOC-TABLE-1: bucket-boundary knob for the new 6×2 weather-SoC
+  // lookup table. Replaces the legacy `1.5 × too_much_energy_threshold`
+  // hard-coded multiplier. Default 67.5 kWh — matches the previous
+  // (45 × 1.5) crossover so cascade-equivalent behaviour holds with
+  // safe-defaults thresholds.
+  weathersoc_very_sunny_threshold: f64
+  // PR-WSOC-TABLE-1: 6×2 lookup table replacing the cascading planner
+  // ladder. Read-only on the dashboard for v1; per-cell editing is a
+  // future PR. Defaults flow from `Knobs::safe_defaults()` in core and
+  // reproduce the previous cascade bit-for-bit.
+  weather_soc_table: WeatherSocTable
+}
+
+// PR-WSOC-TABLE-1: one cell in the 6×2 weather-SoC lookup table. The
+// four operator-tunable values per cell are `export_soc_threshold` (%),
+// `battery_soc_target` (%), `discharge_soc_target` (%), and `extended`
+// (a bit). `disable_night_grid_discharge` is derived from `extended`
+// at evaluation time, *before* the rung-7 stacked override applies.
+data WeatherSocCell {
+  export_soc_threshold: f64
+  battery_soc_target: f64
+  discharge_soc_target: f64
+  extended: bit
+}
+
+// PR-WSOC-TABLE-1: 12-cell value matrix surfaced as a single nested
+// `Knobs` field. Buckets are VerySunny / Sunny / Mid / Low / Dim /
+// VeryDim along the energy axis; each has a `_warm` (today_temp >
+// winter threshold) and `_cold` (≤ threshold) variant.
+data WeatherSocTable {
+  very_sunny_warm: WeatherSocCell
+  very_sunny_cold: WeatherSocCell
+  sunny_warm: WeatherSocCell
+  sunny_cold: WeatherSocCell
+  mid_warm: WeatherSocCell
+  mid_cold: WeatherSocCell
+  low_warm: WeatherSocCell
+  low_cold: WeatherSocCell
+  dim_warm: WeatherSocCell
+  dim_cold: WeatherSocCell
+  very_dim_warm: WeatherSocCell
+  very_dim_cold: WeatherSocCell
 }
 
 // 0.3.0 redefinition of `Bookkeeping` — `prev_ess_state` removed.

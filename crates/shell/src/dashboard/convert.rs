@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::knobs::{
     ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ExtendedChargeMode,
-    ForecastDisagreementStrategy, Knobs,
+    ForecastDisagreementStrategy, Knobs, WeatherSocCell, WeatherSocTable,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -114,6 +114,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::forecast_
 use victron_controller_dashboard_model::victron_controller::dashboard::forecasts::Forecasts as ModelForecasts;
 use victron_controller_dashboard_model::victron_controller::dashboard::freshness::Freshness as ModelFreshness;
 use victron_controller_dashboard_model::victron_controller::dashboard::knobs::Knobs as ModelKnobs;
+// PR-WSOC-TABLE-1: 6×2 weather-SoC lookup table on `Knobs`.
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_cell::WeatherSocCell as ModelWeatherSocCell;
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_table::WeatherSocTable as ModelWeatherSocTable;
 use victron_controller_dashboard_model::victron_controller::dashboard::owner::Owner as ModelOwner;
 use victron_controller_dashboard_model::victron_controller::dashboard::schedule_spec::ScheduleSpec as ModelScheduleSpec;
 use victron_controller_dashboard_model::victron_controller::dashboard::sensor_meta::SensorMeta as ModelSensorMeta;
@@ -1056,6 +1059,36 @@ fn decisions_to_model(d: &victron_controller_core::world::Decisions) -> ModelDec
     }
 }
 
+/// PR-WSOC-TABLE-1: per-cell core → wire mapping. Trivial — every field
+/// has the same name and shape on both sides.
+fn weather_soc_cell_to_model(c: &WeatherSocCell) -> ModelWeatherSocCell {
+    ModelWeatherSocCell {
+        export_soc_threshold: c.export_soc_threshold,
+        battery_soc_target: c.battery_soc_target,
+        discharge_soc_target: c.discharge_soc_target,
+        extended: c.extended,
+    }
+}
+
+/// PR-WSOC-TABLE-1: 12-cell core → wire mapping for the weather-SoC
+/// lookup table. Read-only on the dashboard for v1; no command handler.
+fn weather_soc_table_to_model(t: &WeatherSocTable) -> ModelWeatherSocTable {
+    ModelWeatherSocTable {
+        very_sunny_warm: weather_soc_cell_to_model(&t.very_sunny_warm),
+        very_sunny_cold: weather_soc_cell_to_model(&t.very_sunny_cold),
+        sunny_warm: weather_soc_cell_to_model(&t.sunny_warm),
+        sunny_cold: weather_soc_cell_to_model(&t.sunny_cold),
+        mid_warm: weather_soc_cell_to_model(&t.mid_warm),
+        mid_cold: weather_soc_cell_to_model(&t.mid_cold),
+        low_warm: weather_soc_cell_to_model(&t.low_warm),
+        low_cold: weather_soc_cell_to_model(&t.low_cold),
+        dim_warm: weather_soc_cell_to_model(&t.dim_warm),
+        dim_cold: weather_soc_cell_to_model(&t.dim_cold),
+        very_dim_warm: weather_soc_cell_to_model(&t.very_dim_warm),
+        very_dim_cold: weather_soc_cell_to_model(&t.very_dim_cold),
+    }
+}
+
 fn knobs_to_model(k: &Knobs) -> ModelKnobs {
     ModelKnobs {
         force_disable_export: k.force_disable_export,
@@ -1090,6 +1123,9 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         weathersoc_ok_energy_threshold: k.weathersoc_ok_energy_threshold,
         weathersoc_high_energy_threshold: k.weathersoc_high_energy_threshold,
         weathersoc_too_much_energy_threshold: k.weathersoc_too_much_energy_threshold,
+        // PR-WSOC-TABLE-1: bucket-boundary knob + 6×2 lookup table.
+        weathersoc_very_sunny_threshold: k.weathersoc_very_sunny_threshold,
+        weather_soc_table: weather_soc_table_to_model(&k.weather_soc_table),
         writes_enabled: k.writes_enabled,
         forecast_disagreement_strategy: forecast_strategy(k.forecast_disagreement_strategy),
         charge_battery_extended_mode: cbe_mode(k.charge_battery_extended_mode),
@@ -1328,6 +1364,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc_ok_energy_threshold" => KnobId::WeathersocOkEnergyThreshold,
         "weathersoc_high_energy_threshold" => KnobId::WeathersocHighEnergyThreshold,
         "weathersoc_too_much_energy_threshold" => KnobId::WeathersocTooMuchEnergyThreshold,
+        // PR-WSOC-TABLE-1.
+        "weathersoc_very_sunny_threshold" => KnobId::WeathersocVerySunnyThreshold,
         "forecast_disagreement_strategy" => KnobId::ForecastDisagreementStrategy,
         "charge_battery_extended_mode" => KnobId::ChargeBatteryExtendedMode,
         "export_soc_threshold_mode" => KnobId::ExportSocThresholdMode,

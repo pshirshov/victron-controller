@@ -347,6 +347,8 @@ pub fn knob_name(id: KnobId) -> &'static str {
         KnobId::WeathersocOkEnergyThreshold => "weathersoc.threshold.energy.ok",
         KnobId::WeathersocHighEnergyThreshold => "weathersoc.threshold.energy.high",
         KnobId::WeathersocTooMuchEnergyThreshold => "weathersoc.threshold.energy.too-much",
+        // PR-WSOC-TABLE-1: bucket-boundary kWh knob.
+        KnobId::WeathersocVerySunnyThreshold => "weathersoc.threshold.energy.very-sunny",
         KnobId::ForecastDisagreementStrategy => "forecast.disagreement.strategy",
         KnobId::ChargeBatteryExtendedMode => "schedule.extended.charge.mode",
         // PR-gamma-hold-redesign — four mode selectors.
@@ -407,6 +409,8 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "weathersoc.threshold.energy.ok" => KnobId::WeathersocOkEnergyThreshold,
         "weathersoc.threshold.energy.high" => KnobId::WeathersocHighEnergyThreshold,
         "weathersoc.threshold.energy.too-much" => KnobId::WeathersocTooMuchEnergyThreshold,
+        // PR-WSOC-TABLE-1.
+        "weathersoc.threshold.energy.very-sunny" => KnobId::WeathersocVerySunnyThreshold,
         "forecast.disagreement.strategy" => KnobId::ForecastDisagreementStrategy,
         "schedule.extended.charge.mode" => KnobId::ChargeBatteryExtendedMode,
         // PR-gamma-hold-redesign — four mode selectors.
@@ -605,7 +609,9 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         KnobId::WeathersocLowEnergyThreshold
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
-        | KnobId::WeathersocTooMuchEnergyThreshold => (0.0, 1000.0),
+        | KnobId::WeathersocTooMuchEnergyThreshold
+        // PR-WSOC-TABLE-1: same kWh wire range.
+        | KnobId::WeathersocVerySunnyThreshold => (0.0, 1000.0),
 
         // Power (W) — PR-hardware-config: per-direction ceilings
         // sourced from HardwareParams, so the export and import caps
@@ -767,6 +773,8 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::WeathersocOkEnergyThreshold
         | KnobId::WeathersocHighEnergyThreshold
         | KnobId::WeathersocTooMuchEnergyThreshold
+        // PR-WSOC-TABLE-1.
+        | KnobId::WeathersocVerySunnyThreshold
         // PR-baseline-forecast: per-hour Wh constants are floats.
         | KnobId::BaselineWhPerHourWinter
         | KnobId::BaselineWhPerHourSummer

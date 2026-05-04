@@ -15,6 +15,7 @@ import {
   renderSchedule,
   renderSensors,
   renderTimers,
+  renderWeatherSocTable,
   renderZappiDrainSummary,
   renderZappiDrainChart,
   type EntityType,
@@ -155,6 +156,17 @@ function applySnapshot(snap: WorldSnapshot): void {
   if (!prev || !deepEqual(prev.forecasts, snap.forecasts) || tickedSecond) renderForecasts(snap);
   // Knobs: structural only. Pure (sendCommand handler unchanged).
   if (!prev || !deepEqual(prev.knobs, snap.knobs)) renderKnobs(snap, sendCommand);
+  // PR-WSOC-TABLE-1: read-only 6×2 weather-SoC lookup-table widget.
+  // Re-render only when the table value itself changes.
+  if (
+    !prev
+    || !deepEqual(
+      (prev.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,
+      (snap.knobs as unknown as { weather_soc_table?: unknown }).weather_soc_table,
+    )
+  ) {
+    renderWeatherSocTable(snap);
+  }
   // Schedule: "in 4h 23m" → time-dependent.
   if (
     !prev

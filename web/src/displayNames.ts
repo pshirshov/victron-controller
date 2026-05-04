@@ -77,6 +77,10 @@ const DISPLAY_NAMES: Record<string, string> = {
   weathersoc_ok_energy_threshold: "weathersoc.threshold.energy.ok",
   weathersoc_high_energy_threshold: "weathersoc.threshold.energy.high",
   weathersoc_too_much_energy_threshold: "weathersoc.threshold.energy.too-much",
+  // PR-WSOC-TABLE-1: bucket-boundary kWh knob.
+  weathersoc_very_sunny_threshold: "weathersoc.threshold.energy.very-sunny",
+  // PR-WSOC-TABLE-1: 6×2 lookup table (read-only widget on the dashboard).
+  weather_soc_table: "weathersoc.table",
   forecast_disagreement_strategy: "forecast.disagreement.strategy",
   charge_battery_extended_mode: "schedule.extended.charge.mode",
   writes_enabled: "writes-enabled",

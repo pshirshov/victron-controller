@@ -581,6 +581,8 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::WeathersocOkEnergyThreshold, 1.0, Some("kWh")),
         number_knob(KnobId::WeathersocHighEnergyThreshold, 1.0, Some("kWh")),
         number_knob(KnobId::WeathersocTooMuchEnergyThreshold, 1.0, Some("kWh")),
+        // PR-WSOC-TABLE-1: bucket-boundary kWh knob (default 67.5).
+        number_knob(KnobId::WeathersocVerySunnyThreshold, 1.0, Some("kWh")),
         // PR-baseline-forecast: 4 runtime knobs.
         // Date knobs use step=1 (integer MMDD literal); operator types
         // 1101 / 301 etc. The HA UI is a plain integer slider — not

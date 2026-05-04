@@ -1551,6 +1551,95 @@ export function renderForecasts(snap: WorldSnapshot) {
   updateKeyedRows(tbody, rows);
 }
 
+// --- PR-WSOC-TABLE-1: weather-SoC 6×2 lookup-table widget ---------------
+//
+// Read-only for v1: rows mirror `snap.knobs.weather_soc_table` (12 cells,
+// 6 buckets × 2 temperature columns) with no per-cell controls. Defaults
+// flow from `Knobs::safe_defaults()`; per-cell editing is a future PR.
+
+/// PR-WSOC-TABLE-1: bucket order in the rendered table. Top-down reads
+/// "most sun → least sun", matching the bucket boundaries declared in
+/// `crates/core/src/controllers/weather_soc.rs`. The strings double as
+/// row keys for `updateKeyedRows`.
+const WEATHER_SOC_BUCKETS: ReadonlyArray<{ key: string; label: string; warm: string; cold: string }> = [
+  { key: "very_sunny", label: "VerySunny", warm: "very_sunny_warm", cold: "very_sunny_cold" },
+  { key: "sunny", label: "Sunny", warm: "sunny_warm", cold: "sunny_cold" },
+  { key: "mid", label: "Mid", warm: "mid_warm", cold: "mid_cold" },
+  { key: "low", label: "Low", warm: "low_warm", cold: "low_cold" },
+  { key: "dim", label: "Dim", warm: "dim_warm", cold: "dim_cold" },
+  { key: "very_dim", label: "VeryDim", warm: "very_dim_warm", cold: "very_dim_cold" },
+];
+
+/// PR-WSOC-TABLE-1: minimal per-cell shape used by the renderer. Mirrors
+/// the wire model `WeatherSocCell`; kept structural so the test harness
+/// can feed plain JS objects without instantiating the codegen class.
+export type WeatherSocCellLike = {
+  export_soc_threshold: number;
+  battery_soc_target: number;
+  discharge_soc_target: number;
+  extended: boolean;
+};
+export type WeatherSocTableLike = Record<string, WeatherSocCellLike>;
+
+/// PR-WSOC-TABLE-1: pure row-builder, factored out so it can be unit-
+/// tested without a DOM. Returns one `KeyedRow` per bucket (6 rows).
+/// `extended` renders as ✓ / —; numeric cells use bare integers.
+export function buildWeatherSocTableRows(table: WeatherSocTableLike): KeyedRow[] {
+  const fmt = (v: number): string => {
+    // Cells carry whole-percentage values (35 / 50 / 67 / 80 / 100 / 90 /
+    // 20 / 30) by default; format as bare integer when integer, else
+    // 1-decimal float (defensive for future per-cell editing).
+    if (Number.isFinite(v) && Math.abs(v - Math.round(v)) < 1e-9) {
+      return String(Math.round(v));
+    }
+    return v.toFixed(1);
+  };
+  const ext = (b: boolean): string => (b ? "✓" : "—");
+
+  return WEATHER_SOC_BUCKETS.map((b) => {
+    const warm = table[b.warm];
+    const cold = table[b.cold];
+    return {
+      key: b.key,
+      cells: [
+        { cls: "mono", html: b.label },
+        { cls: "mono", html: fmt(warm.export_soc_threshold) },
+        { cls: "mono", html: fmt(warm.battery_soc_target) },
+        { cls: "mono", html: fmt(warm.discharge_soc_target) },
+        { cls: "mono", html: ext(warm.extended) },
+        { cls: "mono", html: fmt(cold.export_soc_threshold) },
+        { cls: "mono", html: fmt(cold.battery_soc_target) },
+        { cls: "mono", html: fmt(cold.discharge_soc_target) },
+        { cls: "mono", html: ext(cold.extended) },
+      ],
+    };
+  });
+}
+
+/// PR-WSOC-TABLE-1: DOM-mutating renderer. Reads
+/// `snap.knobs.weather_soc_table`, walks each bucket, and writes one row
+/// per bucket via `updateKeyedRows`. The wire-model class exposes
+/// `weather_soc_table` via a getter on `Knobs`; we go through `toPlain`
+/// so both UEBA-decoded class instances and plain JSON snapshots work.
+export function renderWeatherSocTable(snap: WorldSnapshot): void {
+  const tbody = document.querySelector("#weather-soc-table-table tbody") as HTMLElement | null;
+  if (!tbody) return;
+  const k = toPlain(snap.knobs);
+  const tableRaw = k["weather_soc_table"] as unknown;
+  if (!tableRaw || typeof tableRaw !== "object") return;
+  const tablePlain = toPlain(tableRaw) as Record<string, unknown>;
+  // Each cell is itself a class instance with private getters; flatten
+  // through toPlain so the renderer reads `export_soc_threshold` etc.
+  const tableFlat: WeatherSocTableLike = {};
+  for (const k of Object.keys(tablePlain)) {
+    const cell = tablePlain[k];
+    if (cell && typeof cell === "object") {
+      tableFlat[k] = toPlain(cell) as unknown as WeatherSocCellLike;
+    }
+  }
+  updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat));
+}
+
 // --- copy-button handler (delegated, installed once) --------------------
 
 let copyHandlerInstalled = false;

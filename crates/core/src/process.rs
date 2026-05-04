@@ -735,6 +735,10 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::WeathersocTooMuchEnergyThreshold, KnobValue::Float(v)) => {
             replace(&mut k.weathersoc_too_much_energy_threshold, v) != v
         }
+        // PR-WSOC-TABLE-1: bucket-boundary kWh knob.
+        (KnobId::WeathersocVerySunnyThreshold, KnobValue::Float(v)) => {
+            replace(&mut k.weathersoc_very_sunny_threshold, v) != v
+        }
         (KnobId::ForecastDisagreementStrategy, KnobValue::ForecastDisagreementStrategy(v)) => {
             replace(&mut k.forecast_disagreement_strategy, v) != v
         }
@@ -890,6 +894,11 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::WeathersocTooMuchEnergyThreshold,
             value: V::Float(k.weathersoc_too_much_energy_threshold),
+        },
+        // PR-WSOC-TABLE-1: bucket-boundary kWh knob.
+        PublishPayload::Knob {
+            id: I::WeathersocVerySunnyThreshold,
+            value: V::Float(k.weathersoc_very_sunny_threshold),
         },
         PublishPayload::Knob {
             id: I::ForecastDisagreementStrategy,
@@ -2383,7 +2392,12 @@ pub(crate) fn run_weather_soc(
         today_temperature_c: world.sensors.outdoor_temperature.value.unwrap(),
         today_energy_kwh: today_kwh,
     };
-    let d = evaluate_weather_soc(&input, clock);
+    let d = evaluate_weather_soc(
+        &input,
+        &k.weather_soc_table,
+        k.weathersoc_very_sunny_threshold,
+        clock,
+    );
     world.decisions.weather_soc = Some(d.decision.clone());
 
     // PR-gamma-hold-redesign: write the planner's per-tick derivations

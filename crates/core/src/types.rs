@@ -750,6 +750,10 @@ pub enum KnobId {
     WeathersocOkEnergyThreshold,
     WeathersocHighEnergyThreshold,
     WeathersocTooMuchEnergyThreshold,
+    /// PR-WSOC-TABLE-1: bucket-boundary kWh knob for the new weather-SoC
+    /// 6×2 lookup table. Replaces the hard-coded `1.5 × too_much`
+    /// multiplier; default 67.5 kWh.
+    WeathersocVerySunnyThreshold,
     ForecastDisagreementStrategy,
     ChargeBatteryExtendedMode,
     // PR-gamma-hold-redesign — four mode selectors.
@@ -1270,6 +1274,10 @@ pub enum ControllerObservableId {
     ZappiDrainCompensatedW,
     ZappiDrainTightenActive,
     ZappiDrainHardClampActive,
+    /// Process uptime in seconds. Republished on a fixed cadence so HA
+    /// can use `expire_after` as a liveness check — when the controller
+    /// stops, the entity goes `unavailable` once the expiry elapses.
+    AppUptimeS,
 }
 
 impl ControllerObservableId {
@@ -1281,6 +1289,7 @@ impl ControllerObservableId {
             Self::ZappiDrainCompensatedW => "zappi-drain.compensated-w",
             Self::ZappiDrainTightenActive => "zappi-drain.tighten-active",
             Self::ZappiDrainHardClampActive => "zappi-drain.hard-clamp-active",
+            Self::AppUptimeS => "controller.uptime-s",
         }
     }
 
@@ -1289,6 +1298,7 @@ impl ControllerObservableId {
         Self::ZappiDrainCompensatedW,
         Self::ZappiDrainTightenActive,
         Self::ZappiDrainHardClampActive,
+        Self::AppUptimeS,
     ];
 }
 

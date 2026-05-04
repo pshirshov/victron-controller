@@ -66,6 +66,16 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   staleness-floor correctness invariant. Plan in
   `./docs/drafts/20260425-0130-m-ux-1-plan.md`. Five PRs; correctness
   item lands first.
+- [x] **M-WSOC-TABLE** — Replace the `evaluate_weather_soc` rung
+  cascade with a 6×2 lookup table (bucket × temp) of 4-field cells
+  (export_soc_threshold, battery_soc_target, discharge_soc_target,
+  extended). New knob `weathersoc_very_sunny_threshold` (default 67.5
+  kWh) replaces hardcoded `1.5×too_much` multiplier. Defaults
+  reproduce cascade output verbatim; `dng = cell.extended` derived
+  *before* the strict-kWh override applies (so rung-7 semantics
+  survive). Read-only dashboard widget for v1; per-cell editing comes
+  later. Plan in `./docs/drafts/20260504-1530-m-wsoc-table-plan.md`.
+  One PR (PR-WSOC-TABLE-1).
 - [x] **M-AS** — Unify actuated-readback ingestion with the sensor
   pipeline; collapse `Event::Readback`/`apply_readback`/`Route::*Readback`
   into `Route::Sensor` + `Event::ScheduleReadback`. Plan in
@@ -96,6 +106,24 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+
+---
+
+## Milestone M-WSOC-TABLE — PR breakdown
+
+Detail in `./docs/drafts/20260504-1530-m-wsoc-table-plan.md`. One PR;
+spans baboon + core + shell + web (read-only widget).
+
+- [x] **PR-WSOC-TABLE-1** — D01..D12 in plan doc. Add
+  `weathersoc_very_sunny_threshold` knob (full 11-layer registration)
+  + `WeatherSocCell` / `WeatherSocTable` baboon types nested on
+  `Knobs`. Replace `evaluate_weather_soc` cascade with discrete bucket
+  classifier + table lookup + strict-kWh stacked override. Read-only
+  6×2 dashboard widget on the Detail tab. Defaults reproduce cascade
+  bit-for-bit for the 12 cells; `dng = cell.extended` derived before
+  override (preserves rung-7 semantics). Existing 11 weather_soc
+  tests retain their assertions; ≥12 new cell-pinning tests +
+  override + boundary tests.
 
 ---
 
@@ -623,6 +651,64 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-WSOC-TABLE-1 — Weather-SoC lookup-table redesign** (M-WSOC-TABLE,
+  2026-05-04) — Replaced `evaluate_weather_soc`'s rung cascade with a
+  6×2 discrete lookup table (energy bucket × temperature column).
+  Each cell carries 4 fields (`export_soc_threshold`,
+  `battery_soc_target`, `discharge_soc_target`, `extended`); the bool
+  `disable_night_grid_discharge` is derived from `cell.extended`
+  *before* the rung-7 override applies — the override only mutates
+  `bat` + `ext`, not `dng`. New boundary knob
+  `weathersoc_very_sunny_threshold` (default 67.5 kWh) replaces the
+  hardcoded `1.5×too_much` multiplier; full 11-layer registration per
+  CLAUDE.md. The 12-cell value matrix is wire-modeled as a single
+  nested `WeatherSocTable` baboon type on `Knobs`; the 48 cell-knobs
+  are NOT individually addressable (no flat `KnobId`, no `apply_knob`
+  arms, no HA discovery, no `KNOB_SPEC` entries). Read-only 6×2 widget
+  rendered on the Detail tab; per-cell editing is a future PR.
+  Verification: `cargo test --workspace` → 396 + 10 + 212 passed,
+  `cargo clippy --workspace --all-targets -- -D warnings` clean,
+  `tsc --noEmit -p web` clean. Test count delta: 11 retained
+  cascade-equivalence goldens + 19 new (12 cell-pinning + 3 override +
+  4 boundary) = 30 total in `weather_soc.rs`. Adversarial review
+  produced 6 defects (1 major, 2 minor, 3 nit); D01–D04 fixed
+  (`weather_soc_table` no longer rendered as `[object Object]` in
+  operator-knobs "Other" group; cascade-equivalence helper invariant
+  documented; `dng` timing comment added; retained-test docstring
+  archaeology disclaimer added). D05–D06 closed deferred (Decision
+  summary narrative polish; no test for summary string shape).
+  Notes / surprises:
+  - **Rung-7 override predicate stays as legacy strict kWh inequality**
+    `today_energy < high_energy_threshold_kwh` (NOT a bucket-set
+    membership). Memory `project_weathersoc_table.md` originally said
+    "Mid/Low cells" but the cascade source fires on `< high` strict,
+    which is `bucket ∈ {Low (open at top), Dim, VeryDim}`. Truth-source
+    is the code; bit-for-bit cascade equivalence preserved.
+  - **`dng = cell.extended` (not the post-override mutable)** is
+    load-bearing: a refactor that read the local `charge_battery_extended`
+    instead would silently change Low.warm + cf=true behaviour. Source
+    comment + test `override_low_warm_cf_true_only_mutates_bat_ext`
+    pin this — D03 closed by adding the comment.
+  - **`weathersoc_table` ≠ flat knob.** The dashboard's `renderKnobs`
+    iterates `Knobs.toJSON()` and would otherwise treat the structured
+    field as a primitive, rendering `[object Object]` in "Other".
+    Closed by `NESTED_KNOB_FIELDS` allowlist in `web/src/knobs.ts`;
+    new structured fields on `Knobs` must be added to that set.
+  - **Test helper preserves legacy `1.5×too_much` boundary.** The 11
+    retained cascade-equivalence tests use `base_globals` (low=12,
+    ok=20, high=80, too_much=80) for thresholds but `safe_defaults`
+    cells; the helper threads `very_sunny = base_globals.too_much * 1.5
+    = 120` (NOT the safe-default 67.5). Substituting one for the other
+    silently breaks several test assertions because cells and boundary
+    must travel together. Documented in load-bearing-invariant doc on
+    `evaluate(input)`.
+  - **Plan doc** `docs/drafts/20260504-1530-m-wsoc-table-plan.md`
+    captures the locked design (12-cell defaults table, override
+    predicate, dashboard widget shape).
+  - **Memory** `~/.claude/projects/.../memory/project_weathersoc_table.md`
+    captures the design rationale for future sessions; corrected
+    rung-7 semantics during this PR.
 
 - **PR-ZDP-1 — MPPT-curtailment-gated probe** (M-ZAPPI-DRAIN-PROBE,
   2026-04-30) — Field-driven follow-up to M-ZAPPI-DRAIN. Operator

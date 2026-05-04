@@ -4,6 +4,7 @@ use crate::victron_controller::dashboard::discharge_time::DischargeTime;
 use crate::victron_controller::dashboard::extended_charge_mode::ExtendedChargeMode;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
 use crate::victron_controller::dashboard::mode::Mode;
+use crate::victron_controller::dashboard::weather_soc_table::WeatherSocTable;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Knobs {
@@ -56,6 +57,8 @@ pub struct Knobs {
     pub zappi_battery_drain_hard_clamp_w: i32,
     pub zappi_battery_drain_mppt_probe_w: i32,
     pub actuator_retry_s: i32,
+    pub weathersoc_very_sunny_threshold: f64,
+    pub weather_soc_table: WeatherSocTable,
 }
 
 impl PartialEq for Knobs {
@@ -270,6 +273,14 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.weathersoc_very_sunny_threshold.total_cmp(&other.weathersoc_very_sunny_threshold) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.weather_soc_table.cmp(&other.weather_soc_table) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -335,6 +346,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, &mut buffer)?;
             value.zappi_battery_drain_mppt_probe_w.encode_ueba(ctx, &mut buffer)?;
             value.actuator_retry_s.encode_ueba(ctx, &mut buffer)?;
+            value.weathersoc_very_sunny_threshold.encode_ueba(ctx, &mut buffer)?;
+            value.weather_soc_table.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -387,6 +400,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, writer)?;
             value.zappi_battery_drain_mppt_probe_w.encode_ueba(ctx, writer)?;
             value.actuator_retry_s.encode_ueba(ctx, writer)?;
+            value.weathersoc_very_sunny_threshold.encode_ueba(ctx, writer)?;
+            value.weather_soc_table.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -447,6 +462,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let zappi_battery_drain_hard_clamp_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let zappi_battery_drain_mppt_probe_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let actuator_retry_s = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let weathersoc_very_sunny_threshold = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let weather_soc_table = WeatherSocTable::decode_ueba(ctx, reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -497,6 +514,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             zappi_battery_drain_hard_clamp_w,
             zappi_battery_drain_mppt_probe_w,
             actuator_retry_s,
+            weathersoc_very_sunny_threshold,
+            weather_soc_table,
         })
     }
 }

@@ -905,6 +905,8 @@ pub struct KnobsDefaultsConfig {
     pub weathersoc_ok_energy_threshold: Option<f64>,
     pub weathersoc_high_energy_threshold: Option<f64>,
     pub weathersoc_too_much_energy_threshold: Option<f64>,
+    /// PR-WSOC-TABLE-1: bucket-boundary kWh knob (default 67.5).
+    pub weathersoc_very_sunny_threshold: Option<f64>,
 
     // --- Ops ---
     pub writes_enabled: Option<bool>,
@@ -991,6 +993,8 @@ impl KnobsDefaultsConfig {
         set!(weathersoc_ok_energy_threshold);
         set!(weathersoc_high_energy_threshold);
         set!(weathersoc_too_much_energy_threshold);
+        // PR-WSOC-TABLE-1.
+        set!(weathersoc_very_sunny_threshold);
 
         set!(writes_enabled);
         set!(forecast_disagreement_strategy, into);

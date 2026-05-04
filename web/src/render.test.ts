@@ -7,7 +7,16 @@
 // The assertions below are compile-time (TypeScript). Any runtime failure
 // throws an Error (non-zero exit when run via ts-node or similar).
 
-import { fmtMpptOperationMode, fmtSensorValue, BRANCH_COLOR, BRANCH_LABEL, BRANCH_CSS_CLASS, summaryFor } from "./render.js";
+import {
+  fmtMpptOperationMode,
+  fmtSensorValue,
+  BRANCH_COLOR,
+  BRANCH_LABEL,
+  BRANCH_CSS_CLASS,
+  summaryFor,
+  buildWeatherSocTableRows,
+  type WeatherSocTableLike,
+} from "./render.js";
 import { ZappiDrainSnapshotWire } from "./model/victron_controller/dashboard/ZappiDrainSnapshotWire.js";
 import { ZappiDrainBranch } from "./model/victron_controller/dashboard/ZappiDrainBranch.js";
 
@@ -160,4 +169,70 @@ assert("T3: Disabled segment colour = neutral", BRANCH_COLOR[ZappiDrainBranch.Di
   assert("summaryFor Relax: branchText", r.branchText, "Relax");
   assert("summaryFor Relax: hardClampText", r.hardClampText, "Disengaged");
   assert("summaryFor Relax: hardClampClass", r.hardClampClass, "big-number hard-clamp-disengaged");
+}
+
+// --- PR-WSOC-TABLE-1: buildWeatherSocTableRows ----------------------------
+//
+// Snapshot-style smoke check against the safe-defaults table values
+// (mirrors `Knobs::safe_defaults().weather_soc_table` in core). Six rows
+// keyed `very_sunny / sunny / mid / low / dim / very_dim`; each row has
+// 9 cells (1 label + 4 warm + 4 cold).
+
+function cell(exp: number, bat: number, dis: number, ext: boolean) {
+  return { export_soc_threshold: exp, battery_soc_target: bat, discharge_soc_target: dis, extended: ext };
+}
+
+const wsocDefaults: WeatherSocTableLike = {
+  very_sunny_warm: cell(35, 100, 20, false),
+  very_sunny_cold: cell(80, 100, 30, false),
+  sunny_warm: cell(50, 100, 20, false),
+  sunny_cold: cell(80, 100, 30, false),
+  mid_warm: cell(67, 100, 20, false),
+  mid_cold: cell(80, 100, 30, false),
+  low_warm: cell(100, 100, 30, false),
+  low_cold: cell(100, 90, 30, true),
+  dim_warm: cell(100, 90, 30, true),
+  dim_cold: cell(100, 90, 30, true),
+  very_dim_warm: cell(100, 100, 30, true),
+  very_dim_cold: cell(100, 100, 30, true),
+};
+
+{
+  const rows = buildWeatherSocTableRows(wsocDefaults);
+  // Six bucket rows in canonical order (most sun → least).
+  assert("wsoc rows: 6 buckets", String(rows.length), "6");
+  const expectedKeys = ["very_sunny", "sunny", "mid", "low", "dim", "very_dim"];
+  rows.forEach((r, i) => {
+    assert(`wsoc rows[${i}] key`, r.key, expectedKeys[i]);
+    // 1 label + 4 warm + 4 cold = 9 cells per row.
+    assert(`wsoc rows[${i}] cell count`, String(r.cells.length), "9");
+  });
+
+  // Spot-check a few representative rows. Cells layout:
+  // [Label, exp_warm, bat_warm, dis_warm, ext_warm,
+  //         exp_cold, bat_cold, dis_cold, ext_cold]
+
+  // very_sunny: warm 35/100/20/— ; cold 80/100/30/—
+  const vs = rows[0];
+  assert("wsoc very_sunny label", vs.cells[0].html, "VerySunny");
+  assert("wsoc very_sunny exp_warm", vs.cells[1].html, "35");
+  assert("wsoc very_sunny bat_warm", vs.cells[2].html, "100");
+  assert("wsoc very_sunny dis_warm", vs.cells[3].html, "20");
+  assert("wsoc very_sunny ext_warm (false)", vs.cells[4].html, "—");
+  assert("wsoc very_sunny exp_cold", vs.cells[5].html, "80");
+  assert("wsoc very_sunny ext_cold (false)", vs.cells[8].html, "—");
+
+  // low: warm 100/100/30/— ; cold 100/90/30/✓
+  const lo = rows[3];
+  assert("wsoc low label", lo.cells[0].html, "Low");
+  assert("wsoc low exp_warm", lo.cells[1].html, "100");
+  assert("wsoc low ext_warm (false)", lo.cells[4].html, "—");
+  assert("wsoc low bat_cold", lo.cells[6].html, "90");
+  assert("wsoc low ext_cold (true)", lo.cells[8].html, "✓");
+
+  // very_dim: warm 100/100/30/✓ ; cold 100/100/30/✓
+  const vd = rows[5];
+  assert("wsoc very_dim label", vd.cells[0].html, "VeryDim");
+  assert("wsoc very_dim ext_warm (true)", vd.cells[4].html, "✓");
+  assert("wsoc very_dim ext_cold (true)", vd.cells[8].html, "✓");
 }

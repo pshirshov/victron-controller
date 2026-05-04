@@ -165,6 +165,13 @@ export const entityDescriptions: Record<string, string> = {
     "Forecast total energy threshold (kWh) for a high-yield day in weathersoc.",
   "weathersoc.threshold.energy.too-much":
     "Forecast total energy threshold (kWh) above which weathersoc backs off the night charge entirely.",
+  // PR-WSOC-TABLE-1: bucket-boundary kWh knob (replaces the legacy
+  // `1.5 × too_much` hard-coded multiplier).
+  "weathersoc.threshold.energy.very-sunny":
+    "Forecast total energy threshold (kWh) above which weathersoc treats the day as VerySunny — the most aggressive export-bias bucket of the 6×2 lookup table. Replaces the legacy `1.5 × too_much` hard-coded multiplier; default 67.5.",
+  // PR-WSOC-TABLE-1: read-only 6×2 lookup table on the dashboard.
+  "weathersoc.table":
+    "Weather-SoC 6×2 lookup table. Six energy buckets (VerySunny / Sunny / Mid / Low / Dim / VeryDim, gated by `weathersoc.threshold.energy.*` knobs) × two temperature columns (warm / cold, gated by `weathersoc.threshold.winter-temperature`). Each cell carries `export_soc_threshold`, `battery_soc_target`, `discharge_soc_target`, `extended`. Defaults flow from `Knobs::safe_defaults()` and reproduce the previous cascading ladder bit-for-bit; per-cell editing is a future PR (read-only here for v1).",
 
   // --- Knobs (ops) ---
   "writes-enabled":

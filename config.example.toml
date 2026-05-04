@@ -324,6 +324,9 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # weathersoc_ok_energy_threshold          = 15.0
 # weathersoc_high_energy_threshold        = 30.0
 # weathersoc_too_much_energy_threshold    = 45.0
+# PR-WSOC-TABLE-1: bucket-boundary kWh knob for the 6×2 weather-SoC table.
+# Replaces the legacy `1.5 × too_much` hard-coded multiplier.
+# weathersoc_very_sunny_threshold         = 67.5
 
 # --- Ops ---
 # writes_enabled                      = false

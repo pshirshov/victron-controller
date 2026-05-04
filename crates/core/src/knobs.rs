@@ -250,6 +250,151 @@ pub struct Knobs {
     /// same write. Applies to all five actuated entities (grid
     /// setpoint, input current limit, zappi/eddi modes, schedules).
     pub actuator_retry_s: u32,
+
+    /// PR-WSOC-TABLE-1: bucket-boundary knob for the weather-SoC
+    /// lookup table. `today_energy > weathersoc_very_sunny_threshold`
+    /// places the day in the VerySunny bucket; the previous-week
+    /// boundary at `1.5 × too_much` (= 67.5 kWh with safe defaults)
+    /// is now an explicit, operator-tunable kWh value. Default 67.5.
+    pub weathersoc_very_sunny_threshold: f64,
+
+    /// PR-WSOC-TABLE-1: 6×2 lookup table replacing the cascading
+    /// weather-SoC ladder. Defaults reproduce the prior cascade
+    /// bit-for-bit (see `WeatherSocTable::safe_defaults`). Read-only
+    /// on the dashboard for v1; per-cell editing is a future PR. The
+    /// 12 cells are NOT individually addressable through `apply_knob`,
+    /// MQTT `knob/<name>/set`, HA discovery, `[knobs]` `config.toml`,
+    /// or the flat `KNOB_SPEC` table.
+    pub weather_soc_table: WeatherSocTable,
+}
+
+/// PR-WSOC-TABLE-1: one cell of the 6×2 weather-SoC lookup table. The
+/// four operator-tunable fields per cell are
+/// `export_soc_threshold` (%), `battery_soc_target` (%),
+/// `discharge_soc_target` (%), and `extended` (a bool that drives the
+/// derived `disable_night_grid_discharge` output before the
+/// stacked override applies).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeatherSocCell {
+    pub export_soc_threshold: f64,
+    pub battery_soc_target: f64,
+    pub discharge_soc_target: f64,
+    pub extended: bool,
+}
+
+/// PR-WSOC-TABLE-1: 6 energy buckets × 2 temperature columns. Defaults
+/// in `safe_defaults` reproduce the verbatim cascade output for any
+/// `(today_energy, today_temperature)` strictly inside a bucket — the
+/// 11 retained `evaluate_weather_soc` tests pin this equivalence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeatherSocTable {
+    pub very_sunny_warm: WeatherSocCell,
+    pub very_sunny_cold: WeatherSocCell,
+    pub sunny_warm: WeatherSocCell,
+    pub sunny_cold: WeatherSocCell,
+    pub mid_warm: WeatherSocCell,
+    pub mid_cold: WeatherSocCell,
+    pub low_warm: WeatherSocCell,
+    pub low_cold: WeatherSocCell,
+    pub dim_warm: WeatherSocCell,
+    pub dim_cold: WeatherSocCell,
+    pub very_dim_warm: WeatherSocCell,
+    pub very_dim_cold: WeatherSocCell,
+}
+
+impl WeatherSocTable {
+    /// Defaults reproduce the legacy cascading ladder bit-for-bit:
+    ///
+    /// | Bucket    | Warm: exp / bat / dis / ext | Cold: exp / bat / dis / ext |
+    /// |-----------|-----------------------------|-----------------------------|
+    /// | VerySunny | 35 / 100 / 20 / no          | 80 / 100 / 30 / no          |
+    /// | Sunny     | 50 / 100 / 20 / no          | 80 / 100 / 30 / no          |
+    /// | Mid       | 67 / 100 / 20 / no          | 80 / 100 / 30 / no          |
+    /// | Low       | 100 / 100 / 30 / no         | 100 / 90 / 30 / yes         |
+    /// | Dim       | 100 / 90 / 30 / yes         | 100 / 90 / 30 / yes         |
+    /// | VeryDim   | 100 / 100 / 30 / yes        | 100 / 100 / 30 / yes        |
+    #[must_use]
+    pub fn safe_defaults() -> Self {
+        // Warm column (today_temp > winter_threshold).
+        let very_sunny_warm = WeatherSocCell {
+            export_soc_threshold: 35.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 20.0,
+            extended: false,
+        };
+        let sunny_warm = WeatherSocCell {
+            export_soc_threshold: 50.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 20.0,
+            extended: false,
+        };
+        let mid_warm = WeatherSocCell {
+            export_soc_threshold: 67.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 20.0,
+            extended: false,
+        };
+        let low_warm = WeatherSocCell {
+            export_soc_threshold: 100.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 30.0,
+            extended: false,
+        };
+        let dim_warm = WeatherSocCell {
+            export_soc_threshold: 100.0,
+            battery_soc_target: 90.0,
+            discharge_soc_target: 30.0,
+            extended: true,
+        };
+        let very_dim_warm = WeatherSocCell {
+            export_soc_threshold: 100.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 30.0,
+            extended: true,
+        };
+
+        // Cold column (today_temp ≤ winter_threshold). VerySunny / Sunny /
+        // Mid all share the same "preserve evening battery" cell because
+        // the legacy cascade always overrode export to 80 / discharge to 30
+        // on cold days regardless of the energy band — until energy fell
+        // below `high`, at which point disable_export pinned export to 100.
+        let very_sunny_cold = WeatherSocCell {
+            export_soc_threshold: 80.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 30.0,
+            extended: false,
+        };
+        let sunny_cold = very_sunny_cold;
+        let mid_cold = very_sunny_cold;
+        let low_cold = WeatherSocCell {
+            export_soc_threshold: 100.0,
+            battery_soc_target: 90.0,
+            discharge_soc_target: 30.0,
+            extended: true,
+        };
+        let dim_cold = low_cold;
+        let very_dim_cold = WeatherSocCell {
+            export_soc_threshold: 100.0,
+            battery_soc_target: 100.0,
+            discharge_soc_target: 30.0,
+            extended: true,
+        };
+
+        Self {
+            very_sunny_warm,
+            very_sunny_cold,
+            sunny_warm,
+            sunny_cold,
+            mid_warm,
+            mid_cold,
+            low_warm,
+            low_cold,
+            dim_warm,
+            dim_cold,
+            very_dim_warm,
+            very_dim_cold,
+        }
+    }
 }
 
 impl Knobs {
@@ -369,6 +514,17 @@ impl Knobs {
             // settle within a few seconds), short enough that an
             // operator-visible mismatch self-heals within a minute.
             actuator_retry_s: 60,
+            // PR-WSOC-TABLE-1: 67.5 kWh matches the legacy
+            // `1.5 × too_much_energy_threshold_kwh` (45 × 1.5) crossover
+            // that defined the "way too much" rung in the prior cascade.
+            // Tunable independently from `weathersoc_too_much_energy_threshold`
+            // now that the boundary is a first-class knob.
+            weathersoc_very_sunny_threshold: 67.5,
+            // PR-WSOC-TABLE-1: 12-cell value matrix. Bit-for-bit
+            // cascade-equivalent for any `(today_energy, today_temp)`
+            // strictly inside a bucket; verified by retaining the
+            // 11 pre-existing weather_soc tests.
+            weather_soc_table: WeatherSocTable::safe_defaults(),
         }
     }
 }
@@ -434,6 +590,47 @@ mod tests {
     fn auto_extended_default_mode_is_auto() {
         let k = Knobs::safe_defaults();
         assert_eq!(k.charge_car_extended_mode, ExtendedChargeMode::Auto);
+    }
+
+    /// PR-WSOC-TABLE-1: pin every cell of the 6×2 weather-SoC default
+    /// table to its `(exp, bat, dis, ext)` tuple. Mirrors the table in
+    /// the M-WSOC-TABLE plan — any drift here is a cascade-equivalence
+    /// regression and breaks the 11 retained `evaluate_weather_soc`
+    /// tests downstream.
+    #[test]
+    fn weather_soc_table_default_cells() {
+        let t = Knobs::safe_defaults().weather_soc_table;
+
+        let expect = |c: WeatherSocCell, exp: f64, bat: f64, dis: f64, ext: bool| {
+            assert!((c.export_soc_threshold - exp).abs() < f64::EPSILON, "exp");
+            assert!((c.battery_soc_target - bat).abs() < f64::EPSILON, "bat");
+            assert!((c.discharge_soc_target - dis).abs() < f64::EPSILON, "dis");
+            assert_eq!(c.extended, ext, "ext");
+        };
+
+        // Warm column.
+        expect(t.very_sunny_warm, 35.0, 100.0, 20.0, false);
+        expect(t.sunny_warm, 50.0, 100.0, 20.0, false);
+        expect(t.mid_warm, 67.0, 100.0, 20.0, false);
+        expect(t.low_warm, 100.0, 100.0, 30.0, false);
+        expect(t.dim_warm, 100.0, 90.0, 30.0, true);
+        expect(t.very_dim_warm, 100.0, 100.0, 30.0, true);
+
+        // Cold column.
+        expect(t.very_sunny_cold, 80.0, 100.0, 30.0, false);
+        expect(t.sunny_cold, 80.0, 100.0, 30.0, false);
+        expect(t.mid_cold, 80.0, 100.0, 30.0, false);
+        expect(t.low_cold, 100.0, 90.0, 30.0, true);
+        expect(t.dim_cold, 100.0, 90.0, 30.0, true);
+        expect(t.very_dim_cold, 100.0, 100.0, 30.0, true);
+    }
+
+    /// PR-WSOC-TABLE-1: the bucket-boundary knob default (matches the
+    /// legacy `1.5 × too_much` crossover at 45 × 1.5 = 67.5).
+    #[test]
+    fn weathersoc_very_sunny_threshold_default() {
+        let k = Knobs::safe_defaults();
+        assert!((k.weathersoc_very_sunny_threshold - 67.5).abs() < f64::EPSILON);
     }
 
     /// PR-ZD-2: dedicated test for the five compensated-drain defaults so

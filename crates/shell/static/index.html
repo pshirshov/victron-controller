@@ -131,6 +131,37 @@
       </div>
     </section>
 
+    <!-- PR-WSOC-TABLE-1: read-only 6×2 weather-SoC lookup-table widget.
+         Rendered by `renderWeatherSocTable` in render.ts. The 12 cells
+         carry (export_soc_threshold, battery_soc_target,
+         discharge_soc_target, extended) and are NOT individually
+         editable in v1 — defaults flow from `Knobs::safe_defaults()`. -->
+    <section id="weather-soc-table">
+      <h2>Weather-SoC table</h2>
+      <div class="table-wrap">
+        <table id="weather-soc-table-table">
+          <thead>
+            <tr>
+              <th rowspan="2">Bucket</th>
+              <th colspan="4">Warm (today_temp &gt; winter threshold)</th>
+              <th colspan="4">Cold (today_temp ≤ winter threshold)</th>
+            </tr>
+            <tr>
+              <th>exp</th>
+              <th>bat</th>
+              <th>dis</th>
+              <th>ext</th>
+              <th>exp</th>
+              <th>bat</th>
+              <th>dis</th>
+              <th>ext</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="zappi-drain-section">
       <h2>Zappi compensated drain</h2>
       <div id="zappi-drain-summary" class="big-number-row">

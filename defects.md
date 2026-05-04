@@ -2026,3 +2026,49 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `crates/shell/src/dashboard/convert.rs:533-538`
 **Description:** The aggregate doc comment introducing `typed_sensors_to_model` said "The timezone row is sourced from `world.timezone` (D-Bus settings reseed) with the per-route 60 s cadence pinned in `dbus::subscriber::cadence_for_route(Route::Timezone)`." After D03 the implementation pins `TIMEZONE_CADENCE = 5s`. Stale.
 **Fix:** `convert.rs:533-538` — replaced the misleading aggregate text with a one-line pointer to the per-helper docs (`timezone_typed_sensor`, `sunrise_sunset_typed_sensor`) which carry the authoritative cadence/staleness justification. Doc-only edit applied directly by orchestrator (no functional code change).
+
+---
+
+## PR-WSOC-TABLE-1
+
+### [PR-WSOC-TABLE-1-D01] `weather_soc_table` falls through to operator-knobs "Other" group as `[object Object]`
+**Status:** resolved
+**Severity:** major
+**Location:** `web/src/knobs.ts:369-382, 414-438`; supporting wire-shape at `web/src/model/victron_controller/dashboard/Knobs.ts:272-326`
+**Description:** `renderKnobs` iterates `Object.entries(Knobs.toJSON())`, which exposes `weather_soc_table` as a top-level field whose value is a `WeatherSocTable` class instance. With no `KNOB_SPEC` entry for the table (correct by design — per-cell editing is out of scope for v1) and no filter for object-typed values, the entry pushes into the "Other" bucket of the operator knobs table and formats as `esc(String(val))` → `"[object Object]"`. The dashboard renders a row labelled `weathersoc.table` reading `[object Object]` under "Other", **in addition** to the dedicated read-only widget. This is the exact "Other group with no controls" failure mode CLAUDE.md warns about.
+**Fix:** `web/src/knobs.ts` — added module-scope `NESTED_KNOB_FIELDS = new Set(["weather_soc_table"])` above `renderKnobs` with a comment that this is for nested-typed fields surfaced via dedicated widgets, plus an early-return skip in the bucketing loop after the existing `writes_enabled` guard. By-name allowlist (not blanket `typeof object`) so future primitive-knob bugs surface visibly.
+
+### [PR-WSOC-TABLE-1-D02] Cascade-equivalence test helper masks bucket-classification semantics with implicit `too_much*1.5` boundary
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/weather_soc.rs:305-314` (the `evaluate(input)` test helper)
+**Description:** The 11 retained tests use `evaluate(input)` which threads `Knobs::safe_defaults().weather_soc_table` (cells assume safe-defaults thresholds) but uses `base_globals` thresholds (low=12, ok=20, high=80, too_much=80) for bucket classification with an implicit `very_sunny = base_globals.too_much * 1.5 = 120` derived inside the helper. Cells happen to be correct under base_globals because the cell content is bucket-position-driven, not threshold-driven, but the seam is non-obvious. A future "tidying" pass that swapped the implicit `*1.5` for `k.weathersoc_very_sunny_threshold` would silently break cascade equivalence (safe_defaults very_sunny=67.5 vs base_globals.too_much*1.5=120 disagree on which bucket `today_energy=100` lands in).
+**Fix:** `weather_soc.rs::evaluate(input)` — replaced the docstring with a load-bearing-invariant block: explains that `very_sunny_threshold` is derived as `base_globals.too_much * 1.5` (= 120) NOT `k.weathersoc_very_sunny_threshold` (= 67.5), naming the substitution mistake explicitly so a future tidying pass that swaps it sees the warning.
+
+### [PR-WSOC-TABLE-1-D03] `dng = cell.extended` timing invariant is load-bearing but not commented
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/controllers/weather_soc.rs` (the `let disable_night_grid_discharge = cell.extended` line, just before the override block)
+**Description:** Plan §3 acceptance criterion 3 says `dng = cell.extended` derived **before** the override. Implementation correct; tests correct. But a refactor that "simplified" by reading the local `charge_battery_extended` mutable instead (the way every other output is read at the bottom of the function) would silently change Low.warm + cf=true behaviour: cascade `dng=false`, regression `dng=true`. Safety margin is thin because reading `cell.extended` rather than the mutable looks redundant on inspection.
+**Fix:** `weather_soc.rs` — 5-line comment above `let disable_night_grid_discharge = cell.extended;` explaining the override-non-propagation invariant and naming the existing test `override_low_warm_cf_true_only_mutates_bat_ext` that pins it.
+
+### [PR-WSOC-TABLE-1-D04] Test docstrings on retained tests still reference deleted cascade closures
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/controllers/weather_soc.rs` test module — `mild_day_moderate_energy_uses_defaults`, `cold_day_moderate_energy_preserves_evening`, `cold_and_low_energy_extends_charge_and_preserves_morning`, `ok_or_below_always_extends_charge_regardless_of_temp`, `very_low_energy_forces_charge_to_full`, `charge_to_full_required_with_low_energy_forces_full_charge`, `charge_to_full_required_with_high_energy_skips_forcing`, `exact_energy_threshold_counts_as_below`
+**Description:** Eight of the 11 retained tests have docstrings naming closures that no longer exist (`disable_export`, `preserve_evening_battery`, `extend_charge`, `charge_to_full_extended`, `preserve_morning_battery`, "very-sunny branch"). Tests still pass — they're cascade-equivalence goldens — but a reader trying to understand the new model is misled.
+**Fix:** `weather_soc.rs` test module — 7-line module comment immediately after `mod tests {` stating that the 11 retained tests are cascade-equivalence goldens whose docstrings reference legacy closure names for archaeology, and that lookup-table cell-pinning + boundary tests live below.
+
+### [PR-WSOC-TABLE-1-D05] Decision summary loses per-rung narration that the legacy cascade exposed
+**Status:** resolved (deferred)
+**Severity:** nit
+**Location:** `crates/core/src/controllers/weather_soc.rs:222-249`
+**Description:** Legacy cascade pushed up to seven rung-firing strings into a `rungs` Vec, surfaced in `Decision::summary`. New summary is `"Bucket Low / warm cell"` — bucket+column+override flag, no per-cell rationale. Factor list compensates by exposing the boundary thresholds and final outputs.
+**Fix:** Closed deferred — the factor list already exposes boundary thresholds and outputs; the cell coordinates plus override flag are sufficient operator narrative for v1. Per-cell rationale would duplicate the dashboard widget. Revisit if operator complains.
+
+### [PR-WSOC-TABLE-1-D06] No test pins `Decision::summary` shape
+**Status:** resolved (deferred)
+**Severity:** nit
+**Location:** `crates/core/src/controllers/weather_soc.rs` (no test exists)
+**Description:** None of the 30 tests asserts on `d.decision.summary` or any `with_factor` string. A regression printing `cold` as `warm` or swapping `bucket.label()` for the wrong constant goes uncaught.
+**Fix:** Closed deferred — string-shape regression is low-impact and would be obvious on first dashboard reload. Cascade-equivalence outputs are pinned (12 cell tests + 4 boundary tests + 3 override tests); the summary is operator narrative, not a controller output. Revisit if narrative drift becomes a problem.
