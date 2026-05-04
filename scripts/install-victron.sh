@@ -189,10 +189,17 @@ echo "[remote] installing /data/rcS.local hook (replacing any existing block)...
 # then append the current version. This keeps the hook in sync with
 # whatever this install script declares — earlier installs may have
 # left a stale block behind.
+#
+# `chmod +x /data/rcS.local` is load-bearing: Venus's boot init runs
+# `test -x /data/rcS.local && /data/rcS.local`, so a freshly-touched
+# 0644 file is silently skipped and the controller never comes up
+# after a reboot. A previously-executable file is left alone by
+# `touch`, but a fresh install would fail without this chmod.
 remote "touch /data/rcS.local && sed -i '/^$RCS_MARKER\$/,/^# \\/end victron-controller\$/d' /data/rcS.local && cat >> /data/rcS.local <<'EOF'
 
 $RCS_BLOCK
-EOF"
+EOF
+chmod +x /data/rcS.local"
 
 echo "[remote] seeding /service from stage dir (so the service starts now)..."
 remote "mkdir -p $REMOTE_SERVICE_DIR/log && cp $REMOTE_SERVICE_STAGE/run $REMOTE_SERVICE_DIR/run && cp $REMOTE_SERVICE_STAGE/log/run $REMOTE_SERVICE_DIR/log/run && chmod +x $REMOTE_SERVICE_DIR/run $REMOTE_SERVICE_DIR/log/run"

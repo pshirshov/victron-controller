@@ -26,9 +26,16 @@ use victron_controller_shell::mqtt::{
 use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
     Writer as MyenergiWriter};
 use victron_controller_shell::runtime::Runtime;
+use victron_controller_shell::APP_UPTIME_PUBLISH_PERIOD_S;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
+    // Captured as the first statement of `main` so the uptime sensor
+    // (`controller.uptime-s`) reflects "process running" elapsed time,
+    // not "tracing/logger ready" elapsed time. Used by the periodic
+    // MQTT publisher spawned further down.
+    let process_start = Instant::now();
+
     // Create the log channel FIRST, before `init_tracing` — the tracing
     // subscriber composes an MqttLogLayer around the sender end so
     // every log line forwards to the mpsc queue. The publisher task
@@ -311,6 +318,59 @@ async fn main() -> Result<()> {
                     Err(_) => {
                         eprintln!(
                             "mqtt soc_history publish stuck >1s on {topic}; dropping payload"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    // App uptime publisher. Republishes `controller.uptime-s` every
+    // APP_UPTIME_PUBLISH_PERIOD_S so HA's `expire_after` (in the
+    // discovery payload) can flag the controller as `unavailable`
+    // when this loop stops — the load-bearing liveness signal. Direct
+    // publish via the client handle (mirroring the soc_history
+    // pattern) instead of routing through the runtime, since this is
+    // a pure shell concern with no controller state to consult.
+    if let Some(p) = mqtt_publisher.as_ref() {
+        let client = p.client_handle();
+        let topic = format!(
+            "{}/controller/{}/state",
+            cfg.mqtt.topic_root,
+            victron_controller_core::types::ControllerObservableId::AppUptimeS.name(),
+        );
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(APP_UPTIME_PUBLISH_PERIOD_S));
+            // Default Burst behaviour would emit a backlog of catch-up
+            // ticks if the runtime ever stalls; for a heartbeat we want
+            // one publish per real-time period.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let secs = process_start.elapsed().as_secs();
+                let body = secs.to_string();
+                match tokio::time::timeout(
+                    Duration::from_secs(1),
+                    client.publish(
+                        &topic,
+                        rumqttc::QoS::AtMostOnce,
+                        true,
+                        body.into_bytes(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    // Same constraint as the soc_history task: avoid
+                    // tracing! here so a wedged broker can't feed back
+                    // through MqttLogLayer and amplify the stall.
+                    Ok(Err(e)) => {
+                        eprintln!("mqtt uptime publish failed on {topic}: {e}");
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "mqtt uptime publish stuck >1s on {topic}; dropping sample"
                         );
                     }
                 }

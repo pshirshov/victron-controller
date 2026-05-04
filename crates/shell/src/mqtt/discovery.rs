@@ -416,6 +416,35 @@ async fn publish_controller_observables(client: &AsyncClient, topic_root: &str) 
         count += 1;
     }
 
+    // app uptime: numeric sensor with `expire_after` so HA flags the
+    // entity unavailable when the controller stops republishing. The
+    // publisher in main.rs ticks every APP_UPTIME_PUBLISH_PERIOD_S;
+    // expire after 3× that period gives one missed-tick of slack
+    // before HA marks dead.
+    {
+        let id = ControllerObservableId::AppUptimeS;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Controller uptime",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "device_class": "duration",
+            "state_class": "total_increasing",
+            "unit_of_measurement": "s",
+            "expire_after": crate::APP_UPTIME_EXPIRE_AFTER_S,
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery controller observable published");
+        count += 1;
+    }
+
     Ok(count)
 }
 
