@@ -1315,7 +1315,7 @@ impl ControllerObservableId {
             Self::ZappiDrainCompensatedW => "zappi-drain.compensated-w",
             Self::ZappiDrainTightenActive => "zappi-drain.tighten-active",
             Self::ZappiDrainHardClampActive => "zappi-drain.hard-clamp-active",
-            Self::AppUptimeS => "controller.uptime-s",
+            Self::AppUptimeS => "diagnostics.uptime-s",
             Self::DiagProcessRssBytes => "diagnostics.process-rss-bytes",
             Self::DiagProcessVmHwmBytes => "diagnostics.process-vm-hwm-bytes",
             Self::DiagProcessVmSizeBytes => "diagnostics.process-vm-size-bytes",

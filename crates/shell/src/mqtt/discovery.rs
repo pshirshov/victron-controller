@@ -436,6 +436,7 @@ async fn publish_controller_observables(client: &AsyncClient, topic_root: &str) 
             "state_class": "total_increasing",
             "unit_of_measurement": "s",
             "expire_after": crate::APP_UPTIME_EXPIRE_AFTER_S,
+            "entity_category": "diagnostic",
             "device": device_block(),
         });
         client
