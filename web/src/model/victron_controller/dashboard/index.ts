@@ -21,6 +21,7 @@ export * from './DebugFullCharge';
 export * from './Decision';
 export * from './DecisionFactor';
 export * from './Decisions';
+export * from './Diagnostics';
 export * from './DischargeTime';
 export * from './ExtendedChargeMode';
 export * from './ForecastDisagreementStrategy';

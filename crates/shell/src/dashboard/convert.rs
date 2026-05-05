@@ -35,6 +35,7 @@ use victron_controller_core::Owner;
 
 use crate::config::DbusServices;
 use crate::dashboard::soc_history::SocHistoryStore;
+use crate::diagnostics::DiagnosticsHandle;
 
 /// Runtime inputs needed to build `sensors_meta`. Bundled so callers
 /// can pass one reference rather than juggling four arguments.
@@ -76,6 +77,11 @@ pub struct MetaContext {
     /// Fed into the typed-sensor wire surface so the dashboard can
     /// surface cadence/identifier alongside the existing freshness state.
     pub myenergi: MyenergiMeta,
+    /// PR-DIAG-1: shared process + host memory diagnostics slot.
+    /// `world_to_snapshot` reads the latest sample on every tick.
+    /// Zero-initialised before the sampler's first tick, so the
+    /// dashboard's Diagnostics group always has a populated wire shape.
+    pub diagnostics: DiagnosticsHandle,
 }
 
 /// PR-TS-META-1: shell-side projection of `MyenergiConfig` containing
@@ -136,6 +142,8 @@ use victron_controller_dashboard_model::victron_controller::dashboard::zappi_dra
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_snapshot_wire::ZappiDrainSnapshotWire as ModelZappiDrainSnapshotWire;
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_state::ZappiDrainState as ModelZappiDrainState;
 use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_active::WeatherSocActive as ModelWeatherSocActive;
+// PR-DIAG-1: process + host memory diagnostics surface.
+use victron_controller_dashboard_model::victron_controller::dashboard::diagnostics::Diagnostics as ModelDiagnostics;
 
 // --- enums ----------------------------------------------------------------
 
@@ -528,6 +536,24 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
                 cold: matches!(temp, victron_controller_core::weather_soc_addr::TempCol::Cold),
             }
         }),
+        // PR-DIAG-1: latest sampled diagnostics. Zero-initialised
+        // before the first sampler tick; first non-zero values land
+        // within DIAGNOSTICS_SAMPLE_PERIOD of boot.
+        diagnostics: {
+            let d = meta.diagnostics.snapshot();
+            ModelDiagnostics {
+                process_uptime_s: d.process_uptime_s,
+                process_rss_bytes: d.process_rss_bytes,
+                process_vm_hwm_bytes: d.process_vm_hwm_bytes,
+                process_vm_size_bytes: d.process_vm_size_bytes,
+                jemalloc_allocated_bytes: d.jemalloc_allocated_bytes,
+                jemalloc_resident_bytes: d.jemalloc_resident_bytes,
+                host_mem_total_bytes: d.host_mem_total_bytes,
+                host_mem_available_bytes: d.host_mem_available_bytes,
+                host_swap_used_bytes: d.host_swap_used_bytes,
+                sampled_at_epoch_ms: d.sampled_at_epoch_ms,
+            }
+        },
     }
 }
 
@@ -1449,6 +1475,7 @@ mod snapshot_new_sensors_tests {
                 eddi_serial: None,
                 zappi_serial: None,
             },
+            diagnostics: crate::diagnostics::DiagnosticsHandle::new(),
         }
     }
 
@@ -1753,6 +1780,7 @@ mod zappi_drain_state_tests {
                 eddi_serial: None,
                 zappi_serial: None,
             },
+            diagnostics: crate::diagnostics::DiagnosticsHandle::new(),
         }
     }
 

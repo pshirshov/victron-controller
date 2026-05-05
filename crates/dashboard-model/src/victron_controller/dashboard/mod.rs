@@ -38,6 +38,8 @@ pub mod decision_factor;
 pub use decision_factor::*;
 pub mod decisions;
 pub use decisions::*;
+pub mod diagnostics;
+pub use diagnostics::*;
 pub mod discharge_time;
 pub use discharge_time::*;
 pub mod extended_charge_mode;

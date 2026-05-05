@@ -2,6 +2,7 @@ use crate::victron_controller::dashboard::actuated::Actuated;
 use crate::victron_controller::dashboard::bookkeeping::Bookkeeping;
 use crate::victron_controller::dashboard::cores_state::CoresState;
 use crate::victron_controller::dashboard::decisions::Decisions;
+use crate::victron_controller::dashboard::diagnostics::Diagnostics;
 use crate::victron_controller::dashboard::forecasts::Forecasts;
 use crate::victron_controller::dashboard::knobs::Knobs;
 use crate::victron_controller::dashboard::pinned_register::PinnedRegister;
@@ -35,6 +36,7 @@ pub struct WorldSnapshot {
     pub zappi_drain_state: ZappiDrainState,
     pub typed_sensors: TypedSensors,
     pub weather_soc_active: Option<WeatherSocActive>,
+    pub diagnostics: Diagnostics,
 }
 
 
@@ -186,6 +188,7 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            value.diagnostics.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -219,6 +222,7 @@ impl crate::baboon_runtime::BaboonBinEncode for WorldSnapshot {
                     v.encode_ueba(ctx, writer)?;
                 }
             }
+            value.diagnostics.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -260,6 +264,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(WeatherSocActive::decode_ueba(ctx, reader)?) }
         };
+        let diagnostics = Diagnostics::decode_ueba(ctx, reader)?;
         Ok(WorldSnapshot {
             captured_at_epoch_ms,
             captured_at_naive_iso,
@@ -278,6 +283,7 @@ impl crate::baboon_runtime::BaboonBinDecode for WorldSnapshot {
             zappi_drain_state,
             typed_sensors,
             weather_soc_active,
+            diagnostics,
         })
     }
 }

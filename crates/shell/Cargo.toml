@@ -55,5 +55,14 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 thiserror = "1"
 
+# PR-DIAG-1: jemalloc as the global allocator so we can expose
+# `stats.allocated` / `stats.resident` for memory-leak observability.
+# The default allocator (glibc malloc) gives us VmRSS via /proc but no
+# split between "Rust heap demand" and "allocator-retained chunks" —
+# that distinction is what tells a leak apart from benign retention.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+
 [lints]
 workspace = true

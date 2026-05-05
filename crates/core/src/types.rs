@@ -1292,6 +1292,18 @@ pub enum ControllerObservableId {
     /// can use `expire_after` as a liveness check — when the controller
     /// stops, the entity goes `unavailable` once the expiry elapses.
     AppUptimeS,
+    /// PR-DIAG-1: process + host memory diagnostics. Sampled by
+    /// `shell::diagnostics` once a minute. Topics live under
+    /// `diagnostics.*` so HA groups them separately from the
+    /// load-bearing `controller.uptime-s` liveness sensor.
+    DiagProcessRssBytes,
+    DiagProcessVmHwmBytes,
+    DiagProcessVmSizeBytes,
+    DiagJemallocAllocatedBytes,
+    DiagJemallocResidentBytes,
+    DiagHostMemTotalBytes,
+    DiagHostMemAvailableBytes,
+    DiagHostSwapUsedBytes,
 }
 
 impl ControllerObservableId {
@@ -1304,6 +1316,14 @@ impl ControllerObservableId {
             Self::ZappiDrainTightenActive => "zappi-drain.tighten-active",
             Self::ZappiDrainHardClampActive => "zappi-drain.hard-clamp-active",
             Self::AppUptimeS => "controller.uptime-s",
+            Self::DiagProcessRssBytes => "diagnostics.process-rss-bytes",
+            Self::DiagProcessVmHwmBytes => "diagnostics.process-vm-hwm-bytes",
+            Self::DiagProcessVmSizeBytes => "diagnostics.process-vm-size-bytes",
+            Self::DiagJemallocAllocatedBytes => "diagnostics.jemalloc-allocated-bytes",
+            Self::DiagJemallocResidentBytes => "diagnostics.jemalloc-resident-bytes",
+            Self::DiagHostMemTotalBytes => "diagnostics.host-mem-total-bytes",
+            Self::DiagHostMemAvailableBytes => "diagnostics.host-mem-available-bytes",
+            Self::DiagHostSwapUsedBytes => "diagnostics.host-swap-used-bytes",
         }
     }
 
@@ -1313,6 +1333,14 @@ impl ControllerObservableId {
         Self::ZappiDrainTightenActive,
         Self::ZappiDrainHardClampActive,
         Self::AppUptimeS,
+        Self::DiagProcessRssBytes,
+        Self::DiagProcessVmHwmBytes,
+        Self::DiagProcessVmSizeBytes,
+        Self::DiagJemallocAllocatedBytes,
+        Self::DiagJemallocResidentBytes,
+        Self::DiagHostMemTotalBytes,
+        Self::DiagHostMemAvailableBytes,
+        Self::DiagHostSwapUsedBytes,
     ];
 }
 

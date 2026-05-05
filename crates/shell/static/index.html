@@ -247,6 +247,26 @@
       </div>
     </section>
 
+    <!-- PR-DIAG-1: process + host memory diagnostics. Sampled in the
+         shell on a fixed cadence (~60 s); the values intentionally only
+         move on that cadence even though the surrounding snapshot is
+         republished per tick. Lives in the Detail tab so it doesn't
+         clutter the operator's main Control view. -->
+    <section id="diagnostics-section">
+      <h2>Diagnostics</h2>
+      <div class="table-wrap">
+        <table id="diagnostics-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- PR-pinned-registers: per-register drift-enforcement table.
          Hidden when no [[dbus_pinned_registers]] are configured. -->
     <section id="pinned-registers-section" hidden>

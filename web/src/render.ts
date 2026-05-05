@@ -820,6 +820,86 @@ type TimerRow = {
   status: string;
 };
 
+// PR-DIAG-1: format an integer byte count with the largest unit that
+// keeps the number ≥ 1 (mirrors how HA's frontend formats data_size
+// sensors). Negative values shouldn't occur in practice but render as
+// "—" rather than throwing the table off.
+function fmtBytes(n: number | bigint | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  const x = typeof n === "bigint" ? Number(n) : n;
+  if (!Number.isFinite(x) || x < 0) return "—";
+  if (x === 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let u = 0;
+  let v = x;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  // Below MiB: integer; MiB+: one decimal so MB-scale leaks are
+  // visible (~50 MiB → 51.0 MiB doesn't collapse to "51 MiB").
+  const decimals = u <= 1 ? 0 : 1;
+  return `${v.toFixed(decimals)} ${units[u]}`;
+}
+
+// PR-DIAG-1: format an uptime (seconds → "Xd Xh Xm Xs") trimming
+// leading zero-units.
+function fmtUptimeSeconds(secs: number | bigint): string {
+  const total = typeof secs === "bigint" ? Number(secs) : secs;
+  if (!Number.isFinite(total) || total < 0) return "—";
+  const s = Math.floor(total);
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secsR = s % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  if (mins > 0 || hours > 0 || days > 0) parts.push(`${mins}m`);
+  parts.push(`${secsR}s`);
+  return parts.join(" ");
+}
+
+// PR-DIAG-1: process + host memory diagnostics. Uses a fixed row order
+// so the layout is stable across ticks; `updateKeyedRows` only
+// rewrites cells whose innerHTML actually changed.
+type DiagRow = { key: string; label: string; value: string; hint?: string };
+export function renderDiagnostics(snap: WorldSnapshot): void {
+  const tbody = document.querySelector("#diagnostics-table tbody") as HTMLElement | null;
+  if (!tbody) return;
+  const d = (snap as unknown as { diagnostics?: Record<string, number | bigint> }).diagnostics;
+  if (!d) {
+    updateKeyedRows(tbody, []);
+    return;
+  }
+  const entries: DiagRow[] = [
+    { key: "uptime", label: "Process uptime", value: fmtUptimeSeconds(d.process_uptime_s) },
+    { key: "rss", label: "Process RSS", value: fmtBytes(d.process_rss_bytes), hint: "Resident memory in use right now" },
+    { key: "hwm", label: "Process RSS peak", value: fmtBytes(d.process_vm_hwm_bytes), hint: "High-water mark since process start" },
+    { key: "vmsize", label: "Process VmSize", value: fmtBytes(d.process_vm_size_bytes), hint: "Virtual address space" },
+    { key: "jeallocated", label: "Heap (jemalloc allocated)", value: fmtBytes(d.jemalloc_allocated_bytes), hint: "Bytes the program holds via Box/Vec/etc." },
+    { key: "jeresident", label: "Heap (jemalloc resident)", value: fmtBytes(d.jemalloc_resident_bytes), hint: "Bytes jemalloc has mapped from the OS — divergence vs allocated is fragmentation" },
+    { key: "host-total", label: "Host RAM total", value: fmtBytes(d.host_mem_total_bytes) },
+    { key: "host-avail", label: "Host RAM available", value: fmtBytes(d.host_mem_available_bytes), hint: "Use this, not MemFree — accounts for reclaimable cache" },
+    { key: "host-swap", label: "Host swap used", value: fmtBytes(d.host_swap_used_bytes) },
+    {
+      key: "sampled",
+      label: "Last sampled",
+      value: d.sampled_at_epoch_ms
+        ? fmtEpoch(typeof d.sampled_at_epoch_ms === "bigint" ? Number(d.sampled_at_epoch_ms) : d.sampled_at_epoch_ms)
+        : "—",
+    },
+  ];
+  const rows: KeyedRow[] = entries.map((e) => ({
+    key: e.key,
+    cells: [
+      { html: e.hint ? `${esc(e.label)} <span class="dim" title="${esc(e.hint)}">ⓘ</span>` : esc(e.label) },
+      { cls: "mono", html: esc(e.value) },
+    ],
+  }));
+  updateKeyedRows(tbody, rows);
+}
+
 export function renderTimers(snap: WorldSnapshot) {
   const tbody = document.querySelector("#timers-table tbody") as HTMLElement;
   if (!tbody) return;

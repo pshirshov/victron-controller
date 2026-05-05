@@ -445,6 +445,43 @@ async fn publish_controller_observables(client: &AsyncClient, topic_root: &str) 
         count += 1;
     }
 
+    // PR-DIAG-1: process + host memory diagnostics. Each is a `data_size`
+    // sensor reporting bytes; HA's UI auto-formats to KB/MB/GB. Diagnostic
+    // entity_category groups them under "Diagnostic" in HA's device view
+    // so they don't clutter the main controls list.
+    let diag_entries: &[(ControllerObservableId, &str, &str)] = &[
+        (ControllerObservableId::DiagProcessRssBytes, "Controller process RSS", "diagnostic"),
+        (ControllerObservableId::DiagProcessVmHwmBytes, "Controller process RSS peak", "diagnostic"),
+        (ControllerObservableId::DiagProcessVmSizeBytes, "Controller process VmSize", "diagnostic"),
+        (ControllerObservableId::DiagJemallocAllocatedBytes, "Controller jemalloc allocated", "diagnostic"),
+        (ControllerObservableId::DiagJemallocResidentBytes, "Controller jemalloc resident", "diagnostic"),
+        (ControllerObservableId::DiagHostMemTotalBytes, "Host memory total", "diagnostic"),
+        (ControllerObservableId::DiagHostMemAvailableBytes, "Host memory available", "diagnostic"),
+        (ControllerObservableId::DiagHostSwapUsedBytes, "Host swap used", "diagnostic"),
+    ];
+    for (id, friendly, category) in diag_entries {
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": friendly,
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "device_class": "data_size",
+            "state_class": "measurement",
+            "unit_of_measurement": "B",
+            "entity_category": category,
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery diagnostics observable published");
+        count += 1;
+    }
+
     Ok(count)
 }
 

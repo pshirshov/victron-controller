@@ -189,6 +189,16 @@
           RUST_BACKTRACE = "1";
           RUST_LOG = "debug";
 
+          # PR-DIAG-1: tikv-jemalloc-sys runs an autotools `configure`
+          # that compiles probes with `-O0 -Werror`. Nix's default cc
+          # wrapper injects `-D_FORTIFY_SOURCE=2`, and glibc emits a
+          # warning ("FORTIFY_SOURCE requires compiling with optimization")
+          # when `-O0` is set, which `-Werror` upgrades to a build
+          # failure. Dropping the fortify hardening flags from the
+          # wrapper unbreaks debug builds; release builds compile with
+          # `-O*` and would not have triggered the warning anyway.
+          hardeningDisable = [ "fortify" "fortify3" ];
+
           shellHook = ''
             echo "victron-controller dev shell"
             echo "  build (host):   nix build .#victron-controller"

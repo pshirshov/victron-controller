@@ -10,6 +10,7 @@ import {
   renderBookkeeping,
   renderCoresState,
   renderDecisions,
+  renderDiagnostics,
   renderEntityModal,
   renderForecasts,
   renderPinnedRegisters,
@@ -213,6 +214,16 @@ function applySnapshot(snap: WorldSnapshot): void {
   if (!prev || !deepEqual(prev.zappi_drain_state, snap.zappi_drain_state) || tickedSecond) {
     renderZappiDrainSummary(snap.zappi_drain_state);
     renderZappiDrainChart(snap.zappi_drain_state);
+  }
+  // PR-DIAG-1: process + host memory diagnostics. Refreshes on the
+  // sampler cadence (60 s) AND every wall-clock second so the
+  // "Last sampled" "X s ago" cell stays current. The diff against
+  // `prev.diagnostics` skips the per-second renderer when nothing has
+  // moved.
+  const prevDiag = (prev as unknown as { diagnostics?: unknown })?.diagnostics;
+  const snapDiag = (snap as unknown as { diagnostics?: unknown }).diagnostics;
+  if (!prev || !deepEqual(prevDiag, snapDiag) || tickedSecond) {
+    renderDiagnostics(snap);
   }
 
   prevSnapshot = snap;

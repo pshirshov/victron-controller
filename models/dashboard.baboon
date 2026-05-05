@@ -17,6 +17,41 @@ version "0.3.0"
 // safe.
 import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors }
 
+// PR-DIAG-1: process + host memory diagnostics. Sampled in the shell on
+// a fixed cadence (~120 s) — separate from the per-tick world snapshot
+// so a stuck /proc read can never block the dashboard. All byte counts
+// are i64 (big enough for terabyte-scale hosts; signed because baboon
+// has no native u64). Uptime stays alongside so the dashboard's
+// "Diagnostics" group has a single landing surface.
+data Diagnostics {
+  // Wall-clock seconds since process start.
+  process_uptime_s: i64
+  // /proc/self/status VmRSS — currently resident pages.
+  process_rss_bytes: i64
+  // /proc/self/status VmHWM — peak resident set since boot.
+  process_vm_hwm_bytes: i64
+  // /proc/self/status VmSize — virtual address space.
+  process_vm_size_bytes: i64
+  // jemalloc stats.allocated — bytes the program holds via Box/Vec/etc.
+  // (reflects fragmentation-free demand).
+  jemalloc_allocated_bytes: i64
+  // jemalloc stats.resident — bytes jemalloc has mapped from the OS
+  // (allocated + retained chunks). Resident-vs-allocated divergence is
+  // the fragmentation signal.
+  jemalloc_resident_bytes: i64
+  // /proc/meminfo MemTotal.
+  host_mem_total_bytes: i64
+  // /proc/meminfo MemAvailable — kernel's "what a new process can take
+  // without swapping" estimate. Use this, not MemFree.
+  host_mem_available_bytes: i64
+  // /proc/meminfo (SwapTotal - SwapFree).
+  host_swap_used_bytes: i64
+  // Epoch ms at the moment the sampler last refreshed these values.
+  // Stays stable between sampler ticks even though the snapshot
+  // wrapping it gets republished at every world tick.
+  sampled_at_epoch_ms: i64
+}
+
 // PR-ZD-1: extend `Sensors` with the four new sensors.
 data Sensors {
   battery_soc: ActualF64
@@ -384,6 +419,9 @@ root data WorldSnapshot {
   // evaluated this boot. Used by the dashboard widget to highlight the
   // active 4-cell group.
   weather_soc_active: opt[WeatherSocActive]
+  // PR-DIAG-1: process + host memory diagnostics surface. Always
+  // populated (zero-initialised before the first sampler tick).
+  diagnostics: Diagnostics
 }
 
 // PR-WSOC-ACTIVE-1: identifies the cell currently active in the

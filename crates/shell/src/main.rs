@@ -1,5 +1,16 @@
 //! victron-controller binary entry point.
 
+// PR-DIAG-1: jemalloc as the global allocator so `shell::diagnostics`
+// can expose `stats.allocated` / `stats.resident` for memory-leak
+// observability. Splits "Rust heap demand" from "allocator-retained
+// chunks" — the latter is benign retention, the former is the leak
+// signal. Off on MSVC (Windows) since tikv-jemallocator is unsupported
+// there; the controller only ships on Linux/glibc, so the gate is
+// belt-and-braces and matches the Cargo.toml target gate.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,6 +30,9 @@ use victron_controller_shell::dashboard::{
     DashboardServer, SnapshotBroadcast, SocHistoryStore, SOC_SAMPLE_INTERVAL,
 };
 use victron_controller_shell::dbus::{Subscriber, Writer};
+use victron_controller_shell::diagnostics::{
+    spawn_diagnostics_sampler, DiagnosticsHandle, DIAGNOSTICS_SAMPLE_PERIOD,
+};
 use victron_controller_shell::forecast::{self, ForecastSolarClient, OpenMeteoClient, SolcastClient};
 use victron_controller_shell::mqtt::{
     self, log_channel, publish_ha_discovery, spawn_log_publisher, MqttLogLayer,
@@ -207,6 +221,13 @@ async fn main() -> Result<()> {
         }
     };
 
+    // PR-DIAG-1: shared diagnostics slot. Written by the sampler task
+    // every DIAGNOSTICS_SAMPLE_PERIOD; read by the dashboard convert
+    // path on every tick and by the MQTT publisher on the same cadence
+    // as the sampler.
+    let diagnostics = DiagnosticsHandle::new();
+    spawn_diagnostics_sampler(diagnostics.clone(), process_start);
+
     let topology = Topology::with_hardware(cfg.hardware.into());
     let meta = victron_controller_shell::dashboard::convert::MetaContext {
         services: services.clone(),
@@ -224,6 +245,7 @@ async fn main() -> Result<()> {
             eddi_serial: cfg.myenergi.eddi_serial.clone(),
             zappi_serial: cfg.myenergi.zappi_serial.clone(),
         },
+        diagnostics: diagnostics.clone(),
     };
     let mut world_seed = World::fresh_boot(Instant::now());
     // Apply config-file knob defaults on top of `Knobs::safe_defaults`.
@@ -372,6 +394,63 @@ async fn main() -> Result<()> {
                         eprintln!(
                             "mqtt uptime publish stuck >1s on {topic}; dropping sample"
                         );
+                    }
+                }
+            }
+        });
+    }
+
+    // PR-DIAG-1: diagnostics MQTT publisher. Reads the shared
+    // DiagnosticsHandle on the same cadence as the sampler and
+    // republishes all eight memory observables to retained topics under
+    // `controller/diagnostics.*/state`. Same self-contained pattern as
+    // the uptime/soc_history publishers — direct client-handle publish,
+    // tracing! avoided to prevent feedback through MqttLogLayer when
+    // the broker stalls.
+    if let Some(p) = mqtt_publisher.as_ref() {
+        let client = p.client_handle();
+        let topic_root = cfg.mqtt.topic_root.clone();
+        let diag = diagnostics.clone();
+        tokio::spawn(async move {
+            use victron_controller_core::types::ControllerObservableId as Id;
+            let mut interval = tokio::time::interval(DIAGNOSTICS_SAMPLE_PERIOD);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let d = diag.snapshot();
+                let pairs: [(Id, i64); 8] = [
+                    (Id::DiagProcessRssBytes, d.process_rss_bytes),
+                    (Id::DiagProcessVmHwmBytes, d.process_vm_hwm_bytes),
+                    (Id::DiagProcessVmSizeBytes, d.process_vm_size_bytes),
+                    (Id::DiagJemallocAllocatedBytes, d.jemalloc_allocated_bytes),
+                    (Id::DiagJemallocResidentBytes, d.jemalloc_resident_bytes),
+                    (Id::DiagHostMemTotalBytes, d.host_mem_total_bytes),
+                    (Id::DiagHostMemAvailableBytes, d.host_mem_available_bytes),
+                    (Id::DiagHostSwapUsedBytes, d.host_swap_used_bytes),
+                ];
+                for (id, value) in pairs {
+                    let topic = format!("{topic_root}/controller/{}/state", id.name());
+                    let body = value.to_string();
+                    match tokio::time::timeout(
+                        Duration::from_secs(1),
+                        client.publish(
+                            &topic,
+                            rumqttc::QoS::AtMostOnce,
+                            true,
+                            body.into_bytes(),
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            eprintln!("mqtt diagnostics publish failed on {topic}: {e}");
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "mqtt diagnostics publish stuck >1s on {topic}; dropping sample"
+                            );
+                        }
                     }
                 }
             }
