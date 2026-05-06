@@ -994,6 +994,34 @@ impl Core for SensorBroadcastCore {
                 }));
             }
         }
+
+        // ----- weather-SoC active cell -----
+        // Mirrors `world.weather_soc_active` (set by run_weather_soc) as a
+        // `<bucket>.<temp>` kebab token. None → "unavailable" body so HA
+        // greys the entity out when the planner skipped (no fresh temp /
+        // forecast) or hasn't run yet on cold boot. Dedup on encoded body.
+        {
+            let id = ControllerObservableId::WeathersocActiveCell;
+            let value: Option<&'static str> = world
+                .weather_soc_active
+                .map(|(b, t)| crate::weather_soc_addr::active_cell_label(b, t));
+            let body = value.unwrap_or("unavailable");
+            let changed = world
+                .published_cache
+                .controller_enum
+                .get(&id)
+                .is_none_or(|prev| prev.as_str() != body);
+            if changed {
+                world
+                    .published_cache
+                    .controller_enum
+                    .insert(id, body.to_string());
+                effects.push(Effect::Publish(PublishPayload::ControllerEnumName {
+                    id,
+                    value,
+                }));
+            }
+        }
     }
 }
 

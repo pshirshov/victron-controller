@@ -170,6 +170,28 @@ impl CellField {
     }
 }
 
+/// Static `<bucket>.<temp>` kebab token for the active cell. Used by the
+/// MQTT publish path to surface `world.weather_soc_active` to HA without
+/// allocating per tick (`PublishPayload` is `Copy`, so the body must be a
+/// `&'static str`).
+#[must_use]
+pub const fn active_cell_label(bucket: EnergyBucket, temp: TempCol) -> &'static str {
+    match (bucket, temp) {
+        (EnergyBucket::VerySunny, TempCol::Warm) => "very-sunny.warm",
+        (EnergyBucket::VerySunny, TempCol::Cold) => "very-sunny.cold",
+        (EnergyBucket::Sunny, TempCol::Warm) => "sunny.warm",
+        (EnergyBucket::Sunny, TempCol::Cold) => "sunny.cold",
+        (EnergyBucket::Mid, TempCol::Warm) => "mid.warm",
+        (EnergyBucket::Mid, TempCol::Cold) => "mid.cold",
+        (EnergyBucket::Low, TempCol::Warm) => "low.warm",
+        (EnergyBucket::Low, TempCol::Cold) => "low.cold",
+        (EnergyBucket::Dim, TempCol::Warm) => "dim.warm",
+        (EnergyBucket::Dim, TempCol::Cold) => "dim.cold",
+        (EnergyBucket::VeryDim, TempCol::Warm) => "very-dim.warm",
+        (EnergyBucket::VeryDim, TempCol::Cold) => "very-dim.cold",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +232,26 @@ mod tests {
     fn cartesian_product_is_48() {
         let total = EnergyBucket::ALL.len() * TempCol::ALL.len() * CellField::ALL.len();
         assert_eq!(total, 48);
+    }
+
+    /// Wire contract for the `controller/weathersoc.active.cell/state`
+    /// MQTT topic surfaced to HA. The token is `<bucket-kebab>.<temp-kebab>`
+    /// — pinned here so a change to either kebab() arm forces an
+    /// intentional update to the published HA state surface.
+    #[test]
+    fn active_cell_label_pins_wire_contract() {
+        assert_eq!(active_cell_label(EnergyBucket::Sunny, TempCol::Warm), "sunny.warm");
+        assert_eq!(active_cell_label(EnergyBucket::Sunny, TempCol::Cold), "sunny.cold");
+        assert_eq!(active_cell_label(EnergyBucket::VerySunny, TempCol::Warm), "very-sunny.warm");
+        assert_eq!(active_cell_label(EnergyBucket::VeryDim, TempCol::Cold), "very-dim.cold");
+
+        // All 12 combos must produce a non-empty token matching the
+        // `<bucket>.<temp>` shape.
+        for &b in EnergyBucket::ALL {
+            for &t in TempCol::ALL {
+                let label = active_cell_label(b, t);
+                assert_eq!(label, format!("{}.{}", b.kebab(), t.kebab()));
+            }
+        }
     }
 }

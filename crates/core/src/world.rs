@@ -432,6 +432,9 @@ pub struct PublishedCache {
     pub controller_numeric: std::collections::HashMap<ControllerObservableId, String>,
     /// PR-ZDO-2: dedup cache for controller-derived booleans.
     pub controller_bool: std::collections::HashMap<ControllerObservableId, bool>,
+    /// Dedup cache for string-valued controller observables (encoded
+    /// wire body — `"unavailable"` for absent values).
+    pub controller_enum: std::collections::HashMap<ControllerObservableId, String>,
 }
 
 /// One per-timer entry mirroring the wire `Timer` shape. PR-timers-section.

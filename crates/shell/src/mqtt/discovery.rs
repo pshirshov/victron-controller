@@ -483,6 +483,59 @@ async fn publish_controller_observables(client: &AsyncClient, topic_root: &str) 
         count += 1;
     }
 
+    // host (GX device) uptime: numeric sensor, mirrors AppUptimeS shape
+    // but `diagnostic` category and no `expire_after` — process uptime
+    // is the load-bearing liveness signal; host uptime is observability
+    // for "did the GX reboot recently?". `total_increasing` device class
+    // tells HA Recorder to treat reboots (counter reset to 0) cleanly.
+    {
+        let id = ControllerObservableId::DiagHostUptimeS;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Host uptime",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "device_class": "duration",
+            "state_class": "total_increasing",
+            "unit_of_measurement": "s",
+            "entity_category": "diagnostic",
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery diagnostics observable published");
+        count += 1;
+    }
+
+    // weather-SoC active cell: text sensor (no device_class / state_class).
+    // Body is a `<bucket>.<temp>` kebab token (`"sunny.warm"` etc.) or
+    // `"unavailable"` when the planner skipped or hasn't run yet.
+    {
+        let id = ControllerObservableId::WeathersocActiveCell;
+        let name = id.name();
+        let ha_name = ha_safe(name);
+        let state_topic = format!("{topic_root}/controller/{name}/state");
+        let config_topic =
+            format!("{HA_ROOT}/sensor/{NODE_ID}/controller_{ha_name}/config");
+        let config = json!({
+            "name": "Weather-SoC active cell",
+            "unique_id": format!("{NODE_ID}_controller_{ha_name}"),
+            "state_topic": state_topic,
+            "icon": "mdi:weather-partly-cloudy",
+            "device": device_block(),
+        });
+        client
+            .publish(&config_topic, QoS::AtLeastOnce, true, config.to_string())
+            .await?;
+        debug!(topic = %config_topic, "HA discovery controller observable published");
+        count += 1;
+    }
+
     Ok(count)
 }
 

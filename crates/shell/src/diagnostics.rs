@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
 
-/// Snapshot of all diagnostics fields. Cheap to clone (10 × i64).
+/// Snapshot of all diagnostics fields. Cheap to clone (11 × i64).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Diagnostics {
     pub process_uptime_s: i64,
@@ -31,6 +31,10 @@ pub struct Diagnostics {
     pub host_mem_total_bytes: i64,
     pub host_mem_available_bytes: i64,
     pub host_swap_used_bytes: i64,
+    /// Seconds since host boot. Read from `/proc/uptime` (first field).
+    /// Resets on reboot — `total_increasing` device class on the HA
+    /// side handles the reset cleanly.
+    pub host_uptime_s: i64,
     pub sampled_at_epoch_ms: i64,
 }
 
@@ -126,6 +130,7 @@ fn collect(process_start: Instant, jemalloc: Option<&JemallocReader>) -> Diagnos
 
     let proc_status = read_proc_self_status();
     let meminfo = read_proc_meminfo();
+    let host_uptime_s = read_proc_uptime();
     let (alloc, resident) = jemalloc.map_or((0, 0), JemallocReader::sample);
 
     Diagnostics {
@@ -138,8 +143,27 @@ fn collect(process_start: Instant, jemalloc: Option<&JemallocReader>) -> Diagnos
         host_mem_total_bytes: meminfo.mem_total_bytes,
         host_mem_available_bytes: meminfo.mem_available_bytes,
         host_swap_used_bytes: meminfo.swap_used_bytes,
+        host_uptime_s,
         sampled_at_epoch_ms: now_epoch_ms,
     }
+}
+
+/// Read `/proc/uptime` and return the first whitespace-separated field —
+/// seconds since host boot — truncated to an `i64`. Returns 0 on any
+/// I/O or parse error (observability-only path; never panics).
+fn read_proc_uptime() -> i64 {
+    let raw = match fs::read_to_string("/proc/uptime") {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "diagnostics: /proc/uptime read failed");
+            return 0;
+        }
+    };
+    raw.split_whitespace()
+        .next()
+        .and_then(|tok| tok.parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map_or(0, |s| s as i64)
 }
 
 #[derive(Debug, Default)]
@@ -288,6 +312,16 @@ mod tests {
         assert!(s.vm_size_bytes > 0, "VmSize should be > 0 for self");
         assert!(s.vm_hwm_bytes >= s.vm_rss_bytes,
             "VmHWM should be >= VmRSS (peak >= current)");
+    }
+
+    #[test]
+    fn read_proc_uptime_returns_positive_on_linux() {
+        // Sanity check on the host running the test — /proc/uptime
+        // always exists on Linux and the first field is monotonically
+        // increasing seconds since boot. Anything non-zero confirms
+        // both the read and the float parser worked.
+        let s = read_proc_uptime();
+        assert!(s > 0, "host uptime should be > 0 on a running Linux box");
     }
 
     #[test]

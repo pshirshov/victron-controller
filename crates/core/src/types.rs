@@ -1273,6 +1273,13 @@ pub enum PublishPayload {
         id: ControllerObservableId,
         value: bool,
     },
+    /// String-valued controller observable (text `sensor` in HA).
+    /// `value: None` encodes as `"unavailable"` on the wire (HA convention).
+    /// Carries a static-string token so `PublishPayload` stays `Copy`.
+    ControllerEnumName {
+        id: ControllerObservableId,
+        value: Option<&'static str>,
+    },
 }
 
 /// Identifier for a controller-derived broadcast observable.
@@ -1304,6 +1311,18 @@ pub enum ControllerObservableId {
     DiagHostMemTotalBytes,
     DiagHostMemAvailableBytes,
     DiagHostSwapUsedBytes,
+    /// Seconds since host (GX device) boot. Sourced from `/proc/uptime`
+    /// by `shell::diagnostics`; published on the diagnostics 60s cadence.
+    /// Sits in the `diagnostics.*` namespace alongside the host memory
+    /// observables — distinct from `AppUptimeS` ("process running"
+    /// elapsed time, the load-bearing liveness heartbeat at 30s).
+    DiagHostUptimeS,
+    /// Active weather-SoC table cell as a kebab token pair
+    /// (`<bucket>.<temp>`, e.g. `"sunny.warm"`). Mirrors
+    /// `world.weather_soc_active` for HA. Encoded as a text `sensor`
+    /// (no `device_class`); body is `"unavailable"` when the planner
+    /// hasn't run yet or skipped (no fresh temp / forecast).
+    WeathersocActiveCell,
 }
 
 impl ControllerObservableId {
@@ -1324,6 +1343,8 @@ impl ControllerObservableId {
             Self::DiagHostMemTotalBytes => "diagnostics.host-mem-total-bytes",
             Self::DiagHostMemAvailableBytes => "diagnostics.host-mem-available-bytes",
             Self::DiagHostSwapUsedBytes => "diagnostics.host-swap-used-bytes",
+            Self::DiagHostUptimeS => "diagnostics.host-uptime-s",
+            Self::WeathersocActiveCell => "weathersoc.active.cell",
         }
     }
 
@@ -1341,6 +1362,8 @@ impl ControllerObservableId {
         Self::DiagHostMemTotalBytes,
         Self::DiagHostMemAvailableBytes,
         Self::DiagHostSwapUsedBytes,
+        Self::DiagHostUptimeS,
+        Self::WeathersocActiveCell,
     ];
 }
 

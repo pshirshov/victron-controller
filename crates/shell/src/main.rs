@@ -418,7 +418,7 @@ async fn main() -> Result<()> {
             loop {
                 interval.tick().await;
                 let d = diag.snapshot();
-                let pairs: [(Id, i64); 8] = [
+                let pairs: [(Id, i64); 9] = [
                     (Id::DiagProcessRssBytes, d.process_rss_bytes),
                     (Id::DiagProcessVmHwmBytes, d.process_vm_hwm_bytes),
                     (Id::DiagProcessVmSizeBytes, d.process_vm_size_bytes),
@@ -427,6 +427,7 @@ async fn main() -> Result<()> {
                     (Id::DiagHostMemTotalBytes, d.host_mem_total_bytes),
                     (Id::DiagHostMemAvailableBytes, d.host_mem_available_bytes),
                     (Id::DiagHostSwapUsedBytes, d.host_swap_used_bytes),
+                    (Id::DiagHostUptimeS, d.host_uptime_s),
                 ];
                 for (id, value) in pairs {
                     let topic = format!("{topic_root}/controller/{}/state", id.name());

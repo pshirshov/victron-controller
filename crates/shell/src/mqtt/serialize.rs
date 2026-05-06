@@ -111,6 +111,11 @@ pub fn encode_publish_payload(p: &PublishPayload) -> Option<(String, String, boo
             let body = if *value { "true" } else { "false" }.to_string();
             Some((format!("controller/{name}/state"), body, true))
         }
+        PublishPayload::ControllerEnumName { id, value } => {
+            let name = id.name();
+            let body = value.unwrap_or("unavailable").to_string();
+            Some((format!("controller/{name}/state"), body, true))
+        }
     }
 }
 
@@ -1529,6 +1534,30 @@ mod tests {
         let (t, b, r) = encode_publish_payload(&p).unwrap();
         assert_eq!(t, "controller/zappi-drain.tighten-active/state");
         assert_eq!(b, "true");
+        assert!(r);
+    }
+
+    #[test]
+    fn encode_controller_enum_name_some_emits_kebab_token() {
+        let p = PublishPayload::ControllerEnumName {
+            id: ControllerObservableId::WeathersocActiveCell,
+            value: Some("sunny.warm"),
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/weathersoc.active.cell/state");
+        assert_eq!(b, "sunny.warm");
+        assert!(r);
+    }
+
+    #[test]
+    fn encode_controller_enum_name_none_is_unavailable() {
+        let p = PublishPayload::ControllerEnumName {
+            id: ControllerObservableId::WeathersocActiveCell,
+            value: None,
+        };
+        let (t, b, r) = encode_publish_payload(&p).unwrap();
+        assert_eq!(t, "controller/weathersoc.active.cell/state");
+        assert_eq!(b, "unavailable");
         assert!(r);
     }
 
