@@ -143,7 +143,7 @@ for field in slope_pct_per_hour terminus_soc_pct net_power_w capacity_wh charge_
       "$f"
   done
 done
-for field in now_soc_pct discharge_target_pct charge_target_pct; do
+for field in now_soc_pct discharge_target_pct charge_target_pct export_threshold_pct; do
   find "$RS_OUT/src" -path '*/dashboard*/soc_chart.rs' -print0 | while IFS= read -r -d '' f; do
     sed -i \
       -e "s|self\.${field}\.total_cmp(&other\.${field})|crate::baboon_runtime::__opt_f64_total_cmp(\&self.${field}, \&other.${field})|" \

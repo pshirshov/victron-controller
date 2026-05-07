@@ -9,6 +9,7 @@ export function convert__soc_chart__from__0_2_0(from: v0_2_0_SocChart): dashboar
         from.now_epoch_ms,
         from.now_soc_pct,
         from.discharge_target_pct,
-        from.charge_target_pct
+        from.charge_target_pct,
+        from.export_threshold_pct
     )
 }

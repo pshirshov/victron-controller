@@ -8,5 +8,6 @@ pub fn convert__soc_chart__from__0_2_0(from: &crate::victron_controller::dashboa
         now_soc_pct: from.now_soc_pct.clone(),
         discharge_target_pct: from.discharge_target_pct.clone(),
         charge_target_pct: from.charge_target_pct.clone(),
+        export_threshold_pct: from.export_threshold_pct.clone(),
     }
 }

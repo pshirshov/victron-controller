@@ -58,6 +58,7 @@ type SocChart = {
   now_soc_pct: number | null;
   discharge_target_pct: number | null;
   charge_target_pct: number | null;
+  export_threshold_pct: number | null;
 };
 
 // SVG layout. We measure the host container's width at render time and
@@ -166,6 +167,7 @@ function readChart(snap: WorldSnapshot): SocChart | null {
     now_soc_pct: asNum(c.now_soc_pct),
     discharge_target_pct: asNum(c.discharge_target_pct),
     charge_target_pct: asNum(c.charge_target_pct),
+    export_threshold_pct: asNum(c.export_threshold_pct),
   };
 }
 
@@ -380,6 +382,9 @@ export function renderSocChart(snap: WorldSnapshot): void {
   }
   if (chart.charge_target_pct !== null) {
     drawTargetLine(chart.charge_target_pct, "target-line-charge", "charge");
+  }
+  if (chart.export_threshold_pct !== null) {
+    drawTargetLine(chart.export_threshold_pct, "target-line-export", "export");
   }
 
   // History polyline.

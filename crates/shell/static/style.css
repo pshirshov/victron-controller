@@ -771,8 +771,9 @@ td:has(> a > .weather-soc-active) {
 #soc-chart .trace-projection-eveningdischarge     { stroke: var(--bad);    stroke-width: 1.5px; fill: none; opacity: 0.7; stroke-dasharray: 4 4; }
 #soc-chart .trace-projection-batteryfull          { stroke: var(--muted);  stroke-width: 1.5px; fill: none; opacity: 0.4; }
 
-#soc-chart .target-line-discharge { stroke: var(--bad); stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
-#soc-chart .target-line-charge    { stroke: var(--ok);  stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
+#soc-chart .target-line-discharge { stroke: var(--bad);  stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
+#soc-chart .target-line-charge    { stroke: var(--ok);   stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
+#soc-chart .target-line-export    { stroke: var(--warn); stroke-width: 1px; stroke-dasharray: 2 4; opacity: 0.5; }
 #soc-chart .target-label          { font-size: 10px; fill: var(--muted); font-family: ui-monospace, monospace; }
 #soc-chart .now-marker {
   stroke: var(--ok);

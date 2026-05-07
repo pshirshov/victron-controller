@@ -83,6 +83,11 @@ data SocChart {
   // controller will charge to in the next active window
   // (today: bookkeeping.battery_selected_soc_target).
   charge_target_pct: opt[f64]
+  // PR-soc-chart-export-line: export threshold — SoC above which the
+  // controller will export to grid; below it, only solar surplus
+  // exports (today: bookkeeping.effective_export_soc_threshold).
+  // None when not yet computed.
+  export_threshold_pct: opt[f64]
 }
 
 // ---------------------------------------------------------------------------

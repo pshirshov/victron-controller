@@ -154,6 +154,10 @@ pub fn compute_soc_chart(
         // SoC envelope being defended.
         discharge_target_pct: Some(world.bookkeeping.soc_end_of_day_target),
         charge_target_pct: Some(world.bookkeeping.battery_selected_soc_target),
+        // PR-soc-chart-export-line: third reference line — the SoC at/above
+        // which the controller will export to grid. Reflects the
+        // charge-to-full override when active.
+        export_threshold_pct: Some(world.bookkeeping.effective_export_soc_threshold),
     }
 }
 
@@ -957,9 +961,11 @@ mod tests {
         let mut w = world_with_inputs(50.0, -500.0, 100.0, 200.0);
         w.bookkeeping.soc_end_of_day_target = 35.0;
         w.bookkeeping.battery_selected_soc_target = 85.0;
+        w.bookkeeping.effective_export_soc_threshold = 60.0;
         let chart = compute_soc_chart(&w, &[], hw_50v(), cp(), TEST_NOW_MS);
         assert_eq!(chart.discharge_target_pct, Some(35.0));
         assert_eq!(chart.charge_target_pct, Some(85.0));
+        assert_eq!(chart.export_threshold_pct, Some(60.0));
     }
 
     #[test]
