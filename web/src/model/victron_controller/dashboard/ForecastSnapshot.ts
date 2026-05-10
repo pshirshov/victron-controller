@@ -6,12 +6,14 @@ export class ForecastSnapshot implements BaboonGeneratedLatest {
     private readonly _tomorrow_kwh: number;
     private readonly _fetched_at_epoch_ms: bigint;
     private readonly _hourly_kwh: Array<number>;
+    private readonly _hourly_temperature_c: Array<number>;
 
-    constructor(today_kwh: number, tomorrow_kwh: number, fetched_at_epoch_ms: bigint, hourly_kwh: Array<number>) {
+    constructor(today_kwh: number, tomorrow_kwh: number, fetched_at_epoch_ms: bigint, hourly_kwh: Array<number>, hourly_temperature_c: Array<number>) {
         this._today_kwh = today_kwh
         this._tomorrow_kwh = tomorrow_kwh
         this._fetched_at_epoch_ms = fetched_at_epoch_ms
         this._hourly_kwh = hourly_kwh
+        this._hourly_temperature_c = hourly_temperature_c
     }
 
     public get today_kwh(): number {
@@ -26,31 +28,37 @@ export class ForecastSnapshot implements BaboonGeneratedLatest {
     public get hourly_kwh(): Array<number> {
         return this._hourly_kwh;
     }
+    public get hourly_temperature_c(): Array<number> {
+        return this._hourly_temperature_c;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
             today_kwh: this._today_kwh,
             tomorrow_kwh: this._tomorrow_kwh,
             fetched_at_epoch_ms: this._fetched_at_epoch_ms,
-            hourly_kwh: this._hourly_kwh
+            hourly_kwh: this._hourly_kwh,
+            hourly_temperature_c: this._hourly_temperature_c
         };
     }
 
-    public with(overrides: {today_kwh?: number; tomorrow_kwh?: number; fetched_at_epoch_ms?: bigint; hourly_kwh?: Array<number>}): ForecastSnapshot {
+    public with(overrides: {today_kwh?: number; tomorrow_kwh?: number; fetched_at_epoch_ms?: bigint; hourly_kwh?: Array<number>; hourly_temperature_c?: Array<number>}): ForecastSnapshot {
         return new ForecastSnapshot(
             'today_kwh' in overrides ? overrides.today_kwh! : this._today_kwh,
             'tomorrow_kwh' in overrides ? overrides.tomorrow_kwh! : this._tomorrow_kwh,
             'fetched_at_epoch_ms' in overrides ? overrides.fetched_at_epoch_ms! : this._fetched_at_epoch_ms,
-            'hourly_kwh' in overrides ? overrides.hourly_kwh! : this._hourly_kwh
+            'hourly_kwh' in overrides ? overrides.hourly_kwh! : this._hourly_kwh,
+            'hourly_temperature_c' in overrides ? overrides.hourly_temperature_c! : this._hourly_temperature_c
         );
     }
 
-    public static fromPlain(obj: {today_kwh: number; tomorrow_kwh: number; fetched_at_epoch_ms: bigint; hourly_kwh: Array<number>}): ForecastSnapshot {
+    public static fromPlain(obj: {today_kwh: number; tomorrow_kwh: number; fetched_at_epoch_ms: bigint; hourly_kwh: Array<number>; hourly_temperature_c: Array<number>}): ForecastSnapshot {
         return new ForecastSnapshot(
             obj.today_kwh,
             obj.tomorrow_kwh,
             obj.fetched_at_epoch_ms,
-            obj.hourly_kwh
+            obj.hourly_kwh,
+            obj.hourly_temperature_c
         );
     }
 
@@ -66,7 +74,7 @@ export class ForecastSnapshot implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return ForecastSnapshot.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return ForecastSnapshot.BaboonSameInVersions
     }
@@ -97,6 +105,16 @@ export class ForecastSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                BinTools.writeI32(buffer, Array.from(value.hourly_temperature_c).length);
+            for (const item of value.hourly_temperature_c) {
+                BinTools.writeF64(buffer, item);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -105,6 +123,10 @@ export class ForecastSnapshot_UEBACodec {
             BinTools.writeI64(writer, value.fetched_at_epoch_ms);
             BinTools.writeI32(writer, Array.from(value.hourly_kwh).length);
             for (const item of value.hourly_kwh) {
+                BinTools.writeF64(writer, item);
+            }
+            BinTools.writeI32(writer, Array.from(value.hourly_temperature_c).length);
+            for (const item of value.hourly_temperature_c) {
                 BinTools.writeF64(writer, item);
             }
         }
@@ -118,7 +140,7 @@ export class ForecastSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 1; i++) {
+            for (let i = 0; i < 2; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -127,11 +149,13 @@ export class ForecastSnapshot_UEBACodec {
         const tomorrow_kwh = BinTools.readF64(reader);
         const fetched_at_epoch_ms = BinTools.readI64(reader);
         const hourly_kwh = Array.from({ length: BinTools.readI32(reader) }, () => BinTools.readF64(reader));
+        const hourly_temperature_c = Array.from({ length: BinTools.readI32(reader) }, () => BinTools.readF64(reader));
         return new ForecastSnapshot(
             today_kwh,
             tomorrow_kwh,
             fetched_at_epoch_ms,
             hourly_kwh,
+            hourly_temperature_c,
         );
     }
 

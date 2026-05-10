@@ -44,12 +44,12 @@ pub struct MetaContext {
     pub services: DbusServices,
     pub open_meteo_cadence: Duration,
     pub controller_params: ControllerParams,
-    /// PR-matter-outdoor-temp: when `Some`, the dashboard's
-    /// `outdoor_temperature` row is annotated with the Matter MQTT
-    /// origin/topic instead of Open-Meteo. Open-Meteo remains a silent
-    /// fallback source (whichever publishes most recently wins via
+    /// When non-empty, the dashboard's `outdoor_temperature` row is
+    /// annotated with the configured local-MQTT topics instead of
+    /// Open-Meteo. Open-Meteo remains a silent fallback source
+    /// (whichever publishes most recently wins via
     /// `Actual::on_reading`'s freshness reset).
-    pub matter_outdoor_topic: Option<String>,
+    pub outdoor_temp_topics: Vec<String>,
     /// PR-ev-soc-sensor: when `Some`, the dashboard's `ev_soc` row is
     /// annotated with this discovery topic. The actual subscribe path
     /// resolves the publisher's `state_topic` from the retained
@@ -142,6 +142,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::zappi_dra
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_snapshot_wire::ZappiDrainSnapshotWire as ModelZappiDrainSnapshotWire;
 use victron_controller_dashboard_model::victron_controller::dashboard::zappi_drain_state::ZappiDrainState as ModelZappiDrainState;
 use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_active::WeatherSocActive as ModelWeatherSocActive;
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_day::WeatherSocDay as ModelWeatherSocDay;
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_inputs::WeatherSocInputs as ModelWeatherSocInputs;
+use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_temperature_source::WeatherSocTemperatureSource as ModelWeatherSocTemperatureSource;
 // PR-DIAG-1: process + host memory diagnostics surface.
 use victron_controller_dashboard_model::victron_controller::dashboard::diagnostics::Diagnostics as ModelDiagnostics;
 
@@ -534,6 +537,23 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             ModelWeatherSocActive {
                 bucket: bucket.kebab().to_string(),
                 cold: matches!(temp, victron_controller_core::weather_soc_addr::TempCol::Cold),
+            }
+        }),
+        weather_soc_inputs: world.weather_soc_inputs.map(|i| {
+            use victron_controller_core::world::{
+                WeatherSocDay as CoreDay, WeatherSocTemperatureSource as CoreSrc,
+            };
+            ModelWeatherSocInputs {
+                temperature_c: i.temperature_c,
+                temperature_source: match i.temperature_source {
+                    CoreSrc::Forecast => ModelWeatherSocTemperatureSource::Forecast,
+                    CoreSrc::Sensor => ModelWeatherSocTemperatureSource::Sensor,
+                },
+                energy_kwh: i.energy_kwh,
+                day: match i.day {
+                    CoreDay::Today => ModelWeatherSocDay::Today,
+                    CoreDay::Tomorrow => ModelWeatherSocDay::Tomorrow,
+                },
             }
         }),
         // PR-DIAG-1: latest sampled diagnostics. Zero-initialised
@@ -953,25 +973,25 @@ fn sensors_meta(ctx: &MetaContext) -> BTreeMap<String, ModelSensorMeta> {
             SensorId::EssState,
         ),
     );
-    // PR-matter-outdoor-temp: when the Matter MQTT bridge is configured,
-    // surface its origin/topic/cadence on the dashboard. Open-Meteo
-    // stays running as a silent fallback (~30 min cadence, 40 min
-    // staleness — either source keeps the sensor fresh).
+    // When local-MQTT outdoor-temp sources are configured, surface
+    // their origin/topics/cadence on the dashboard. Open-Meteo stays
+    // running as a silent fallback (~30 min cadence, 40 min staleness —
+    // either source keeps the sensor fresh).
     m.insert(
         "outdoor_temperature".into(),
-        if let Some(topic) = &ctx.matter_outdoor_topic {
-            ModelSensorMeta {
-                origin: "matter-mqtt".to_string(),
-                identifier: topic.clone(),
-                // Meross publishes ~every minute when alive.
-                cadence_ms: 60_000,
-                staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
-            }
-        } else {
+        if ctx.outdoor_temp_topics.is_empty() {
             ModelSensorMeta {
                 origin: "open-meteo".to_string(),
                 identifier: "api.open-meteo.com/v1/forecast?current=temperature_2m".to_string(),
                 cadence_ms: om_cadence_ms,
+                staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
+            }
+        } else {
+            ModelSensorMeta {
+                origin: "local-mqtt".to_string(),
+                identifier: ctx.outdoor_temp_topics.join(", "),
+                // Meross / Nodon publish ~every minute when alive.
+                cadence_ms: 60_000,
                 staleness_ms: staleness_ms(SensorId::OutdoorTemperature),
             }
         },
@@ -1217,6 +1237,7 @@ fn forecast_snapshot(f: &victron_controller_core::world::ForecastSnapshot) -> Mo
         // PR-soc-chart-solar: surface the hourly array so the
         // dashboard's SoC chart can subdivide Natural segments.
         hourly_kwh: f.hourly_kwh.clone(),
+        hourly_temperature_c: f.hourly_temperature_c.clone(),
     }
 }
 
@@ -1463,7 +1484,7 @@ mod snapshot_new_sensors_tests {
             services: crate::config::DbusServices::default_venus_3_70(),
             open_meteo_cadence: Duration::from_secs(1800),
             controller_params: ControllerParams::defaults(),
-            matter_outdoor_topic: None,
+            outdoor_temp_topics: Vec::new(),
             ev_soc_discovery_topic: None,
             ev_charge_target_discovery_topic: None,
             heat_pump_topic: heat_pump_topic.map(str::to_owned),
@@ -1768,7 +1789,7 @@ mod zappi_drain_state_tests {
             services: crate::config::DbusServices::default_venus_3_70(),
             open_meteo_cadence: Duration::from_secs(1800),
             controller_params: ControllerParams::defaults(),
-            matter_outdoor_topic: None,
+            outdoor_temp_topics: Vec::new(),
             ev_soc_discovery_topic: None,
             ev_charge_target_discovery_topic: None,
             heat_pump_topic: None,

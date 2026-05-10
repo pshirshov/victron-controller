@@ -39,7 +39,34 @@ use crate::world::{ForecastSnapshot, TypedSensors};
 pub fn fused_today_kwh(
     typed: &TypedSensors,
     strategy: ForecastDisagreementStrategy,
+    is_fresh: impl FnMut(ForecastProvider, &ForecastSnapshot) -> bool,
+) -> Option<f64> {
+    fused_kwh_for(typed, strategy, is_fresh, |s| s.today_kwh)
+}
+
+/// Same as [`fused_today_kwh`] but picks each provider's tomorrow
+/// total. Used by the WeatherSoc planner once today's sunset has
+/// passed: today's forecast number is no longer forward-looking, so
+/// the column choice should reflect tomorrow's regime instead.
+#[must_use]
+pub fn fused_tomorrow_kwh(
+    typed: &TypedSensors,
+    strategy: ForecastDisagreementStrategy,
+    is_fresh: impl FnMut(ForecastProvider, &ForecastSnapshot) -> bool,
+) -> Option<f64> {
+    fused_kwh_for(typed, strategy, is_fresh, |s| s.tomorrow_kwh)
+}
+
+/// Inner reducer parameterised by which scalar (today_kwh /
+/// tomorrow_kwh) to read from each snapshot. The freshness gate,
+/// strategy, NaN filtering, and baseline-as-last-resort fallback are
+/// all identical between today and tomorrow — `select_kwh` is the
+/// only thing that varies.
+fn fused_kwh_for(
+    typed: &TypedSensors,
+    strategy: ForecastDisagreementStrategy,
     mut is_fresh: impl FnMut(ForecastProvider, &ForecastSnapshot) -> bool,
+    select_kwh: impl Fn(&ForecastSnapshot) -> f64,
 ) -> Option<f64> {
     let solcast = typed
         .forecast_solcast
@@ -62,7 +89,7 @@ pub fn fused_today_kwh(
     let mut fresh: Vec<f64> = [solcast, fs, om]
         .into_iter()
         .flatten()
-        .map(|s| s.today_kwh)
+        .map(&select_kwh)
         .filter(|v| v.is_finite())
         .collect();
 
@@ -72,7 +99,7 @@ pub fn fused_today_kwh(
             .forecast_baseline
             .as_ref()
             .filter(|s| is_fresh(ForecastProvider::Baseline, s))
-            .map(|s| s.today_kwh)
+            .map(&select_kwh)
             .filter(|v| v.is_finite());
     }
 
@@ -86,7 +113,7 @@ pub fn fused_today_kwh(
         }
         ForecastDisagreementStrategy::SolcastIfAvailableElseMean => {
             if let Some(s) = solcast {
-                Some(s.today_kwh)
+                Some(select_kwh(s))
             } else if fresh.is_empty() {
                 None
             } else {
@@ -225,6 +252,7 @@ mod tests {
             tomorrow_kwh: 0.0,
             fetched_at: Instant::now(),
             hourly_kwh: Vec::new(),
+            hourly_temperature_c: Vec::new(),
         }
     }
 
@@ -385,6 +413,7 @@ mod tests {
             tomorrow_kwh: 0.0,
             fetched_at: Instant::now(),
             hourly_kwh: hourly,
+            hourly_temperature_c: Vec::new(),
         }
     }
 

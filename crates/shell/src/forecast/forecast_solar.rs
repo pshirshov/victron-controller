@@ -152,6 +152,9 @@ impl ForecastFetcher for ForecastSolarClient {
             today_kwh: totals_today_wh / 1000.0,
             tomorrow_kwh: totals_tomorrow_wh / 1000.0,
             hourly_kwh: final_hourly,
+            // Forecast.Solar doesn't supply temperature; planner falls
+            // back to the sensor when this is empty.
+            hourly_temperature_c: Vec::new(),
         })
     }
 }

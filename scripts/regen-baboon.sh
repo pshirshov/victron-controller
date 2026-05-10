@@ -123,10 +123,12 @@ done
 
 # PR-soc-chart-solar: ForecastSnapshot.hourly_kwh is `lst[f64]` →
 # Vec<f64>, which also has no `total_cmp`. Patch only the v0.2.0+
-# generated file (0.1.0 didn't have the field).
+# generated file (0.1.0 didn't have the field). Same patch covers the
+# 0.3.0 addition `hourly_temperature_c` (also `lst[f64]`).
 find "$RS_OUT/src" -path '*/dashboard*/forecast_snapshot.rs' -print0 | while IFS= read -r -d '' f; do
   sed -i \
     -e 's|self\.hourly_kwh\.total_cmp(&other\.hourly_kwh)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_kwh, \&other.hourly_kwh)|' \
+    -e 's|self\.hourly_temperature_c\.total_cmp(&other\.hourly_temperature_c)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_temperature_c, \&other.hourly_temperature_c)|' \
     "$f"
 done
 

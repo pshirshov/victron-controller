@@ -185,6 +185,8 @@ pub async fn run_baseline_scheduler(
                 today_kwh,
                 tomorrow_kwh,
                 hourly_kwh,
+                // Baseline doesn't model temperature.
+                hourly_temperature_c: Vec::new(),
                 at: Instant::now(),
             }))
             .await;

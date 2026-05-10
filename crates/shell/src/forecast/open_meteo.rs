@@ -99,6 +99,14 @@ impl ForecastFetcher for OpenMeteoClient {
         // midnight today (hours 0..24 = today, 24..48 = tomorrow).
         let mut hourly_kwh: Vec<f64> = vec![0.0; 48];
         let mut saw_any_hourly = false;
+        // Per-hour temperature (°C), same indexing convention as
+        // `hourly_kwh`. Sentinel `NaN` marks "not yet populated"; we
+        // fold the first non-NaN reading per (hour, plane-loop) iteration
+        // — the temperature field is plane-independent, so subsequent
+        // planes overwrite with the same value (idempotent). After the
+        // loop, NaN slots collapse the vector to empty if none were set.
+        let mut hourly_temperature_c: Vec<f64> = vec![f64::NAN; 48];
+        let mut saw_any_temperature = false;
 
         let url = "https://api.open-meteo.com/v1/forecast";
         let tz_name = self.tz.name();
@@ -113,7 +121,11 @@ impl ForecastFetcher for OpenMeteoClient {
                 &[
                     ("latitude", &lat),
                     ("longitude", &lon),
-                    ("hourly", "global_tilted_irradiance"),
+                    // Comma-separated list of hourly variables. Adding
+                    // `temperature_2m` so the WeatherSoc planner can
+                    // average forecast temperature across daylight hours
+                    // instead of consulting the instantaneous sensor.
+                    ("hourly", "global_tilted_irradiance,temperature_2m"),
                     ("tilt", &tilt),
                     ("azimuth", &az),
                     // A-50: pin site TZ explicitly (reqwest URL-encodes
@@ -133,6 +145,15 @@ impl ForecastFetcher for OpenMeteoClient {
             else {
                 continue;
             };
+            // `temperature_2m` is plane-independent (same value across
+            // planes for any given hour), but Open-Meteo returns it in
+            // every per-plane response since we ask for it in the
+            // `hourly=` list. The fold below overwrites previous
+            // populates with the same value — idempotent — so we don't
+            // care which plane's response wins.
+            let temps: Option<&Vec<serde_json::Value>> = body
+                .pointer("/hourly/temperature_2m")
+                .and_then(|v| v.as_array());
 
             // Sum hourly irradiance (W/m²) × 1 h × efficiency × kWp/1000
             // into today/tomorrow buckets, using the time string's date.
@@ -140,7 +161,7 @@ impl ForecastFetcher for OpenMeteoClient {
             // local-clock hour (today = 0..24, tomorrow = 24..48).
             let today_str = today.format("%Y-%m-%d").to_string();
             let tomorrow_str = tomorrow.format("%Y-%m-%d").to_string();
-            for (t, w) in times.iter().zip(irrad.iter()) {
+            for (i, (t, w)) in times.iter().zip(irrad.iter()).enumerate() {
                 let Some(t_str) = t.as_str() else { continue };
                 let Some(w_f) = w.as_f64() else { continue };
                 // Open-Meteo format: "2026-04-22T13:00"
@@ -152,17 +173,28 @@ impl ForecastFetcher for OpenMeteoClient {
                     .get(11..13)
                     .and_then(|h| h.parse::<usize>().ok())
                     .filter(|h| *h < 24);
+                let temp_c: Option<f64> = temps
+                    .and_then(|arr| arr.get(i))
+                    .and_then(serde_json::Value::as_f64);
                 if date_part == today_str {
                     totals_today_kwh += kwh_contrib;
                     if let Some(h) = hour {
                         hourly_kwh[h] += kwh_contrib;
                         saw_any_hourly = true;
+                        if let Some(c) = temp_c {
+                            hourly_temperature_c[h] = c;
+                            saw_any_temperature = true;
+                        }
                     }
                 } else if date_part == tomorrow_str {
                     totals_tomorrow_kwh += kwh_contrib;
                     if let Some(h) = hour {
                         hourly_kwh[24 + h] += kwh_contrib;
                         saw_any_hourly = true;
+                        if let Some(c) = temp_c {
+                            hourly_temperature_c[24 + h] = c;
+                            saw_any_temperature = true;
+                        }
                     }
                 }
             }
@@ -176,11 +208,25 @@ impl ForecastFetcher for OpenMeteoClient {
             );
             Vec::new()
         };
+        // Collapse to empty when no temperature samples landed at all
+        // (provider partial response, schema drift, etc.). The
+        // downstream WeatherSoc planner treats an empty vector as "no
+        // forecast temperature available" and falls back to the local
+        // sensor — same shape as the kwh fallback above.
+        let final_hourly_temp = if saw_any_temperature {
+            hourly_temperature_c
+        } else {
+            tracing::debug!(
+                "open_meteo: no temperature entries parsed; emitting empty hourly_temperature_c"
+            );
+            Vec::new()
+        };
 
         Ok(ForecastTotals {
             today_kwh: totals_today_kwh,
             tomorrow_kwh: totals_tomorrow_kwh,
             hourly_kwh: final_hourly,
+            hourly_temperature_c: final_hourly_temp,
         })
     }
 }

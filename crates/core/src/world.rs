@@ -196,6 +196,12 @@ pub struct ForecastSnapshot {
     /// Length 48 = 24 today + 24 tomorrow. kWh per hour. Empty when the
     /// provider didn't supply hourly data.
     pub hourly_kwh: Vec<f64>,
+    /// Hourly outdoor temperature (°C) starting at midnight LOCAL today.
+    /// Same length/indexing convention as `hourly_kwh`. Empty for
+    /// providers that don't fetch temperature (Solcast, Forecast.Solar,
+    /// baseline). Consumed by the WeatherSoc planner to derive the
+    /// daylight-window average that drives the Cold/Warm column choice.
+    pub hourly_temperature_c: Vec<f64>,
 }
 
 /// Non-scalar sensor state.
@@ -689,6 +695,47 @@ pub struct World {
     /// to highlight the active 4-cell group in the Weather-SoC widget.
     pub weather_soc_active:
         Option<(crate::weather_soc_addr::EnergyBucket, crate::weather_soc_addr::TempCol)>,
+
+    /// Inputs the WeatherSoc planner consulted on its most recent
+    /// successful tick: temperature value + source, fused solar
+    /// energy forecast, and today-vs-tomorrow selection. Set by
+    /// `run_weather_soc` after every tick that produces a Cold/Warm
+    /// classification; left as `None` when the planner skipped
+    /// because no temperature input was usable. Surfaced on the wire
+    /// as `WorldSnapshot.weather_soc_inputs` for the dashboard
+    /// caption.
+    pub weather_soc_inputs: Option<WeatherSocInputs>,
+}
+
+/// Source of the temperature value the WeatherSoc planner used on a
+/// given tick. Mirrors the wire enum `WeatherSocTemperatureSource`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherSocTemperatureSource {
+    /// Daylight-window arithmetic mean over the day's hourly forecast
+    /// (Open-Meteo `temperature_2m`), bounded by `world.sunrise` →
+    /// `world.sunset`. The day is today before today's sunset and
+    /// tomorrow after.
+    Forecast,
+    /// Instantaneous outdoor sensor reading
+    /// (`world.sensors.outdoor_temperature.value`). Fallback path when
+    /// the forecast is stale, missing, or sunrise/sunset is unknown.
+    Sensor,
+}
+
+/// Which day's forecast slice the planner sourced from. Mirrors the
+/// wire enum `WeatherSocDay`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherSocDay {
+    Today,
+    Tomorrow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeatherSocInputs {
+    pub temperature_c: f64,
+    pub temperature_source: WeatherSocTemperatureSource,
+    pub energy_kwh: f64,
+    pub day: WeatherSocDay,
 }
 
 impl World {
@@ -723,6 +770,7 @@ impl World {
             sunrise_sunset_updated_at: None,
             pinned_registers: std::collections::BTreeMap::new(),
             weather_soc_active: None,
+            weather_soc_inputs: None,
         }
     }
 }

@@ -494,32 +494,56 @@ impl Default for DashboardConfig {
     }
 }
 
-/// PR-matter-outdoor-temp: optional MQTT bridge for a Matter
-/// outdoor-temperature sensor (e.g. a Meross Smart Hub publishing
-/// raw cluster attributes). Same broker/credentials as `[mqtt]`. When
-/// `mqtt_topic` is `None`, this path is silent — Open-Meteo's current-
-/// weather poller remains the sole `outdoor_temperature` source.
+/// Optional MQTT bridge feeding `SensorId::OutdoorTemperature`. Same
+/// broker/credentials as `[mqtt]`. Each entry in `sources` subscribes
+/// to one topic; readings from all sources are merged "most recent
+/// wins" via `Actual::on_reading`. Empty list ⇒ silent: the Open-Meteo
+/// current-weather poller remains the sole source.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OutdoorTemperatureLocalConfig {
-    /// Optional MQTT topic publishing local outdoor temperature.
-    /// Body must be a JSON-encoded int (centi-Celsius units, e.g.
-    /// `1640` for 16.4°C, signed int16 range [-27315, 32767]).
-    /// `null` / non-numeric bodies are silently dropped (the Meross
-    /// hub publishes `null` between low-power reads).
+    /// MQTT topics to subscribe to. Each entry declares its own body
+    /// shape (`format`). See `OutdoorTempSource`.
     #[serde(default)]
-    pub mqtt_topic: Option<String>,
-    /// Sanity bounds. Readings outside are dropped as glitches.
-    /// Defaults: -50.0 / 80.0.
+    pub sources: Vec<OutdoorTempSource>,
+    /// Sanity bounds applied to every source. Readings outside are
+    /// dropped as glitches. Defaults: -50.0 / 80.0.
     #[serde(default = "default_min_celsius")]
     pub min_celsius: f64,
     #[serde(default = "default_max_celsius")]
     pub max_celsius: f64,
 }
 
+/// One source feeding the outdoor-temperature sensor. Internally tagged
+/// on `format` so each variant carries the fields it needs.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "format", rename_all = "snake_case")]
+pub enum OutdoorTempSource {
+    /// Matter `TemperatureMeasurement::MeasuredValue` shape (cluster
+    /// 0x0402, attr 0): JSON-encoded signed int in centi-Celsius
+    /// (e.g. `1640` = 16.4°C). `null` / non-numeric / out-of-int16
+    /// bodies are silently dropped (the Meross hub publishes `null`
+    /// between low-power reads).
+    MatterCentiCelsius { topic: String },
+    /// Zigbee2MQTT-style JSON object: pluck the named field as a
+    /// floating-point °C value (e.g. `{"temperature":16.4,...}` with
+    /// `field = "temperature"`). Non-numeric / missing fields are
+    /// silently dropped.
+    JsonField { topic: String, field: String },
+}
+
+impl OutdoorTempSource {
+    #[must_use]
+    pub fn topic(&self) -> &str {
+        match self {
+            Self::MatterCentiCelsius { topic } | Self::JsonField { topic, .. } => topic,
+        }
+    }
+}
+
 impl Default for OutdoorTemperatureLocalConfig {
     fn default() -> Self {
         Self {
-            mqtt_topic: None,
+            sources: Vec::new(),
             min_celsius: default_min_celsius(),
             max_celsius: default_max_celsius(),
         }
@@ -1516,27 +1540,49 @@ discharge_time = "noon"
 
     #[test]
     fn outdoor_temperature_local_absent_yields_silent_defaults() {
-        // PR-matter-outdoor-temp: the Open-Meteo path is the sole
-        // outdoor_temperature source when the section is absent.
+        // Open-Meteo is the sole outdoor_temperature source when the
+        // section is absent.
         let c: Config = toml::from_str("").unwrap();
-        assert!(c.outdoor_temperature_local.mqtt_topic.is_none());
+        assert!(c.outdoor_temperature_local.sources.is_empty());
         assert!((c.outdoor_temperature_local.min_celsius - -50.0).abs() < f64::EPSILON);
         assert!((c.outdoor_temperature_local.max_celsius - 80.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn outdoor_temperature_local_parses_section() {
+    fn outdoor_temperature_local_parses_multi_source_section() {
         let t = r#"
             [outdoor_temperature_local]
-            mqtt_topic  = "matter/1/attributes/107_1026_0"
             min_celsius = -20.0
             max_celsius = 50.0
+
+            [[outdoor_temperature_local.sources]]
+            topic  = "matter/1/attributes/107_1026_0"
+            format = "matter_centi_celsius"
+
+            [[outdoor_temperature_local.sources]]
+            topic  = "zigbee2mqtt/nodon-snsr-outdoor"
+            format = "json_field"
+            field  = "temperature"
         "#;
         let c: Config = toml::from_str(t).unwrap();
-        assert_eq!(
-            c.outdoor_temperature_local.mqtt_topic.as_deref(),
-            Some("matter/1/attributes/107_1026_0")
-        );
+        assert_eq!(c.outdoor_temperature_local.sources.len(), 2);
+        match &c.outdoor_temperature_local.sources[0] {
+            OutdoorTempSource::MatterCentiCelsius { topic } => {
+                assert_eq!(topic, "matter/1/attributes/107_1026_0");
+            }
+            other @ OutdoorTempSource::JsonField { .. } => {
+                panic!("expected MatterCentiCelsius, got {other:?}")
+            }
+        }
+        match &c.outdoor_temperature_local.sources[1] {
+            OutdoorTempSource::JsonField { topic, field } => {
+                assert_eq!(topic, "zigbee2mqtt/nodon-snsr-outdoor");
+                assert_eq!(field, "temperature");
+            }
+            other @ OutdoorTempSource::MatterCentiCelsius { .. } => {
+                panic!("expected JsonField, got {other:?}")
+            }
+        }
         assert!((c.outdoor_temperature_local.min_celsius - -20.0).abs() < f64::EPSILON);
         assert!((c.outdoor_temperature_local.max_celsius - 50.0).abs() < f64::EPSILON);
     }

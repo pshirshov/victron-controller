@@ -136,21 +136,24 @@ fn format_sensor_value(v: f64) -> String {
 }
 
 // -----------------------------------------------------------------------------
-// PR-matter-outdoor-temp: Matter cluster attribute → SensorReading
+// Outdoor-temperature MQTT bridge: per-source body parsers.
+//
+// Multiple source types share the same outcome enum so the dispatch
+// site in the subscriber can treat them uniformly.
 // -----------------------------------------------------------------------------
 
-/// Outcome of parsing a Matter outdoor-temperature MQTT body.
+/// Outcome of parsing an outdoor-temperature MQTT body.
 /// Three-way distinction so the caller can log appropriately:
 /// - `Reading(°C)` — happy path; emit a `SensorReading`.
-/// - `Drop` — body is `null` / non-numeric / out of int16 range;
-///   silently dropped (Meross publishes `null` between low-power reads,
-///   so this is the common case and must not spam logs).
+/// - `Drop` — body is `null` / non-numeric / structurally invalid;
+///   silently dropped (the Meross hub publishes `null` between low-
+///   power reads, so this is the common case and must not spam logs).
 /// - `OutOfRange` — body parsed but the °C value is outside the
 ///   configured `[min_celsius, max_celsius]` sanity bounds; caller
 ///   should `warn!` (rate-limited) because this signals a real sensor
 ///   issue.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MatterOutdoorTempParse {
+pub enum OutdoorTempParse {
     Reading(f64),
     Drop,
     OutOfRange(f64),
@@ -165,33 +168,64 @@ pub fn parse_matter_outdoor_temp(
     payload: &[u8],
     min_celsius: f64,
     max_celsius: f64,
-) -> MatterOutdoorTempParse {
+) -> OutdoorTempParse {
     let centi: i64 = match serde_json::from_slice::<serde_json::Value>(payload) {
         Ok(serde_json::Value::Number(n)) => match n.as_i64() {
             Some(v) => v,
-            None => return MatterOutdoorTempParse::Drop,
+            None => return OutdoorTempParse::Drop,
         },
         // null, "unavailable", arrays, schema drift — silently drop.
-        _ => return MatterOutdoorTempParse::Drop,
+        _ => return OutdoorTempParse::Drop,
     };
     // Matter int16 range. Anything outside indicates corruption /
     // schema drift, not a sensor error — drop silently.
     if !(-27315..=32767).contains(&centi) {
-        return MatterOutdoorTempParse::Drop;
+        return OutdoorTempParse::Drop;
     }
     #[allow(clippy::cast_precision_loss)]
     let celsius = centi as f64 / 100.0;
-    if !(min_celsius..=max_celsius).contains(&celsius) {
-        return MatterOutdoorTempParse::OutOfRange(celsius);
-    }
-    MatterOutdoorTempParse::Reading(celsius)
+    bound_celsius(celsius, min_celsius, max_celsius)
 }
 
-/// Build the `Event::Sensor` for a parsed Matter outdoor-temperature
-/// reading. Separated from the parser so tests can assert the wiring
-/// without standing up an MQTT client.
+/// Parse a Zigbee2MQTT-style JSON object body, extracting the named
+/// field as a floating-point °C value (e.g. nodon-snsr-outdoor publishes
+/// `{"temperature":16.4,"humidity":...}` with `field = "temperature"`).
+/// Missing field, non-numeric value, or non-object body ⇒ `Drop`.
 #[must_use]
-pub fn matter_outdoor_temp_event(celsius: f64, at: Instant) -> Event {
+pub fn parse_json_field_outdoor_temp(
+    payload: &[u8],
+    field: &str,
+    min_celsius: f64,
+    max_celsius: f64,
+) -> OutdoorTempParse {
+    let value: serde_json::Value = match serde_json::from_slice(payload) {
+        Ok(v) => v,
+        Err(_) => return OutdoorTempParse::Drop,
+    };
+    let Some(field_value) = value.get(field) else {
+        return OutdoorTempParse::Drop;
+    };
+    let Some(celsius) = field_value.as_f64() else {
+        return OutdoorTempParse::Drop;
+    };
+    if !celsius.is_finite() {
+        return OutdoorTempParse::Drop;
+    }
+    bound_celsius(celsius, min_celsius, max_celsius)
+}
+
+fn bound_celsius(celsius: f64, min_celsius: f64, max_celsius: f64) -> OutdoorTempParse {
+    if !(min_celsius..=max_celsius).contains(&celsius) {
+        return OutdoorTempParse::OutOfRange(celsius);
+    }
+    OutdoorTempParse::Reading(celsius)
+}
+
+/// Build the `Event::Sensor` for a parsed outdoor-temperature reading.
+/// Separated from the parser so tests can assert the wiring without
+/// standing up an MQTT client.
+#[must_use]
+pub fn outdoor_temp_event(celsius: f64, at: Instant) -> Event {
     Event::Sensor(SensorReading {
         id: SensorId::OutdoorTemperature,
         value: celsius,
@@ -1581,13 +1615,13 @@ mod tests {
     fn matter_outdoor_temp_parses_positive_centi_celsius() {
         // 16.4 °C — the running example from PR scope.
         match parse_matter_outdoor_temp(b"1640", -50.0, 80.0) {
-            MatterOutdoorTempParse::Reading(v) => {
+            OutdoorTempParse::Reading(v) => {
                 assert!((v - 16.4).abs() < 1e-9, "got {v}");
             }
             other => panic!("expected Reading(16.4), got {other:?}"),
         }
         // The wired-event helper preserves the value.
-        let ev = matter_outdoor_temp_event(16.4, Instant::now());
+        let ev = outdoor_temp_event(16.4, Instant::now());
         match ev {
             Event::Sensor(SensorReading {
                 id: SensorId::OutdoorTemperature,
@@ -1601,7 +1635,7 @@ mod tests {
     #[test]
     fn matter_outdoor_temp_parses_negative_centi_celsius() {
         match parse_matter_outdoor_temp(b"-450", -50.0, 80.0) {
-            MatterOutdoorTempParse::Reading(v) => {
+            OutdoorTempParse::Reading(v) => {
                 assert!((v - -4.5).abs() < 1e-9, "got {v}");
             }
             other => panic!("expected Reading(-4.5), got {other:?}"),
@@ -1612,7 +1646,7 @@ mod tests {
     fn matter_outdoor_temp_drops_null_body() {
         assert_eq!(
             parse_matter_outdoor_temp(b"null", -50.0, 80.0),
-            MatterOutdoorTempParse::Drop,
+            OutdoorTempParse::Drop,
         );
     }
 
@@ -1620,7 +1654,7 @@ mod tests {
     fn matter_outdoor_temp_drops_string_body() {
         assert_eq!(
             parse_matter_outdoor_temp(b"\"unavailable\"", -50.0, 80.0),
-            MatterOutdoorTempParse::Drop,
+            OutdoorTempParse::Drop,
         );
     }
 
@@ -1629,7 +1663,7 @@ mod tests {
         // Not even valid JSON.
         assert_eq!(
             parse_matter_outdoor_temp(b"not-json", -50.0, 80.0),
-            MatterOutdoorTempParse::Drop,
+            OutdoorTempParse::Drop,
         );
     }
 
@@ -1639,12 +1673,12 @@ mod tests {
         // [-27315, 32767] — drop silently as schema drift.
         assert_eq!(
             parse_matter_outdoor_temp(b"100000", -50.0, 80.0),
-            MatterOutdoorTempParse::Drop,
+            OutdoorTempParse::Drop,
         );
         // Negative overflow too.
         assert_eq!(
             parse_matter_outdoor_temp(b"-30000", -50.0, 80.0),
-            MatterOutdoorTempParse::Drop,
+            OutdoorTempParse::Drop,
         );
     }
 
@@ -1653,7 +1687,7 @@ mod tests {
         // 7000 centi-°C = 70.0 °C, within int16 but above the
         // configured upper sanity bound (50.0).
         match parse_matter_outdoor_temp(b"7000", -20.0, 50.0) {
-            MatterOutdoorTempParse::OutOfRange(v) => {
+            OutdoorTempParse::OutOfRange(v) => {
                 assert!((v - 70.0).abs() < 1e-9);
             }
             other => panic!("expected OutOfRange(70.0), got {other:?}"),
@@ -1665,7 +1699,7 @@ mod tests {
         // 500 centi-°C = 5.0 °C — passes both int16 and configured
         // [-20, 50] bounds.
         match parse_matter_outdoor_temp(b"500", -20.0, 50.0) {
-            MatterOutdoorTempParse::Reading(v) => assert!((v - 5.0).abs() < 1e-9),
+            OutdoorTempParse::Reading(v) => assert!((v - 5.0).abs() < 1e-9),
             other => panic!("expected Reading(5.0), got {other:?}"),
         }
     }
@@ -1674,12 +1708,79 @@ mod tests {
     fn matter_outdoor_temp_bounds_are_inclusive() {
         // Exactly at the bounds should pass.
         match parse_matter_outdoor_temp(b"-2000", -20.0, 50.0) {
-            MatterOutdoorTempParse::Reading(v) => assert!((v - -20.0).abs() < 1e-9),
+            OutdoorTempParse::Reading(v) => assert!((v - -20.0).abs() < 1e-9),
             other => panic!("expected Reading(-20.0), got {other:?}"),
         }
         match parse_matter_outdoor_temp(b"5000", -20.0, 50.0) {
-            MatterOutdoorTempParse::Reading(v) => assert!((v - 50.0).abs() < 1e-9),
+            OutdoorTempParse::Reading(v) => assert!((v - 50.0).abs() < 1e-9),
             other => panic!("expected Reading(50.0), got {other:?}"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // JSON-field outdoor-temperature parser (zigbee2mqtt-style bodies)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn json_field_outdoor_temp_extracts_named_field() {
+        // Nodon-style body: object with several fields, we want
+        // `temperature`. Body shape is the real wire format published by
+        // zigbee2mqtt for the Nodon outdoor sensor.
+        let body =
+            br#"{"battery":100,"humidity":70,"linkquality":90,"temperature":16.4,"voltage":3000}"#;
+        match parse_json_field_outdoor_temp(body, "temperature", -50.0, 80.0) {
+            OutdoorTempParse::Reading(v) => assert!((v - 16.4).abs() < 1e-9, "got {v}"),
+            other => panic!("expected Reading(16.4), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_field_outdoor_temp_handles_integer_value() {
+        // serde_json represents integers without decimals; as_f64 should
+        // still succeed.
+        let body = br#"{"temperature":17}"#;
+        match parse_json_field_outdoor_temp(body, "temperature", -50.0, 80.0) {
+            OutdoorTempParse::Reading(v) => assert!((v - 17.0).abs() < 1e-9),
+            other => panic!("expected Reading(17.0), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_field_outdoor_temp_drops_missing_field() {
+        let body = br#"{"humidity":70,"battery":100}"#;
+        assert_eq!(
+            parse_json_field_outdoor_temp(body, "temperature", -50.0, 80.0),
+            OutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn json_field_outdoor_temp_drops_null_field() {
+        let body = br#"{"temperature":null}"#;
+        assert_eq!(
+            parse_json_field_outdoor_temp(body, "temperature", -50.0, 80.0),
+            OutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn json_field_outdoor_temp_drops_non_object_body() {
+        assert_eq!(
+            parse_json_field_outdoor_temp(b"null", "temperature", -50.0, 80.0),
+            OutdoorTempParse::Drop,
+        );
+        assert_eq!(
+            parse_json_field_outdoor_temp(b"not-json", "temperature", -50.0, 80.0),
+            OutdoorTempParse::Drop,
+        );
+    }
+
+    #[test]
+    fn json_field_outdoor_temp_oor_when_outside_bounds() {
+        let body = br#"{"temperature":70.0}"#;
+        match parse_json_field_outdoor_temp(body, "temperature", -20.0, 50.0) {
+            OutdoorTempParse::OutOfRange(v) => assert!((v - 70.0).abs() < 1e-9),
+            other => panic!("expected OutOfRange(70.0), got {other:?}"),
         }
     }
 

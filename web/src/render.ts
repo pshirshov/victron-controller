@@ -1960,6 +1960,49 @@ export function renderWeatherSocTable(
     }
   }
   updateKeyedRows(tbody, buildWeatherSocTableRows(tableFlat, boundaries, active));
+  // Live-update the winter-temperature value baked into the column
+  // headers. The static HTML carries a placeholder "12" inside two
+  // anchors with stable ids; tbody re-renders don't touch thead, so
+  // without this both headers would stay at the hardcoded value even
+  // after the operator edits the threshold.
+  const winterTempRaw = (toPlain(snap.knobs) as Record<string, unknown>)[
+    "weathersoc_winter_temperature_threshold"
+  ];
+  if (typeof winterTempRaw === "number") {
+    const text = fmtBoundary(winterTempRaw);
+    const warmHdr = document.getElementById("weathersoc-winter-temp-header-warm");
+    const coldHdr = document.getElementById("weathersoc-winter-temp-header-cold");
+    if (warmHdr) warmHdr.textContent = text;
+    if (coldHdr) coldHdr.textContent = text;
+  }
+  // Caption above the table: temperature + fused energy + which day's
+  // forecast both came from. Empty string when the planner skipped or
+  // hasn't run yet — the empty caption collapses visually so the
+  // table is unaffected.
+  const caption = document.getElementById("weather-soc-temperature-caption");
+  if (caption) {
+    const inputsRaw = (snap as unknown as { weather_soc_inputs?: unknown })
+      .weather_soc_inputs;
+    if (inputsRaw && typeof inputsRaw === "object") {
+      const flat = toPlain(inputsRaw) as Record<string, unknown>;
+      const tC = typeof flat.temperature_c === "number" ? flat.temperature_c : null;
+      const tSrc = typeof flat.temperature_source === "string" ? flat.temperature_source : null;
+      const kwh = typeof flat.energy_kwh === "number" ? flat.energy_kwh : null;
+      const day = typeof flat.day === "string" ? flat.day : null;
+      if (tC !== null && tSrc !== null && kwh !== null && day !== null) {
+        const dayLabel = day === "Tomorrow" ? "tomorrow" : "today";
+        const tempLabel =
+          tSrc === "Forecast" ? "forecast, sunrise–sunset avg" : "sensor, fallback";
+        caption.textContent =
+          `Inputs (${dayLabel}): ${tC.toFixed(1)} °C (${tempLabel}) · `
+          + `${kwh.toFixed(1)} kWh fused solar`;
+      } else {
+        caption.textContent = "";
+      }
+    } else {
+      caption.textContent = "";
+    }
+  }
 }
 
 // --- PR-WSOC-EDIT-2: single-knob-edit modal body ------------------------
@@ -2138,6 +2181,14 @@ export function clearSingleKnobEditModal(): void {
 /// input value differs from the previously-stamped snapshot value.
 /// Avoids publishing untouched values back to retained MQTT.
 /// `SetFloatKnob` covers `int` knobs too per the existing convention.
+///
+/// The shell's `knob_id_from_name` (crates/shell/src/dashboard/
+/// convert.rs) accepts the dotted form ONLY for cell knobs
+/// (`weathersoc.table.<bucket>.<temp>.<field>`). The boundary knobs
+/// (`weathersoc.threshold.energy.*`, `weathersoc.threshold.winter-
+/// temperature`) are matched by their snake_case name, so we translate
+/// here before dispatch — otherwise the command silently drops and
+/// Save appears to do nothing.
 function saveSingleKnobEdit(bodyEl: HTMLElement): void {
   const send = singleKnobSendCommand;
   if (!send) return;
@@ -2147,11 +2198,18 @@ function saveSingleKnobEdit(bodyEl: HTMLElement): void {
   if (!spec) return;
   const input = bodyEl.querySelector("[data-singleknob-field]") as HTMLInputElement | null;
   if (!input) return;
+  // Cell knobs keep the dotted form (shell has a dedicated parser);
+  // boundary / winter-temp knobs need the snake_case form. The
+  // `dottedToSnake` helper returns "" for any dotted name it doesn't
+  // recognise; cell knobs fall through to that branch and keep the
+  // original dotted name as-is.
+  const snake = dottedToSnake(dotted);
+  const wireName = snake || dotted;
   if (spec.kind === "bool") {
     const v = input.checked;
     const last = input.dataset.singleknobLastSnap;
     if (last !== undefined && (last === "true") === v) return;
-    send({ SetBoolKnob: { knob_name: dotted, value: v } });
+    send({ SetBoolKnob: { knob_name: wireName, value: v } });
   } else if (spec.kind === "enum") {
     const v = input.value;
     const last = input.dataset.singleknobLastSnap;
@@ -2159,7 +2217,7 @@ function saveSingleKnobEdit(bodyEl: HTMLElement): void {
     // single-knob-edit currently doesn't open enum knobs; defensive
     // path emits the same shape as the renderKnobs enum dispatcher.
     if (spec.cmdVariant === "SetMode") {
-      send({ SetMode: { knob_name: dotted, value: v } });
+      send({ SetMode: { knob_name: wireName, value: v } });
     } else {
       // D02: hard fail rather than dispatch a payload missing
       // `knob_name`. single-knob-edit currently only opens float/bool
@@ -2176,7 +2234,7 @@ function saveSingleKnobEdit(bodyEl: HTMLElement): void {
     if (!isFinite(v)) return;
     const last = input.dataset.singleknobLastSnap;
     if (last !== undefined && Number(last) === v) return;
-    send({ SetFloatKnob: { knob_name: dotted, value: v } });
+    send({ SetFloatKnob: { knob_name: wireName, value: v } });
   }
 }
 

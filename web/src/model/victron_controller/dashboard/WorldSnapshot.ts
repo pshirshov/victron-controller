@@ -11,6 +11,7 @@ import {SocChart, SocChart_UEBACodec} from './SocChart'
 import {WeatherSocActive, WeatherSocActive_UEBACodec} from './WeatherSocActive'
 import {SensorMeta, SensorMeta_UEBACodec} from './SensorMeta'
 import {Actuated, Actuated_UEBACodec} from './Actuated'
+import {WeatherSocInputs, WeatherSocInputs_UEBACodec} from './WeatherSocInputs'
 import {ZappiDrainState, ZappiDrainState_UEBACodec} from './ZappiDrainState'
 import {TypedSensors, TypedSensors_UEBACodec} from './TypedSensors'
 import {Forecasts, Forecasts_UEBACodec} from './Forecasts'
@@ -35,9 +36,10 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     private readonly _zappi_drain_state: ZappiDrainState;
     private readonly _typed_sensors: TypedSensors;
     private readonly _weather_soc_active: WeatherSocActive | undefined;
+    private readonly _weather_soc_inputs: WeatherSocInputs | undefined;
     private readonly _diagnostics: Diagnostics;
 
-    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, soc_chart: SocChart, scheduled_actions: ScheduledActions, pinned_registers: Array<PinnedRegister>, zappi_drain_state: ZappiDrainState, typed_sensors: TypedSensors, weather_soc_active: WeatherSocActive | undefined, diagnostics: Diagnostics) {
+    constructor(captured_at_epoch_ms: bigint, captured_at_naive_iso: string, sensors: Sensors, sensors_meta: Record<string, SensorMeta>, actuated: Actuated, knobs: Knobs, bookkeeping: Bookkeeping, forecasts: Forecasts, decisions: Decisions, cores_state: CoresState, timers: Timers, soc_chart: SocChart, scheduled_actions: ScheduledActions, pinned_registers: Array<PinnedRegister>, zappi_drain_state: ZappiDrainState, typed_sensors: TypedSensors, weather_soc_active: WeatherSocActive | undefined, weather_soc_inputs: WeatherSocInputs | undefined, diagnostics: Diagnostics) {
         this._captured_at_epoch_ms = captured_at_epoch_ms
         this._captured_at_naive_iso = captured_at_naive_iso
         this._sensors = sensors
@@ -55,6 +57,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
         this._zappi_drain_state = zappi_drain_state
         this._typed_sensors = typed_sensors
         this._weather_soc_active = weather_soc_active
+        this._weather_soc_inputs = weather_soc_inputs
         this._diagnostics = diagnostics
     }
 
@@ -109,6 +112,9 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
     public get weather_soc_active(): WeatherSocActive | undefined {
         return this._weather_soc_active;
     }
+    public get weather_soc_inputs(): WeatherSocInputs | undefined {
+        return this._weather_soc_inputs;
+    }
     public get diagnostics(): Diagnostics {
         return this._diagnostics;
     }
@@ -132,11 +138,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             zappi_drain_state: this._zappi_drain_state,
             typed_sensors: this._typed_sensors,
             weather_soc_active: this._weather_soc_active !== undefined ? this._weather_soc_active : undefined,
+            weather_soc_inputs: this._weather_soc_inputs !== undefined ? this._weather_soc_inputs : undefined,
             diagnostics: this._diagnostics
         };
     }
 
-    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; soc_chart?: SocChart; scheduled_actions?: ScheduledActions; pinned_registers?: Array<PinnedRegister>; zappi_drain_state?: ZappiDrainState; typed_sensors?: TypedSensors; weather_soc_active?: WeatherSocActive | undefined; diagnostics?: Diagnostics}): WorldSnapshot {
+    public with(overrides: {captured_at_epoch_ms?: bigint; captured_at_naive_iso?: string; sensors?: Sensors; sensors_meta?: Record<string, SensorMeta>; actuated?: Actuated; knobs?: Knobs; bookkeeping?: Bookkeeping; forecasts?: Forecasts; decisions?: Decisions; cores_state?: CoresState; timers?: Timers; soc_chart?: SocChart; scheduled_actions?: ScheduledActions; pinned_registers?: Array<PinnedRegister>; zappi_drain_state?: ZappiDrainState; typed_sensors?: TypedSensors; weather_soc_active?: WeatherSocActive | undefined; weather_soc_inputs?: WeatherSocInputs | undefined; diagnostics?: Diagnostics}): WorldSnapshot {
         return new WorldSnapshot(
             'captured_at_epoch_ms' in overrides ? overrides.captured_at_epoch_ms! : this._captured_at_epoch_ms,
             'captured_at_naive_iso' in overrides ? overrides.captured_at_naive_iso! : this._captured_at_naive_iso,
@@ -155,11 +162,12 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             'zappi_drain_state' in overrides ? overrides.zappi_drain_state! : this._zappi_drain_state,
             'typed_sensors' in overrides ? overrides.typed_sensors! : this._typed_sensors,
             'weather_soc_active' in overrides ? overrides.weather_soc_active! : this._weather_soc_active,
+            'weather_soc_inputs' in overrides ? overrides.weather_soc_inputs! : this._weather_soc_inputs,
             'diagnostics' in overrides ? overrides.diagnostics! : this._diagnostics
         );
     }
 
-    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; soc_chart: SocChart; scheduled_actions: ScheduledActions; pinned_registers: Array<PinnedRegister>; zappi_drain_state: ZappiDrainState; typed_sensors: TypedSensors; weather_soc_active: WeatherSocActive | undefined; diagnostics: Diagnostics}): WorldSnapshot {
+    public static fromPlain(obj: {captured_at_epoch_ms: bigint; captured_at_naive_iso: string; sensors: Sensors; sensors_meta: Record<string, SensorMeta>; actuated: Actuated; knobs: Knobs; bookkeeping: Bookkeeping; forecasts: Forecasts; decisions: Decisions; cores_state: CoresState; timers: Timers; soc_chart: SocChart; scheduled_actions: ScheduledActions; pinned_registers: Array<PinnedRegister>; zappi_drain_state: ZappiDrainState; typed_sensors: TypedSensors; weather_soc_active: WeatherSocActive | undefined; weather_soc_inputs: WeatherSocInputs | undefined; diagnostics: Diagnostics}): WorldSnapshot {
         return new WorldSnapshot(
             obj.captured_at_epoch_ms,
             obj.captured_at_naive_iso,
@@ -178,6 +186,7 @@ export class WorldSnapshot implements BaboonGeneratedLatest {
             obj.zappi_drain_state,
             obj.typed_sensors,
             obj.weather_soc_active,
+            obj.weather_soc_inputs,
             obj.diagnostics
         );
     }
@@ -334,6 +343,18 @@ export class WorldSnapshot_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.weather_soc_inputs === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                WeatherSocInputs_UEBACodec.instance.encode(ctx, value.weather_soc_inputs, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             Diagnostics_UEBACodec.instance.encode(ctx, value.diagnostics, buffer);
             writer.writeAll(buffer.toBytes());
         } else {
@@ -370,6 +391,12 @@ export class WorldSnapshot_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 WeatherSocActive_UEBACodec.instance.encode(ctx, value.weather_soc_active, writer);
             }
+            if (value.weather_soc_inputs === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                WeatherSocInputs_UEBACodec.instance.encode(ctx, value.weather_soc_inputs, writer);
+            }
             Diagnostics_UEBACodec.instance.encode(ctx, value.diagnostics, writer);
         }
     }
@@ -382,7 +409,7 @@ export class WorldSnapshot_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 15; i++) {
+            for (let i = 0; i < 16; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -404,6 +431,7 @@ export class WorldSnapshot_UEBACodec {
         const zappi_drain_state = ZappiDrainState_UEBACodec.instance.decode(ctx, reader);
         const typed_sensors = TypedSensors_UEBACodec.instance.decode(ctx, reader);
         const weather_soc_active = (BinTools.readByte(reader) === 0 ? undefined : WeatherSocActive_UEBACodec.instance.decode(ctx, reader));
+        const weather_soc_inputs = (BinTools.readByte(reader) === 0 ? undefined : WeatherSocInputs_UEBACodec.instance.decode(ctx, reader));
         const diagnostics = Diagnostics_UEBACodec.instance.decode(ctx, reader);
         return new WorldSnapshot(
             captured_at_epoch_ms,
@@ -423,6 +451,7 @@ export class WorldSnapshot_UEBACodec {
             zappi_drain_state,
             typed_sensors,
             weather_soc_active,
+            weather_soc_inputs,
             diagnostics,
         );
     }

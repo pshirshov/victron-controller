@@ -15,7 +15,7 @@ version "0.3.0"
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors ForecastSnapshot }
 
 // PR-DIAG-1: process + host memory diagnostics. Sampled in the shell on
 // a fixed cadence (~120 s) — separate from the per-tick world snapshot
@@ -419,6 +419,11 @@ root data WorldSnapshot {
   // evaluated this boot. Used by the dashboard widget to highlight the
   // active 4-cell group.
   weather_soc_active: opt[WeatherSocActive]
+  // PR: WeatherSoc planner inputs (temperature value + source, fused
+  // solar energy forecast, today vs tomorrow). None before the
+  // planner's first successful run or when both temperature inputs
+  // were unavailable. See `WeatherSocInputs` for field semantics.
+  weather_soc_inputs: opt[WeatherSocInputs]
   // PR-DIAG-1: process + host memory diagnostics surface. Always
   // populated (zero-initialised before the first sampler tick).
   diagnostics: Diagnostics
@@ -431,4 +436,54 @@ root data WorldSnapshot {
 data WeatherSocActive {
   bucket: str
   cold: bit
+}
+
+// 0.3.0 redefinition of `ForecastSnapshot` — adds
+// `hourly_temperature_c`, a length-48 vector of per-hour outdoor
+// temperatures in °C starting at midnight LOCAL today. Populated by
+// providers that fetch temperature alongside irradiance (Open-Meteo
+// today); empty for providers that don't (Solcast, Forecast.Solar,
+// baseline). Consumed by the WeatherSoc planner to derive the
+// daylight-window average that drives the Cold/Warm column choice.
+data ForecastSnapshot {
+  today_kwh: f64
+  tomorrow_kwh: f64
+  fetched_at_epoch_ms: i64
+  hourly_kwh: lst[f64]
+  hourly_temperature_c: lst[f64]
+}
+
+// Source of the temperature value the WeatherSoc planner used this
+// tick. `Forecast` = daylight-window average over today's (or
+// tomorrow's, post-sunset) hourly forecast; `Sensor` = instantaneous
+// outdoor sensor reading (fallback when the forecast is stale,
+// missing, or the sunrise/sunset window is unknown).
+enum WeatherSocTemperatureSource {
+  Forecast
+  Sensor
+}
+
+// Which day's forecast the WeatherSoc planner sourced its inputs
+// from this tick. `Today` is the default; `Tomorrow` kicks in once
+// today's sunset has passed — at that point today's forecast number
+// is no longer forward-looking (those hours are in the past), so the
+// column choice should reflect tomorrow's regime instead.
+enum WeatherSocDay {
+  Today
+  Tomorrow
+}
+
+// Inputs the WeatherSoc planner consulted on its most recent tick.
+// `temperature_c` + `temperature_source` describe the value that
+// drove the Cold/Warm column choice; `energy_kwh` is the fused solar
+// forecast that drove the energy bucket; `day` says whether both
+// values were sourced from today's or tomorrow's forecast slice.
+// `temperature_c` is `nan` when the sensor fallback fired and the
+// sensor itself was unavailable (controller skipped). `energy_kwh`
+// is `nan` when no provider was fresh (controller skipped).
+data WeatherSocInputs {
+  temperature_c: f64
+  temperature_source: WeatherSocTemperatureSource
+  energy_kwh: f64
+  day: WeatherSocDay
 }

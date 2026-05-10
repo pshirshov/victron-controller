@@ -24,8 +24,8 @@ mod serialize;
 pub use discovery::publish_ha_discovery;
 pub use log_layer::{log_channel, spawn_log_publisher, LogRecord, MqttLogLayer};
 pub use serialize::{
-    decode_knob_set, decode_state_message, encode_publish_payload, matter_outdoor_temp_event,
-    parse_matter_outdoor_temp, set_hardware_params, MatterOutdoorTempParse,
+    decode_knob_set, decode_state_message, encode_publish_payload, outdoor_temp_event,
+    parse_json_field_outdoor_temp, parse_matter_outdoor_temp, set_hardware_params, OutdoorTempParse,
 };
 
 // PR-ev-soc-sensor: parsers re-exported for unit testing and any
@@ -53,7 +53,9 @@ use victron_controller_core::types::{
     TimerStatus,
 };
 
-use crate::config::{EvConfig, MqttConfig, OutdoorTemperatureLocalConfig, Zigbee2MqttConfig};
+use crate::config::{
+    EvConfig, MqttConfig, OutdoorTempSource, OutdoorTemperatureLocalConfig, Zigbee2MqttConfig,
+};
 use crate::dashboard::SocHistoryStore;
 use std::sync::Arc;
 
@@ -196,13 +198,36 @@ pub async fn connect(
         "zigbee2mqtt.cooker_availability_topic",
     );
 
+    // Validate every outdoor-temp source topic the same way we
+    // validate EV/z2m topics — whitespace artefacts are silently
+    // dropped from the live subscription set with a loud warn.
+    let outdoor_temp_sources: Vec<OutdoorTempSource> = outdoor_temp
+        .sources
+        .iter()
+        .filter_map(|src| match src {
+            OutdoorTempSource::MatterCentiCelsius { topic } => validate_topic(
+                Some(topic.as_str()),
+                "outdoor_temperature_local.sources.topic",
+            )
+            .map(|t| OutdoorTempSource::MatterCentiCelsius { topic: t }),
+            OutdoorTempSource::JsonField { topic, field } => validate_topic(
+                Some(topic.as_str()),
+                "outdoor_temperature_local.sources.topic",
+            )
+            .map(|t| OutdoorTempSource::JsonField {
+                topic: t,
+                field: field.clone(),
+            }),
+        })
+        .collect();
+
     let subscriber = Subscriber {
         client,
         event_loop,
         topic_root: config.topic_root.clone(),
-        matter_outdoor_topic: outdoor_temp.mqtt_topic.clone(),
-        matter_outdoor_min_c: outdoor_temp.min_celsius,
-        matter_outdoor_max_c: outdoor_temp.max_celsius,
+        outdoor_temp_sources,
+        outdoor_temp_min_c: outdoor_temp.min_celsius,
+        outdoor_temp_max_c: outdoor_temp.max_celsius,
         soc_history,
         ev_soc_discovery_topic: ev_soc_topic_validated,
         ev_soc_state_topic: None,
@@ -402,11 +427,13 @@ pub struct Subscriber {
     client: AsyncClient,
     event_loop: EventLoop,
     topic_root: String,
-    /// PR-matter-outdoor-temp: when `Some`, subscribe to this exact
-    /// topic and feed its readings as `SensorId::OutdoorTemperature`.
-    matter_outdoor_topic: Option<String>,
-    matter_outdoor_min_c: f64,
-    matter_outdoor_max_c: f64,
+    /// Outdoor-temperature MQTT bridge: list of source topics + their
+    /// body shapes. Each source is exact-match on Publish; readings
+    /// merge into `SensorId::OutdoorTemperature` via `Actual::on_reading`
+    /// (most recent wins). Empty ⇒ bridge dormant.
+    outdoor_temp_sources: Vec<OutdoorTempSource>,
+    outdoor_temp_min_c: f64,
+    outdoor_temp_max_c: f64,
     /// PR-soc-history-persist: in-memory ring that gets restored from
     /// the retained `<topic_root>/state/soc_history` payload observed
     /// during the bootstrap window. Periodic re-publishes after
@@ -471,9 +498,9 @@ impl std::fmt::Debug for Subscriber {
             .field("client", &"<AsyncClient>")
             .field("event_loop", &"<EventLoop>")
             .field("topic_root", &self.topic_root)
-            .field("matter_outdoor_topic", &self.matter_outdoor_topic)
-            .field("matter_outdoor_min_c", &self.matter_outdoor_min_c)
-            .field("matter_outdoor_max_c", &self.matter_outdoor_max_c)
+            .field("outdoor_temp_sources", &self.outdoor_temp_sources)
+            .field("outdoor_temp_min_c", &self.outdoor_temp_min_c)
+            .field("outdoor_temp_max_c", &self.outdoor_temp_max_c)
             .field("soc_history", &"<SocHistoryStore>")
             .field("ev_soc_discovery_topic", &self.ev_soc_discovery_topic)
             .field("ev_soc_state_topic", &self.ev_soc_state_topic)
@@ -675,7 +702,7 @@ impl Subscriber {
 
         // Phase 2: main loop ---------------------------------------------------
         self.subscribe_set_topics(&set_topics).await?;
-        self.subscribe_matter_outdoor().await;
+        self.subscribe_outdoor_temp_sources().await;
         // PR-ev-soc-sensor: subscribe to the publisher's HA-discovery
         // config topic. The retained discovery payload arrives shortly
         // after subscribe; the inbound dispatch below resolves
@@ -713,7 +740,7 @@ impl Subscriber {
                     if let Err(e2) = self.subscribe_set_topics(&set_topics).await {
                         warn!(error = %e2, "re-subscribe failed; continuing");
                     }
-                    self.subscribe_matter_outdoor().await;
+                    self.subscribe_outdoor_temp_sources().await;
                     self.subscribe_ev_soc_discovery().await;
                     if let Some(t) = self.ev_soc_state_topic.clone() {
                         self.subscribe_ev_soc_state(&t).await;
@@ -732,7 +759,7 @@ impl Subscriber {
                     if let Err(e) = self.subscribe_set_topics(&set_topics).await {
                         warn!(error = %e, "re-subscribe after ConnAck failed");
                     }
-                    self.subscribe_matter_outdoor().await;
+                    self.subscribe_outdoor_temp_sources().await;
                     self.subscribe_ev_soc_discovery().await;
                     if let Some(t) = self.ev_soc_state_topic.clone() {
                         self.subscribe_ev_soc_state(&t).await;
@@ -744,52 +771,62 @@ impl Subscriber {
                     self.subscribe_z2m_topics().await;
                 }
                 MqttEvent::Incoming(Packet::Publish(publish)) => {
-                    // PR-matter-outdoor-temp: exact-match against the
-                    // configured Matter outdoor-temperature topic before
-                    // falling through to the knob/set decoder.
-                    if let Some(topic) = self.matter_outdoor_topic.as_deref() {
-                        if publish.topic == topic {
-                            match serialize::parse_matter_outdoor_temp(
-                                &publish.payload,
-                                self.matter_outdoor_min_c,
-                                self.matter_outdoor_max_c,
-                            ) {
-                                MatterOutdoorTempParse::Reading(c) => {
-                                    let event = serialize::matter_outdoor_temp_event(
-                                        c,
-                                        Instant::now(),
-                                    );
-                                    if tx.send(event).await.is_err() {
-                                        info!(
-                                            "runtime receiver closed; mqtt subscriber exiting"
-                                        );
-                                        return Ok(());
-                                    }
-                                }
-                                MatterOutdoorTempParse::Drop => {
-                                    debug!(
-                                        topic = %publish.topic,
-                                        "matter outdoor temp body dropped (null/non-numeric/out-of-int16)"
-                                    );
-                                }
-                                MatterOutdoorTempParse::OutOfRange(c) => {
-                                    let now = Instant::now();
-                                    let should_warn = last_oor_warn
-                                        .is_none_or(|t| now.duration_since(t) >= oor_warn_period);
-                                    if should_warn {
-                                        warn!(
-                                            celsius = c,
-                                            min = self.matter_outdoor_min_c,
-                                            max = self.matter_outdoor_max_c,
-                                            topic = %publish.topic,
-                                            "matter outdoor temp out of sanity range; dropped (rate-limited 60s)"
-                                        );
-                                        last_oor_warn = Some(now);
-                                    }
+                    // Exact-match against each configured outdoor-temp
+                    // source before falling through to the knob/set
+                    // decoder. Empty list ⇒ this whole block no-ops.
+                    if let Some(src) = self
+                        .outdoor_temp_sources
+                        .iter()
+                        .find(|s| s.topic() == publish.topic)
+                    {
+                        let parsed = match src {
+                            OutdoorTempSource::MatterCentiCelsius { .. } => {
+                                serialize::parse_matter_outdoor_temp(
+                                    &publish.payload,
+                                    self.outdoor_temp_min_c,
+                                    self.outdoor_temp_max_c,
+                                )
+                            }
+                            OutdoorTempSource::JsonField { field, .. } => {
+                                serialize::parse_json_field_outdoor_temp(
+                                    &publish.payload,
+                                    field,
+                                    self.outdoor_temp_min_c,
+                                    self.outdoor_temp_max_c,
+                                )
+                            }
+                        };
+                        match parsed {
+                            OutdoorTempParse::Reading(c) => {
+                                let event = serialize::outdoor_temp_event(c, Instant::now());
+                                if tx.send(event).await.is_err() {
+                                    info!("runtime receiver closed; mqtt subscriber exiting");
+                                    return Ok(());
                                 }
                             }
-                            continue;
+                            OutdoorTempParse::Drop => {
+                                debug!(
+                                    topic = %publish.topic,
+                                    "outdoor temp body dropped (null/non-numeric/missing field)"
+                                );
+                            }
+                            OutdoorTempParse::OutOfRange(c) => {
+                                let now = Instant::now();
+                                let should_warn = last_oor_warn
+                                    .is_none_or(|t| now.duration_since(t) >= oor_warn_period);
+                                if should_warn {
+                                    warn!(
+                                        celsius = c,
+                                        min = self.outdoor_temp_min_c,
+                                        max = self.outdoor_temp_max_c,
+                                        topic = %publish.topic,
+                                        "outdoor temp out of sanity range; dropped (rate-limited 60s)"
+                                    );
+                                    last_oor_warn = Some(now);
+                                }
+                            }
                         }
+                        continue;
                     }
                     // PR-ev-soc-sensor: discovery + state topic dispatch.
                     // Discovery payload is retained; the gateway may also
@@ -1176,20 +1213,20 @@ impl Subscriber {
         Ok(())
     }
 
-    /// PR-matter-outdoor-temp: subscribe (exact, no glob) to the
-    /// configured Matter outdoor-temperature topic, if any. Logged
-    /// once per (re)subscribe so an operator can see the bridge is
-    /// live; non-fatal on failure (the OM poller is the safety net).
-    async fn subscribe_matter_outdoor(&self) {
-        let Some(topic) = self.matter_outdoor_topic.as_deref() else {
-            return;
-        };
-        match self.client.subscribe(topic, QoS::AtLeastOnce).await {
-            Ok(()) => {
-                info!(%topic, "matter outdoor temperature MQTT bridge subscribed: {topic}");
-            }
-            Err(e) => {
-                warn!(error = %e, %topic, "matter outdoor temperature MQTT subscribe failed");
+    /// Subscribe (exact, no glob) to every configured outdoor-temp
+    /// source topic. No-op when the list is empty. Logged once per
+    /// (re)subscribe so an operator can see the bridge is live; non-
+    /// fatal on per-topic failure (Open-Meteo is the safety net).
+    async fn subscribe_outdoor_temp_sources(&self) {
+        for src in &self.outdoor_temp_sources {
+            let topic = src.topic();
+            match self.client.subscribe(topic, QoS::AtLeastOnce).await {
+                Ok(()) => {
+                    info!(%topic, ?src, "outdoor temperature MQTT bridge subscribed");
+                }
+                Err(e) => {
+                    warn!(error = %e, %topic, "outdoor temperature MQTT subscribe failed");
+                }
             }
         }
     }

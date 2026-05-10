@@ -144,6 +144,10 @@ impl ForecastFetcher for SolcastClient {
             today_kwh: totals_today,
             tomorrow_kwh: totals_tomorrow,
             hourly_kwh: final_hourly,
+            // Solcast doesn't supply temperature; planner treats empty as
+            // "no forecast temperature available" and consults the
+            // sensor.
+            hourly_temperature_c: Vec::new(),
         })
     }
 }

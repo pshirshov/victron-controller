@@ -55,13 +55,14 @@
          See render.ts::renderWeatherSocTable for the layout. -->
     <section id="weather-soc-table">
       <h2>Weather-SoC table</h2>
+      <div id="weather-soc-temperature-caption" class="dim"></div>
       <div class="table-wrap">
         <table id="weather-soc-table-table">
           <thead>
             <tr>
               <th rowspan="2">Bucket</th>
-              <th colspan="4">Warm (&gt;<a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
-              <th colspan="4">Cold (≤<a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
+              <th colspan="4">Warm (&gt;<a id="weathersoc-winter-temp-header-warm" class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
+              <th colspan="4">Cold (≤<a id="weathersoc-winter-temp-header-cold" class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.threshold.winter-temperature" data-entity-type="single-knob-edit">12</a> °C)</th>
             </tr>
             <tr>
               <th><a class="entity-link mono" href="javascript:void(0)" data-entity-id="weathersoc.table.export-soc-threshold" data-entity-type="knob">exp</a></th>

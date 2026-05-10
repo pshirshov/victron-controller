@@ -1086,6 +1086,11 @@ pub enum TypedReading {
         /// Length-48 vector starting at midnight LOCAL today. Empty when
         /// the provider didn't supply hourly data.
         hourly_kwh: Vec<f64>,
+        /// Length-48 vector starting at midnight LOCAL today, °C. Empty
+        /// for providers that don't supply temperature (Solcast,
+        /// Forecast.Solar, baseline). Open-Meteo populates this from
+        /// its `temperature_2m` hourly field.
+        hourly_temperature_c: Vec<f64>,
         at: Instant,
     },
 }

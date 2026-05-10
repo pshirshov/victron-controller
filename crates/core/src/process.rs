@@ -519,6 +519,7 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
             today_kwh,
             tomorrow_kwh,
             hourly_kwh,
+            hourly_temperature_c,
             at,
         } => {
             let snap = ForecastSnapshot {
@@ -526,6 +527,7 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
                 tomorrow_kwh,
                 fetched_at: at,
                 hourly_kwh,
+                hourly_temperature_c,
             };
             match provider {
                 ForecastProvider::Solcast => world.typed_sensors.forecast_solcast = Some(snap),
@@ -2390,29 +2392,80 @@ pub(crate) fn run_weather_soc(
 ) {
     let now = clock.naive();
     let today = now.date();
+    let now_mono = clock.monotonic();
+    let freshness_threshold = topology.controller_params.freshness_forecast;
 
-    // Use today's temp if fresh; else skip (with explanation).
-    if !world.sensors.outdoor_temperature.is_usable() {
+    // Today vs tomorrow selection drives BOTH the temperature window
+    // and the fused energy total. After today's sunset, today's
+    // forecast values are no longer forward-looking — the column
+    // choice should reflect tomorrow's regime instead. When sunset
+    // is unknown (location not configured / scheduler hasn't run),
+    // default to today (the existing pre-PR behaviour).
+    let after_sunset = match world.sunset {
+        Some(sunset) => now > sunset,
+        None => false,
+    };
+    let day = if after_sunset {
+        crate::world::WeatherSocDay::Tomorrow
+    } else {
+        crate::world::WeatherSocDay::Today
+    };
+
+    // Pick the temperature input. Primary path: arithmetic mean of
+    // the chosen day's forecast `temperature_2m` across its daylight
+    // window (sunrise → sunset, whole-hour buckets), gated on the
+    // snapshot being fresh under `freshness_forecast` and on
+    // sunrise/sunset being known. Fallback: instantaneous outdoor
+    // sensor reading (which is itself the "most recent across all
+    // configured sources" by virtue of `Actual::on_reading`
+    // semantics — Matter, zigbee2mqtt, and Open-Meteo current-weather
+    // all merge into the same slot).
+    //
+    // Both inputs may be unavailable on a fresh boot or after
+    // prolonged provider outage; in that case the planner skips and
+    // surfaces both freshness states in the Decision so the operator
+    // can see why.
+    let forecast_temp = forecast_daylight_mean_temperature_c(
+        world,
+        now,
+        now_mono,
+        freshness_threshold,
+    );
+    let sensor_temp_usable = world.sensors.outdoor_temperature.is_usable();
+    let sensor_temp_value = world.sensors.outdoor_temperature.value;
+    let chosen = match (forecast_temp, sensor_temp_usable, sensor_temp_value) {
+        (Some(v), _, _) => Some((v, crate::world::WeatherSocTemperatureSource::Forecast)),
+        (None, true, Some(v)) => {
+            Some((v, crate::world::WeatherSocTemperatureSource::Sensor))
+        }
+        _ => None,
+    };
+    let Some((today_temperature_c, temp_source)) = chosen else {
         world.decisions.weather_soc = Some(
-            Decision::new("Skipped: outdoor_temperature not usable".to_string())
-                .with_factor(
-                    "outdoor_temperature.freshness",
-                    format!("{:?}", world.sensors.outdoor_temperature.freshness),
-                )
-                .with_factor(
-                    "outdoor_temperature.value",
-                    world
-                        .sensors
-                        .outdoor_temperature
-                        .value
-                        .map_or("None".to_string(), |v| format!("{v:.1}°C")),
-                ),
+            Decision::new(
+                "Skipped: no temperature input usable (forecast + sensor both unavailable)"
+                    .to_string(),
+            )
+            .with_factor(
+                "outdoor_temperature.freshness",
+                format!("{:?}", world.sensors.outdoor_temperature.freshness),
+            )
+            .with_factor(
+                "outdoor_temperature.value",
+                world
+                    .sensors
+                    .outdoor_temperature
+                    .value
+                    .map_or("None".to_string(), |v| format!("{v:.1}°C")),
+            )
+            .with_factor("forecast_temperature.value", "None".to_string()),
         );
         // PR-WSOC-ACTIVE-1: clear active-cell highlight when the
         // planner skips — the dashboard renders no group highlighted.
         world.weather_soc_active = None;
+        world.weather_soc_inputs = None;
         return;
-    }
+    };
 
     // Fuse forecasts across providers, excluding any snapshot older
     // than `ControllerParams::freshness_forecast` (A-16: previously
@@ -2422,16 +2475,23 @@ pub(crate) fn run_weather_soc(
     // fetcher on every successful fetch, so staleness survives the
     // shell layer's "don't republish stale" contract.
     let strategy = world.knobs.forecast_disagreement_strategy;
-    let now_mono = clock.monotonic();
-    let freshness_threshold = topology.controller_params.freshness_forecast;
     let is_fresh = |_provider: ForecastProvider, snap: &crate::world::ForecastSnapshot| {
         now_mono.saturating_duration_since(snap.fetched_at) <= freshness_threshold
     };
-    let Some(today_kwh) = crate::controllers::forecast_fusion::fused_today_kwh(
-        &world.typed_sensors,
-        strategy,
-        is_fresh,
-    ) else {
+    let fused_kwh = if after_sunset {
+        crate::controllers::forecast_fusion::fused_tomorrow_kwh(
+            &world.typed_sensors,
+            strategy,
+            is_fresh,
+        )
+    } else {
+        crate::controllers::forecast_fusion::fused_today_kwh(
+            &world.typed_sensors,
+            strategy,
+            is_fresh,
+        )
+    };
+    let Some(today_kwh) = fused_kwh else {
         world.decisions.weather_soc = Some(
             Decision::new(
                 "Skipped: no fresh fused forecast available (all providers stale or missing)"
@@ -2441,10 +2501,12 @@ pub(crate) fn run_weather_soc(
             .with_factor(
                 "freshness_forecast_s",
                 format!("{}", freshness_threshold.as_secs()),
-            ),
+            )
+            .with_factor("day", format!("{day:?}")),
         );
         // PR-WSOC-ACTIVE-1: same as the temp-skip path above.
         world.weather_soc_active = None;
+        world.weather_soc_inputs = None;
         return;
     };
 
@@ -2458,15 +2520,32 @@ pub(crate) fn run_weather_soc(
             high_energy_threshold_kwh: k.weathersoc_high_energy_threshold,
             too_much_energy_threshold_kwh: k.weathersoc_too_much_energy_threshold,
         },
-        today_temperature_c: world.sensors.outdoor_temperature.value.unwrap(),
+        today_temperature_c,
         today_energy_kwh: today_kwh,
     };
-    let d = evaluate_weather_soc(
+    let mut d = evaluate_weather_soc(
         &input,
         &k.weather_soc_table,
         k.weathersoc_very_sunny_threshold,
         clock,
     );
+    // Surface temperature/day provenance as Decision factors so the
+    // trace unambiguously records which inputs drove the column +
+    // bucket choice.
+    d.decision = d
+        .decision
+        .with_factor(
+            "temperature.source",
+            match temp_source {
+                crate::world::WeatherSocTemperatureSource::Forecast => "forecast".to_string(),
+                crate::world::WeatherSocTemperatureSource::Sensor => "sensor".to_string(),
+            },
+        )
+        .with_factor(
+            "temperature.value",
+            format!("{today_temperature_c:.1}°C"),
+        )
+        .with_factor("day", format!("{day:?}"));
     world.decisions.weather_soc = Some(d.decision.clone());
     // PR-WSOC-ACTIVE-1: cache the active classification for the
     // dashboard widget. Cold/Warm derived from the planner's `cold`
@@ -2480,6 +2559,12 @@ pub(crate) fn run_weather_soc(
             crate::weather_soc_addr::TempCol::Warm
         },
     ));
+    world.weather_soc_inputs = Some(crate::world::WeatherSocInputs {
+        temperature_c: today_temperature_c,
+        temperature_source: temp_source,
+        energy_kwh: today_kwh,
+        day,
+    });
 
     // PR-gamma-hold-redesign: write the planner's per-tick derivations
     // into the four bookkeeping slots. The `*_mode = Weather` default
@@ -2505,6 +2590,82 @@ pub(crate) fn run_weather_soc(
     // kept so the dashboard / tests can observe "did the planner run
     // today yet". Stamped on every successful run.
     world.bookkeeping.last_weather_soc_run_date = Some(today);
+}
+
+/// Compute the daylight-window arithmetic mean of the Open-Meteo
+/// hourly `temperature_2m` forecast.
+///
+/// Window selection:
+/// - Before sunset: today's sunrise → sunset, indices 0..24 of the
+///   hourly slice (which is `[midnight today, midnight today+2)`).
+/// - After sunset: tomorrow's sunrise → sunset, indices 24..48. The
+///   sunrise/sunset *hours* are reused from today (drift between
+///   adjacent days is sub-hour except near solstices, which is below
+///   the resolution that matters for whole-hour bucketing). The
+///   `hourly_temperature_c` slice must have at least 48 entries to
+///   take this branch — if Open-Meteo only returned 24 hours we
+///   silently fall back to None and the caller switches to the
+///   sensor.
+///
+/// Returns `None` when any of the gates fails:
+/// - no Open-Meteo snapshot yet;
+/// - snapshot older than `freshness_threshold`;
+/// - snapshot's `hourly_temperature_c` is too short for the chosen
+///   window (provider returned partial data, schema drift, or this
+///   isn't an Open-Meteo snapshot — e.g. baseline);
+/// - sunrise/sunset for today are unknown (location not configured,
+///   or the sunrise scheduler hasn't run yet);
+/// - the daylight window contains no valid (non-NaN) hourly samples.
+///
+/// Whole-hour bucketing: sunrise 06:23 → start at index 6, sunset 20:47
+/// → end at index 20 inclusive. The Cold/Warm column choice is binary,
+/// so fractional-hour edge effects are below the resolution that
+/// matters for the decision.
+fn forecast_daylight_mean_temperature_c(
+    world: &World,
+    now_naive: chrono::NaiveDateTime,
+    now_mono: Instant,
+    freshness_threshold: std::time::Duration,
+) -> Option<f64> {
+    use chrono::Timelike as _;
+    let snap = world.typed_sensors.forecast_open_meteo.as_ref()?;
+    if now_mono.saturating_duration_since(snap.fetched_at) > freshness_threshold {
+        return None;
+    }
+    let sunrise = world.sunrise?;
+    let sunset = world.sunset?;
+    let start = sunrise.hour() as usize;
+    let end = sunset.hour() as usize;
+    if end < start {
+        // Polar day / polar night / coords misconfigured — refuse to
+        // average across an inverted window.
+        return None;
+    }
+    // After today's sunset, today's daylight forecast is no longer a
+    // prediction (those hours are in the past — the values are still
+    // forecast-model output, but they've stopped being forward-looking).
+    // Switch to tomorrow's window so the column choice reflects the
+    // regime we're about to enter, not the one we just left.
+    let after_sunset = now_naive > sunset;
+    let base_idx: usize = if after_sunset { 24 } else { 0 };
+    let needed_len = base_idx + end.min(23) + 1;
+    if snap.hourly_temperature_c.len() < needed_len {
+        return None;
+    }
+    let mut sum = 0.0;
+    let mut n = 0_u32;
+    for h in start..=end.min(23) {
+        let v = snap.hourly_temperature_c[base_idx + h];
+        if v.is_finite() {
+            sum += v;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        None
+    } else {
+        Some(sum / f64::from(n))
+    }
 }
 
 // PR-gamma-hold-redesign: `propose_knob` is gone. The weather_soc
@@ -4618,6 +4779,7 @@ mod tests {
             tomorrow_kwh: 25.0,
             fetched_at: at,
             hourly_kwh: Vec::new(),
+            hourly_temperature_c: Vec::new(),
         });
     }
 
@@ -4671,6 +4833,286 @@ mod tests {
         assert_eq!(
             world.bookkeeping.last_weather_soc_run_date,
             Some(c0.naive.date())
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // PR-WSOC-FORECAST-TEMP: temperature input selection
+    // ------------------------------------------------------------------
+    //
+    // Primary path: average forecasted `temperature_2m` across today's
+    // sunrise→sunset window. Fallback: instantaneous outdoor sensor.
+    // Skip only when both inputs are unavailable.
+
+    fn seed_weather_soc_with_forecast_temp(
+        world: &mut World,
+        at: Instant,
+        hourly_temperature_c: Vec<f64>,
+    ) {
+        seed_weather_soc_with_forecast(world, at, hourly_temperature_c, 25.0, 25.0);
+    }
+
+    fn seed_weather_soc_with_forecast(
+        world: &mut World,
+        at: Instant,
+        hourly_temperature_c: Vec<f64>,
+        today_kwh: f64,
+        tomorrow_kwh: f64,
+    ) {
+        // Sunrise 06:00, sunset 20:00 — 15 whole-hour buckets (6..=20).
+        world.sunrise = Some(naive_at(2026, 4, 21, 6, 0));
+        world.sunset = Some(naive_at(2026, 4, 21, 20, 0));
+        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh,
+            tomorrow_kwh,
+            fetched_at: at,
+            hourly_kwh: Vec::new(),
+            hourly_temperature_c,
+        });
+    }
+
+    fn naive_at(y: i32, m: u32, d: u32, hh: u32, mm: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap().and_hms_opt(hh, mm, 0).unwrap()
+    }
+
+    #[test]
+    fn weather_soc_uses_forecast_daylight_mean_when_fresh() {
+        // Forecast says 5°C across the daylight window; sensor (which
+        // would otherwise drive Cold/Warm) is set to a value on the
+        // OPPOSITE side of the threshold to prove the planner ignored
+        // it. winter_temperature_threshold default is 12°C.
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        // Sensor reads 20°C → would pick Warm if consulted.
+        world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
+        // Forecast hourly temps: all 5°C across the 15-hour daylight
+        // window → mean = 5°C → Cold.
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, temps);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert!((t.temperature_c - 5.0).abs() < 1e-9, "expected forecast mean 5.0°C, got {}", t.temperature_c);
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Forecast);
+        // Pre-sunset path → today's slice for both temp and kwh.
+        assert_eq!(t.day, crate::world::WeatherSocDay::Today);
+        assert!((t.energy_kwh - 25.0).abs() < 1e-9);
+        let active = world.weather_soc_active.expect("active set");
+        assert_eq!(active.1, crate::weather_soc_addr::TempCol::Cold);
+    }
+
+    #[test]
+    fn weather_soc_uses_tomorrow_kwh_after_sunset() {
+        // Distinct today_kwh vs tomorrow_kwh values; planner is at
+        // 21:00 (after sunset 20:00) → energy_kwh must be tomorrow's
+        // value, day = Tomorrow.
+        let c0 = clock_at_hms(21, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(0.0, c0.monotonic);
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(24 + 21).skip(24 + 6) {
+            *slot = 10.0;
+        }
+        seed_weather_soc_with_forecast(&mut world, c0.monotonic, temps, 5.0, 40.0);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.day, crate::world::WeatherSocDay::Tomorrow);
+        assert!(
+            (t.energy_kwh - 40.0).abs() < 1e-9,
+            "expected tomorrow_kwh 40.0, got {}",
+            t.energy_kwh
+        );
+    }
+
+    #[test]
+    fn weather_soc_uses_tomorrow_window_after_sunset() {
+        // It's 21:00, sunset was at 20:00 → planner should average
+        // tomorrow's sunrise→sunset slice (indices 24..48), not
+        // today's. Today's hours are filled with 5°C, tomorrow's with
+        // 25°C — if we read tomorrow's window we get 25°C (Warm); if
+        // we accidentally read today's we get 5°C (Cold).
+        let c0 = clock_at_hms(21, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        // Sensor at 0°C — would pick Cold if consulted; lets us prove
+        // the planner came from the forecast path.
+        world.sensors.outdoor_temperature.on_reading(0.0, c0.monotonic);
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        for slot in temps.iter_mut().take(24 + 21).skip(24 + 6) {
+            *slot = 25.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, temps);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Forecast);
+        assert!(
+            (t.temperature_c - 25.0).abs() < 1e-9,
+            "expected tomorrow's mean 25.0°C after sunset, got {}",
+            t.temperature_c
+        );
+        assert_eq!(t.day, crate::world::WeatherSocDay::Tomorrow);
+        let active = world.weather_soc_active.expect("active set");
+        assert_eq!(active.1, crate::weather_soc_addr::TempCol::Warm);
+    }
+
+    #[test]
+    fn weather_soc_falls_back_to_sensor_when_tomorrow_window_missing_after_sunset() {
+        // Post-sunset but Open-Meteo only returned 24 hours of
+        // temperature (no tomorrow) — forecast path returns None,
+        // sensor wins. This catches the partial-response regression
+        // where the controller might silently average today's already-
+        // past hours instead of admitting the forecast is unusable.
+        let c0 = clock_at_hms(21, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(7.0, c0.monotonic);
+        let mut temps = vec![f64::NAN; 24];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, temps);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Sensor);
+        assert!((t.temperature_c - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn weather_soc_falls_back_to_sensor_when_forecast_temp_empty() {
+        // hourly_temperature_c empty → forecast path returns None →
+        // sensor used. Sensor at 20°C → Warm column.
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, Vec::new());
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert!((t.temperature_c - 20.0).abs() < 1e-9);
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Sensor);
+        let active = world.weather_soc_active.expect("active set");
+        assert_eq!(active.1, crate::weather_soc_addr::TempCol::Warm);
+    }
+
+    #[test]
+    fn weather_soc_falls_back_to_sensor_when_forecast_stale() {
+        // Open-Meteo snapshot fetched 24h ago, freshness_forecast = 4h
+        // → stale temperature path returns None → sensor wins. Need a
+        // fresh second provider so the kwh fusion still produces a
+        // value (otherwise the planner would skip on missing kwh
+        // before getting to the temp source determination).
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
+        let stale_at = c0
+            .monotonic
+            .checked_sub(StdDuration::from_secs(24 * 3600))
+            .expect("stale instant");
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, stale_at, temps);
+        // Fresh Solcast snapshot to satisfy the kwh fusion gate.
+        world.typed_sensors.forecast_solcast = Some(ForecastSnapshot {
+            today_kwh: 25.0,
+            tomorrow_kwh: 25.0,
+            fetched_at: c0.monotonic,
+            hourly_kwh: Vec::new(),
+            hourly_temperature_c: Vec::new(),
+        });
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Sensor);
+        assert!((t.temperature_c - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn weather_soc_falls_back_to_sensor_when_sunrise_unknown() {
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        // Seed snapshot but leave world.sunrise / world.sunset = None.
+        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh: 25.0,
+            tomorrow_kwh: 25.0,
+            fetched_at: c0.monotonic,
+            hourly_kwh: Vec::new(),
+            hourly_temperature_c: temps,
+        });
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Sensor);
+    }
+
+    #[test]
+    fn weather_soc_skips_when_both_temperature_inputs_unavailable() {
+        // No sensor reading, no forecast snapshot — planner skips and
+        // both observability slots clear.
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        // Need a fresh fused forecast for kwh so the temp-skip branch is
+        // the ONLY thing under test (otherwise we'd skip on missing kwh
+        // first). Provide a snapshot with kwh but empty temps + no
+        // sensor reading.
+        world.typed_sensors.forecast_open_meteo = Some(ForecastSnapshot {
+            today_kwh: 25.0,
+            tomorrow_kwh: 25.0,
+            fetched_at: c0.monotonic,
+            hourly_kwh: Vec::new(),
+            hourly_temperature_c: Vec::new(),
+        });
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        assert!(world.weather_soc_inputs.is_none());
+        assert!(world.weather_soc_active.is_none());
+        let dec = world.decisions.weather_soc.as_ref().expect("decision recorded");
+        assert!(
+            dec.summary.contains("temperature input"),
+            "expected temp-skip decision, got: {:?}",
+            dec.summary
         );
     }
 

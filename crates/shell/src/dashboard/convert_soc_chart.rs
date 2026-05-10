@@ -826,6 +826,7 @@ mod tests {
             tomorrow_kwh: hourly.iter().skip(24).sum(),
             fetched_at: Instant::now(),
             hourly_kwh: hourly,
+            hourly_temperature_c: Vec::new(),
         });
     }
 

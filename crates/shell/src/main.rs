@@ -233,7 +233,12 @@ async fn main() -> Result<()> {
         services: services.clone(),
         open_meteo_cadence: cfg.forecast.open_meteo.cadence,
         controller_params: topology.controller_params,
-        matter_outdoor_topic: cfg.outdoor_temperature_local.mqtt_topic.clone(),
+        outdoor_temp_topics: cfg
+            .outdoor_temperature_local
+            .sources
+            .iter()
+            .map(|s| s.topic().to_string())
+            .collect(),
         ev_soc_discovery_topic: cfg.ev.soc_topic.clone(),
         ev_charge_target_discovery_topic: cfg.ev.charge_target_topic.clone(),
         heat_pump_topic: cfg.zigbee2mqtt.heat_pump_topic.clone(),

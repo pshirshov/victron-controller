@@ -144,18 +144,40 @@ port = 8910
 bind = "0.0.0.0"
 
 # =============================================================================
-# Outdoor temperature — optional Matter MQTT bridge (PR-matter-outdoor-temp)
+# Outdoor temperature — optional MQTT bridge(s)
 # =============================================================================
-# When `mqtt_topic` is set, the controller subscribes to that topic on the
-# same broker as `[mqtt]` above and feeds incoming readings as the
-# `outdoor_temperature` sensor. The Open-Meteo current-weather poller
-# stays running as a fallback — whichever source publishes most recently
-# wins. Body must be a JSON-encoded signed int in centi-Celsius (e.g.
-# `1640` = 16.4°C); `null` / non-numeric bodies are silently dropped.
+# When `[[outdoor_temperature_local.sources]]` entries are present, the
+# controller subscribes to each topic on the same broker as `[mqtt]`
+# above and feeds incoming readings as the `outdoor_temperature` sensor.
+# Multiple sources merge "most recent wins". The Open-Meteo current-
+# weather poller stays running as a fallback.
+#
+# Each source declares its body shape via `format`:
+#
+#   format = "matter_centi_celsius"
+#     Matter `TemperatureMeasurement::MeasuredValue` (cluster 0x0402,
+#     attr 0). Body is a JSON-encoded signed int in centi-Celsius
+#     (e.g. `1640` = 16.4°C). `null` / non-numeric bodies are silently
+#     dropped (Meross hubs publish `null` between low-power reads).
+#
+#   format = "json_field"
+#     JSON object body; pluck the named field as a float in °C
+#     (e.g. zigbee2mqtt `{"temperature":16.4,"humidity":...}`).
+#
+# `min_celsius` / `max_celsius` apply globally to every source —
+# readings outside are dropped as glitches.
 [outdoor_temperature_local]
-# mqtt_topic  = "matter/1/attributes/107_1026_0"
 # min_celsius = -20.0
 # max_celsius = 50.0
+
+# [[outdoor_temperature_local.sources]]
+# topic  = "matter/1/attributes/107_1026_0"
+# format = "matter_centi_celsius"
+
+# [[outdoor_temperature_local.sources]]
+# topic  = "zigbee2mqtt/nodon-snsr-outdoor"
+# format = "json_field"
+# field  = "temperature"
 
 # =============================================================================
 # EV state-of-charge + charge target — external MQTT publisher
