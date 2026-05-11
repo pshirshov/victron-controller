@@ -2411,20 +2411,31 @@ pub(crate) fn run_weather_soc(
         crate::world::WeatherSocDay::Today
     };
 
-    // Pick the temperature input. Primary path: arithmetic mean of
-    // the chosen day's forecast `temperature_2m` across its daylight
-    // window (sunrise → sunset, whole-hour buckets), gated on the
-    // snapshot being fresh under `freshness_forecast` and on
-    // sunrise/sunset being known. Fallback: instantaneous outdoor
-    // sensor reading (which is itself the "most recent across all
-    // configured sources" by virtue of `Actual::on_reading`
-    // semantics — Matter, zigbee2mqtt, and Open-Meteo current-weather
-    // all merge into the same slot).
+    // Three-way time-of-day branch driving the temperature input:
     //
-    // Both inputs may be unavailable on a fresh boot or after
-    // prolonged provider outage; in that case the planner skips and
-    // surfaces both freshness states in the Decision so the operator
-    // can see why.
+    // - Daylight (sunrise ≤ now ≤ sunset): the outdoor sensor IS the
+    //   ground truth for the bucket we're currently sitting in. Prefer
+    //   it; the forecast daylight mean (which mixes already-elapsed
+    //   hours with still-future ones) becomes the fallback for when
+    //   the sensor is missing.
+    // - Pre-sunrise / post-sunset: the daylight regime hasn't started
+    //   (or has already ended) — the sensor reading at night doesn't
+    //   reflect the daytime temperatures the bucket is meant to
+    //   predict. The forecast daylight mean is the better proxy
+    //   (today's window pre-sunrise, tomorrow's post-sunset — already
+    //   encoded by the `after_sunset` branch inside
+    //   `forecast_daylight_mean_temperature_c`). Sensor stays as
+    //   fallback so a stale-forecast outage is not fatal.
+    //
+    // When sunrise/sunset are unknown (location not yet configured /
+    // sunrise scheduler hasn't run), `is_daylight` is false and we
+    // take the forecast-primary branch — the forecast helper itself
+    // returns None without sunrise data, so this devolves to sensor
+    // anyway.
+    let is_daylight = match (world.sunrise, world.sunset) {
+        (Some(sr), Some(ss)) => now >= sr && now <= ss,
+        _ => false,
+    };
     let forecast_temp = forecast_daylight_mean_temperature_c(
         world,
         now,
@@ -2433,12 +2444,24 @@ pub(crate) fn run_weather_soc(
     );
     let sensor_temp_usable = world.sensors.outdoor_temperature.is_usable();
     let sensor_temp_value = world.sensors.outdoor_temperature.value;
-    let chosen = match (forecast_temp, sensor_temp_usable, sensor_temp_value) {
-        (Some(v), _, _) => Some((v, crate::world::WeatherSocTemperatureSource::Forecast)),
-        (None, true, Some(v)) => {
-            Some((v, crate::world::WeatherSocTemperatureSource::Sensor))
+    let chosen = if is_daylight {
+        match (sensor_temp_usable, sensor_temp_value, forecast_temp) {
+            (true, Some(v), _) => {
+                Some((v, crate::world::WeatherSocTemperatureSource::Sensor))
+            }
+            (_, _, Some(v)) => {
+                Some((v, crate::world::WeatherSocTemperatureSource::Forecast))
+            }
+            _ => None,
         }
-        _ => None,
+    } else {
+        match (forecast_temp, sensor_temp_usable, sensor_temp_value) {
+            (Some(v), _, _) => Some((v, crate::world::WeatherSocTemperatureSource::Forecast)),
+            (None, true, Some(v)) => {
+                Some((v, crate::world::WeatherSocTemperatureSource::Sensor))
+            }
+            _ => None,
+        }
     };
     let Some((today_temperature_c, temp_source)) = chosen else {
         world.decisions.weather_soc = Some(
@@ -4876,12 +4899,12 @@ mod tests {
     }
 
     #[test]
-    fn weather_soc_uses_forecast_daylight_mean_when_fresh() {
-        // Forecast says 5°C across the daylight window; sensor (which
-        // would otherwise drive Cold/Warm) is set to a value on the
-        // OPPOSITE side of the threshold to prove the planner ignored
-        // it. winter_temperature_threshold default is 12°C.
-        let c0 = clock_at_hms(12, 0, 0);
+    fn weather_soc_uses_forecast_daylight_mean_pre_sunrise() {
+        // Pre-sunrise (clock 04:00, sunrise 06:00): forecast is the
+        // primary input — today's daylight window mean wins, and the
+        // sensor reading (deliberately on the OPPOSITE side of the
+        // threshold) must be ignored. Default threshold is 12°C.
+        let c0 = clock_at_hms(4, 0, 0);
         let mut world = World::fresh_boot(c0.monotonic);
         // Sensor reads 20°C → would pick Warm if consulted.
         world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
@@ -4901,11 +4924,63 @@ mod tests {
             .expect("weather_soc_inputs populated");
         assert!((t.temperature_c - 5.0).abs() < 1e-9, "expected forecast mean 5.0°C, got {}", t.temperature_c);
         assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Forecast);
-        // Pre-sunset path → today's slice for both temp and kwh.
+        // Pre-sunrise path → today's slice for both temp and kwh.
         assert_eq!(t.day, crate::world::WeatherSocDay::Today);
         assert!((t.energy_kwh - 25.0).abs() < 1e-9);
         let active = world.weather_soc_active.expect("active set");
         assert_eq!(active.1, crate::weather_soc_addr::TempCol::Cold);
+    }
+
+    #[test]
+    fn weather_soc_prefers_sensor_during_daylight() {
+        // Daylight (clock 12:00, sunrise 06:00, sunset 20:00): the
+        // sensor IS ground truth for the current bucket and must win
+        // even when the forecast is fresh. Sensor 20°C → Warm; forecast
+        // 5°C across the window → Cold. Asserting Warm proves the
+        // sensor was consulted, not the forecast.
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, temps);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Sensor);
+        assert!((t.temperature_c - 20.0).abs() < 1e-9);
+        assert_eq!(t.day, crate::world::WeatherSocDay::Today);
+        let active = world.weather_soc_active.expect("active set");
+        assert_eq!(active.1, crate::weather_soc_addr::TempCol::Warm);
+    }
+
+    #[test]
+    fn weather_soc_falls_back_to_forecast_during_daylight_when_sensor_missing() {
+        // Daylight, no sensor reading, fresh forecast → forecast
+        // becomes the daylight fallback.
+        let c0 = clock_at_hms(12, 0, 0);
+        let mut world = World::fresh_boot(c0.monotonic);
+        // Note: no outdoor_temperature.on_reading — sensor unusable.
+        let mut temps = vec![f64::NAN; 48];
+        for slot in temps.iter_mut().take(21).skip(6) {
+            *slot = 5.0;
+        }
+        seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, temps);
+
+        let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
+
+        let t = world
+            .weather_soc_inputs
+            .as_ref()
+            .expect("weather_soc_inputs populated");
+        assert_eq!(t.temperature_source, crate::world::WeatherSocTemperatureSource::Forecast);
+        assert!((t.temperature_c - 5.0).abs() < 1e-9);
     }
 
     #[test]
@@ -5002,9 +5077,11 @@ mod tests {
 
     #[test]
     fn weather_soc_falls_back_to_sensor_when_forecast_temp_empty() {
-        // hourly_temperature_c empty → forecast path returns None →
-        // sensor used. Sensor at 20°C → Warm column.
-        let c0 = clock_at_hms(12, 0, 0);
+        // Pre-sunrise (forecast-primary branch), `hourly_temperature_c`
+        // empty → forecast path returns None → sensor used. Sensor at
+        // 20°C → Warm column. Run pre-sunrise so the assertion has
+        // teeth — under daylight, sensor would win regardless.
+        let c0 = clock_at_hms(4, 0, 0);
         let mut world = World::fresh_boot(c0.monotonic);
         world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
         seed_weather_soc_with_forecast_temp(&mut world, c0.monotonic, Vec::new());
@@ -5023,12 +5100,15 @@ mod tests {
 
     #[test]
     fn weather_soc_falls_back_to_sensor_when_forecast_stale() {
-        // Open-Meteo snapshot fetched 24h ago, freshness_forecast = 4h
-        // → stale temperature path returns None → sensor wins. Need a
-        // fresh second provider so the kwh fusion still produces a
-        // value (otherwise the planner would skip on missing kwh
-        // before getting to the temp source determination).
-        let c0 = clock_at_hms(12, 0, 0);
+        // Pre-sunrise (forecast-primary branch). Open-Meteo snapshot
+        // fetched 24h ago, freshness_forecast = 4h → stale temperature
+        // path returns None → sensor wins. Need a fresh second provider
+        // so the kwh fusion still produces a value (otherwise the
+        // planner would skip on missing kwh before getting to the temp
+        // source determination). Run pre-sunrise so the staleness gate
+        // is the actual reason sensor wins — under daylight, sensor
+        // would win regardless of forecast freshness.
+        let c0 = clock_at_hms(4, 0, 0);
         let mut world = World::fresh_boot(c0.monotonic);
         world.sensors.outdoor_temperature.on_reading(20.0, c0.monotonic);
         let stale_at = c0
