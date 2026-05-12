@@ -125,9 +125,29 @@ impl HeatPumpState {
         let heating_water_current_c = room_block
             .as_ref()
             .and_then(|b| b.get("outWaterCurrentTemperature").and_then(Value::as_f64));
-        let heating_water_target_c = room_block
-            .as_ref()
-            .and_then(|b| b.get("waterHeatTargetTemperature").and_then(Value::as_f64));
+        // Heating-water target. The SDK documents the field as
+        // `waterHeatTargetTemperature`, but on the HM051M.U43 the live
+        // response only contains `targetTemperature` inside the room
+        // block. `operation.roomTempMode` says what that scalar means:
+        // - "WATER" or absent → it's the water-side setpoint.
+        // - "AIR" → it's the air-side target, so we MUST NOT use it as
+        //   the water target. Fall back to `waterHeatTargetTemperature`
+        //   instead (which may itself be absent — that's fine, None
+        //   simply means we have no readback this cycle).
+        let room_temp_mode = v
+            .pointer("/operation/roomTempMode")
+            .and_then(Value::as_str);
+        let heating_water_target_c = if room_temp_mode == Some("AIR") {
+            room_block
+                .as_ref()
+                .and_then(|b| b.get("waterHeatTargetTemperature").and_then(Value::as_f64))
+        } else {
+            room_block.as_ref().and_then(|b| {
+                b.get("targetTemperature")
+                    .and_then(Value::as_f64)
+                    .or_else(|| b.get("waterHeatTargetTemperature").and_then(Value::as_f64))
+            })
+        };
         let room_air_current_c = room_block
             .as_ref()
             .and_then(|b| b.get("airCurrentTemperature").and_then(Value::as_f64));
@@ -327,6 +347,101 @@ mod tests {
         // because we'd risk hiding a misconfigured unit.
         assert!(s.dhw_current_c.is_none());
         assert!(s.dhw_target_c.is_none());
+    }
+
+    /// Pinned on the real HM051M.U43 response captured 2026-05-12 via the
+    /// one-shot `lg_thinq raw device-state envelope` diagnostic. The
+    /// significant deviations from the SDK's documented shape:
+    /// - the heating-water target sits under `targetTemperature` (not
+    ///   `waterHeatTargetTemperature`);
+    /// - `operation.roomTempMode == "WATER"` qualifies that scalar as
+    ///   the water-side setpoint.
+    #[test]
+    fn decode_state_real_hm051_water_mode_envelope() {
+        let v = json!({
+            "boilerJobMode": {"currentJobMode": "HEAT"},
+            "operation": {
+                "boilerOperationMode": "POWER_OFF",
+                "hotWaterMode": "OFF",
+                "roomTempMode": "WATER",
+                "roomWaterMode": "OUT_WATER"
+            },
+            "hotWaterTemperatureInUnits": [
+                {"unit": "C", "currentTemperature": 23.5, "targetTemperature": 60,
+                 "minTemperature": 30, "maxTemperature": 65},
+                {"unit": "F", "currentTemperature": 75, "targetTemperature": 140}
+            ],
+            "roomTemperatureInUnits": [
+                {"unit": "C",
+                 "airCurrentTemperature": 23,
+                 "currentTemperature": 38.5,
+                 "inWaterCurrentTemperature": 39,
+                 "outWaterCurrentTemperature": 38.5,
+                 "targetTemperature": 40,
+                 "waterHeatMaxTemperature": 55,
+                 "waterHeatMinTemperature": 20}
+            ]
+        });
+        let s = HeatPumpState::from_json(&v).unwrap();
+        assert!(!s.heating_enabled);
+        assert!(!s.dhw_enabled);
+        assert_eq!(s.dhw_current_c, Some(23.5));
+        assert_eq!(s.dhw_target_c, Some(60.0));
+        assert_eq!(s.heating_water_current_c, Some(38.5));
+        // The actual live response only carries `targetTemperature`,
+        // not `waterHeatTargetTemperature`. Pre-fix the decoder
+        // returned None here and the dashboard rendered "undefined °C".
+        assert_eq!(s.heating_water_target_c, Some(40.0));
+        assert_eq!(s.room_air_current_c, Some(23.0));
+    }
+
+    /// AIR-mode safety: when `roomTempMode == "AIR"` the room block's
+    /// `targetTemperature` is the air-side target, not the water-side
+    /// one. The decoder must NOT misread it as the heating-water
+    /// target.
+    #[test]
+    fn decode_state_air_mode_does_not_misread_target_temperature() {
+        let v = json!({
+            "operation": {
+                "boilerOperationMode": "POWER_ON",
+                "hotWaterMode": "ON",
+                "roomTempMode": "AIR"
+            },
+            "roomTemperatureInUnits": [
+                {"unit": "C",
+                 "currentTemperature": 21.0,
+                 "airCurrentTemperature": 21.0,
+                 "outWaterCurrentTemperature": 34.2,
+                 "targetTemperature": 22}
+            ]
+        });
+        let s = HeatPumpState::from_json(&v).unwrap();
+        // `targetTemperature: 22` is the air target — must not appear
+        // as `heating_water_target_c`.
+        assert_eq!(s.heating_water_target_c, None);
+        // The water current still comes from `outWaterCurrentTemperature`.
+        assert_eq!(s.heating_water_current_c, Some(34.2));
+    }
+
+    /// AIR-mode + `waterHeatTargetTemperature` present: the explicit
+    /// water-target key wins (some firmware revisions may include it).
+    #[test]
+    fn decode_state_air_mode_uses_water_heat_target_temperature_when_present() {
+        let v = json!({
+            "operation": {
+                "boilerOperationMode": "POWER_ON",
+                "hotWaterMode": "ON",
+                "roomTempMode": "AIR"
+            },
+            "roomTemperatureInUnits": [
+                {"unit": "C",
+                 "targetTemperature": 22,
+                 "waterHeatTargetTemperature": 38,
+                 "outWaterCurrentTemperature": 34.2}
+            ]
+        });
+        let s = HeatPumpState::from_json(&v).unwrap();
+        assert_eq!(s.heating_water_target_c, Some(38.0));
     }
 
     #[test]
