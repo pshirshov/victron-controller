@@ -72,6 +72,14 @@ pub struct Config {
     /// "bias-to-safety, no write".
     #[serde(default)]
     pub location: LocationConfig,
+    /// LG ThinQ heat-pump cloud bridge (HM051M.U43). Optional sidecar:
+    /// when `pat` is non-empty, the shell spawns a self-contained
+    /// subscriber that maps `victron-controller/knob/lg_*/set` MQTT
+    /// commands to LG cloud control calls and publishes readback state.
+    /// Does not yet integrate with the core TASS surfaces — see
+    /// `crates/shell/src/lg_thinq/mod.rs`.
+    #[serde(default)]
+    pub lg_thinq: LgThinqConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,6 +223,85 @@ impl Default for MyenergiConfig {
 
 fn default_myenergi_poll() -> Duration {
     Duration::from_secs(15)
+}
+
+// -----------------------------------------------------------------------------
+// LG ThinQ heat-pump bridge (Option A — self-contained sidecar).
+// -----------------------------------------------------------------------------
+
+/// LG ThinQ Connect bridge config. Dormant when `pat` is empty.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LgThinqConfig {
+    /// Personal Access Token from the LG ThinQ Developer site
+    /// (<https://thinq.developer.lge.com/>). Empty ⇒ bridge disabled.
+    #[serde(default)]
+    pub pat: String,
+    /// ISO-3166-1 alpha-2 country code matching the LG account
+    /// (e.g. `"IE"`, `"DE"`). Determines the regional API endpoint.
+    #[serde(default)]
+    pub country: String,
+    /// LG device id of the heat pump. Find it via the test command
+    /// `victron-controller --dump-lg-devices` (TODO) or by inspecting
+    /// the HA `lg_thinq` integration. Empty ⇒ bridge disabled.
+    #[serde(default)]
+    pub device_id: String,
+    /// Persistent directory for the MQTT-push cert bundle. Survives
+    /// firmware updates only if it lives under `/data/...`. Unused in
+    /// Option A (no MQTT push yet) but kept in config so Option B
+    /// can adopt it without a TOML migration.
+    #[serde(default = "default_lg_thinq_cache_dir")]
+    pub cache_dir: String,
+    /// When `false`, control commands are logged but not sent. Mirrors
+    /// the `[myenergi] writes_enabled` gate.
+    #[serde(default = "default_true")]
+    pub writes_enabled: bool,
+    /// State-poll cadence. LG's free tier allows generous quota but
+    /// the heat pump itself only changes state on minute timescales,
+    /// so 60 s is the documented sweet spot.
+    #[serde(default = "default_lg_thinq_poll", with = "humantime_serde_compat")]
+    pub poll_period: Duration,
+
+    // --- Dashboard / HA `number` entity bounds. Tightening these
+    // client-side keeps the dashboard slider sane and prevents
+    // out-of-range values from being sent to LG (which would reject
+    // them with UNACCEPTABLE_PARAMETERS). Defaults match a typical
+    // Therma V install. ---
+    #[serde(default = "default_lg_heating_min")]
+    pub heating_target_min_c: u32,
+    #[serde(default = "default_lg_heating_max")]
+    pub heating_target_max_c: u32,
+    #[serde(default = "default_lg_dhw_min")]
+    pub dhw_target_min_c: u32,
+    #[serde(default = "default_lg_dhw_max")]
+    pub dhw_target_max_c: u32,
+}
+
+impl LgThinqConfig {
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        !self.pat.is_empty() && !self.device_id.is_empty() && !self.country.is_empty()
+    }
+}
+
+fn default_lg_thinq_cache_dir() -> String {
+    "/data/var/lib/victron-controller/lg-thinq/".to_string()
+}
+
+fn default_lg_thinq_poll() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_lg_heating_min() -> u32 {
+    25
+}
+fn default_lg_heating_max() -> u32 {
+    55
+}
+fn default_lg_dhw_min() -> u32 {
+    30
+}
+fn default_lg_dhw_max() -> u32 {
+    65
 }
 
 // -----------------------------------------------------------------------------
@@ -1354,6 +1441,7 @@ impl Default for Config {
             dbus_pinned_registers: Vec::new(),
             knobs: KnobsDefaultsConfig::default(),
             location: LocationConfig::default(),
+            lg_thinq: LgThinqConfig::default(),
         }
     }
 }

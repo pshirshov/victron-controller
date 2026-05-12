@@ -16,6 +16,7 @@ pub mod dashboard;
 pub mod dbus;
 pub mod diagnostics;
 pub mod forecast;
+pub mod lg_thinq;
 pub mod mqtt;
 pub mod myenergi;
 pub mod runtime;

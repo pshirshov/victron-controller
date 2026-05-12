@@ -1,0 +1,51 @@
+[package]
+name = "victron-controller-lg-thinq-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "LG ThinQ Connect Open API client for the victron-controller heat-pump actuator"
+
+[dependencies]
+# HTTP — pinned to match shell so the rustls graph is shared
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+
+# MQTT — same pin as shell
+rumqttc = { version = "0.24", default-features = false, features = ["use-rustls"] }
+rustls = { version = "0.22", default-features = false, features = ["ring"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+
+# Async runtime + utilities
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "io-util"] }
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Identifiers + encoding
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+# Crypto for the client-cert provisioning flow.
+# rsa generates the keypair; rcgen builds the CSR; both go through `ring`
+# under the hood, matching the rest of the rustls stack.
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+sha2 = "0.10"
+rand = "0.8"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "crypto", "ring"] }
+pem = "3"
+
+# Errors + logging
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+wiremock = "0.6"
+tempfile = "3"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1"
+
+[lints]
+workspace = true

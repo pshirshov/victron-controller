@@ -536,6 +536,32 @@ async fn main() -> Result<()> {
         }
     });
 
+    // LG ThinQ heat-pump sidecar (Option A — self-contained: doesn't
+    // emit Events into the core's channel; talks straight to MQTT and
+    // LG's HTTP API). Dormant unless `[lg_thinq]` is fully configured
+    // (pat + country + device_id all non-empty).
+    let _lg_thinq_task: Option<tokio::task::JoinHandle<()>> = if cfg.lg_thinq.is_configured() {
+        let lg_cfg = cfg.lg_thinq.clone();
+        let mqtt_cfg = cfg.mqtt.clone();
+        info!(
+            "lg_thinq sidecar starting (device_id={:?}, writes_enabled={})",
+            lg_cfg.device_id, lg_cfg.writes_enabled
+        );
+        Some(tokio::spawn(async move {
+            match victron_controller_shell::lg_thinq::Service::new(&lg_cfg, &mqtt_cfg) {
+                Ok(svc) => {
+                    if let Err(e) = svc.run().await {
+                        error!(error = %e, "lg_thinq sidecar terminated with error");
+                    }
+                }
+                Err(e) => error!(error = %e, "lg_thinq sidecar failed to start"),
+            }
+        }))
+    } else {
+        info!("lg_thinq: not configured (pat / country / device_id missing); sidecar disabled");
+        None
+    };
+
     // PR-pinned-registers: hourly re-reader for the configured pinned
     // D-Bus registers. Idle when `[[dbus_pinned_registers]]` is empty.
     let tx_for_pinned = tx.clone();

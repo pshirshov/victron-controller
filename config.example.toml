@@ -93,6 +93,41 @@ longitude = -3.2
 # 15 min is fine; longer is also fine. Default 15 min.
 # cadence   = "15m"
 
+# =============================================================================
+# LG ThinQ heat-pump cloud bridge (HM051M.U43). Optional sidecar — dormant
+# when any of `pat`, `country`, or `device_id` is empty. The sidecar:
+#   * Subscribes to MQTT `<topic_root>/knob/lg_*/set` (commands from HA / the
+#     dashboard).
+#   * POSTs control payloads to the LG ThinQ Connect Open API.
+#   * Polls device state every `poll_period` and publishes retained state +
+#     temperature readbacks under `<topic_root>/knob/lg_*/state` and
+#     `<topic_root>/sensor/lg_*/state`.
+#   * Emits HA MQTT-discovery for the four knobs + two temperature sensors
+#     so they show up as their own device card in Home Assistant.
+#
+# Obtain a PAT at https://thinq.developer.lge.com/  (sign in with the LG
+# account the heat pump is registered against; create an application
+# enabling the ThinQ Connect product).
+#
+# `country` is the ISO-3166-1 alpha-2 code matching the LG account
+# (e.g. "IE", "DE", "NL"). Wrong region returns NOT_SUPPORTED_COUNTRY.
+#
+# Find `device_id` via the LG developer console, the HA `lg_thinq`
+# integration's diagnostics page, or by inspecting the response of
+# `GET /devices` against the LG API with your PAT.
+# =============================================================================
+# [lg_thinq]
+# pat        = "REPLACE_WITH_PAT"
+# country    = "IE"
+# device_id  = "REPLACE_WITH_DEVICE_ID"
+# cache_dir  = "/data/var/lib/victron-controller/lg-thinq/"
+# writes_enabled = true
+# poll_period    = "60s"
+# heating_target_min_c = 25
+# heating_target_max_c = 55
+# dhw_target_min_c     = 30
+# dhw_target_max_c     = 65
+
 [forecast]
 # Site timezone for solar-boundary bucketing; do not rely on machine TZ.
 # Venus OS defaults to TZ=UTC, but Open-Meteo's `timezone=auto` returns
