@@ -1,6 +1,7 @@
 // @ts-nocheck
 import {BaboonGeneratedLatest, BaboonCodecContext, BaboonBinWriter, BinTools, BaboonBinReader, Lazy} from '../../BaboonSharedRuntime'
 import {ActuatedF64, ActuatedF64_UEBACodec} from './ActuatedF64'
+import {ActuatedBool, ActuatedBool_UEBACodec} from './ActuatedBool'
 import {ActuatedSchedule, ActuatedSchedule_UEBACodec} from './ActuatedSchedule'
 import {ActuatedI32, ActuatedI32_UEBACodec} from './ActuatedI32'
 import {ActuatedEnumName, ActuatedEnumName_UEBACodec} from './ActuatedEnumName'
@@ -13,8 +14,12 @@ export class Actuated implements BaboonGeneratedLatest {
     private readonly _schedule_0: ActuatedSchedule;
     private readonly _schedule_1: ActuatedSchedule;
     private readonly _ess_state_target: ActuatedI32;
+    private readonly _lg_heat_pump_power: ActuatedBool;
+    private readonly _lg_dhw_power: ActuatedBool;
+    private readonly _lg_heating_water_target_c: ActuatedI32;
+    private readonly _lg_dhw_target_c: ActuatedI32;
 
-    constructor(grid_setpoint: ActuatedI32, input_current_limit: ActuatedF64, zappi_mode: ActuatedEnumName, eddi_mode: ActuatedEnumName, schedule_0: ActuatedSchedule, schedule_1: ActuatedSchedule, ess_state_target: ActuatedI32) {
+    constructor(grid_setpoint: ActuatedI32, input_current_limit: ActuatedF64, zappi_mode: ActuatedEnumName, eddi_mode: ActuatedEnumName, schedule_0: ActuatedSchedule, schedule_1: ActuatedSchedule, ess_state_target: ActuatedI32, lg_heat_pump_power: ActuatedBool, lg_dhw_power: ActuatedBool, lg_heating_water_target_c: ActuatedI32, lg_dhw_target_c: ActuatedI32) {
         this._grid_setpoint = grid_setpoint
         this._input_current_limit = input_current_limit
         this._zappi_mode = zappi_mode
@@ -22,6 +27,10 @@ export class Actuated implements BaboonGeneratedLatest {
         this._schedule_0 = schedule_0
         this._schedule_1 = schedule_1
         this._ess_state_target = ess_state_target
+        this._lg_heat_pump_power = lg_heat_pump_power
+        this._lg_dhw_power = lg_dhw_power
+        this._lg_heating_water_target_c = lg_heating_water_target_c
+        this._lg_dhw_target_c = lg_dhw_target_c
     }
 
     public get grid_setpoint(): ActuatedI32 {
@@ -45,6 +54,18 @@ export class Actuated implements BaboonGeneratedLatest {
     public get ess_state_target(): ActuatedI32 {
         return this._ess_state_target;
     }
+    public get lg_heat_pump_power(): ActuatedBool {
+        return this._lg_heat_pump_power;
+    }
+    public get lg_dhw_power(): ActuatedBool {
+        return this._lg_dhw_power;
+    }
+    public get lg_heating_water_target_c(): ActuatedI32 {
+        return this._lg_heating_water_target_c;
+    }
+    public get lg_dhw_target_c(): ActuatedI32 {
+        return this._lg_dhw_target_c;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -54,11 +75,15 @@ export class Actuated implements BaboonGeneratedLatest {
             eddi_mode: this._eddi_mode,
             schedule_0: this._schedule_0,
             schedule_1: this._schedule_1,
-            ess_state_target: this._ess_state_target
+            ess_state_target: this._ess_state_target,
+            lg_heat_pump_power: this._lg_heat_pump_power,
+            lg_dhw_power: this._lg_dhw_power,
+            lg_heating_water_target_c: this._lg_heating_water_target_c,
+            lg_dhw_target_c: this._lg_dhw_target_c
         };
     }
 
-    public with(overrides: {grid_setpoint?: ActuatedI32; input_current_limit?: ActuatedF64; zappi_mode?: ActuatedEnumName; eddi_mode?: ActuatedEnumName; schedule_0?: ActuatedSchedule; schedule_1?: ActuatedSchedule; ess_state_target?: ActuatedI32}): Actuated {
+    public with(overrides: {grid_setpoint?: ActuatedI32; input_current_limit?: ActuatedF64; zappi_mode?: ActuatedEnumName; eddi_mode?: ActuatedEnumName; schedule_0?: ActuatedSchedule; schedule_1?: ActuatedSchedule; ess_state_target?: ActuatedI32; lg_heat_pump_power?: ActuatedBool; lg_dhw_power?: ActuatedBool; lg_heating_water_target_c?: ActuatedI32; lg_dhw_target_c?: ActuatedI32}): Actuated {
         return new Actuated(
             'grid_setpoint' in overrides ? overrides.grid_setpoint! : this._grid_setpoint,
             'input_current_limit' in overrides ? overrides.input_current_limit! : this._input_current_limit,
@@ -66,11 +91,15 @@ export class Actuated implements BaboonGeneratedLatest {
             'eddi_mode' in overrides ? overrides.eddi_mode! : this._eddi_mode,
             'schedule_0' in overrides ? overrides.schedule_0! : this._schedule_0,
             'schedule_1' in overrides ? overrides.schedule_1! : this._schedule_1,
-            'ess_state_target' in overrides ? overrides.ess_state_target! : this._ess_state_target
+            'ess_state_target' in overrides ? overrides.ess_state_target! : this._ess_state_target,
+            'lg_heat_pump_power' in overrides ? overrides.lg_heat_pump_power! : this._lg_heat_pump_power,
+            'lg_dhw_power' in overrides ? overrides.lg_dhw_power! : this._lg_dhw_power,
+            'lg_heating_water_target_c' in overrides ? overrides.lg_heating_water_target_c! : this._lg_heating_water_target_c,
+            'lg_dhw_target_c' in overrides ? overrides.lg_dhw_target_c! : this._lg_dhw_target_c
         );
     }
 
-    public static fromPlain(obj: {grid_setpoint: ActuatedI32; input_current_limit: ActuatedF64; zappi_mode: ActuatedEnumName; eddi_mode: ActuatedEnumName; schedule_0: ActuatedSchedule; schedule_1: ActuatedSchedule; ess_state_target: ActuatedI32}): Actuated {
+    public static fromPlain(obj: {grid_setpoint: ActuatedI32; input_current_limit: ActuatedF64; zappi_mode: ActuatedEnumName; eddi_mode: ActuatedEnumName; schedule_0: ActuatedSchedule; schedule_1: ActuatedSchedule; ess_state_target: ActuatedI32; lg_heat_pump_power: ActuatedBool; lg_dhw_power: ActuatedBool; lg_heating_water_target_c: ActuatedI32; lg_dhw_target_c: ActuatedI32}): Actuated {
         return new Actuated(
             obj.grid_setpoint,
             obj.input_current_limit,
@@ -78,7 +107,11 @@ export class Actuated implements BaboonGeneratedLatest {
             obj.eddi_mode,
             obj.schedule_0,
             obj.schedule_1,
-            obj.ess_state_target
+            obj.ess_state_target,
+            obj.lg_heat_pump_power,
+            obj.lg_dhw_power,
+            obj.lg_heating_water_target_c,
+            obj.lg_dhw_target_c
         );
     }
 
@@ -161,6 +194,34 @@ export class Actuated_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActuatedBool_UEBACodec.instance.encode(ctx, value.lg_heat_pump_power, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActuatedBool_UEBACodec.instance.encode(ctx, value.lg_dhw_power, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActuatedI32_UEBACodec.instance.encode(ctx, value.lg_heating_water_target_c, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                ActuatedI32_UEBACodec.instance.encode(ctx, value.lg_dhw_target_c, buffer);
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -171,6 +232,10 @@ export class Actuated_UEBACodec {
             ActuatedSchedule_UEBACodec.instance.encode(ctx, value.schedule_0, writer);
             ActuatedSchedule_UEBACodec.instance.encode(ctx, value.schedule_1, writer);
             ActuatedI32_UEBACodec.instance.encode(ctx, value.ess_state_target, writer);
+            ActuatedBool_UEBACodec.instance.encode(ctx, value.lg_heat_pump_power, writer);
+            ActuatedBool_UEBACodec.instance.encode(ctx, value.lg_dhw_power, writer);
+            ActuatedI32_UEBACodec.instance.encode(ctx, value.lg_heating_water_target_c, writer);
+            ActuatedI32_UEBACodec.instance.encode(ctx, value.lg_dhw_target_c, writer);
         }
     }
     
@@ -182,7 +247,7 @@ export class Actuated_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < 11; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -194,6 +259,10 @@ export class Actuated_UEBACodec {
         const schedule_0 = ActuatedSchedule_UEBACodec.instance.decode(ctx, reader);
         const schedule_1 = ActuatedSchedule_UEBACodec.instance.decode(ctx, reader);
         const ess_state_target = ActuatedI32_UEBACodec.instance.decode(ctx, reader);
+        const lg_heat_pump_power = ActuatedBool_UEBACodec.instance.decode(ctx, reader);
+        const lg_dhw_power = ActuatedBool_UEBACodec.instance.decode(ctx, reader);
+        const lg_heating_water_target_c = ActuatedI32_UEBACodec.instance.decode(ctx, reader);
+        const lg_dhw_target_c = ActuatedI32_UEBACodec.instance.decode(ctx, reader);
         return new Actuated(
             grid_setpoint,
             input_current_limit,
@@ -202,6 +271,10 @@ export class Actuated_UEBACodec {
             schedule_0,
             schedule_1,
             ess_state_target,
+            lg_heat_pump_power,
+            lg_dhw_power,
+            lg_heating_water_target_c,
+            lg_dhw_target_c,
         );
     }
 

@@ -44,6 +44,9 @@ const DISPLAY_NAMES: Record<string, string> = {
   cooker_power: "house.cooker.power",
   mppt_0_operation_mode: "solar.mppt.0.mode.operation",
   mppt_1_operation_mode: "solar.mppt.1.mode.operation",
+  // PR-LG-THINQ-B: plain temperature readbacks from the heat pump.
+  lg_dhw_actual_c: "lg.dhw.temperature.current",
+  lg_heating_water_actual_c: "lg.heating-water.temperature.current",
 
   // --- Knobs (33) ---
   force_disable_export: "grid.export.force-disable",
@@ -104,6 +107,11 @@ const DISPLAY_NAMES: Record<string, string> = {
   zappi_battery_drain_mppt_probe_w: "zappi.battery-drain.mppt-probe-w",
   // PR-ACT-RETRY-1: universal actuator retry threshold.
   actuator_retry_s: "actuator.retry.s",
+  // PR-LG-THINQ-B: four heat-pump knobs.
+  lg_heat_pump_power: "lg.heat-pump.power",
+  lg_dhw_power: "lg.dhw.power",
+  lg_heating_water_target_c: "lg.heating-water.target-c",
+  lg_dhw_target_c: "lg.dhw.target-c",
 
   // --- Controller observables (PR-ZDO-2) ---
   controller_zappi_drain_compensated_w: "controller.zappi-drain.compensated-w",
@@ -192,6 +200,16 @@ for (const bucket of WEATHER_SOC_BUCKETS_FOR_NAMES) {
 type TypeOverride = Partial<Record<string, string>>;
 
 const DISPLAY_NAMES_BY_TYPE: Record<string, TypeOverride> = {
+  // PR-LG-THINQ-B-D07: the four LG actuated keys collide with same-named
+  // knob keys in DISPLAY_NAMES (lg_heat_pump_power etc. → knob dotted form).
+  // Override here so `displayNameOfTyped(key, "actuated")` returns the
+  // correct actuated dotted name while the knob form stays unchanged.
+  actuated: {
+    lg_heat_pump_power: "lg.heat-pump.power.target",
+    lg_dhw_power: "lg.dhw.power.target",
+    lg_heating_water_target_c: "lg.heating-water.target",
+    lg_dhw_target_c: "lg.dhw.target",
+  },
   decision: {
     grid_setpoint: "setpoint.decision",
     input_current_limit: "current-limit.decision",

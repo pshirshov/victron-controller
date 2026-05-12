@@ -33,4 +33,6 @@ pub enum Owner {
     /// PR-keep-batteries-charged: daytime ESS-state override
     /// (`evaluate_ess_state_override`).
     EssStateOverrideController,
+    /// PR-LG-THINQ-B: HeatPumpControl core (evaluate_heat_pump).
+    HeatPumpController,
 }

@@ -251,6 +251,16 @@ pub struct Knobs {
     /// setpoint, input current limit, zappi/eddi modes, schedules).
     pub actuator_retry_s: u32,
 
+    // PR-LG-THINQ-B: four heat-pump knobs.
+    /// Master power switch for the LG ThinQ heat pump. Default false.
+    pub lg_heat_pump_power: bool,
+    /// DHW (domestic hot water) power switch for the LG ThinQ heat pump. Default false.
+    pub lg_dhw_power: bool,
+    /// Heating-water temperature target (°C). Range from `[lg_thinq]` config. Default 42.
+    pub lg_heating_water_target_c: u32,
+    /// DHW temperature target (°C). Range from `[lg_thinq]` config. Default 60.
+    pub lg_dhw_target_c: u32,
+
     /// PR-WSOC-TABLE-1: bucket-boundary knob for the weather-SoC
     /// lookup table. `today_energy > weathersoc_very_sunny_threshold`
     /// places the day in the VerySunny bucket; the previous-week
@@ -524,6 +534,14 @@ impl Knobs {
             // settle within a few seconds), short enough that an
             // operator-visible mismatch self-heals within a minute.
             actuator_retry_s: 60,
+            // PR-LG-THINQ-B: heat-pump knob defaults. Both power bools
+            // default to false (safe cold-start; operator enables from
+            // the dashboard / HA). Temperature targets match the midrange
+            // for a typical ASHP installation.
+            lg_heat_pump_power: false,
+            lg_dhw_power: false,
+            lg_heating_water_target_c: 42,
+            lg_dhw_target_c: 60,
             // PR-WSOC-TABLE-1: 67.5 kWh matches the legacy
             // `1.5 × too_much_energy_threshold_kwh` (45 × 1.5) crossover
             // that defined the "way too much" rung in the prior cascade.
@@ -586,6 +604,11 @@ mod tests {
         assert_eq!(k.zappi_battery_drain_hard_clamp_w, 200);
         // PR-ACT-RETRY-1: universal retry threshold default 60 s.
         assert_eq!(k.actuator_retry_s, 60);
+        // PR-LG-THINQ-B: heat-pump knob defaults.
+        assert!(!k.lg_heat_pump_power);
+        assert!(!k.lg_dhw_power);
+        assert_eq!(k.lg_heating_water_target_c, 42);
+        assert_eq!(k.lg_dhw_target_c, 60);
     }
 
     #[test]

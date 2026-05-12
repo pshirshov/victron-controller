@@ -28,13 +28,15 @@ pub struct Sensors {
     pub cooker_power: ActualF64,
     pub mppt_0_operation_mode: ActualF64,
     pub mppt_1_operation_mode: ActualF64,
+    pub lg_dhw_actual_c: ActualF64,
+    pub lg_heating_water_actual_c: ActualF64,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Sensors {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        26
+        28
     }
 }
 
@@ -252,6 +254,22 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_dhw_actual_c.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_heating_water_actual_c.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -281,6 +299,8 @@ impl crate::baboon_runtime::BaboonBinEncode for Sensors {
             value.cooker_power.encode_ueba(ctx, writer)?;
             value.mppt_0_operation_mode.encode_ueba(ctx, writer)?;
             value.mppt_1_operation_mode.encode_ueba(ctx, writer)?;
+            value.lg_dhw_actual_c.encode_ueba(ctx, writer)?;
+            value.lg_heating_water_actual_c.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -318,6 +338,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
         let cooker_power = ActualF64::decode_ueba(ctx, reader)?;
         let mppt_0_operation_mode = ActualF64::decode_ueba(ctx, reader)?;
         let mppt_1_operation_mode = ActualF64::decode_ueba(ctx, reader)?;
+        let lg_dhw_actual_c = ActualF64::decode_ueba(ctx, reader)?;
+        let lg_heating_water_actual_c = ActualF64::decode_ueba(ctx, reader)?;
         Ok(Sensors {
             battery_soc,
             battery_soh,
@@ -345,6 +367,8 @@ impl crate::baboon_runtime::BaboonBinDecode for Sensors {
             cooker_power,
             mppt_0_operation_mode,
             mppt_1_operation_mode,
+            lg_dhw_actual_c,
+            lg_heating_water_actual_c,
         })
     }
 }

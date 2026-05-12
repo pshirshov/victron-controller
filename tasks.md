@@ -129,6 +129,59 @@ Status: `[ ]` planned · `[~]` in progress · `[x]` done · `[!]` blocked
   op-modes via D-Bus, observability-only), 5 knobs (threshold, relax
   step, kp, target, hard-clamp). Plan in
   `./docs/drafts/20260429-1700-m-zappi-drain-plan.md`.
+- [x] **M-LG-THINQ** — LG ThinQ heat-pump cloud bridge for the HM051
+  (Therma V) hydro kit. Phase A (already on `lg-thinq` branch, `36e4a29`):
+  standalone client crate (`crates/lg-thinq-client/`, 39+1 tests) and
+  self-contained MQTT sidecar (`crates/shell/src/lg_thinq/`). **Phase B**
+  (this milestone) promotes the sidecar to a first-class TASS subsystem:
+  4 KnobIds + 4 ActuatedIds + 6 SensorIds + `Owner::HeatPumpController` +
+  `Effect::CallLgThinq` + `HeatPumpControlCore` running
+  `evaluate_heat_pump` (DHW on 02:00-05:00 ∪ 07:00-08:00 at 60 °C,
+  heating-water target = piecewise function of outdoor temp, master
+  power operator-only). Plan in
+  `./docs/drafts/20260512-1305-m-lg-thinq-phase-b-plan.md`. One PR
+  (PR-LG-THINQ-B-1).
+
+---
+
+## Milestone M-LG-THINQ — PR breakdown
+
+Detail in `./docs/drafts/20260512-1305-m-lg-thinq-phase-b-plan.md`. One
+PR; touches ~15 files across `models/`, `crates/core/`, `crates/shell/`,
+and `web/`. Single-PR enforced by the explicit-match-no-wildcard rule
+on `SensorId` / `KnobId` / `ActuatedId` (any split leaves the workspace
+non-compiling) and the atomic baboon-regen requirement.
+
+- [x] **PR-LG-THINQ-B-1** — Full TASS integration. D-checklist of 22+
+  sub-tasks in the plan doc. Owner: orchestrator-driven review loop.
+
+### Deploy runbook — purge Phase A retained HA discovery entries
+
+Phase A published its own MQTT HA discovery under
+`homeassistant/<switch|number|sensor>/victron_controller_lg_thinq/...`
+plus an LWT availability topic `<topic_root>/availability/lg_thinq`.
+Phase B routes discovery through the main controller's pipeline
+(under the existing `victron_controller` node id) with the dotted
+names `lg.heat-pump.power[.target]`, `lg.dhw.power[.target]`,
+`lg.heating-water.target[-c]`, `lg.dhw.target[-c]`,
+`lg.dhw.current-c`, `lg.heating-water.current-c`. The Phase A retained
+entries will linger as zombie "unavailable" entities until the
+operator clears them. To purge:
+
+```sh
+# Replace BROKER + topic-root as appropriate.
+mosquitto_pub -h $BROKER -r -n -t homeassistant/switch/victron_controller_lg_thinq/lg_heat_pump_power/config
+mosquitto_pub -h $BROKER -r -n -t homeassistant/switch/victron_controller_lg_thinq/lg_dhw_power/config
+mosquitto_pub -h $BROKER -r -n -t homeassistant/number/victron_controller_lg_thinq/lg_heating_water_target_c/config
+mosquitto_pub -h $BROKER -r -n -t homeassistant/number/victron_controller_lg_thinq/lg_dhw_target_c/config
+mosquitto_pub -h $BROKER -r -n -t homeassistant/sensor/victron_controller_lg_thinq/lg_dhw_actual_c/config
+mosquitto_pub -h $BROKER -r -n -t homeassistant/sensor/victron_controller_lg_thinq/lg_heating_water_actual_c/config
+mosquitto_pub -h $BROKER -r -n -t $TOPIC_ROOT/availability/lg_thinq
+```
+
+`-r -n` publishes a zero-byte retained message, which deletes the
+retained payload at the broker. HA will drop the entities on its next
+refresh.
 
 ---
 
@@ -721,6 +774,141 @@ Four PRs, sequenced. Total: ~16 new unit tests across the milestone.
 ---
 
 ## Completed
+
+- **PR-LG-THINQ-B-1 — LG ThinQ heat-pump full TASS integration**
+  (M-LG-THINQ, 2026-05-12) — Promoted the LG bridge from the Phase A
+  MQTT sidecar (own connection + own knobs + own discovery) to a
+  first-class TASS subsystem. Net diff: ~40 files, 2.9k inserted /
+  0.8k deleted across `models/dashboard.baboon` + `crates/core/` +
+  `crates/shell/` + `web/`. Sidecar's command-handler, MQTT-bridge,
+  LWT, and `discovery.rs` deleted; the core's `HeatPumpControlCore`
+  becomes the sole writer (via new `Effect::CallLgThinq` →
+  `lg_thinq::Writer` → `ThinqApi::post_device_control`); the
+  refactored `lg_thinq::Poller` emits 6 `Event::Sensor` readings into
+  the runtime channel which route through the existing
+  `apply_sensor_reading` + actuated-mirror post-hook pipeline.
+
+  **Policy (`evaluate_heat_pump` in
+  `crates/core/src/controllers/heat_pump.rs`):**
+  - DHW power ON when local time ∈ [02:00, 05:00) ∪ [07:00, 08:00),
+    else OFF.
+  - DHW target 60 °C constant.
+  - Heating-water target piecewise function of
+    `world.sensors.outdoor_temperature.value` (≤2 → 48, ≤5 → 46,
+    ≤8 → 44, ≤10 → 43, else 42). Strict `≤` boundaries, no
+    hysteresis.
+  - On non-Fresh outdoor temp: skip the heating-water write entirely.
+  - Master heat-pump power NOT proposed by the controller (external
+    heat-demand relay owns the contactor; TASS slot exists for
+    operator dashboard override + readback observability via
+    `apply_knob`'s operator-mirror).
+
+  **Verification.**
+  - `cargo test --workspace` — 700+ tests, all green. Per-crate:
+    448 core (+ 27 new for evaluate_heat_pump / apply_knob × 4 /
+    apply_sensor_reading × 6 / Actuated<bool>), 39 lg-thinq-client,
+    237 shell (+ 6 new for action_to_payload writer-routing), 10
+    dashboard-model.
+  - `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+  - `cd web && ./node_modules/.bin/tsc --noEmit -p .` — clean.
+  - Not deployed against the real HM051 device this session; static
+    analysis only. Operator validates against live LG cloud on the
+    next deploy window.
+
+  **Adversarial review.** Two rounds; orchestrator-driven loop.
+  Round 1 (Opus, hostile posture) surfaced 15 defects across the
+  41-file diff: 4 major (kill-switch reset missing for the 4 LG
+  slots; 3 cohorts of tests mandated by the plan's §5 not implemented
+  — apply_knob × 4, apply_sensor_reading × 6, action_to_payload × 4),
+  6 minor (round-trip serialize tests; `ActuatedPhase` publish-spam
+  in `HeatPumpControlCore::run`; dead `_act` displayName entries;
+  knob/actuated dotted-name collision on master power; Owner::System
+  bootstrap churn through operator-mirror; Actuated<bool> untested),
+  5 nit (descriptions missing; debug-log noise; docstring; runbook;
+  the resolved-as-note `lg.*` vs `heat-pump.*` prefix deviation).
+  Six fix subagents ran in parallel worktrees but produced
+  hallucinated Phase B reconstructions (worktrees branched from
+  pre-Phase-B commit and tried to recreate it). Orchestrator
+  abandoned the merge, reverted, restored Phase B from one
+  canonical worktree, and applied the 14 actionable fixes manually
+  (D09 resolved note-only). Round 2 (Opus, same posture)
+  verified-fixed all 14, flagged 1 new nit (D16: pre-existing `===
+  null` vs `=== undefined` pattern in `web/src/render.ts` propagated
+  to the new LG i32 actuated rows — not a regression; resolved
+  note-only for a follow-up cleanup PR).
+
+  **Surprises / notes for future work.**
+  - The "every-tick controller proposal" pattern means the operator's
+    dashboard write to a controller-driven knob is overridden within
+    one tick by `Owner::HeatPumpController`. Operator's intent IS
+    surfaced via the operator-knob → actuated mirror in
+    `apply_command`, which emits `ActuatedPhase::Pending` with
+    `Owner::HaMqtt` (or Dashboard) BEFORE the cores run. The
+    dashboard sees the operator's owner for ≤1 tick; the controller
+    then takes over. This is by design but caught the test authors —
+    the round-1 apply_knob tests were initially written asserting
+    `target.owner == Operator`, which fails. The fixed tests pick
+    operator values that match the controller's tick output (DHW=false
+    at noon, DHW target=60, heating target with Unknown outdoor temp)
+    so the assertions are deterministic.
+  - The four LG slots ALL needed adding to the KillSwitch
+    observer→live reset block — silent up-to-`actuator_retry_s`-seconds
+    actuation gap otherwise. Same hazard already documented for the
+    pre-existing six slots; the new ones inherited it. ESS state
+    target was also missing (pre-existing condition, not a regression
+    of this PR — left for a separate sweep).
+  - `Owner::System` is emitted by bootstrap retained-MQTT replay.
+    Propagating it through the operator-knob → actuated mirror
+    produces a redundant `ActuatedPhase` publish per LG knob per
+    boot (the controller's first tick proposes again with
+    HeatPumpController). The mirror now skips System owner; only LG
+    knobs are affected (the skip is scoped to the LG match arms).
+  - `Actuated<bool>` is the first instantiation of the generic for
+    `bool` in the codebase. The TASS `propose_target`/`confirm_if`
+    type bounds are `V: PartialEq`, which `bool` satisfies. No
+    workaround needed. New `actuated.rs` test
+    `bool_actuator_full_lifecycle_both_values` pins both `true` and
+    `false` cycles plus the mismatch-no-confirm case.
+  - `HeatPumpControlCore::run` publishes `ActuatedPhase` per actuator
+    per tick. Initial implementation published unconditionally,
+    producing 180 `ActuatedPhase`/min steady-state broker load.
+    Round-1 D06 fix gates the propose-side publish on `changed`
+    (matching `EssStateOverrideCore`); the write-path publish stays
+    unconditional so retries surface.
+  - `LgThinqAction → JSON` payload tests were missing. Round-1 D04
+    fix extracts a `pub(crate) fn action_to_payload(action) ->
+    serde_json::Value` from `Writer::execute`; the 6 new tests assert
+    exact JSON shape matching the upstream
+    `lg-thinq-client::HeatPumpControl::set_*` tests.
+
+  **Constraints future work must respect.**
+  - The 6 LG `SensorId` variants are classified as `ReseedDriven` +
+    `reseed_cadence=60s` + `freshness_threshold=180s` (strict 2× rule,
+    NOT external-polled grace window — the poller is internal and
+    bounded). Changing the LG poll period requires bumping the
+    threshold to maintain the invariant.
+  - The four LG actuator slots' readback uses `f64` SensorReading
+    values: bool actuators coerce via `v != 0.0` at the post-hook,
+    i32 actuators via `v as i32`. Future changes to the wire format
+    (e.g. typed sensor readings) must preserve this coercion or
+    update the post-hook tolerance in tandem.
+  - The actuated dotted names follow the project convention: append
+    `.target` when the knob's dotted name would collide (master
+    power and DHW power, where the actuated form is otherwise
+    identical to the knob form). The heating-water and DHW
+    temperature-target actuated names omit the suffix because the
+    knob form's `-c` unit suffix already disambiguates. New LG-side
+    additions should follow the same rule.
+  - `HeatPumpControlCore` has no `depends_on` edges. It reads
+    `world.sensors.outdoor_temperature` (a regular sensor written by
+    the D-Bus subscriber, NOT a derivation written by a peer core),
+    `world.knobs.lg_*` (operator-owned), and `clock.naive()`.
+    `SensorBroadcastCore` has a `DepEdge { from: HeatPumpControl,
+    fields: &[] }` so the broadcast sees the proposed targets in the
+    same tick.
+  - Phase A operators upgrading to Phase B should run the runbook in
+    the M-LG-THINQ deploy-runbook subsection above to purge zombie
+    retained HA discovery entries.
 
 - **PR-WSOC-EDIT-2 — Per-field popups + inline boundary editing in
   Weather-SoC widget** (M-WSOC-EDIT-2, 2026-05-04) — Operator

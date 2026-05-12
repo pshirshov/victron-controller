@@ -1,11 +1,15 @@
 
 
+pub mod actual_bool;
+pub use actual_bool::*;
 pub mod actual_f64;
 pub use actual_f64::*;
 pub mod actual_i32;
 pub use actual_i32::*;
 pub mod actuated;
 pub use actuated::*;
+pub mod actuated_bool;
+pub use actuated_bool::*;
 pub mod actuated_enum_name;
 pub use actuated_enum_name::*;
 pub mod actuated_f64;

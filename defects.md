@@ -2157,3 +2157,121 @@ Verified green: 214+11+50=275 tests, clippy clean, ARMv7 release ok, web bundle 
 **Location:** `web/src/render.ts:855-862`
 **Description:** Defensive enum dispatch path's `else` branch dispatched `send({ [spec.cmdVariant]: { value: v } })` without `knob_name`. Today unreachable, but a future enum knob added to single-knob-edit would silently produce a malformed command.
 **Fix:** `web/src/render.ts::saveSingleKnobEdit` — `else` branch replaced with `throw new Error(\`single-knob-edit doesn't support cmdVariant ${spec.cmdVariant} for knob ${dotted}\`)`. Hard fail beats silent malformed payload; the comment above the branch already stated this is unsupported.
+
+---
+
+## PR-LG-THINQ-B-1
+
+Round 1 review (2026-05-12). Adversarial pass by Opus over the 41-file, 2862/788-line diff that promotes the LG ThinQ heat-pump bridge from a self-contained MQTT sidecar to a TASS-integrated subsystem.
+
+### [PR-LG-THINQ-B-1-D01] KillSwitch observer→live edge-trigger does not reset the four LG Actuated entities
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs:683-702`
+**Description:** The `Command::KillSwitch` observer→live edge-trigger calls `reset_to_unset` on the six pre-existing actuated entities (grid_setpoint, input_current_limit, zappi_mode, eddi_mode, schedule_0, schedule_1) so the controllers are forced to re-propose + emit a fresh actuation. The four new LG Actuated entities (`lg_heat_pump_power`, `lg_dhw_power`, `lg_heating_water_target_c`, `lg_dhw_target_c`) are NOT in the reset list. The companion `ActuatedPhase` republish-as-Unset effect block (lines 690-697) likewise omits the four LG `ActuatedId`s. Under the documented hazard (line 678-682 comment), after an observer-mode run leaves `world.lg_dhw_power.target.phase = Pending(value=true, owner=HeatPumpController)`, a user toggling KillSwitch off→on does NOT clear the slot. The next tick's `HeatPumpControlCore::run` calls `propose_target(true, HeatPumpController, now)` — same value, same owner, non-Unset phase — short-circuits to `changed=false`. The `needs_actuation` retry only kicks in after `actuator_retry_s` seconds (default 60). So the live-mode controller silently fails to issue any `Effect::CallLgThinq` for up to a minute after the kill-switch flip — the exact failure mode the reset block exists to prevent.
+**Fix:** in `process.rs:683-702`, extend both the `reset_to_unset` calls and the `ActuatedId` array with the four LG slots / variants.
+
+### [PR-LG-THINQ-B-1-D02] `apply_knob` × 4 round-trip tests missing — plan §5.2 obligation
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs` test section
+**Description:** Plan §5.2 mandates four tests, one per new knob, mirroring `apply_knob_zappi_battery_drain_threshold_w_routes_to_field`. For the three controller-driven knobs the plan also requires asserting the operator-mirror writes into `world.lg_*.target.value`. The implementation has zero such tests. Without them: (a) the apply_knob match arms aren't pinned against schema drift — a `KnobValue::Float` mistake in the match shape would silently fall through to the `_ => warn!` catch-all; (b) the operator-mirror block (lines 624-661 in `apply_command`) has no test coverage at all. The `apply_knob` arms write the knob field but the matching `propose_target` call lives in a separate `match (id, value)` block in `apply_command` — these are easy to drift apart.
+**Fix:** add `process.rs` test section: `apply_knob_lg_heat_pump_power_routes_to_field_and_mirrors_actuated`, three more (one per knob); assert both `world.knobs.lg_*` AND `world.lg_*.target.value` are set and `target.owner == Owner::Dashboard`.
+
+### [PR-LG-THINQ-B-1-D03] `apply_sensor_reading` × 6 tests missing — plan §5.3 obligation
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/core/src/process.rs` test section
+**Description:** Plan §5.3 mandates six tests, one per new SensorId. For the four actuated-mirror tests, it requires asserting `world.lg_*.actual.value` is set AND a confirm-success `ActuatedPhase` effect is emitted. The implementation has none. The post-hook routing (`apply_sensor_reading` lines 449-490) is the load-bearing piece that translates `f64` readings into `bool`/`i32` actuated-actual values and confirms targets — completely untested. A typo like `let bool_val = v == 0.0;` (inverted) or `v as i32` for the bool variants would not be caught.
+**Fix:** add 6 tests in `process.rs`; bool-arm asserts `world.lg_*.actual.value == Some(true)` for `v=1.0`; for `v=0.5` (a non-canonical reading) `Some(true)` per the `v != 0.0` predicate; confirm-success assertion checks the emitted `Effect::Publish(PublishPayload::ActuatedPhase { id, phase: Confirmed })`.
+
+### [PR-LG-THINQ-B-1-D04] `LgThinqAction → JSON` payload tests missing — plan §5.4 obligation
+**Status:** resolved
+**Severity:** major
+**Location:** `crates/shell/src/lg_thinq/mod.rs`
+**Description:** Plan §5.4 mandates four tests asserting `Writer::execute(LgThinqAction::Set<X>(value))` produces the exact JSON envelope from `HeatPumpControl::set_<X>`. The file has zero tests. The `Writer::execute` arm (lines 123-130) routes `SetHeatPumpPower → HeatPumpControl::set_heating_power` etc.; a wrong wiring (e.g. `SetHeatPumpPower → set_dhw_power`) would not be caught. The dual-tests pattern with a recording fake `ThinqApi` is explicitly called out in the plan; absent any test, the bridge between `LgThinqAction` variants and the upstream `HeatPumpControl` payload builders is unverified.
+**Fix:** add a `tests` mod in `lg_thinq/mod.rs` with a `RecordingApi` (manual dummy implementing the `post_device_control` surface) capturing the JSON payload; four assertions matching the exact payload shapes from `lg-thinq-client/src/heat_pump.rs`.
+
+### [PR-LG-THINQ-B-1-D05] Round-trip `knob_name ↔ knob_id_from_name` tests missing for 4 LG knobs — plan §5.7
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs` test section
+**Description:** Plan §5.7 mandates `knob_name(KnobId::Lg*) → knob_id_from_name(...) → KnobId::Lg*` for each of the four new knobs. With the existing all-variant round-trip test in the file (if any), this might be auto-covered; otherwise a typo in one direction (e.g. `"lg.heat-pump.power"` vs `"lg.heat_pump.power"`) is asymmetric and silently breaks ingest without breaking egress.
+**Fix:** confirm whether `crates/shell/src/mqtt/serialize.rs` already has an exhaustive round-trip test over `KnobId::ALL`-like enumeration; if not, add `lg_knob_round_trip` over the four variants.
+
+### [PR-LG-THINQ-B-1-D06] `HeatPumpControlCore::run` publishes `ActuatedPhase` unconditionally every tick for three actuators
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/core_dag/cores.rs:832,861,893`
+**Description:** After each `propose_target` (lines 829, 858, 890), the core unconditionally pushes `Effect::Publish(PublishPayload::ActuatedPhase{...})` regardless of whether the proposal actually changed the phase. With a 1 s tick period and three actuators, that's `3 × 60 = 180 ActuatedPhase publishes/min` for the heat-pump alone, on top of a duplicate publish on the write path. The MQTT layer has no dedup on `ActuatedPhase`. EssStateOverrideCore's pattern short-circuits with `if !changed { return; }`. Not strictly incorrect — but adds steady-state broker load.
+**Fix:** gate the initial `Effect::Publish(ActuatedPhase)` on `changed` (cheaper of the two reviewer-suggested options; matches `EssStateOverrideCore`).
+
+### [PR-LG-THINQ-B-1-D07] Dead `_act` displayName entries — `displayNameOfTyped("…", "actuated")` falls through to knob names
+**Status:** resolved
+**Severity:** minor
+**Location:** `web/src/displayNames.ts:148-153`
+**Description:** The PR adds `lg_heat_pump_power_act`, `lg_dhw_power_act`, `lg_heating_water_target_act`, `lg_dhw_target_act` to `DISPLAY_NAMES`, but `render.ts`'s `renderActuated` uses keys WITHOUT the `_act` suffix when constructing rows (`mkRow("lg_heat_pump_power", …)`) and `displayNameOfTyped(a.key, "actuated")` looks up `lg_heat_pump_power` — which `DISPLAY_NAMES` resolves to the knob's `"lg.heat-pump.power"`. So: (1) the four `_act` entries are dead — nothing ever queries them. (2) The actuated table's row display name collides with the knob's, breaking the project's "actuated → `.target` suffix" disambiguation convention.
+**Fix:** delete the four `_act` entries and instead extend `DISPLAY_NAMES_BY_TYPE.actuated` with `lg_heat_pump_power: "lg.heat-pump.power.target"` etc., matching the existing convention for `zappi_mode`/`eddi_mode`.
+
+### [PR-LG-THINQ-B-1-D08] Missing description entries for the two actuated-only dotted names
+**Status:** resolved
+**Severity:** nit
+**Location:** `web/src/descriptions.ts:239-250`
+**Description:** The actuated names emitted by `actuated_name` in `serialize.rs:565-566` are `"lg.heating-water.target"` and `"lg.dhw.target"` (no `-c` suffix; the suffix is on the knob form). The description file has entries for the knob forms only. The entity inspector, when opened on the actuated entity, looks up the actuated dotted name and falls back to "no description" on miss.
+**Fix:** add the two missing entries with similar wording to the `-c` versions (and the matching entries for the two bool actuators once D10 is applied), or alias them to the knob entries.
+
+### [PR-LG-THINQ-B-1-D09] Knob/actuated name prefix `"lg.*"` deviates from plan's `"heat-pump.*"`
+**Status:** resolved (note-only; orchestrator accepts the deviation)
+**Severity:** nit
+**Location:** `crates/shell/src/mqtt/serialize.rs:449-566`
+**Description:** Plan §3 D15 specified knob and actuated dotted names rooted at `"heat-pump.*"`. Implementation uses `"lg.*"` prefix everywhere. Internally consistent across Rust + TS + descriptions + HA discovery; functionally equivalent. The `"lg.*"` prefix groups all LG-sourced topics under one node (arguably better than the plan's flat naming).
+**Fix:** Note-only — orchestrator accepts the deviation; the plan's `"heat-pump.*"` is retroactively superseded by `"lg.*"`. No code change.
+
+### [PR-LG-THINQ-B-1-D10] Knob master power name `"lg.heat-pump.power"` collides with actuated name `"lg.heat-pump.power"`
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/shell/src/mqtt/serialize.rs:450,563`
+**Description:** `knob_name(KnobId::LgHeatPumpPower)` returns `"lg.heat-pump.power"`. `actuated_name(ActuatedId::LgHeatPumpPower)` returns `"lg.heat-pump.power"` (same string). MQTT topic prefixes disambiguate at the wire level, but the web `displayNames.ts` knob entry and the actuated entry both resolve to the same dotted name — there's no `.target` suffix on the actuated form. Existing convention (e.g. `zappi_mode → "evcharger.mode.target"`) uses `.target` to disambiguate.
+**Fix:** change the four `actuated_name` returns to add a `.target` suffix (`"lg.heat-pump.power.target"`, `"lg.dhw.power.target"`, `"lg.heating-water.target.target-c"`, `"lg.dhw.target.target-c"` — pick whichever form reads best). Update HA discovery `publish_phases::ids` array (auto-cascades through `actuated_name`), `DISPLAY_NAMES_BY_TYPE.actuated`, and `descriptions.ts` in lockstep.
+
+### [PR-LG-THINQ-B-1-D11] Operator-mirror in `apply_knob` propagates `Owner::System` from bootstrap, causing 1-tick controller-vs-operator phase churn
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/process.rs:624-661`
+**Description:** On bootstrap, retained MQTT replay produces `Event::Command { owner: Owner::System, … }` for each stored knob. The apply_knob mirror block calls `world.lg_dhw_power.propose_target(value, Owner::System, at)` — pinning the slot to System-owned Pending. One tick later, `HeatPumpControlCore::run` calls `propose_target(value, Owner::HeatPumpController, …)` — different owner so phase resets to Pending again, and a fresh `ActuatedPhase` publish fires. Net effect: every boot cycle, each of the 4 LG knobs gets two redundant phase publishes within 1 s.
+**Fix:** skip the operator-mirror for `Owner::System` (bootstrap path is the only producer of that owner for knob commands); the controller's tick will pick up the value through its normal flow.
+
+### [PR-LG-THINQ-B-1-D12] `Actuated<bool>::confirm_if` semantics untested
+**Status:** resolved
+**Severity:** minor
+**Location:** `crates/core/src/tass/actuated.rs` tests + new heat_pump.rs tests
+**Description:** The implementation introduces the first ever `Actuated<bool>`. The existing tests at `tass/actuated.rs:316-` exercise `Actuated<i32>` exclusively. A regression in `confirm_if` semantics specifically for `bool` (e.g. behaviour when target is `Some(false)` and actual is `Some(false)`) isn't pinned.
+**Fix:** add at least one `Actuated::<bool>` test in `actuated.rs` exercising propose → mark_commanded → on_reading → confirm_if for both `true` and `false` values.
+
+### [PR-LG-THINQ-B-1-D13] `Effect::CallLgThinq` dispatched every tick even when `lg_thinq` is unconfigured — debug-log noise
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/shell/src/runtime.rs:171-173` + `crates/core/src/core_dag/cores.rs:847,876,912`
+**Description:** When `[lg_thinq]` is unconfigured, `Runtime::lg_thinq = None`. But `HeatPumpControlCore::run` still emits `Effect::CallLgThinq` per tick once retry threshold elapses. Dispatch logs `debug!(?action, "CallLgThinq dropped …")` for each. At `actuator_retry_s=60s` default, that's three debug-log lines/minute steady state for an LG-less install.
+**Fix:** demote the dispatch's "dropped" log to `trace` in `runtime.rs`. Consistent with how the project treats other "no-op effect when subsystem disabled" cases.
+
+### [PR-LG-THINQ-B-1-D14] `HeatPumpControlCore` `last_inputs` / docstring lacks "no cross-core edges" explanation
+**Status:** resolved
+**Severity:** nit
+**Location:** `crates/core/src/core_dag/cores.rs:811-813`
+**Description:** `depends_on` returns an empty slice (intentional per plan §3 D08), but the doc comment doesn't explain why. Future readers comparing this core to `EssStateOverrideCore` (which also has no upstream deps but is a discrete state machine) won't see the rationale. The "edge motivation" string surfaced via `last_inputs/last_outputs` is empty.
+**Fix:** add a doc comment paragraph on `HeatPumpControlCore` explaining the empty `depends_on` and the fact that `outdoor_temperature` is consumed as a regular sensor rather than a cross-core derivation. Cosmetic only.
+
+### [PR-LG-THINQ-B-1-D15] Phase A zombie HA-discovery entities — operator runbook step missing
+**Status:** resolved
+**Severity:** nit
+**Location:** `tasks.md` / PR description
+**Description:** Plan §6 R7 accepted either (a) explicit zombie cleanup in code or (b) operator runbook step. The implementation chose (b) — no cleanup code present in `lg_thinq/mod.rs`. But `tasks.md` and the PR description don't mention the runbook step. Deploying this PR to an existing install that previously ran Phase A leaves stale retained discovery entries under `homeassistant/.../victron_controller_lg_thinq/...` topics, which HA will keep showing as "unavailable" entities until manually purged.
+**Fix:** added a "Deploy runbook — purge Phase A retained HA discovery entries" subsection to the M-LG-THINQ milestone breakdown in `tasks.md`. Lists the six retained discovery topics (2 switches, 2 numbers, 2 sensors under `homeassistant/.../victron_controller_lg_thinq/.../config`) plus the LWT `<topic_root>/availability/lg_thinq`, with `mosquitto_pub -r -n` commands to delete each retained payload.
+
+### [PR-LG-THINQ-B-1-D16] Pre-existing dashboard `=== null` comparison pattern copied into LG i32 actuated rows
+**Status:** resolved (note-only; pre-existing convention, follow-up PR)
+**Severity:** nit
+**Location:** `web/src/render.ts:695,698,704,707`
+**Description:** Round-2 reviewer flagged that the new `lg_heating_water_target_c` and `lg_dhw_target_c` rows compare `target_value === null` and `actual.value === null` to detect missing values. The generated TypeScript model declares both fields as `number | undefined`, never `null`. The same pattern exists for the older actuators (grid_setpoint, ess_state_target etc. at lines 613, 616, 622, 625, 667, 670) and isn't introduced by this PR — the new rows mirror the convention. Reviewer noted this is NOT a regression.
+**Fix:** note-only — pre-existing convention propagated; production dashboard works because TypeScript's runtime null/undefined handling is more permissive than the type system claims. A workspace-wide cleanup (replace all `=== null` with `=== undefined` for actuated value comparisons in `web/src/render.ts`) belongs in a separate web-cleanup PR, not in this LG-thinq PR.

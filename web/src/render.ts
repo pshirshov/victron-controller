@@ -13,6 +13,7 @@ import type { ActuatedI32 } from "./model/victron_controller/dashboard/ActuatedI
 import type { ActuatedF64 } from "./model/victron_controller/dashboard/ActuatedF64.js";
 import type { ActuatedEnumName } from "./model/victron_controller/dashboard/ActuatedEnumName.js";
 import type { ActuatedSchedule } from "./model/victron_controller/dashboard/ActuatedSchedule.js";
+import type { ActuatedBool } from "./model/victron_controller/dashboard/ActuatedBool.js";
 import { ZappiDrainBranch } from "./model/victron_controller/dashboard/ZappiDrainBranch.js";
 import type { ZappiDrainState } from "./model/victron_controller/dashboard/ZappiDrainState.js";
 import type { ZappiDrainSnapshotWire } from "./model/victron_controller/dashboard/ZappiDrainSnapshotWire.js";
@@ -600,6 +601,11 @@ export function renderActuated(snap: WorldSnapshot) {
   const s1: ActuatedSchedule = a.schedule_1;
   // PR-keep-batteries-charged.
   const ess: ActuatedI32 = a.ess_state_target;
+  // PR-LG-THINQ-B: four heat-pump actuated entities.
+  const lgHpp: ActuatedBool = a.lg_heat_pump_power;
+  const lgDhwP: ActuatedBool = a.lg_dhw_power;
+  const lgHwt: ActuatedI32 = a.lg_heating_water_target_c;
+  const lgDhwT: ActuatedI32 = a.lg_dhw_target_c;
 
   const rows: KeyedRow[] = [
     mkRow(
@@ -664,6 +670,43 @@ export function renderActuated(snap: WorldSnapshot) {
       ess.actual.value === null ? "—" : String(ess.actual.value),
       String(ess.actual.freshness),
       ess.actual.since_epoch_ms as unknown as number,
+    ),
+    // PR-LG-THINQ-B: four heat-pump actuated entities.
+    mkRow(
+      "lg_heat_pump_power",
+      lgHpp.target_value === undefined ? "—" : String(lgHpp.target_value),
+      String(lgHpp.target_owner),
+      String(lgHpp.target_phase),
+      lgHpp.actual.value === undefined ? "—" : String(lgHpp.actual.value),
+      String(lgHpp.actual.freshness),
+      lgHpp.actual.since_epoch_ms as unknown as number,
+    ),
+    mkRow(
+      "lg_dhw_power",
+      lgDhwP.target_value === undefined ? "—" : String(lgDhwP.target_value),
+      String(lgDhwP.target_owner),
+      String(lgDhwP.target_phase),
+      lgDhwP.actual.value === undefined ? "—" : String(lgDhwP.actual.value),
+      String(lgDhwP.actual.freshness),
+      lgDhwP.actual.since_epoch_ms as unknown as number,
+    ),
+    mkRow(
+      "lg_heating_water_target_c",
+      lgHwt.target_value === null ? "—" : `${lgHwt.target_value} °C`,
+      String(lgHwt.target_owner),
+      String(lgHwt.target_phase),
+      lgHwt.actual.value === null ? "—" : `${lgHwt.actual.value} °C`,
+      String(lgHwt.actual.freshness),
+      lgHwt.actual.since_epoch_ms as unknown as number,
+    ),
+    mkRow(
+      "lg_dhw_target_c",
+      lgDhwT.target_value === null ? "—" : `${lgDhwT.target_value} °C`,
+      String(lgDhwT.target_owner),
+      String(lgDhwT.target_phase),
+      lgDhwT.actual.value === null ? "—" : `${lgDhwT.actual.value} °C`,
+      String(lgDhwT.actual.freshness),
+      lgDhwT.actual.since_epoch_ms as unknown as number,
     ),
   ];
   rows.sort((a, b) => displayNameOfTyped(a.key, "actuated").localeCompare(displayNameOfTyped(b.key, "actuated")));

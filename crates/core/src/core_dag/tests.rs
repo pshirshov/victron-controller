@@ -76,6 +76,11 @@ const EXPECTED_PRODUCTION_ORDER: &[CoreId] = &[
     // Kahn's keeps it at the tail because everything before it has
     // its in-degree-zero spot earlier.
     CoreId::EssStateOverride,
+    // PR-LG-THINQ-B: no cross-core reads (sensors + knobs only);
+    // Kahn's places it alongside EssStateOverride at in-degree 0
+    // after all transitive deps are satisfied. Discriminant order
+    // puts HeatPumpControl AFTER EssStateOverride.
+    CoreId::HeatPumpControl,
     CoreId::SensorBroadcast,
 ];
 
@@ -574,19 +579,21 @@ mod sensor_broadcast {
     use crate::types::{Effect, PublishPayload, SensorId};
     use crate::world::World;
 
-    // 26 sensor publishes (20 original + ev_soc per PR-ev-soc-sensor +
+    // 28 sensor publishes (20 original + ev_soc per PR-ev-soc-sensor +
     // ev_charge_target per PR-auto-extended-charge + 4 new sensors per
     // PR-ZD-1: heat_pump_power, cooker_power, mppt_0_operation_mode,
-    // mppt_1_operation_mode) plus 3 numeric + 3 boolean bookkeeping
-    // publishes on the first run with a fresh-boot world (every cache
-    // slot is absent → first-write emits the value).
-    // PR-AS-C: the 12 actuated-mirror SensorId variants (grid setpoint
-    // actual + current limit actual + 10 schedule leaves) are filtered
-    // out of the broadcast iteration via `id.actuated_id().is_some()` —
-    // their values are surfaced via the dedicated `Actuated` table
+    // mppt_1_operation_mode + 2 new sensors per PR-LG-THINQ-B:
+    // lg_dhw_current_c, lg_heating_water_current_c) plus 3 numeric +
+    // 3 boolean bookkeeping publishes on the first run with a fresh-boot
+    // world (every cache slot is absent → first-write emits the value).
+    // PR-AS-C: the 16 actuated-mirror SensorId variants (grid setpoint
+    // actual + current limit actual + 10 schedule leaves + 4 LG
+    // actuated-mirror variants) are filtered out of the broadcast
+    // iteration via `id.actuated_id().is_some()` — their values are
+    // surfaced via the dedicated `Actuated` table
     // (`PublishPayload::ActuatedPhase`), so double-publishing them as
     // sensors would clutter HA.
-    const EXPECTED_FIRST_RUN_EFFECTS: usize = 26 + 3 + 3;
+    const EXPECTED_FIRST_RUN_EFFECTS: usize = 28 + 3 + 3;
 
     fn fixed_clock() -> FixedClock {
         let mono = Instant::now();

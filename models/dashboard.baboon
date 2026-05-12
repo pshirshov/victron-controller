@@ -81,11 +81,15 @@ data Sensors {
   cooker_power: ActualF64
   mppt_0_operation_mode: ActualF64
   mppt_1_operation_mode: ActualF64
+  // PR-LG-THINQ-B: two read-only temperature sensors from the LG heat pump.
+  lg_dhw_actual_c: ActualF64
+  lg_heating_water_actual_c: ActualF64
 }
 
 // PR-keep-batteries-charged: extend `Owner` with the new
 // EssStateOverrideController so the dashboard's actuated-table "Owner"
 // column can label rows whose target was set by that controller.
+// PR-LG-THINQ-B: add HeatPumpController.
 enum Owner {
   Unset
   System
@@ -99,12 +103,29 @@ enum Owner {
   EddiController
   FullChargeScheduler
   EssStateOverrideController
+  HeatPumpController
+}
+
+// PR-LG-THINQ-B: new wire types for bool-valued actuated entities.
+// Mirror the shape of ActuatedI32 + ActualI32 from models/dashboard-0.1.0.baboon.
+data ActuatedBool {
+  target_value: opt[bit]
+  target_owner: Owner
+  target_phase: TargetPhase
+  target_since_epoch_ms: i64
+  actual: ActualBool
+}
+data ActualBool {
+  value: opt[bit]
+  freshness: Freshness
+  since_epoch_ms: i64
 }
 
 // PR-keep-batteries-charged: add `ess_state_target: ActuatedI32` so the
 // daytime ESS-state override has full TASS phase tracking on the
 // dashboard's actuated table (target/owner/phase + actual readback +
 // confirm_if). Same shape as `grid_setpoint`.
+// PR-LG-THINQ-B: four new heat-pump actuated entities.
 data Actuated {
   grid_setpoint: ActuatedI32
   input_current_limit: ActuatedF64
@@ -113,6 +134,10 @@ data Actuated {
   schedule_0: ActuatedSchedule
   schedule_1: ActuatedSchedule
   ess_state_target: ActuatedI32
+  lg_heat_pump_power: ActuatedBool
+  lg_dhw_power: ActuatedBool
+  lg_heating_water_target_c: ActuatedI32
+  lg_dhw_target_c: ActuatedI32
 }
 
 // PR-baseline-forecast: extend `Forecasts` with the locally-computed
@@ -202,6 +227,11 @@ data Knobs {
   // actuators (grid setpoint, current limit, zappi/eddi modes,
   // schedules).
   actuator_retry_s: i32
+  // PR-LG-THINQ-B: four heat-pump knobs.
+  lg_heat_pump_power: bit
+  lg_dhw_power: bit
+  lg_heating_water_target_c: i32
+  lg_dhw_target_c: i32
   // PR-WSOC-TABLE-1: bucket-boundary knob for the new 6×2 weather-SoC
   // lookup table. Replaces the legacy `1.5 × too_much_energy_threshold`
   // hard-coded multiplier. Default 67.5 kWh — matches the previous

@@ -25,7 +25,8 @@ pub use discovery::publish_ha_discovery;
 pub use log_layer::{log_channel, spawn_log_publisher, LogRecord, MqttLogLayer};
 pub use serialize::{
     decode_knob_set, decode_state_message, encode_publish_payload, outdoor_temp_event,
-    parse_json_field_outdoor_temp, parse_matter_outdoor_temp, set_hardware_params, OutdoorTempParse,
+    parse_json_field_outdoor_temp, parse_matter_outdoor_temp, set_hardware_params,
+    set_lg_thinq_ranges, LgThinqRanges, OutdoorTempParse,
 };
 
 // PR-ev-soc-sensor: parsers re-exported for unit testing and any

@@ -607,4 +607,39 @@ mod tests {
         e.mark_commanded(at(t0, 37));
         assert_eq!(e.actual.freshness, Freshness::Deprecated);
     }
+
+    /// PR-LG-THINQ-B-1-D12: PR-LG-THINQ introduces the first
+    /// `Actuated<bool>` slots in the codebase. The existing lifecycle
+    /// tests above are all parameterised on `Actuated<i32>`. This
+    /// pins the same propose → mark_commanded → on_reading →
+    /// confirm_if cycle for `bool`, both values, and a mismatch case.
+    #[test]
+    fn bool_actuator_full_lifecycle_both_values() {
+        let t0 = Instant::now();
+
+        // --- true cycle ---
+        let mut e: Actuated<bool> = Actuated::new(t0);
+        assert!(e.propose_target(true, Owner::HeatPumpController, at(t0, 1)));
+        assert_eq!(e.target.phase, TargetPhase::Pending);
+        e.mark_commanded(at(t0, 2));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
+        e.on_reading(true, at(t0, 3));
+        assert!(e.confirm_if(|t, a| t == a, at(t0, 4)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
+
+        // --- false cycle ---
+        assert!(e.propose_target(false, Owner::HeatPumpController, at(t0, 5)));
+        assert_eq!(e.target.phase, TargetPhase::Pending);
+        e.mark_commanded(at(t0, 6));
+        e.on_reading(false, at(t0, 7));
+        assert!(e.confirm_if(|t, a| t == a, at(t0, 8)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
+
+        // --- mismatch must NOT confirm ---
+        assert!(e.propose_target(true, Owner::HeatPumpController, at(t0, 9)));
+        e.mark_commanded(at(t0, 10));
+        e.on_reading(false, at(t0, 11));
+        assert!(!e.confirm_if(|t, a| t == a, at(t0, 12)));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
+    }
 }

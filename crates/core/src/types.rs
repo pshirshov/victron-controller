@@ -129,6 +129,24 @@ pub enum SensorId {
     /// 0=Off, 1=Voltage-or-current-limited, 2=MPPT-tracking.
     /// Observability only — not coupled into the control loop.
     Mppt1OperationMode,
+    // PR-LG-THINQ-B: actuated-mirror sensors for the 4 LG heat-pump slots,
+    // plus 2 read-only temperature sensors. Storage of truth lives on
+    // `world.lg_*.actual`; freshness regime = ReseedDriven at 60 s cadence;
+    // staleness = 180 s (>= 2× cadence + headroom). NOT external-polled.
+    /// Bool readback mirror of `ActuatedId::LgHeatPumpPower`.
+    LgHeatPumpPowerActual,
+    /// Bool readback mirror of `ActuatedId::LgDhwPower`.
+    LgDhwPowerActual,
+    /// i32 readback mirror of `ActuatedId::LgHeatingWaterTarget`.
+    LgHeatingWaterTargetActual,
+    /// i32 readback mirror of `ActuatedId::LgDhwTarget`.
+    LgDhwTargetActual,
+    /// Current DHW water temperature (°C). Read-only; sourced from
+    /// the LG ThinQ cloud poller's `HeatPumpState.dhw_current_c`.
+    LgDhwCurrentTemperatureC,
+    /// Current heating water temperature (°C). Read-only; sourced from
+    /// the LG ThinQ cloud poller's `HeatPumpState.heating_water_current_c`.
+    LgHeatingWaterCurrentTemperatureC,
 }
 
 impl SensorId {
@@ -186,6 +204,7 @@ impl SensorId {
             }
             // PR-actuated-as-sensors (PR-AS-A): schedule leaf paths
             // reseed at 60 s; staleness 180 s satisfies 2× cadence.
+            // PR-LG-THINQ-B: LG sensors polled at 60 s → same 180 s window.
             Self::Schedule0StartActual
             | Self::Schedule0DurationActual
             | Self::Schedule0SocActual
@@ -195,7 +214,13 @@ impl SensorId {
             | Self::Schedule1DurationActual
             | Self::Schedule1SocActual
             | Self::Schedule1DaysActual
-            | Self::Schedule1AllowDischargeActual => Duration::from_secs(180),
+            | Self::Schedule1AllowDischargeActual
+            | Self::LgHeatPumpPowerActual
+            | Self::LgDhwPowerActual
+            | Self::LgHeatingWaterTargetActual
+            | Self::LgDhwTargetActual
+            | Self::LgDhwCurrentTemperatureC
+            | Self::LgHeatingWaterCurrentTemperatureC => Duration::from_secs(180),
             // PR-ev-soc-sensor: external push from saic-python-mqtt-gateway.
             // The car can sleep for hours between reports; 12 h is a
             // generous Fresh window that still flips Stale if the gateway
@@ -287,6 +312,13 @@ impl SensorId {
         SensorId::CookerPower,
         SensorId::Mppt0OperationMode,
         SensorId::Mppt1OperationMode,
+        // PR-LG-THINQ-B: 4 actuated-mirror + 2 plain temperature sensors.
+        SensorId::LgHeatPumpPowerActual,
+        SensorId::LgDhwPowerActual,
+        SensorId::LgHeatingWaterTargetActual,
+        SensorId::LgDhwTargetActual,
+        SensorId::LgDhwCurrentTemperatureC,
+        SensorId::LgHeatingWaterCurrentTemperatureC,
     ];
 
     /// Freshness regime for this sensor — see [`FreshnessRegime`].
@@ -364,7 +396,15 @@ impl SensorId {
             // PR-ZD-1: MPPT op-modes are reseed-driven (value changes
             // only on inverter mode transitions; no organic signal).
             | Self::Mppt0OperationMode
-            | Self::Mppt1OperationMode => FreshnessRegime::ReseedDriven,
+            | Self::Mppt1OperationMode
+            // PR-LG-THINQ-B: all 6 new LG sensors are reseed-driven (60 s
+            // LG cloud poll is the sole freshness source).
+            | Self::LgHeatPumpPowerActual
+            | Self::LgDhwPowerActual
+            | Self::LgHeatingWaterTargetActual
+            | Self::LgDhwTargetActual
+            | Self::LgDhwCurrentTemperatureC
+            | Self::LgHeatingWaterCurrentTemperatureC => FreshnessRegime::ReseedDriven,
         }
     }
 
@@ -457,6 +497,13 @@ impl SensorId {
             | Self::CookerPower
             | Self::Mppt0OperationMode
             | Self::Mppt1OperationMode => Duration::from_secs(15),
+            // PR-LG-THINQ-B: 60 s LG cloud poll cadence (2× = 120 s ≤ 180 s threshold).
+            Self::LgHeatPumpPowerActual
+            | Self::LgDhwPowerActual
+            | Self::LgHeatingWaterTargetActual
+            | Self::LgDhwTargetActual
+            | Self::LgDhwCurrentTemperatureC
+            | Self::LgHeatingWaterCurrentTemperatureC => Duration::from_secs(60),
         }
     }
 
@@ -529,7 +576,15 @@ impl SensorId {
             | Self::HeatPumpPower
             | Self::CookerPower
             | Self::Mppt0OperationMode
-            | Self::Mppt1OperationMode => None,
+            | Self::Mppt1OperationMode
+            // PR-LG-THINQ-B: 2 plain temperature sensors (not actuated mirrors).
+            | Self::LgDhwCurrentTemperatureC
+            | Self::LgHeatingWaterCurrentTemperatureC => None,
+            // PR-LG-THINQ-B: 4 actuated-mirror sensors route to their ActuatedId.
+            Self::LgHeatPumpPowerActual => Some(ActuatedId::LgHeatPumpPower),
+            Self::LgDhwPowerActual => Some(ActuatedId::LgDhwPower),
+            Self::LgHeatingWaterTargetActual => Some(ActuatedId::LgHeatingWaterTarget),
+            Self::LgDhwTargetActual => Some(ActuatedId::LgDhwTarget),
         }
     }
 }
@@ -717,6 +772,15 @@ pub enum ActuatedId {
     /// `com.victronenergy.settings`). Mirrored on `SensorId::EssState`
     /// for readback / confirm.
     EssStateTarget,
+    // PR-LG-THINQ-B: four LG heat-pump actuated entities.
+    /// Master power on/off for the heat pump.
+    LgHeatPumpPower,
+    /// DHW (hot water) power on/off.
+    LgDhwPower,
+    /// Heating-water temperature target (°C, i32).
+    LgHeatingWaterTarget,
+    /// DHW temperature target (°C, i32).
+    LgDhwTarget,
 }
 
 /// Knob identifiers — one per user-controllable setting in [`crate::knobs::Knobs`].
@@ -798,6 +862,17 @@ pub enum KnobId {
     ZappiBatteryDrainMpptProbeW,
     /// PR-ACT-RETRY-1: universal actuator retry threshold (s). Default 60.
     ActuatorRetryS,
+
+    // PR-LG-THINQ-B: four heat-pump knobs. Bool variants use KnobValue::Bool;
+    // °C targets use KnobValue::Uint32 (cast to i64 at the writer boundary).
+    /// Master power switch for the LG heat pump.
+    LgHeatPumpPower,
+    /// DHW (domestic hot water) power switch for the LG heat pump.
+    LgDhwPower,
+    /// Heating-water temperature target (°C). Range from config.
+    LgHeatingWaterTargetC,
+    /// DHW temperature target (°C). Range from config.
+    LgDhwTargetC,
 
     /// PR-WSOC-EDIT-1: per-cell knob in the 6×2 weather-SoC lookup
     /// table. Externally surfaces as 48 distinct addressable knobs
@@ -916,6 +991,8 @@ pub enum TimerId {
     MqttBootstrap,
     /// One-shot initial knob publish at startup (PR-2).
     InitialKnobPublish,
+    /// PR-LG-THINQ-B: LG ThinQ heat-pump cloud poller (state + temperature readbacks).
+    LgThinqPoller,
 }
 
 impl TimerId {
@@ -940,6 +1017,7 @@ impl TimerId {
         TimerId::DbusReseedSettings,
         TimerId::MqttBootstrap,
         TimerId::InitialKnobPublish,
+        TimerId::LgThinqPoller,
     ];
 
     /// Stable dotted identifier — what the wire `Timer.id` field carries
@@ -965,6 +1043,7 @@ impl TimerId {
             Self::DbusReseedSettings => "timer.dbus.reseed.settings",
             Self::MqttBootstrap => "timer.mqtt.bootstrap",
             Self::InitialKnobPublish => "timer.knob.initial-publish",
+            Self::LgThinqPoller => "timer.lg-thinq.poll",
         }
     }
 
@@ -992,6 +1071,7 @@ impl TimerId {
             Self::DbusReseedSettings => "D-Bus reseed timer for the settings service",
             Self::MqttBootstrap => "One-shot MQTT bootstrap (retained-state restore + initial publish)",
             Self::InitialKnobPublish => "One-shot initial knob publish at startup",
+            Self::LgThinqPoller => "LG ThinQ heat-pump cloud poller (state + temperature readbacks)",
         }
     }
 }
@@ -1230,6 +1310,15 @@ pub enum DbusValue {
 pub enum MyenergiAction {
     SetZappiMode(ZappiMode),
     SetEddiMode(EddiMode),
+}
+
+/// PR-LG-THINQ-B: an LG ThinQ heat-pump API action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LgThinqAction {
+    SetHeatPumpPower(bool),
+    SetDhwPower(bool),
+    SetHeatingWaterTargetC(i64),
+    SetDhwTargetC(i64),
 }
 
 /// Publishable snapshots (retained MQTT state).
@@ -1475,6 +1564,8 @@ pub enum Effect {
         value: PinnedValue,
     },
     CallMyenergi(MyenergiAction),
+    /// PR-LG-THINQ-B: an LG ThinQ API call.
+    CallLgThinq(LgThinqAction),
     Publish(PublishPayload),
     Log {
         level: LogLevel,
@@ -1559,6 +1650,13 @@ mod tests {
                 | SensorId::CookerPower
                 | SensorId::Mppt0OperationMode
                 | SensorId::Mppt1OperationMode => Duration::from_secs(15),
+                // PR-LG-THINQ-B: 60 s LG cloud poll cadence.
+                SensorId::LgHeatPumpPowerActual
+                | SensorId::LgDhwPowerActual
+                | SensorId::LgHeatingWaterTargetActual
+                | SensorId::LgDhwTargetActual
+                | SensorId::LgDhwCurrentTemperatureC
+                | SensorId::LgHeatingWaterCurrentTemperatureC => Duration::from_secs(60),
             };
             assert_eq!(
                 id.reseed_cadence(),
@@ -1612,7 +1710,14 @@ mod tests {
                 | SensorId::EvChargeTarget
                 // PR-ZD-1: MPPT op-modes are reseed-driven.
                 | SensorId::Mppt0OperationMode
-                | SensorId::Mppt1OperationMode => FreshnessRegime::ReseedDriven,
+                | SensorId::Mppt1OperationMode
+                // PR-LG-THINQ-B: all 6 LG sensors are reseed-driven.
+                | SensorId::LgHeatPumpPowerActual
+                | SensorId::LgDhwPowerActual
+                | SensorId::LgHeatingWaterTargetActual
+                | SensorId::LgDhwTargetActual
+                | SensorId::LgDhwCurrentTemperatureC
+                | SensorId::LgHeatingWaterCurrentTemperatureC => FreshnessRegime::ReseedDriven,
                 // PR-ZD-1: HP/cooker are SlowSignalled (z2m push on change).
                 SensorId::HeatPumpPower | SensorId::CookerPower => FreshnessRegime::SlowSignalled,
             };
@@ -1698,7 +1803,15 @@ mod tests {
                 | SensorId::HeatPumpPower
                 | SensorId::CookerPower
                 | SensorId::Mppt0OperationMode
-                | SensorId::Mppt1OperationMode => None,
+                | SensorId::Mppt1OperationMode
+                // PR-LG-THINQ-B: plain temperature sensors.
+                | SensorId::LgDhwCurrentTemperatureC
+                | SensorId::LgHeatingWaterCurrentTemperatureC => None,
+                // PR-LG-THINQ-B: 4 actuated-mirror sensors.
+                SensorId::LgHeatPumpPowerActual => Some(ActuatedId::LgHeatPumpPower),
+                SensorId::LgDhwPowerActual => Some(ActuatedId::LgDhwPower),
+                SensorId::LgHeatingWaterTargetActual => Some(ActuatedId::LgHeatingWaterTarget),
+                SensorId::LgDhwTargetActual => Some(ActuatedId::LgDhwTarget),
             };
             assert_eq!(
                 id.actuated_id(),

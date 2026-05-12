@@ -446,3 +446,10 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # (grid setpoint, current limit, zappi/eddi modes, schedules).
 # actuator_retry_s                         = 60
 
+# PR-LG-THINQ-B: LG ThinQ heat-pump knob defaults. Override here to
+# seed the retained MQTT value at boot without a manual HA write.
+# lg_heat_pump_power                        = false
+# lg_dhw_power                              = false
+# lg_heating_water_target_c                 = 42
+# lg_dhw_target_c                           = 60
+

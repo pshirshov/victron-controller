@@ -235,6 +235,29 @@ export const entityDescriptions: Record<string, string> = {
   "actuator.retry.s":
     "How long to wait after a write before re-issuing the same command when actual hasn't matched target. Applies to all actuated values (grid setpoint, current limit, zappi/eddi modes, schedules).",
 
+  // PR-LG-THINQ-B: heat-pump knobs and sensors.
+  "lg.heat-pump.power":
+    "Master power switch for the LG ThinQ heat pump. When false the pump stays off regardless of DHW/heating demand.",
+  "lg.dhw.power":
+    "DHW (domestic hot water) power switch. Enable to allow the heat pump to produce hot water. Controller may set this automatically based on schedule.",
+  "lg.heating-water.target-c":
+    "Heating-water flow temperature target (°C). Sent to the heat pump whenever the controller proposes a new value.",
+  "lg.dhw.target-c":
+    "DHW tank temperature target (°C). Sent to the heat pump whenever the controller proposes a new value.",
+  // PR-LG-THINQ-B-D08: actuated dotted names (distinct from the knob forms above).
+  "lg.heat-pump.power.target":
+    "Target state of the heat pump's master power contactor as commanded by the controller (operator-set; no policy).",
+  "lg.dhw.power.target":
+    "Target state of the DHW circuit as commanded by the controller (Active 02:00–05:00 and 07:00–08:00 per policy).",
+  "lg.heating-water.target":
+    "Target temperature (°C) for the heat-pump's heating water loop, commanded by the controller from outdoor-temperature policy.",
+  "lg.dhw.target":
+    "Target temperature (°C) for the DHW tank, always 60 °C per policy.",
+  "lg.dhw.temperature.current":
+    "Current DHW tank temperature as reported by the heat pump (°C). Polled from LG ThinQ Cloud.",
+  "lg.heating-water.temperature.current":
+    "Current heating-water loop temperature as reported by the heat pump (°C). Polled from LG ThinQ Cloud.",
+
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:
     "Grid setpoint controller — chooses the AC setpoint at the grid tie each tick (idle 10 W or commanded values).",

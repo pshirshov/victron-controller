@@ -14,6 +14,7 @@ pub enum Owner {
     EddiController,
     FullChargeScheduler,
     EssStateOverrideController,
+    HeatPumpController,
 }
 
 impl Owner {
@@ -31,6 +32,7 @@ impl Owner {
             "EddiController" => Ok(Owner::EddiController),
             "FullChargeScheduler" => Ok(Owner::FullChargeScheduler),
             "EssStateOverrideController" => Ok(Owner::EssStateOverrideController),
+            "HeatPumpController" => Ok(Owner::HeatPumpController),
             _ => Err(format!("Unknown variant: {}", s)),
         }
     }
@@ -49,6 +51,7 @@ impl Owner {
             Owner::EddiController,
             Owner::FullChargeScheduler,
             Owner::EssStateOverrideController,
+            Owner::HeatPumpController,
         ]
     }
 }
@@ -68,6 +71,7 @@ impl std::fmt::Display for Owner {
             Owner::EddiController => write!(f, "EddiController"),
             Owner::FullChargeScheduler => write!(f, "FullChargeScheduler"),
             Owner::EssStateOverrideController => write!(f, "EssStateOverrideController"),
+            Owner::HeatPumpController => write!(f, "HeatPumpController"),
         }
     }
 }
@@ -100,6 +104,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Owner {
             Owner::EddiController => crate::baboon_runtime::bin_tools::write_byte(writer, 9)?,
             Owner::FullChargeScheduler => crate::baboon_runtime::bin_tools::write_byte(writer, 10)?,
             Owner::EssStateOverrideController => crate::baboon_runtime::bin_tools::write_byte(writer, 11)?,
+            Owner::HeatPumpController => crate::baboon_runtime::bin_tools::write_byte(writer, 12)?,
         }
         Ok(())
     }
@@ -121,6 +126,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Owner {
             9 => Ok(Owner::EddiController),
             10 => Ok(Owner::FullChargeScheduler),
             11 => Ok(Owner::EssStateOverrideController),
+            12 => Ok(Owner::HeatPumpController),
             _ => Err(format!("Unknown enum variant tag: {}", tag).into()),
         }
     }

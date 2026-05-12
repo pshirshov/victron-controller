@@ -13,7 +13,8 @@ export enum Owner {
     ZappiController = "ZappiController",
     EddiController = "EddiController",
     FullChargeScheduler = "FullChargeScheduler",
-    EssStateOverrideController = "EssStateOverrideController"
+    EssStateOverrideController = "EssStateOverrideController",
+    HeatPumpController = "HeatPumpController"
 }
 
 export const Owner_values: ReadonlyArray<Owner> = [
@@ -28,7 +29,8 @@ export const Owner_values: ReadonlyArray<Owner> = [
     Owner.ZappiController,
     Owner.EddiController,
     Owner.FullChargeScheduler,
-    Owner.EssStateOverrideController
+    Owner.EssStateOverrideController,
+    Owner.HeatPumpController
 ] as const;
 
 export function Owner_parse(s: string): Owner {
@@ -58,6 +60,7 @@ export class Owner_UEBACodec {
                 case "EddiController": BinTools.writeByte(writer, 9); break;
                 case "FullChargeScheduler": BinTools.writeByte(writer, 10); break;
                 case "EssStateOverrideController": BinTools.writeByte(writer, 11); break;
+                case "HeatPumpController": BinTools.writeByte(writer, 12); break;
             default: throw new Error("Unknown enum variant: " + value);
         }
     }
@@ -81,6 +84,7 @@ export class Owner_UEBACodec {
                 case 9: return "EddiController" as Owner;
                 case 10: return "FullChargeScheduler" as Owner;
                 case 11: return "EssStateOverrideController" as Owner;
+                case 12: return "HeatPumpController" as Owner;
             default: throw new Error("Unknown enum variant tag: " + tag);
         }
     }

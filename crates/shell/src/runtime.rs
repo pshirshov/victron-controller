@@ -24,6 +24,7 @@ use crate::dbus::Writer;
 use crate::mqtt::Publisher as MqttPublisher;
 use crate::dashboard::convert::MetaContext;
 use crate::myenergi::Writer as MyenergiWriter;
+use crate::lg_thinq::Writer as LgThinqWriter;
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -32,16 +33,20 @@ pub struct Runtime {
     clock: RealClock,
     writer: Writer,
     myenergi: MyenergiWriter,
+    /// `None` when `[lg_thinq]` is not configured.
+    lg_thinq: Option<LgThinqWriter>,
     mqtt: Option<MqttPublisher>,
     snapshot_stream: Arc<SnapshotBroadcast>,
     meta: MetaContext,
 }
 
 impl Runtime {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         world: Arc<Mutex<World>>,
         writer: Writer,
         myenergi: MyenergiWriter,
+        lg_thinq: Option<LgThinqWriter>,
         mqtt: Option<MqttPublisher>,
         topology: Topology,
         snapshot_stream: Arc<SnapshotBroadcast>,
@@ -64,6 +69,7 @@ impl Runtime {
             clock,
             writer,
             myenergi,
+            lg_thinq,
             mqtt,
             snapshot_stream,
             meta,
@@ -142,6 +148,29 @@ impl Runtime {
                         ),
                     }
                 });
+            }
+            Effect::CallLgThinq(action) => {
+                // Mirror the myenergi dispatch: spawn with a 20 s
+                // timeout to avoid blocking the event loop on a slow
+                // LG ThinQ Cloud round-trip.
+                if let Some(lg) = self.lg_thinq.clone() {
+                    tokio::spawn(async move {
+                        match tokio::time::timeout(
+                            Duration::from_secs(20),
+                            lg.execute(action),
+                        )
+                        .await
+                        {
+                            Ok(()) => {}
+                            Err(_) => warn!(
+                                ?action,
+                                "lg_thinq call stuck >20s; dropping"
+                            ),
+                        }
+                    });
+                } else {
+                    trace!(?action, "CallLgThinq dropped (lg_thinq not configured)");
+                }
             }
             Effect::Publish(payload) => {
                 if let Some(mqtt) = &self.mqtt {

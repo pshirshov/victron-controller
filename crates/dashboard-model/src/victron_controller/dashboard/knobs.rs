@@ -57,6 +57,10 @@ pub struct Knobs {
     pub zappi_battery_drain_hard_clamp_w: i32,
     pub zappi_battery_drain_mppt_probe_w: i32,
     pub actuator_retry_s: i32,
+    pub lg_heat_pump_power: bool,
+    pub lg_dhw_power: bool,
+    pub lg_heating_water_target_c: i32,
+    pub lg_dhw_target_c: i32,
     pub weathersoc_very_sunny_threshold: f64,
     pub weather_soc_table: WeatherSocTable,
 }
@@ -273,6 +277,22 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.lg_heat_pump_power.cmp(&other.lg_heat_pump_power) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.lg_dhw_power.cmp(&other.lg_dhw_power) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.lg_heating_water_target_c.cmp(&other.lg_heating_water_target_c) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.lg_dhw_target_c.cmp(&other.lg_dhw_target_c) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         match self.weathersoc_very_sunny_threshold.total_cmp(&other.weathersoc_very_sunny_threshold) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
@@ -346,6 +366,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, &mut buffer)?;
             value.zappi_battery_drain_mppt_probe_w.encode_ueba(ctx, &mut buffer)?;
             value.actuator_retry_s.encode_ueba(ctx, &mut buffer)?;
+            value.lg_heat_pump_power.encode_ueba(ctx, &mut buffer)?;
+            value.lg_dhw_power.encode_ueba(ctx, &mut buffer)?;
+            value.lg_heating_water_target_c.encode_ueba(ctx, &mut buffer)?;
+            value.lg_dhw_target_c.encode_ueba(ctx, &mut buffer)?;
             value.weathersoc_very_sunny_threshold.encode_ueba(ctx, &mut buffer)?;
             value.weather_soc_table.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
@@ -400,6 +424,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.zappi_battery_drain_hard_clamp_w.encode_ueba(ctx, writer)?;
             value.zappi_battery_drain_mppt_probe_w.encode_ueba(ctx, writer)?;
             value.actuator_retry_s.encode_ueba(ctx, writer)?;
+            value.lg_heat_pump_power.encode_ueba(ctx, writer)?;
+            value.lg_dhw_power.encode_ueba(ctx, writer)?;
+            value.lg_heating_water_target_c.encode_ueba(ctx, writer)?;
+            value.lg_dhw_target_c.encode_ueba(ctx, writer)?;
             value.weathersoc_very_sunny_threshold.encode_ueba(ctx, writer)?;
             value.weather_soc_table.encode_ueba(ctx, writer)?;
         }
@@ -462,6 +490,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let zappi_battery_drain_hard_clamp_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let zappi_battery_drain_mppt_probe_w = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let actuator_retry_s = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let lg_heat_pump_power = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let lg_dhw_power = crate::baboon_runtime::bin_tools::read_bool(reader)?;
+        let lg_heating_water_target_c = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let lg_dhw_target_c = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let weathersoc_very_sunny_threshold = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let weather_soc_table = WeatherSocTable::decode_ueba(ctx, reader)?;
         Ok(Knobs {
@@ -514,6 +546,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             zappi_battery_drain_hard_clamp_w,
             zappi_battery_drain_mppt_probe_w,
             actuator_retry_s,
+            lg_heat_pump_power,
+            lg_dhw_power,
+            lg_heating_water_target_c,
+            lg_dhw_target_c,
             weathersoc_very_sunny_threshold,
             weather_soc_table,
         })

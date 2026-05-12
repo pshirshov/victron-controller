@@ -41,6 +41,11 @@ pub enum CoreId {
     /// `now ∈ [sunrise+offset, sunset-offset]`; otherwise writes 10
     /// (Optimized).
     EssStateOverride,
+    /// PR-LG-THINQ-B: LG ThinQ heat-pump controller. Proposes DHW
+    /// power schedule, constant DHW temperature target, and
+    /// outdoor-temperature-curve heating-water target. Does NOT propose
+    /// the master heat-pump power (operator-only slot).
+    HeatPumpControl,
 
     // Observability — must run AFTER every actuator core so the
     // broadcast sees the latest derived/bookkeeping state. PR-ha-
@@ -62,6 +67,7 @@ impl CoreId {
             Self::EddiMode => "eddi.mode",
             Self::WeatherSoc => "weathersoc",
             Self::EssStateOverride => "ess-state.override",
+            Self::HeatPumpControl => "heat-pump.control",
             Self::SensorBroadcast => "broadcast.sensor",
         }
     }

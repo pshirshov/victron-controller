@@ -379,10 +379,18 @@ fn apply_sensor_reading(
                 });
             }
         }
+        // PR-LG-THINQ-B: plain temperature sensors → dedicated fields.
+        SensorId::LgDhwCurrentTemperatureC => {
+            world.sensors.lg_dhw_current_c.on_reading(v, at);
+        }
+        SensorId::LgHeatingWaterCurrentTemperatureC => {
+            world.sensors.lg_heating_water_current_c.on_reading(v, at);
+        }
         // PR-actuated-as-sensors (PR-AS-A): the actuated-mirror sensor
         // variants don't have dedicated `world.sensors.<field>` slots —
         // their storage of truth is `world.<entity>.actual`, driven by
         // the post-hook below.
+        // PR-LG-THINQ-B: LG actuated-mirror variants follow the same rule.
         SensorId::GridSetpointActual
         | SensorId::InputCurrentLimitActual
         | SensorId::Schedule0StartActual
@@ -394,7 +402,11 @@ fn apply_sensor_reading(
         | SensorId::Schedule1DurationActual
         | SensorId::Schedule1SocActual
         | SensorId::Schedule1DaysActual
-        | SensorId::Schedule1AllowDischargeActual => {}
+        | SensorId::Schedule1AllowDischargeActual
+        | SensorId::LgHeatPumpPowerActual
+        | SensorId::LgDhwPowerActual
+        | SensorId::LgHeatingWaterTargetActual
+        | SensorId::LgDhwTargetActual => {}
     }
 
     // PR-actuated-as-sensors (PR-AS-A): post-update hook. If this
@@ -430,6 +442,49 @@ fn apply_sensor_reading(
                 effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
                     id: ActuatedId::InputCurrentLimit,
                     phase: world.input_current_limit.target.phase,
+                }));
+            }
+        }
+        // PR-LG-THINQ-B: bool actuated mirrors. v is 0.0/1.0 from the poller.
+        Some(ActuatedId::LgHeatPumpPower) => {
+            let bool_val = v != 0.0;
+            world.lg_heat_pump_power.on_reading(bool_val, at);
+            if world.lg_heat_pump_power.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgHeatPumpPower,
+                    phase: world.lg_heat_pump_power.target.phase,
+                }));
+            }
+        }
+        Some(ActuatedId::LgDhwPower) => {
+            let bool_val = v != 0.0;
+            world.lg_dhw_power.on_reading(bool_val, at);
+            if world.lg_dhw_power.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwPower,
+                    phase: world.lg_dhw_power.target.phase,
+                }));
+            }
+        }
+        Some(ActuatedId::LgHeatingWaterTarget) => {
+            #[allow(clippy::cast_possible_truncation)]
+            let int_val = v as i32;
+            world.lg_heating_water_target_c.on_reading(int_val, at);
+            if world.lg_heating_water_target_c.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgHeatingWaterTarget,
+                    phase: world.lg_heating_water_target_c.target.phase,
+                }));
+            }
+        }
+        Some(ActuatedId::LgDhwTarget) => {
+            #[allow(clippy::cast_possible_truncation)]
+            let int_val = v as i32;
+            world.lg_dhw_target_c.on_reading(int_val, at);
+            if world.lg_dhw_target_c.confirm_if(|t, a| t == a, at) {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwTarget,
+                    phase: world.lg_dhw_target_c.target.phase,
                 }));
             }
         }
@@ -559,6 +614,61 @@ fn apply_command(
             // owner. The four weather_soc-driven outputs are arbitrated
             // by the `*_mode` selectors at read-time, not at write-time.
             let changed = apply_knob(id, value, world, effects);
+            // PR-LG-THINQ-B: operator-knob → actuated mirror. Each of
+            // the 4 heat-pump knobs writes the knob value AND proposes
+            // the matching actuated target with the command's owner. This
+            // makes the dashboard show intent immediately; the controller
+            // re-proposes on the next tick with Owner::HeatPumpController,
+            // overriding within one tick period.
+            //
+            // PR-LG-THINQ-B-1-D11: skip the mirror on bootstrap
+            // (`Owner::System` is emitted by retained-MQTT replay). The
+            // controller's first tick will propose with
+            // `Owner::HeatPumpController` directly, avoiding a
+            // redundant phase publish per knob per boot.
+            if owner != Owner::System {
+                match (id, value) {
+                    (KnobId::LgHeatPumpPower, KnobValue::Bool(v)) => {
+                        let phase_changed = world.lg_heat_pump_power.propose_target(v, owner, at);
+                        if phase_changed || changed {
+                            effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                                id: ActuatedId::LgHeatPumpPower,
+                                phase: world.lg_heat_pump_power.target.phase,
+                            }));
+                        }
+                    }
+                    (KnobId::LgDhwPower, KnobValue::Bool(v)) => {
+                        let phase_changed = world.lg_dhw_power.propose_target(v, owner, at);
+                        if phase_changed || changed {
+                            effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                                id: ActuatedId::LgDhwPower,
+                                phase: world.lg_dhw_power.target.phase,
+                            }));
+                        }
+                    }
+                    (KnobId::LgHeatingWaterTargetC, KnobValue::Uint32(v)) => {
+                        let i = i32::try_from(v).unwrap_or(i32::MAX);
+                        let phase_changed = world.lg_heating_water_target_c.propose_target(i, owner, at);
+                        if phase_changed || changed {
+                            effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                                id: ActuatedId::LgHeatingWaterTarget,
+                                phase: world.lg_heating_water_target_c.target.phase,
+                            }));
+                        }
+                    }
+                    (KnobId::LgDhwTargetC, KnobValue::Uint32(v)) => {
+                        let i = i32::try_from(v).unwrap_or(i32::MAX);
+                        let phase_changed = world.lg_dhw_target_c.propose_target(i, owner, at);
+                        if phase_changed || changed {
+                            effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                                id: ActuatedId::LgDhwTarget,
+                                phase: world.lg_dhw_target_c.target.phase,
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             // Skip the retained-MQTT publish on no-op writes; otherwise
             // any every-tick caller would spam the broker with redundant
             // retains.
@@ -585,6 +695,16 @@ fn apply_command(
                 world.eddi_mode.reset_to_unset(at);
                 world.schedule_0.reset_to_unset(at);
                 world.schedule_1.reset_to_unset(at);
+                // PR-LG-THINQ-B-1-D01: the four LG actuated slots
+                // share the same hazard — observer-mode leaves them at
+                // a `Pending`-with-controller-owner that the next live
+                // tick's `propose_target` short-circuits on. Reset
+                // alongside the others so HeatPumpControlCore re-fires
+                // immediately, not after `actuator_retry_s` elapses.
+                world.lg_heat_pump_power.reset_to_unset(at);
+                world.lg_dhw_power.reset_to_unset(at);
+                world.lg_heating_water_target_c.reset_to_unset(at);
+                world.lg_dhw_target_c.reset_to_unset(at);
                 for id in [
                     ActuatedId::GridSetpoint,
                     ActuatedId::InputCurrentLimit,
@@ -592,6 +712,11 @@ fn apply_command(
                     ActuatedId::EddiMode,
                     ActuatedId::Schedule0,
                     ActuatedId::Schedule1,
+                    // PR-LG-THINQ-B-1-D01: mirror the reset on the wire.
+                    ActuatedId::LgHeatPumpPower,
+                    ActuatedId::LgDhwPower,
+                    ActuatedId::LgHeatingWaterTarget,
+                    ActuatedId::LgDhwTarget,
                 ] {
                     effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
                         id,
@@ -849,6 +974,20 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
                 }
             }
         }
+        // PR-LG-THINQ-B: heat-pump knob writes. The actuated-target mirror
+        // is handled in `apply_command` after this returns (needs owner/at).
+        (KnobId::LgHeatPumpPower, KnobValue::Bool(v)) => {
+            replace(&mut k.lg_heat_pump_power, v) != v
+        }
+        (KnobId::LgDhwPower, KnobValue::Bool(v)) => {
+            replace(&mut k.lg_dhw_power, v) != v
+        }
+        (KnobId::LgHeatingWaterTargetC, KnobValue::Uint32(v)) => {
+            replace(&mut k.lg_heating_water_target_c, v) != v
+        }
+        (KnobId::LgDhwTargetC, KnobValue::Uint32(v)) => {
+            replace(&mut k.lg_dhw_target_c, v) != v
+        }
         _ => {
             effects.push(Effect::Log {
                 level: LogLevel::Warn,
@@ -1023,6 +1162,23 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
             id: I::ActuatorRetryS,
             value: V::Uint32(k.actuator_retry_s),
         },
+        // PR-LG-THINQ-B: four heat-pump knobs.
+        PublishPayload::Knob {
+            id: I::LgHeatPumpPower,
+            value: V::Bool(k.lg_heat_pump_power),
+        },
+        PublishPayload::Knob {
+            id: I::LgDhwPower,
+            value: V::Bool(k.lg_dhw_power),
+        },
+        PublishPayload::Knob {
+            id: I::LgHeatingWaterTargetC,
+            value: V::Uint32(k.lg_heating_water_target_c),
+        },
+        PublishPayload::Knob {
+            id: I::LgDhwTargetC,
+            value: V::Uint32(k.lg_dhw_target_c),
+        },
     ];
     // PR-WSOC-EDIT-1: append the 48 cell knobs. Programmatic
     // enumeration over the cartesian product
@@ -1107,6 +1263,11 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
         .tick(at, SensorId::Mppt0OperationMode.freshness_threshold());
     ss.mppt_1_operation_mode
         .tick(at, SensorId::Mppt1OperationMode.freshness_threshold());
+    // PR-LG-THINQ-B: plain temperature sensors.
+    ss.lg_dhw_current_c
+        .tick(at, SensorId::LgDhwCurrentTemperatureC.freshness_threshold());
+    ss.lg_heating_water_current_c
+        .tick(at, SensorId::LgHeatingWaterCurrentTemperatureC.freshness_threshold());
 
     world.typed_sensors.zappi_state.tick(at, myenergi);
     world.typed_sensors.eddi_mode.tick(at, myenergi);
@@ -1137,6 +1298,19 @@ fn apply_tick(at: Instant, world: &mut World, clock: &dyn Clock, topology: &Topo
     world
         .schedule_1
         .tick(at, SensorId::Schedule1StartActual.freshness_threshold());
+    // PR-LG-THINQ-B: actuated entity freshness decay.
+    world
+        .lg_heat_pump_power
+        .tick(at, SensorId::LgHeatPumpPowerActual.freshness_threshold());
+    world
+        .lg_dhw_power
+        .tick(at, SensorId::LgDhwPowerActual.freshness_threshold());
+    world
+        .lg_heating_water_target_c
+        .tick(at, SensorId::LgHeatingWaterTargetActual.freshness_threshold());
+    world
+        .lg_dhw_target_c
+        .tick(at, SensorId::LgDhwTargetActual.freshness_threshold());
 
     // A-15: midnight reset of the per-day weather_soc flag. If the date
     // the flag was stamped for isn't today, clear it. Intentionally
@@ -5852,6 +6026,205 @@ mod tests {
         let mut world = World::fresh_boot(c.monotonic);
         send_knob(&mut world, KnobId::ZappiBatteryDrainMpptProbeW, KnobValue::Uint32(750));
         assert_eq!(world.knobs.zappi_battery_drain_mppt_probe_w, 750);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-LG-THINQ-B-1-D02: apply_knob routing for the 4 LG heat-pump
+    // knobs. Each test asserts both the knob field write AND the
+    // operator-knob → actuated mirror (target.value + target.owner ==
+    // HaMqtt, since `send_knob` passes `Owner::HaMqtt`).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_knob_lg_heat_pump_power_routes_to_field_and_mirrors_actuated() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::LgHeatPumpPower, KnobValue::Bool(true));
+        assert!(world.knobs.lg_heat_pump_power);
+        assert_eq!(world.lg_heat_pump_power.target.value, Some(true));
+        assert_eq!(world.lg_heat_pump_power.target.owner, Owner::HaMqtt);
+        assert_eq!(world.lg_heat_pump_power.target.phase, crate::tass::TargetPhase::Pending);
+    }
+
+    /// `LgDhwPower` is controller-driven: HeatPumpControlCore proposes
+    /// every tick. Pick a clock matching the controller's output (false
+    /// at 12:00 — outside both DHW windows) so the operator-mirror's
+    /// value isn't masked by the same-tick controller override.
+    #[test]
+    fn apply_knob_lg_dhw_power_routes_to_field_and_mirrors_actuated() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::LgDhwPower, KnobValue::Bool(false));
+        assert!(!world.knobs.lg_dhw_power);
+        // Controller proposed false too — slot ends up with the
+        // controller's owner, but value matches both inputs.
+        assert_eq!(world.lg_dhw_power.target.value, Some(false));
+    }
+
+    /// `LgHeatingWaterTargetC`: controller skips when outdoor_temp is
+    /// not Fresh. In a fresh-boot world it's Unknown, so the operator
+    /// mirror persists across the tick.
+    #[test]
+    fn apply_knob_lg_heating_water_target_c_routes_to_field_and_mirrors_actuated() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::LgHeatingWaterTargetC, KnobValue::Uint32(45));
+        assert_eq!(world.knobs.lg_heating_water_target_c, 45);
+        // Outdoor temp Unknown → controller didn't propose, operator's
+        // value + owner stand.
+        assert_eq!(world.lg_heating_water_target_c.target.value, Some(45_i32));
+        assert_eq!(world.lg_heating_water_target_c.target.owner, Owner::HaMqtt);
+    }
+
+    /// `LgDhwTargetC`: controller always proposes 60. Operator sends
+    /// 60 too — value matches, only owner shifts to HeatPumpController
+    /// after the same-tick override.
+    #[test]
+    fn apply_knob_lg_dhw_target_c_routes_to_field_and_mirrors_actuated() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        send_knob(&mut world, KnobId::LgDhwTargetC, KnobValue::Uint32(60));
+        assert_eq!(world.knobs.lg_dhw_target_c, 60);
+        assert_eq!(world.lg_dhw_target_c.target.value, Some(60_i32));
+    }
+
+    /// PR-LG-THINQ-B-1-D11: bootstrap `Owner::System` knob commands
+    /// must NOT propagate through the operator-knob → actuated mirror.
+    /// Verified via `LgHeatPumpPower` (the one slot the controller
+    /// doesn't drive): if the mirror fired for System, the slot would
+    /// hold `Some(true)` with `Owner::System`. With the skip, it
+    /// stays Unset.
+    #[test]
+    fn apply_knob_lg_heat_pump_power_skips_actuated_mirror_for_system_owner() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let _ = process(
+            &Event::Command {
+                command: Command::Knob {
+                    id: KnobId::LgHeatPumpPower,
+                    value: KnobValue::Bool(true),
+                },
+                owner: Owner::System,
+                at: c.monotonic,
+            },
+            &mut world,
+            &c,
+            &Topology::defaults(),
+        );
+        assert!(world.knobs.lg_heat_pump_power);
+        // The knob field is set, but the actuated mirror is suppressed
+        // for System owner — the actuated slot stays Unset because the
+        // controller does NOT drive this slot either.
+        assert_eq!(world.lg_heat_pump_power.target.value, None);
+        assert_eq!(world.lg_heat_pump_power.target.owner, Owner::Unset);
+        assert_eq!(world.lg_heat_pump_power.target.phase, crate::tass::TargetPhase::Unset);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-LG-THINQ-B-1-D03: apply_sensor_reading routing for the 6 new
+    // LG SensorIds. 2 plain f64 sensors land on `world.sensors.lg_*`;
+    // the 4 actuated-mirror sensors land on `world.lg_*.actual` and
+    // (when matching a proposed target) confirm + emit ActuatedPhase.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn apply_sensor_reading_lg_dhw_current_temperature_c_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgDhwCurrentTemperatureC,
+            value: 47.5,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.lg_dhw_current_c.value, Some(47.5));
+        assert_eq!(world.sensors.lg_dhw_current_c.freshness, Freshness::Fresh);
+    }
+
+    #[test]
+    fn apply_sensor_reading_lg_heating_water_current_temperature_c_writes_field() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgHeatingWaterCurrentTemperatureC,
+            value: 34.2,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.sensors.lg_heating_water_current_c.value, Some(34.2));
+        assert_eq!(world.sensors.lg_heating_water_current_c.freshness, Freshness::Fresh);
+    }
+
+    /// Bool actuator-mirror: pre-populate target, send matching
+    /// readback, assert confirm. The post-hook coerces f64 → bool via
+    /// `v != 0.0`, so `1.0` → true.
+    #[test]
+    fn apply_sensor_reading_lg_heat_pump_power_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.lg_heat_pump_power.propose_target(true, Owner::HeatPumpController, c.monotonic);
+        world.lg_heat_pump_power.mark_commanded(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgHeatPumpPowerActual,
+            value: 1.0,
+            at: c.monotonic,
+        });
+        let effects = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.lg_heat_pump_power.actual.value, Some(true));
+        assert_eq!(world.lg_heat_pump_power.target.phase, crate::tass::TargetPhase::Confirmed);
+        // ActuatedPhase publish must have been emitted.
+        let has_phase_publish = effects.iter().any(|e| matches!(e,
+            Effect::Publish(PublishPayload::ActuatedPhase { id: ActuatedId::LgHeatPumpPower, phase })
+                if *phase == crate::tass::TargetPhase::Confirmed));
+        assert!(has_phase_publish, "expected ActuatedPhase(Confirmed) publish in {effects:#?}");
+    }
+
+    #[test]
+    fn apply_sensor_reading_lg_dhw_power_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.lg_dhw_power.propose_target(false, Owner::HeatPumpController, c.monotonic);
+        world.lg_dhw_power.mark_commanded(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgDhwPowerActual,
+            value: 0.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.lg_dhw_power.actual.value, Some(false));
+        assert_eq!(world.lg_dhw_power.target.phase, crate::tass::TargetPhase::Confirmed);
+    }
+
+    #[test]
+    fn apply_sensor_reading_lg_heating_water_target_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.lg_heating_water_target_c.propose_target(48, Owner::HeatPumpController, c.monotonic);
+        world.lg_heating_water_target_c.mark_commanded(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgHeatingWaterTargetActual,
+            value: 48.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.lg_heating_water_target_c.actual.value, Some(48));
+        assert_eq!(world.lg_heating_water_target_c.target.phase, crate::tass::TargetPhase::Confirmed);
+    }
+
+    #[test]
+    fn apply_sensor_reading_lg_dhw_target_actual_confirms_target() {
+        let c = clock_at(12, 0);
+        let mut world = World::fresh_boot(c.monotonic);
+        world.lg_dhw_target_c.propose_target(60, Owner::HeatPumpController, c.monotonic);
+        world.lg_dhw_target_c.mark_commanded(c.monotonic);
+        let event = Event::Sensor(SensorReading {
+            id: SensorId::LgDhwTargetActual,
+            value: 60.0,
+            at: c.monotonic,
+        });
+        let _ = process(&event, &mut world, &c, &Topology::defaults());
+        assert_eq!(world.lg_dhw_target_c.actual.value, Some(60));
+        assert_eq!(world.lg_dhw_target_c.target.phase, crate::tass::TargetPhase::Confirmed);
     }
 
     // ------------------------------------------------------------------

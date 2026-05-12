@@ -147,6 +147,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::weather_s
 use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_temperature_source::WeatherSocTemperatureSource as ModelWeatherSocTemperatureSource;
 // PR-DIAG-1: process + host memory diagnostics surface.
 use victron_controller_dashboard_model::victron_controller::dashboard::diagnostics::Diagnostics as ModelDiagnostics;
+// PR-LG-THINQ-B: bool actuated + actual types.
+use victron_controller_dashboard_model::victron_controller::dashboard::actuated_bool::ActuatedBool as ModelActuatedBool;
+use victron_controller_dashboard_model::victron_controller::dashboard::actual_bool::ActualBool as ModelActualBool;
 
 // --- enums ----------------------------------------------------------------
 
@@ -183,6 +186,8 @@ fn owner(o: Owner) -> ModelOwner {
         Owner::FullChargeScheduler => ModelOwner::FullChargeScheduler,
         // PR-keep-batteries-charged.
         Owner::EssStateOverrideController => ModelOwner::EssStateOverrideController,
+        // PR-LG-THINQ-B.
+        Owner::HeatPumpController => ModelOwner::HeatPumpController,
     }
 }
 
@@ -263,6 +268,21 @@ fn actuated_i32(a: &Actuated<i32>) -> ModelActuatedI32 {
         target_phase: phase(a.target.phase),
         target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
         actual: ModelActualI32 {
+            value: a.actual.value,
+            freshness: freshness(a.actual.freshness),
+            since_epoch_ms: instant_to_epoch_ms(a.actual.since),
+        },
+    }
+}
+
+/// PR-LG-THINQ-B: bool actuated entity → wire type.
+fn actuated_bool(a: &Actuated<bool>) -> ModelActuatedBool {
+    ModelActuatedBool {
+        target_value: a.target.value,
+        target_owner: owner(a.target.owner),
+        target_phase: phase(a.target.phase),
+        target_since_epoch_ms: instant_to_epoch_ms(a.target.since),
+        actual: ModelActualBool {
             value: a.actual.value,
             freshness: freshness(a.actual.freshness),
             since_epoch_ms: instant_to_epoch_ms(a.actual.since),
@@ -443,6 +463,10 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             cooker_power: actual_f64(&s.cooker_power),
             mppt_0_operation_mode: actual_f64(&s.mppt_0_operation_mode),
             mppt_1_operation_mode: actual_f64(&s.mppt_1_operation_mode),
+            // PR-LG-THINQ-B: plain temperature sensors (readback
+            // temperatures, not the actuated setpoint mirrors).
+            lg_dhw_actual_c: actual_f64(&s.lg_dhw_current_c),
+            lg_heating_water_actual_c: actual_f64(&s.lg_heating_water_current_c),
         },
         sensors_meta: sensors_meta(meta),
         actuated: ModelActuated {
@@ -464,6 +488,11 @@ pub fn world_to_snapshot(world: &World, meta: &MetaContext) -> WorldSnapshot {
             schedule_1: actuated_schedule(a.schedule_1),
             // PR-keep-batteries-charged.
             ess_state_target: actuated_i32(a.ess_state_target),
+            // PR-LG-THINQ-B.
+            lg_heat_pump_power: actuated_bool(a.lg_heat_pump_power),
+            lg_dhw_power: actuated_bool(a.lg_dhw_power),
+            lg_heating_water_target_c: actuated_i32(a.lg_heating_water_target_c),
+            lg_dhw_target_c: actuated_i32(a.lg_dhw_target_c),
         },
         knobs: knobs_to_model(k),
         bookkeeping: ModelBookkeeping {
@@ -1218,6 +1247,11 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
             .unwrap_or(i32::MAX),
         // PR-ACT-RETRY-1: universal actuator retry threshold (s).
         actuator_retry_s: i32::try_from(k.actuator_retry_s).unwrap_or(i32::MAX),
+        // PR-LG-THINQ-B.
+        lg_heat_pump_power: k.lg_heat_pump_power,
+        lg_dhw_power: k.lg_dhw_power,
+        lg_heating_water_target_c: i32::try_from(k.lg_heating_water_target_c).unwrap_or(i32::MAX),
+        lg_dhw_target_c: i32::try_from(k.lg_dhw_target_c).unwrap_or(i32::MAX),
     }
 }
 
@@ -1254,6 +1288,11 @@ fn world_actuated(world: &World) -> WorldActuatedRefs<'_> {
         schedule_0: &world.schedule_0,
         schedule_1: &world.schedule_1,
         ess_state_target: &world.ess_state_target,
+        // PR-LG-THINQ-B.
+        lg_heat_pump_power: &world.lg_heat_pump_power,
+        lg_dhw_power: &world.lg_dhw_power,
+        lg_heating_water_target_c: &world.lg_heating_water_target_c,
+        lg_dhw_target_c: &world.lg_dhw_target_c,
     }
 }
 
@@ -1265,6 +1304,11 @@ struct WorldActuatedRefs<'a> {
     schedule_0: &'a Actuated<ScheduleSpec>,
     schedule_1: &'a Actuated<ScheduleSpec>,
     ess_state_target: &'a Actuated<i32>,
+    // PR-LG-THINQ-B.
+    lg_heat_pump_power: &'a Actuated<bool>,
+    lg_dhw_power: &'a Actuated<bool>,
+    lg_heating_water_target_c: &'a Actuated<i32>,
+    lg_dhw_target_c: &'a Actuated<i32>,
 }
 
 trait WorldActuatedAccess {
@@ -1468,6 +1512,11 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi_battery_drain_mppt_probe_w" => KnobId::ZappiBatteryDrainMpptProbeW,
         // PR-ACT-RETRY-1.
         "actuator_retry_s" => KnobId::ActuatorRetryS,
+        // PR-LG-THINQ-B.
+        "lg_heat_pump_power" => KnobId::LgHeatPumpPower,
+        "lg_dhw_power" => KnobId::LgDhwPower,
+        "lg_heating_water_target_c" => KnobId::LgHeatingWaterTargetC,
+        "lg_dhw_target_c" => KnobId::LgDhwTargetC,
         _ => return None,
     })
 }

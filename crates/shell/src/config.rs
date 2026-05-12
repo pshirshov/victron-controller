@@ -1066,6 +1066,12 @@ pub struct KnobsDefaultsConfig {
 
     // --- PR-ACT-RETRY-1: universal actuator retry threshold ---
     pub actuator_retry_s: Option<u32>,
+
+    // --- PR-LG-THINQ-B: heat-pump knobs ---
+    pub lg_heat_pump_power: Option<bool>,
+    pub lg_dhw_power: Option<bool>,
+    pub lg_heating_water_target_c: Option<u32>,
+    pub lg_dhw_target_c: Option<u32>,
 }
 
 impl KnobsDefaultsConfig {
@@ -1148,6 +1154,12 @@ impl KnobsDefaultsConfig {
         set!(zappi_battery_drain_mppt_probe_w);
         // PR-ACT-RETRY-1: universal actuator retry threshold.
         set!(actuator_retry_s);
+
+        // PR-LG-THINQ-B: heat-pump knobs.
+        set!(lg_heat_pump_power);
+        set!(lg_dhw_power);
+        set!(lg_heating_water_target_c);
+        set!(lg_dhw_target_c);
     }
 }
 

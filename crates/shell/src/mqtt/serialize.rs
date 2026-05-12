@@ -37,6 +37,36 @@ use victron_controller_core::{HardwareParams, Owner};
 ///     `HardwareParams::defaults()` (see `hardware_params()` below).
 static HARDWARE_PARAMS: OnceLock<HardwareParams> = OnceLock::new();
 
+/// PR-LG-THINQ-B: runtime temperature ranges from `[lg_thinq]` config,
+/// used by `knob_range` for the two LG temperature knobs.
+#[derive(Debug, Clone, Copy)]
+pub struct LgThinqRanges {
+    pub heating_target_min_c: u32,
+    pub heating_target_max_c: u32,
+    pub dhw_target_min_c: u32,
+    pub dhw_target_max_c: u32,
+}
+
+static LG_THINQ_RANGES: OnceLock<LgThinqRanges> = OnceLock::new();
+
+/// Initialise LG ThinQ temperature ranges from the config `[lg_thinq]`
+/// section. Called once from `main` when the LG integration is active.
+/// Panics if called twice.
+pub fn set_lg_thinq_ranges(ranges: LgThinqRanges) {
+    LG_THINQ_RANGES
+        .set(ranges)
+        .expect("set_lg_thinq_ranges called twice");
+}
+
+fn lg_thinq_ranges() -> LgThinqRanges {
+    *LG_THINQ_RANGES.get_or_init(|| LgThinqRanges {
+        heating_target_min_c: 25,
+        heating_target_max_c: 55,
+        dhw_target_min_c: 30,
+        dhw_target_max_c: 65,
+    })
+}
+
 /// Initialise the global hardware params for MQTT-layer use. Called
 /// once from `main` after config load. Panics if called twice — that
 /// would indicate a bug in startup wiring.
@@ -416,6 +446,11 @@ pub fn knob_name(id: KnobId) -> String {
         KnobId::ZappiBatteryDrainMpptProbeW => "zappi.battery-drain.mppt-probe-w".to_string(),
         // PR-ACT-RETRY-1.
         KnobId::ActuatorRetryS => "actuator.retry.s".to_string(),
+        // PR-LG-THINQ-B: four heat-pump knobs.
+        KnobId::LgHeatPumpPower => "lg.heat-pump.power".to_string(),
+        KnobId::LgDhwPower => "lg.dhw.power".to_string(),
+        KnobId::LgHeatingWaterTargetC => "lg.heating-water.target-c".to_string(),
+        KnobId::LgDhwTargetC => "lg.dhw.target-c".to_string(),
         // PR-WSOC-EDIT-1: programmatic arm — one match arm covers all
         // 48 cell knobs. Format mirrors the dotted naming convention:
         // `weathersoc.table.<bucket>.<temp>.<field>`.
@@ -505,6 +540,11 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "zappi.battery-drain.mppt-probe-w" => KnobId::ZappiBatteryDrainMpptProbeW,
         // PR-ACT-RETRY-1.
         "actuator.retry.s" => KnobId::ActuatorRetryS,
+        // PR-LG-THINQ-B: four heat-pump knobs.
+        "lg.heat-pump.power" => KnobId::LgHeatPumpPower,
+        "lg.dhw.power" => KnobId::LgDhwPower,
+        "lg.heating-water.target-c" => KnobId::LgHeatingWaterTargetC,
+        "lg.dhw.target-c" => KnobId::LgDhwTargetC,
         _ => return None,
     })
 }
@@ -519,6 +559,15 @@ fn actuated_name(id: ActuatedId) -> &'static str {
         ActuatedId::Schedule1 => "schedule.1",
         // PR-keep-batteries-charged.
         ActuatedId::EssStateTarget => "ess.state.target",
+        // PR-LG-THINQ-B: four heat-pump actuated entities.
+        // LgHeatPumpPower/LgDhwPower collide with same-named knobs, so
+        // append `.target` per project convention (see ZappiMode, EddiMode).
+        // LgHeatingWaterTarget/LgDhwTarget are already unambiguous because
+        // the matching knobs carry a `-c` unit suffix.
+        ActuatedId::LgHeatPumpPower => "lg.heat-pump.power.target",
+        ActuatedId::LgDhwPower => "lg.dhw.power.target",
+        ActuatedId::LgHeatingWaterTarget => "lg.heating-water.target",
+        ActuatedId::LgDhwTarget => "lg.dhw.target",
     }
 }
 
@@ -571,6 +620,9 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         // and `discovery::publish_sensors`) are unreachable for these
         // variants because `SensorBroadcastCore` filters them out
         // before any `Publish(Sensor{...})` is produced.
+        // PR-LG-THINQ-B: plain temperature sensors (not actuated mirrors).
+        SensorId::LgDhwCurrentTemperatureC => "lg.dhw.temperature.current",
+        SensorId::LgHeatingWaterCurrentTemperatureC => "lg.heating-water.temperature.current",
         SensorId::GridSetpointActual
         | SensorId::InputCurrentLimitActual
         | SensorId::Schedule0StartActual
@@ -582,7 +634,13 @@ pub(crate) fn sensor_name(id: SensorId) -> &'static str {
         | SensorId::Schedule1DurationActual
         | SensorId::Schedule1SocActual
         | SensorId::Schedule1DaysActual
-        | SensorId::Schedule1AllowDischargeActual => unreachable!(
+        | SensorId::Schedule1AllowDischargeActual
+        // PR-LG-THINQ-B: actuated-mirror SensorIds — filtered before
+        // this function is reached (see `SensorBroadcastCore`).
+        | SensorId::LgHeatPumpPowerActual
+        | SensorId::LgDhwPowerActual
+        | SensorId::LgHeatingWaterTargetActual
+        | SensorId::LgDhwTargetActual => unreachable!(
             "actuated-mirror SensorId {id:?} reached sensor_name — caller \
              must filter via id.actuated_id().is_some()"
         ),
@@ -747,6 +805,16 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
             }
         }
 
+        // PR-LG-THINQ-B: temperature knob ranges from LG config.
+        KnobId::LgHeatingWaterTargetC => {
+            let r = lg_thinq_ranges();
+            (f64::from(r.heating_target_min_c), f64::from(r.heating_target_max_c))
+        }
+        KnobId::LgDhwTargetC => {
+            let r = lg_thinq_ranges();
+            (f64::from(r.dhw_target_min_c), f64::from(r.dhw_target_max_c))
+        }
+
         // Enums + bools don't use this table.
         KnobId::ForceDisableExport
         | KnobId::DisableNightGridDischarge
@@ -767,7 +835,10 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         | KnobId::InverterSafeDischargeEnable
         // PR-keep-batteries-charged — bool, no range.
         | KnobId::KeepBatteriesChargedDuringFullCharge
-        | KnobId::FullChargeDeferToNextSunday => return None,
+        | KnobId::FullChargeDeferToNextSunday
+        // PR-LG-THINQ-B: bool power switches — no numeric range.
+        | KnobId::LgHeatPumpPower
+        | KnobId::LgDhwPower => return None,
     })
 }
 
@@ -835,7 +906,10 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         | KnobId::InverterSafeDischargeEnable
         // PR-keep-batteries-charged — bool.
         | KnobId::KeepBatteriesChargedDuringFullCharge
-        | KnobId::FullChargeDeferToNextSunday => parse_bool(body).map(KnobValue::Bool),
+        | KnobId::FullChargeDeferToNextSunday
+        // PR-LG-THINQ-B: bool power switches.
+        | KnobId::LgHeatPumpPower
+        | KnobId::LgDhwPower => parse_bool(body).map(KnobValue::Bool),
         KnobId::ExportSocThreshold
         | KnobId::DischargeSocTarget
         | KnobId::BatterySocTarget
@@ -879,7 +953,10 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         // PR-ZDP-1.
         | KnobId::ZappiBatteryDrainMpptProbeW
         // PR-ACT-RETRY-1.
-        | KnobId::ActuatorRetryS => {
+        | KnobId::ActuatorRetryS
+        // PR-LG-THINQ-B: temperature targets as u32 (°C).
+        | KnobId::LgHeatingWaterTargetC
+        | KnobId::LgDhwTargetC => {
             parse_ranged_u32(id, body).map(KnobValue::Uint32)
         }
         KnobId::DischargeTime => match body.trim() {
@@ -1917,6 +1994,24 @@ mod tests {
             }
         }
         assert_eq!(count, 48);
+    }
+
+    // ------------------------------------------------------------------
+    // PR-LG-THINQ-B-D05: name round-trip test for the four LG knobs.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn lg_knob_name_round_trip() {
+        for id in [
+            KnobId::LgHeatPumpPower,
+            KnobId::LgDhwPower,
+            KnobId::LgHeatingWaterTargetC,
+            KnobId::LgDhwTargetC,
+        ] {
+            let name = knob_name(id);
+            let back = knob_id_from_name(&name);
+            assert_eq!(back, Some(id), "round-trip failed for {id:?}: name={name:?}");
+        }
     }
 
     #[test]

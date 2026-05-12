@@ -61,6 +61,12 @@ pub struct Sensors {
     /// PR-ZD-1: Operation mode of MPPT charger 1 (ttyS2, DI 274).
     /// 0=Off, 1=V/I-limited, 2=MPPT-tracking. Observability only.
     pub mppt_1_operation_mode: Actual<f64>,
+    /// PR-LG-THINQ-B: current DHW water temperature (°C). Sourced from
+    /// the LG ThinQ cloud poller's `HeatPumpState.dhw_current_c`.
+    pub lg_dhw_current_c: Actual<f64>,
+    /// PR-LG-THINQ-B: current heating-water temperature (°C). Sourced from
+    /// the LG ThinQ cloud poller's `HeatPumpState.heating_water_current_c`.
+    pub lg_heating_water_current_c: Actual<f64>,
 }
 
 impl Sensors {
@@ -123,7 +129,16 @@ impl Sensors {
             | SensorId::Schedule1DurationActual
             | SensorId::Schedule1SocActual
             | SensorId::Schedule1DaysActual
-            | SensorId::Schedule1AllowDischargeActual => Actual::unknown(self.battery_soc.since),
+            | SensorId::Schedule1AllowDischargeActual
+            // PR-LG-THINQ-B: actuated-mirror variants — storage of truth
+            // lives on `world.lg_*.actual`, not `Sensors`.
+            | SensorId::LgHeatPumpPowerActual
+            | SensorId::LgDhwPowerActual
+            | SensorId::LgHeatingWaterTargetActual
+            | SensorId::LgDhwTargetActual => Actual::unknown(self.battery_soc.since),
+            // PR-LG-THINQ-B: plain temperature sensors have dedicated fields.
+            SensorId::LgDhwCurrentTemperatureC => self.lg_dhw_current_c,
+            SensorId::LgHeatingWaterCurrentTemperatureC => self.lg_heating_water_current_c,
         }
     }
 
@@ -157,6 +172,9 @@ impl Sensors {
             cooker_power: Actual::unknown(now),
             mppt_0_operation_mode: Actual::unknown(now),
             mppt_1_operation_mode: Actual::unknown(now),
+            // PR-LG-THINQ-B.
+            lg_dhw_current_c: Actual::unknown(now),
+            lg_heating_water_current_c: Actual::unknown(now),
         }
     }
 }
@@ -607,6 +625,19 @@ pub struct World {
     /// (see `apply_sensor_reading` for the on_reading + confirm_if
     /// hook).
     pub ess_state_target: Actuated<i32>,
+    // PR-LG-THINQ-B: four LG heat-pump actuated entities.
+    /// Master power on/off. Proposed by `apply_knob` (operator); not
+    /// proposed by `HeatPumpControlCore` — the controller skips this slot.
+    pub lg_heat_pump_power: Actuated<bool>,
+    /// DHW power on/off. Proposed by `HeatPumpControlCore` (time-window
+    /// schedule) and by `apply_knob` (operator override).
+    pub lg_dhw_power: Actuated<bool>,
+    /// Heating-water temperature target (°C). Proposed by
+    /// `HeatPumpControlCore` (outdoor-temp curve) and operator.
+    pub lg_heating_water_target_c: Actuated<i32>,
+    /// DHW temperature target (°C, constant 60). Proposed by
+    /// `HeatPumpControlCore` and operator.
+    pub lg_dhw_target_c: Actuated<i32>,
 
     // PR-gamma-hold-redesign: knobs are user-owned plain values; γ-hold
     // and per-knob provenance are gone. Source-of-truth dispatch on the
@@ -751,6 +782,11 @@ impl World {
             schedule_0: Actuated::new(now),
             schedule_1: Actuated::new(now),
             ess_state_target: Actuated::new(now),
+            // PR-LG-THINQ-B.
+            lg_heat_pump_power: Actuated::new(now),
+            lg_dhw_power: Actuated::new(now),
+            lg_heating_water_target_c: Actuated::new(now),
+            lg_dhw_target_c: Actuated::new(now),
             knobs: Knobs::safe_defaults(),
             sensors: Sensors::unknown(now),
             typed_sensors: TypedSensors::unknown(now),

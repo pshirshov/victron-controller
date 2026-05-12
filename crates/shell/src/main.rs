@@ -39,6 +39,9 @@ use victron_controller_shell::mqtt::{
 };
 use victron_controller_shell::myenergi::{Client as MyenergiClient, Poller as MyenergiPoller,
     Writer as MyenergiWriter};
+use victron_controller_shell::lg_thinq::{
+    Client as LgThinqClient, Poller as LgThinqPoller, Writer as LgThinqWriter,
+};
 use victron_controller_shell::runtime::Runtime;
 use victron_controller_shell::APP_UPTIME_PUBLISH_PERIOD_S;
 
@@ -66,6 +69,19 @@ async fn main() -> Result<()> {
     // so the per-direction grid_*_limit_w ceilings are in effect for
     // the very first knob_range() call.
     victron_controller_shell::mqtt::set_hardware_params(cfg.hardware.into());
+
+    // PR-LG-THINQ-B: install LG temperature ranges for knob_range().
+    // Always set even when LG is not configured — the defaults match
+    // a typical Therma V install and the OnceLock must be initialised
+    // before any retained-knob MQTT ingest that touches these knobs.
+    victron_controller_shell::mqtt::set_lg_thinq_ranges(
+        victron_controller_shell::mqtt::LgThinqRanges {
+            heating_target_min_c: cfg.lg_thinq.heating_target_min_c,
+            heating_target_max_c: cfg.lg_thinq.heating_target_max_c,
+            dhw_target_min_c: cfg.lg_thinq.dhw_target_min_c,
+            dhw_target_max_c: cfg.lg_thinq.dhw_target_max_c,
+        },
+    );
 
     let services = cfg
         .dbus
@@ -463,10 +479,43 @@ async fn main() -> Result<()> {
         });
     }
 
+    // PR-LG-THINQ-B: build Writer + Poller. The Writer is handed to the
+    // Runtime so it can execute `Effect::CallLgThinq` effects; the
+    // Poller is spawned as a sibling task that emits `Event::Sensor`
+    // readings into the core channel. Both are `None` / not spawned
+    // when `[lg_thinq]` is not configured.
+    let lg_thinq_writer: Option<LgThinqWriter> = if cfg.lg_thinq.is_configured() {
+        match LgThinqClient::new(&cfg.lg_thinq) {
+            Ok(client) => {
+                info!(
+                    "lg_thinq integration starting (device_id={:?}, writes_enabled={})",
+                    cfg.lg_thinq.device_id, cfg.lg_thinq.writes_enabled
+                );
+                let writer = LgThinqWriter::new(client.clone(), !cfg.lg_thinq.writes_enabled);
+                let poller = LgThinqPoller::new(client, cfg.lg_thinq.poll_period);
+                let tx_for_lg = tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = poller.run(tx_for_lg).await {
+                        error!(error = %e, "lg_thinq poller terminated with error");
+                    }
+                });
+                Some(writer)
+            }
+            Err(e) => {
+                error!(error = %e, "lg_thinq client failed to build; integration disabled");
+                None
+            }
+        }
+    } else {
+        info!("lg_thinq: not configured (pat / country / device_id missing); integration disabled");
+        None
+    };
+
     let runtime = Runtime::new(
         world.clone(),
         writer,
         myenergi_writer,
+        lg_thinq_writer,
         mqtt_publisher,
         topology,
         snapshot_stream.clone(),
@@ -536,31 +585,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // LG ThinQ heat-pump sidecar (Option A — self-contained: doesn't
-    // emit Events into the core's channel; talks straight to MQTT and
-    // LG's HTTP API). Dormant unless `[lg_thinq]` is fully configured
-    // (pat + country + device_id all non-empty).
-    let _lg_thinq_task: Option<tokio::task::JoinHandle<()>> = if cfg.lg_thinq.is_configured() {
-        let lg_cfg = cfg.lg_thinq.clone();
-        let mqtt_cfg = cfg.mqtt.clone();
-        info!(
-            "lg_thinq sidecar starting (device_id={:?}, writes_enabled={})",
-            lg_cfg.device_id, lg_cfg.writes_enabled
-        );
-        Some(tokio::spawn(async move {
-            match victron_controller_shell::lg_thinq::Service::new(&lg_cfg, &mqtt_cfg) {
-                Ok(svc) => {
-                    if let Err(e) = svc.run().await {
-                        error!(error = %e, "lg_thinq sidecar terminated with error");
-                    }
-                }
-                Err(e) => error!(error = %e, "lg_thinq sidecar failed to start"),
-            }
-        }))
-    } else {
-        info!("lg_thinq: not configured (pat / country / device_id missing); sidecar disabled");
-        None
-    };
 
     // PR-pinned-registers: hourly re-reader for the configured pinned
     // D-Bus registers. Idle when `[[dbus_pinned_registers]]` is empty.

@@ -1,9 +1,11 @@
 // @ts-nocheck
 
 
+export * from './ActualBool';
 export * from './ActualF64';
 export * from './ActualI32';
 export * from './Actuated';
+export * from './ActuatedBool';
 export * from './ActuatedEnumName';
 export * from './ActuatedF64';
 export * from './ActuatedI32';

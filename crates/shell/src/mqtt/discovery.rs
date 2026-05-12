@@ -198,6 +198,11 @@ async fn publish_phases(client: &AsyncClient, topic_root: &str) -> Result<usize>
         (ActuatedId::EddiMode, "eddi.mode.target"),
         (ActuatedId::Schedule0, "schedule.0"),
         (ActuatedId::Schedule1, "schedule.1"),
+        // PR-LG-THINQ-B: four heat-pump actuated entities.
+        (ActuatedId::LgHeatPumpPower, "lg.heat-pump.power.target"),
+        (ActuatedId::LgDhwPower, "lg.dhw.power.target"),
+        (ActuatedId::LgHeatingWaterTarget, "lg.heating-water.target"),
+        (ActuatedId::LgDhwTarget, "lg.dhw.target"),
     ];
     let mut count = 0;
     for (_id, name) in ids {
@@ -595,7 +600,10 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
             device_class: Some("voltage"),
             state_class: "measurement",
         },
-        OutdoorTemperature => SensorMeta {
+        OutdoorTemperature
+        // PR-LG-THINQ-B: plain temperature readbacks from the heat pump.
+        | LgDhwCurrentTemperatureC
+        | LgHeatingWaterCurrentTemperatureC => SensorMeta {
             unit: Some("°C"),
             device_class: Some("temperature"),
             state_class: "measurement",
@@ -623,7 +631,12 @@ fn sensor_meta(id: SensorId) -> SensorMeta {
         | Schedule1DurationActual
         | Schedule1SocActual
         | Schedule1DaysActual
-        | Schedule1AllowDischargeActual => unreachable!(
+        | Schedule1AllowDischargeActual
+        // PR-LG-THINQ-B: actuated-mirror SensorIds filtered before here.
+        | LgHeatPumpPowerActual
+        | LgDhwPowerActual
+        | LgHeatingWaterTargetActual
+        | LgDhwTargetActual => unreachable!(
             "actuated-mirror SensorId {id:?} reached sensor_meta — caller \
              must filter via id.actuated_id().is_some()"
         ),
@@ -773,6 +786,11 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
             "select",
             json!({"options": ["weather", "forced"]}),
         ),
+        // PR-LG-THINQ-B: four heat-pump knobs.
+        (KnobId::LgHeatPumpPower, "switch", json!({"payload_on": "true", "payload_off": "false"})),
+        (KnobId::LgDhwPower, "switch", json!({"payload_on": "true", "payload_off": "false"})),
+        number_knob(KnobId::LgHeatingWaterTargetC, 1.0, Some("°C")),
+        number_knob(KnobId::LgDhwTargetC, 1.0, Some("°C")),
     ];
     // PR-WSOC-EDIT-1: append the 48 cell knob schemas.
     schemas.extend(weathersoc_table_knob_schemas());

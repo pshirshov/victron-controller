@@ -24,10 +24,14 @@
 //! same-tick reads. Locked by
 //! `current_limit_reads_same_tick_battery_selected_soc_target`.
 
+use std::time::Duration;
+
 use crate::Clock;
+use crate::Owner;
 use crate::controllers::ess_state_override::{
     EssStateOverrideInput, evaluate_ess_state_override,
 };
+use crate::controllers::heat_pump::evaluate_heat_pump;
 use crate::controllers::zappi_active::classify_zappi_active;
 use crate::process::{
     build_current_limit_input, build_eddi_mode_input, build_schedules_input,
@@ -37,8 +41,9 @@ use crate::process::{
 use crate::tass::{Actual, Freshness};
 use crate::topology::{HardwareParams, Topology};
 use crate::types::{
-    BookkeepingId, ControllerObservableId, DbusTarget, DbusValue, Effect, ForecastProvider,
-    LogLevel, PublishPayload, SensorId, ZappiDrainBranch, encode_sensor_body,
+    ActuatedId, BookkeepingId, ControllerObservableId, DbusTarget, DbusValue, Effect,
+    ForecastProvider, LgThinqAction, LogLevel, PublishPayload, SensorId, ZappiDrainBranch,
+    encode_sensor_body,
 };
 use crate::world::{CoreFactor, SUNRISE_SUNSET_FRESHNESS, World};
 
@@ -786,6 +791,178 @@ impl Core for EssStateOverrideCore {
     }
 }
 
+/// PR-LG-THINQ-B: proposes three of the four LG ThinQ actuated entities
+/// every tick.
+///
+/// - `lg_dhw_power`: time-window schedule [02:00, 05:00) ∪ [07:00, 08:00).
+/// - `lg_dhw_target_c`: constant 60 °C.
+/// - `lg_heating_water_target_c`: outdoor-temperature curve — only proposed
+///   when `world.sensors.outdoor_temperature` is Fresh.
+///
+/// `lg_heat_pump_power` (master on/off) is intentionally NOT proposed here;
+/// it is operator-only and is mirrored by `apply_knob` in `process.rs`.
+///
+/// No `depends_on` edges — `evaluate_heat_pump` reads sensors and knobs only.
+pub(crate) struct HeatPumpControlCore;
+impl Core for HeatPumpControlCore {
+    fn id(&self) -> CoreId {
+        CoreId::HeatPumpControl
+    }
+    fn depends_on(&self) -> &'static [DepEdge] {
+        &[]
+    }
+    fn run(
+        &self,
+        world: &mut World,
+        clock: &dyn Clock,
+        _topology: &Topology,
+        effects: &mut Vec<Effect>,
+    ) {
+        let now_mono = clock.monotonic();
+        let now_local = clock.naive();
+        let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
+
+        let out = evaluate_heat_pump(now_local, world.sensors.outdoor_temperature);
+
+        // --- DHW power ---
+        if let Some(dhw_power) = out.dhw_power {
+            let changed = world
+                .lg_dhw_power
+                .propose_target(dhw_power, Owner::HeatPumpController, now_mono);
+            // PR-LG-THINQ-B-1-D06: gate the propose-side phase publish
+            // on `changed`. The write-path publish below stays
+            // unconditional so a retry is still surfaced.
+            if changed {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwPower,
+                    phase: world.lg_dhw_power.target.phase,
+                }));
+            }
+            if !world.knobs.writes_enabled {
+                if changed {
+                    effects.push(Effect::Log {
+                        level: LogLevel::Info,
+                        source: "observer",
+                        message: format!(
+                            "lg_dhw_power would be set to {dhw_power}; suppressed by writes_enabled=false"
+                        ),
+                    });
+                }
+            } else if changed || world.lg_dhw_power.needs_actuation(now_mono, retry_threshold) {
+                effects.push(Effect::CallLgThinq(LgThinqAction::SetDhwPower(dhw_power)));
+                world.lg_dhw_power.mark_commanded(now_mono);
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwPower,
+                    phase: world.lg_dhw_power.target.phase,
+                }));
+            }
+        }
+
+        // --- DHW target temperature (constant 60 °C) ---
+        if let Some(dhw_target_c) = out.dhw_target_c {
+            let changed = world
+                .lg_dhw_target_c
+                .propose_target(dhw_target_c, Owner::HeatPumpController, now_mono);
+            // PR-LG-THINQ-B-1-D06: gate the propose-side phase publish on `changed`.
+            if changed {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwTarget,
+                    phase: world.lg_dhw_target_c.target.phase,
+                }));
+            }
+            if !world.knobs.writes_enabled {
+                if changed {
+                    effects.push(Effect::Log {
+                        level: LogLevel::Info,
+                        source: "observer",
+                        message: format!(
+                            "lg_dhw_target_c would be set to {dhw_target_c}; suppressed by writes_enabled=false"
+                        ),
+                    });
+                }
+            } else if changed || world.lg_dhw_target_c.needs_actuation(now_mono, retry_threshold) {
+                effects.push(Effect::CallLgThinq(LgThinqAction::SetDhwTargetC(
+                    i64::from(dhw_target_c),
+                )));
+                world.lg_dhw_target_c.mark_commanded(now_mono);
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgDhwTarget,
+                    phase: world.lg_dhw_target_c.target.phase,
+                }));
+            }
+        }
+
+        // --- Heating-water target temperature (outdoor-temp curve; None
+        //     when outdoor temperature is not Fresh — controller skips) ---
+        if let Some(hw_target_c) = out.heating_water_target_c {
+            let changed = world
+                .lg_heating_water_target_c
+                .propose_target(hw_target_c, Owner::HeatPumpController, now_mono);
+            // PR-LG-THINQ-B-1-D06: gate the propose-side phase publish on `changed`.
+            if changed {
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgHeatingWaterTarget,
+                    phase: world.lg_heating_water_target_c.target.phase,
+                }));
+            }
+            if !world.knobs.writes_enabled {
+                if changed {
+                    effects.push(Effect::Log {
+                        level: LogLevel::Info,
+                        source: "observer",
+                        message: format!(
+                            "lg_heating_water_target_c would be set to {hw_target_c}; suppressed by writes_enabled=false"
+                        ),
+                    });
+                }
+            } else if changed
+                || world
+                    .lg_heating_water_target_c
+                    .needs_actuation(now_mono, retry_threshold)
+            {
+                effects.push(Effect::CallLgThinq(LgThinqAction::SetHeatingWaterTargetC(
+                    i64::from(hw_target_c),
+                )));
+                world.lg_heating_water_target_c.mark_commanded(now_mono);
+                effects.push(Effect::Publish(PublishPayload::ActuatedPhase {
+                    id: ActuatedId::LgHeatingWaterTarget,
+                    phase: world.lg_heating_water_target_c.target.phase,
+                }));
+            }
+        }
+    }
+
+    fn last_inputs(&self, world: &World) -> Vec<CoreFactor> {
+        let outdoor = fmt_actual_f64(world.sensors.outdoor_temperature);
+        vec![
+            factor("outdoor_temperature_C", outdoor),
+        ]
+    }
+
+    fn last_outputs(&self, world: &World) -> Vec<CoreFactor> {
+        let dhw_power = world
+            .lg_dhw_power
+            .target
+            .value
+            .map_or("—".to_string(), |v| v.to_string());
+        let dhw_target = world
+            .lg_dhw_target_c
+            .target
+            .value
+            .map_or("—".to_string(), |v| format!("{v} °C"));
+        let hw_target = world
+            .lg_heating_water_target_c
+            .target
+            .value
+            .map_or("—".to_string(), |v| format!("{v} °C"));
+        vec![
+            factor("lg_dhw_power", dhw_power),
+            factor("lg_dhw_target_c", dhw_target),
+            factor("lg_heating_water_target_c", hw_target),
+        ]
+    }
+}
+
 /// PR-ha-discovery-expand: emits one `Publish(Sensor{…})` per `SensorId`
 /// and one `Publish(BookkeepingNumeric/Bool{…})` per published
 /// bookkeeping field, dedup'd against `world.published_cache`.
@@ -815,6 +992,7 @@ impl Core for SensorBroadcastCore {
             DepEdge { from: CoreId::EddiMode, fields: &[] },
             DepEdge { from: CoreId::WeatherSoc, fields: &[] },
             DepEdge { from: CoreId::EssStateOverride, fields: &[] },
+            DepEdge { from: CoreId::HeatPumpControl, fields: &[] },
         ]
     }
     fn run(
@@ -1038,6 +1216,7 @@ pub(crate) fn production_cores() -> Vec<Box<dyn Core>> {
         Box::new(EddiModeCore),
         Box::new(WeatherSocCore),
         Box::new(EssStateOverrideCore),
+        Box::new(HeatPumpControlCore),
         Box::new(SensorBroadcastCore),
     ]
 }

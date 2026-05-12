@@ -1,3 +1,4 @@
+use crate::victron_controller::dashboard::actuated_bool::ActuatedBool;
 use crate::victron_controller::dashboard::actuated_enum_name::ActuatedEnumName;
 use crate::victron_controller::dashboard::actuated_f64::ActuatedF64;
 use crate::victron_controller::dashboard::actuated_i32::ActuatedI32;
@@ -12,13 +13,17 @@ pub struct Actuated {
     pub schedule_0: ActuatedSchedule,
     pub schedule_1: ActuatedSchedule,
     pub ess_state_target: ActuatedI32,
+    pub lg_heat_pump_power: ActuatedBool,
+    pub lg_dhw_power: ActuatedBool,
+    pub lg_heating_water_target_c: ActuatedI32,
+    pub lg_dhw_target_c: ActuatedI32,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Actuated {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        7
+        11
     }
 }
 
@@ -84,6 +89,38 @@ impl crate::baboon_runtime::BaboonBinEncode for Actuated {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_heat_pump_power.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_dhw_power.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_heating_water_target_c.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                value.lg_dhw_target_c.encode_ueba(ctx, &mut buffer)?;
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -94,6 +131,10 @@ impl crate::baboon_runtime::BaboonBinEncode for Actuated {
             value.schedule_0.encode_ueba(ctx, writer)?;
             value.schedule_1.encode_ueba(ctx, writer)?;
             value.ess_state_target.encode_ueba(ctx, writer)?;
+            value.lg_heat_pump_power.encode_ueba(ctx, writer)?;
+            value.lg_dhw_power.encode_ueba(ctx, writer)?;
+            value.lg_heating_water_target_c.encode_ueba(ctx, writer)?;
+            value.lg_dhw_target_c.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -112,6 +153,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Actuated {
         let schedule_0 = ActuatedSchedule::decode_ueba(ctx, reader)?;
         let schedule_1 = ActuatedSchedule::decode_ueba(ctx, reader)?;
         let ess_state_target = ActuatedI32::decode_ueba(ctx, reader)?;
+        let lg_heat_pump_power = ActuatedBool::decode_ueba(ctx, reader)?;
+        let lg_dhw_power = ActuatedBool::decode_ueba(ctx, reader)?;
+        let lg_heating_water_target_c = ActuatedI32::decode_ueba(ctx, reader)?;
+        let lg_dhw_target_c = ActuatedI32::decode_ueba(ctx, reader)?;
         Ok(Actuated {
             grid_setpoint,
             input_current_limit,
@@ -120,6 +165,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Actuated {
             schedule_0,
             schedule_1,
             ess_state_target,
+            lg_heat_pump_power,
+            lg_dhw_power,
+            lg_heating_water_target_c,
+            lg_dhw_target_c,
         })
     }
 }

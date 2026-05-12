@@ -38,6 +38,7 @@ export const OPERATOR_GROUPS: ReadonlyArray<string> = [
   "Planner overrides",
   "EV / Zappi",
   "Schedule overrides",
+  "Heat pump",
 ];
 export const CONFIG_GROUPS: ReadonlyArray<string> = [
   "Tariff / scheduling",
@@ -224,6 +225,14 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
 
   // --- Config: Zappi calibration ---
   "evcharger.current.margin": { kind: "float", min: 0, max: 10, step: 0.5, default: 5, category: "config", group: "Zappi calibration" },
+
+  // --- Operator: Heat pump (PR-LG-THINQ-B) ---
+  "lg.heat-pump.power": { kind: "bool", default: false, category: "operator", group: "Heat pump" },
+  "lg.dhw.power": { kind: "bool", default: false, category: "operator", group: "Heat pump" },
+  // Temperature ranges here use the defaults from LgThinqConfig; the
+  // HA discovery min/max are overridden by the runtime OnceLock.
+  "lg.heating-water.target-c": { kind: "int", min: 25, max: 55, step: 1, default: 42, category: "operator", group: "Heat pump" },
+  "lg.dhw.target-c": { kind: "int", min: 30, max: 65, step: 1, default: 60, category: "operator", group: "Heat pump" },
 
   // --- Config: Weather-SoC planner ---
   "weathersoc.threshold.winter-temperature": { kind: "float", min: -30, max: 40, step: 0.5, default: 12, category: "config", group: "Weather-SoC planner" },
