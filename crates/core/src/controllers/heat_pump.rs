@@ -58,20 +58,42 @@ fn heating_target_from_outdoor_c(outdoor_c: f64) -> i32 {
 /// `now_local` is the current local `NaiveDateTime` from
 /// `topology.tz_handle` (same as `clock.naive()`).
 /// `outdoor_temp` is `world.sensors.outdoor_temperature`.
+/// `master_on` is `world.lg_heat_pump_power.actual` — readback of the
+/// heat-pump master power, driven externally by the heat-demand relay.
+///
+/// The heating-water target is gated on `master_on` being Fresh + true.
+/// LG silently drops setpoint writes while the unit reports
+/// `boilerOperationMode == POWER_OFF` (the cloud returns 2xx but the
+/// unit's reported `targetTemperature` never changes), which would
+/// otherwise leave the actuator stuck in Commanded+Deprecated and burn
+/// LG API retries every tick. DHW power and DHW target are still
+/// proposed unconditionally (DHW writes succeed independently of master
+/// power in practice).
 pub fn evaluate_heat_pump(
     now_local: NaiveDateTime,
     outdoor_temp: Actual<f64>,
+    master_on: Actual<bool>,
 ) -> HeatPumpOutput {
     let t = now_local.time();
     let dhw_power = in_dhw_window(t);
     let dhw_target_c = 60;
 
+    let master_demanding =
+        master_on.freshness == crate::Freshness::Fresh && master_on.value == Some(true);
+
     let mut decision = Decision::new("heat-pump controller")
         .with_factor("time_local", now_local.time().format("%H:%M:%S").to_string())
         .with_factor("dhw_window", dhw_power.to_string())
-        .with_factor("outdoor_freshness", format!("{:?}", outdoor_temp.freshness));
+        .with_factor("outdoor_freshness", format!("{:?}", outdoor_temp.freshness))
+        .with_factor("master_demanding", master_demanding.to_string());
 
-    let heating_water_target_c = if outdoor_temp.freshness == crate::Freshness::Fresh {
+    let heating_water_target_c = if !master_demanding {
+        decision = decision.with_factor(
+            "heating_target_c",
+            "skipped (master not demanding heat)".to_string(),
+        );
+        None
+    } else if outdoor_temp.freshness == crate::Freshness::Fresh {
         let t_c = outdoor_temp.value.unwrap_or(f64::NAN);
         let target = heating_target_from_outdoor_c(t_c);
         decision = decision
@@ -134,36 +156,56 @@ mod tests {
         Actual::unknown(Instant::now())
     }
 
+    fn master_on(on: bool) -> Actual<bool> {
+        Actual {
+            value: Some(on),
+            freshness: Freshness::Fresh,
+            since: Instant::now(),
+        }
+    }
+
+    fn master_stale(on: bool) -> Actual<bool> {
+        Actual {
+            value: Some(on),
+            freshness: Freshness::Stale,
+            since: Instant::now(),
+        }
+    }
+
+    fn master_unknown() -> Actual<bool> {
+        Actual::unknown(Instant::now())
+    }
+
     // --- outdoor-temp bucket tests ---
 
     #[test]
     fn bucket_t1_yields_48() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(48));
         assert_eq!(out.dhw_target_c, Some(60));
     }
 
     #[test]
     fn bucket_t4_yields_46() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(4.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(4.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(46));
     }
 
     #[test]
     fn bucket_t6_yields_44() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(6.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(6.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(44));
     }
 
     #[test]
     fn bucket_t9_yields_43() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(9.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(9.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(43));
     }
 
     #[test]
     fn bucket_t15_yields_42() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(42));
     }
 
@@ -171,25 +213,25 @@ mod tests {
 
     #[test]
     fn boundary_t2_inclusive_yields_48() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(2.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(2.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(48));
     }
 
     #[test]
     fn boundary_t5_inclusive_yields_46() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(5.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(5.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(46));
     }
 
     #[test]
     fn boundary_t8_inclusive_yields_44() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(8.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(8.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(44));
     }
 
     #[test]
     fn boundary_t10_inclusive_yields_43() {
-        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(10.0));
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(10.0), master_on(true));
         assert_eq!(out.heating_water_target_c, Some(43));
     }
 
@@ -197,19 +239,19 @@ mod tests {
 
     #[test]
     fn dhw_window_0230_is_on() {
-        let out = evaluate_heat_pump(local(2, 30), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(2, 30), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(true));
     }
 
     #[test]
     fn dhw_window_0730_is_on() {
-        let out = evaluate_heat_pump(local(7, 30), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(7, 30), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(true));
     }
 
     #[test]
     fn dhw_window_1200_is_off() {
-        let out = evaluate_heat_pump(local(12, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(12, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(false));
     }
 
@@ -217,25 +259,25 @@ mod tests {
 
     #[test]
     fn dhw_window_edge_0200_is_in() {
-        let out = evaluate_heat_pump(local(2, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(2, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(true));
     }
 
     #[test]
     fn dhw_window_edge_0500_is_out() {
-        let out = evaluate_heat_pump(local(5, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(5, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(false));
     }
 
     #[test]
     fn dhw_window_edge_0700_is_in() {
-        let out = evaluate_heat_pump(local(7, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(7, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(true));
     }
 
     #[test]
     fn dhw_window_edge_0800_is_out() {
-        let out = evaluate_heat_pump(local(8, 0), fresh_outdoor(15.0));
+        let out = evaluate_heat_pump(local(8, 0), fresh_outdoor(15.0), master_on(true));
         assert_eq!(out.dhw_power, Some(false));
     }
 
@@ -243,7 +285,7 @@ mod tests {
 
     #[test]
     fn stale_outdoor_temperature_skips_heating_target() {
-        let out = evaluate_heat_pump(local(3, 0), stale_outdoor());
+        let out = evaluate_heat_pump(local(3, 0), stale_outdoor(), master_on(true));
         assert_eq!(out.heating_water_target_c, None, "stale → no proposal");
         // DHW is unaffected by outdoor-temp freshness.
         assert_eq!(out.dhw_power, Some(true));
@@ -252,7 +294,7 @@ mod tests {
 
     #[test]
     fn unknown_outdoor_temperature_skips_heating_target() {
-        let out = evaluate_heat_pump(local(3, 0), unknown_outdoor());
+        let out = evaluate_heat_pump(local(3, 0), unknown_outdoor(), master_on(true));
         assert_eq!(out.heating_water_target_c, None, "unknown → no proposal");
     }
 
@@ -261,8 +303,42 @@ mod tests {
     #[test]
     fn dhw_target_constant_60_across_all_buckets() {
         for &t in &[1.0_f64, 4.0, 6.0, 9.0, 15.0] {
-            let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(t));
+            let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(t), master_on(true));
             assert_eq!(out.dhw_target_c, Some(60), "t={t} → dhw_target_c must always be 60");
         }
+    }
+
+    // --- master-demand gate tests -------------------------------------
+
+    #[test]
+    fn master_off_skips_heating_target_even_with_fresh_outdoor() {
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0), master_on(false));
+        assert_eq!(
+            out.heating_water_target_c, None,
+            "master off → no heating-water proposal regardless of outdoor temp"
+        );
+        // DHW still proposed.
+        assert_eq!(out.dhw_power, Some(true));
+        assert_eq!(out.dhw_target_c, Some(60));
+    }
+
+    #[test]
+    fn master_unknown_skips_heating_target() {
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0), master_unknown());
+        assert_eq!(out.heating_water_target_c, None);
+    }
+
+    #[test]
+    fn master_stale_true_still_skips_heating_target() {
+        // Stale readback isn't authoritative enough to drive a write —
+        // require Fresh so we only act when the readback is current.
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0), master_stale(true));
+        assert_eq!(out.heating_water_target_c, None);
+    }
+
+    #[test]
+    fn master_on_fresh_with_fresh_outdoor_proposes_target() {
+        let out = evaluate_heat_pump(local(3, 0), fresh_outdoor(1.0), master_on(true));
+        assert_eq!(out.heating_water_target_c, Some(48));
     }
 }

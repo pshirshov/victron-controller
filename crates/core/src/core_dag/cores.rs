@@ -822,7 +822,11 @@ impl Core for HeatPumpControlCore {
         let now_local = clock.naive();
         let retry_threshold = Duration::from_secs(u64::from(world.knobs.actuator_retry_s));
 
-        let out = evaluate_heat_pump(now_local, world.sensors.outdoor_temperature);
+        let out = evaluate_heat_pump(
+            now_local,
+            world.sensors.outdoor_temperature,
+            world.lg_heat_pump_power.actual,
+        );
 
         // PR-LG-THINQ-DECISIONS-1: surface the controller's decision
         // factors in the dashboard's Decisions section. Done first so
