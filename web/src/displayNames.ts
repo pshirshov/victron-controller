@@ -218,6 +218,7 @@ const DISPLAY_NAMES_BY_TYPE: Record<string, TypeOverride> = {
     zappi_mode: "evcharger.mode.decision",
     eddi_mode: "eddi.mode.decision",
     weather_soc: "weathersoc",
+    heat_pump: "heat-pump.decision",
   },
   core: {
     zappi_active: "evcharger.active",

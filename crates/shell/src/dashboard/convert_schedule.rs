@@ -47,6 +47,18 @@ const EDDI_EDGES: &[(u32, &str)] = &[
     (8, "→ Stopped"),
 ];
 
+/// PR-LG-THINQ-DECISIONS-1: the four DHW-window edges driven by
+/// `evaluate_heat_pump`: DHW on during [02:00,05:00) ∪ [07:00,08:00).
+/// Hard-coded — the policy is hard-coded in `controllers/heat_pump.rs`,
+/// so the schedule edges are too. If the policy ever becomes
+/// configurable, this table moves into a knob.
+const DHW_EDGES: &[(u32, &str)] = &[
+    (2, "→ on"),
+    (5, "→ off"),
+    (7, "→ on"),
+    (8, "→ off"),
+];
+
 /// Build the `ScheduledActions` wire payload sorted by `next_fire_epoch_ms`.
 #[must_use]
 pub fn compute_scheduled_actions(world: &World, now_ms: i64) -> WireActions {
@@ -63,6 +75,7 @@ pub fn compute_scheduled_actions(world: &World, now_ms: i64) -> WireActions {
     entries.extend(weather_soc_action(now_local));
     entries.extend(zappi_actions(world, now_local));
     entries.extend(keep_batteries_charged_actions(world, tz, now_ms));
+    entries.extend(dhw_window_actions(now_local));
 
     entries.sort_by_key(|e| e.next_fire_epoch_ms);
     WireActions { entries }
@@ -182,6 +195,27 @@ fn eddi_tariff_actions(now_local: DateTime<Tz>) -> Vec<WireAction> {
             Some(WireAction {
                 label: format!("Eddi {suffix}"),
                 source: "eddi.tariff".to_string(),
+                next_fire_epoch_ms,
+                period_ms: Some(DAY_MS),
+            })
+        })
+        .collect()
+}
+
+/// PR-LG-THINQ-DECISIONS-1: DHW window edges — four predictable daily
+/// transitions matching the policy in `controllers/heat_pump.rs`
+/// (`in_dhw_window`): on at 02:00, off at 05:00, on at 07:00, off at
+/// 08:00. The heating-water target is sensor-driven (not time-of-day)
+/// and is intentionally not surfaced here; the Decisions section shows
+/// the per-tick bucket choice instead.
+fn dhw_window_actions(now_local: DateTime<Tz>) -> Vec<WireAction> {
+    DHW_EDGES
+        .iter()
+        .filter_map(|(hour, suffix)| {
+            let next_fire_epoch_ms = next_local_hm(now_local, *hour, 0)?;
+            Some(WireAction {
+                label: format!("DHW {suffix}"),
+                source: "lg.dhw.window".to_string(),
                 next_fire_epoch_ms,
                 period_ms: Some(DAY_MS),
             })
@@ -471,6 +505,76 @@ mod tests {
             later_normal.next_fire_epoch_ms,
             local_to_epoch_ms(tz, 2026, 3, 30, 2, 0),
             "02:00 edge must roll to 03-30 since 03-29 02:00 doesn't exist"
+        );
+    }
+
+    // ----- DHW window edges (PR-LG-THINQ-DECISIONS-1) ----------------
+
+    #[test]
+    fn dhw_window_actions_emits_four_entries_per_day() {
+        let tz = chrono_tz::UTC;
+        let now_ms = local_to_epoch_ms(tz, 2026, 4, 26, 12, 0);
+        let now_local = dt_local(tz, now_ms);
+        let actions = dhw_window_actions(now_local);
+        assert_eq!(actions.len(), 4, "expected 4 DHW edges, got {actions:?}");
+        for a in &actions {
+            let dt = a.next_fire_epoch_ms - now_ms;
+            assert!(
+                dt > 0 && dt <= DAY_MS,
+                "next_fire {} not in (now, now+24h]",
+                a.next_fire_epoch_ms
+            );
+            assert_eq!(a.period_ms, Some(DAY_MS));
+            assert_eq!(a.source, "lg.dhw.window");
+        }
+    }
+
+    #[test]
+    fn dhw_window_actions_today_vs_tomorrow_boundary() {
+        let tz = chrono_tz::UTC;
+        // 06:00 — the 02:00 + 05:00 edges have already passed today;
+        // 07:00 + 08:00 are still ahead.
+        let now_ms = local_to_epoch_ms(tz, 2026, 4, 26, 6, 0);
+        let now_local = dt_local(tz, now_ms);
+        let actions = dhw_window_actions(now_local);
+        // Earliest "→ on" must be 07:00 today; "→ off" must be 08:00 today.
+        let next_on = actions
+            .iter()
+            .filter(|a| a.label == "DHW → on")
+            .min_by_key(|a| a.next_fire_epoch_ms)
+            .unwrap();
+        assert_eq!(
+            next_on.next_fire_epoch_ms,
+            local_to_epoch_ms(tz, 2026, 4, 26, 7, 0)
+        );
+        let next_off = actions
+            .iter()
+            .filter(|a| a.label == "DHW → off")
+            .min_by_key(|a| a.next_fire_epoch_ms)
+            .unwrap();
+        assert_eq!(
+            next_off.next_fire_epoch_ms,
+            local_to_epoch_ms(tz, 2026, 4, 26, 8, 0)
+        );
+        // The 02:00 "→ on" edge must roll to tomorrow.
+        let later_on = actions
+            .iter()
+            .filter(|a| a.label == "DHW → on")
+            .max_by_key(|a| a.next_fire_epoch_ms)
+            .unwrap();
+        assert_eq!(
+            later_on.next_fire_epoch_ms,
+            local_to_epoch_ms(tz, 2026, 4, 27, 2, 0)
+        );
+        // The 05:00 "→ off" edge must also roll to tomorrow.
+        let later_off = actions
+            .iter()
+            .filter(|a| a.label == "DHW → off")
+            .max_by_key(|a| a.next_fire_epoch_ms)
+            .unwrap();
+        assert_eq!(
+            later_off.next_fire_epoch_ms,
+            local_to_epoch_ms(tz, 2026, 4, 27, 5, 0)
         );
     }
 

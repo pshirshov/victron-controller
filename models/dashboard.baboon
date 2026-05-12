@@ -15,7 +15,7 @@ version "0.3.0"
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors ForecastSnapshot }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors ForecastSnapshot Decisions }
 
 // PR-DIAG-1: process + host memory diagnostics. Sampled in the shell on
 // a fixed cadence (~120 s) — separate from the per-tick world snapshot
@@ -138,6 +138,22 @@ data Actuated {
   lg_dhw_power: ActuatedBool
   lg_heating_water_target_c: ActuatedI32
   lg_dhw_target_c: ActuatedI32
+}
+
+// PR-LG-THINQ-DECISIONS-1: extend `Decisions` with the new
+// `heat_pump` slot. Surfaces the per-tick decision factors produced by
+// `evaluate_heat_pump` (time-window, outdoor-temp bucket, freshness)
+// in the dashboard's Decisions section. Other slots unchanged from
+// v0.2.0.
+data Decisions {
+  grid_setpoint: opt[Decision]
+  input_current_limit: opt[Decision]
+  schedule_0: opt[Decision]
+  schedule_1: opt[Decision]
+  zappi_mode: opt[Decision]
+  eddi_mode: opt[Decision]
+  weather_soc: opt[Decision]
+  heat_pump: opt[Decision]
 }
 
 // PR-baseline-forecast: extend `Forecasts` with the locally-computed

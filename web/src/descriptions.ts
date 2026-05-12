@@ -257,6 +257,8 @@ export const entityDescriptions: Record<string, string> = {
     "Current DHW tank temperature as reported by the heat pump (°C). Polled from LG ThinQ Cloud.",
   "lg.heating-water.temperature.current":
     "Current heating-water loop temperature as reported by the heat pump (°C). Polled from LG ThinQ Cloud.",
+  "heat-pump.decision":
+    "Per-tick heat-pump controller decision. Factors: local time, DHW window membership ([02:00,05:00) ∪ [07:00,08:00)), outdoor-temperature freshness, and (when fresh) the outdoor-temperature bucket → heating-water target mapping.",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

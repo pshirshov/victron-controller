@@ -824,6 +824,13 @@ impl Core for HeatPumpControlCore {
 
         let out = evaluate_heat_pump(now_local, world.sensors.outdoor_temperature);
 
+        // PR-LG-THINQ-DECISIONS-1: surface the controller's decision
+        // factors in the dashboard's Decisions section. Done first so
+        // every tick the operator can see WHY the controller produced
+        // its current proposals (time window, outdoor-temp bucket,
+        // outdoor-sensor freshness).
+        world.decisions.heat_pump = Some(out.decision.clone());
+
         // --- DHW power ---
         if let Some(dhw_power) = out.dhw_power {
             let changed = world

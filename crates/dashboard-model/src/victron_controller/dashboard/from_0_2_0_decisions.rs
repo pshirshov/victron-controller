@@ -9,5 +9,6 @@ pub fn convert__decisions__from__0_2_0(from: &crate::victron_controller::dashboa
         zappi_mode: serde_json::from_value(serde_json::to_value(&from.zappi_mode).unwrap()).unwrap(),
         eddi_mode: serde_json::from_value(serde_json::to_value(&from.eddi_mode).unwrap()).unwrap(),
         weather_soc: serde_json::from_value(serde_json::to_value(&from.weather_soc).unwrap()).unwrap(),
+        heat_pump: None,
     }
 }

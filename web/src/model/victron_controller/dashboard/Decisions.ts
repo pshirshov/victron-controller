@@ -10,8 +10,9 @@ export class Decisions implements BaboonGeneratedLatest {
     private readonly _zappi_mode: Decision | undefined;
     private readonly _eddi_mode: Decision | undefined;
     private readonly _weather_soc: Decision | undefined;
+    private readonly _heat_pump: Decision | undefined;
 
-    constructor(grid_setpoint: Decision | undefined, input_current_limit: Decision | undefined, schedule_0: Decision | undefined, schedule_1: Decision | undefined, zappi_mode: Decision | undefined, eddi_mode: Decision | undefined, weather_soc: Decision | undefined) {
+    constructor(grid_setpoint: Decision | undefined, input_current_limit: Decision | undefined, schedule_0: Decision | undefined, schedule_1: Decision | undefined, zappi_mode: Decision | undefined, eddi_mode: Decision | undefined, weather_soc: Decision | undefined, heat_pump: Decision | undefined) {
         this._grid_setpoint = grid_setpoint
         this._input_current_limit = input_current_limit
         this._schedule_0 = schedule_0
@@ -19,6 +20,7 @@ export class Decisions implements BaboonGeneratedLatest {
         this._zappi_mode = zappi_mode
         this._eddi_mode = eddi_mode
         this._weather_soc = weather_soc
+        this._heat_pump = heat_pump
     }
 
     public get grid_setpoint(): Decision | undefined {
@@ -42,6 +44,9 @@ export class Decisions implements BaboonGeneratedLatest {
     public get weather_soc(): Decision | undefined {
         return this._weather_soc;
     }
+    public get heat_pump(): Decision | undefined {
+        return this._heat_pump;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -51,11 +56,12 @@ export class Decisions implements BaboonGeneratedLatest {
             schedule_1: this._schedule_1 !== undefined ? this._schedule_1 : undefined,
             zappi_mode: this._zappi_mode !== undefined ? this._zappi_mode : undefined,
             eddi_mode: this._eddi_mode !== undefined ? this._eddi_mode : undefined,
-            weather_soc: this._weather_soc !== undefined ? this._weather_soc : undefined
+            weather_soc: this._weather_soc !== undefined ? this._weather_soc : undefined,
+            heat_pump: this._heat_pump !== undefined ? this._heat_pump : undefined
         };
     }
 
-    public with(overrides: {grid_setpoint?: Decision | undefined; input_current_limit?: Decision | undefined; schedule_0?: Decision | undefined; schedule_1?: Decision | undefined; zappi_mode?: Decision | undefined; eddi_mode?: Decision | undefined; weather_soc?: Decision | undefined}): Decisions {
+    public with(overrides: {grid_setpoint?: Decision | undefined; input_current_limit?: Decision | undefined; schedule_0?: Decision | undefined; schedule_1?: Decision | undefined; zappi_mode?: Decision | undefined; eddi_mode?: Decision | undefined; weather_soc?: Decision | undefined; heat_pump?: Decision | undefined}): Decisions {
         return new Decisions(
             'grid_setpoint' in overrides ? overrides.grid_setpoint! : this._grid_setpoint,
             'input_current_limit' in overrides ? overrides.input_current_limit! : this._input_current_limit,
@@ -63,11 +69,12 @@ export class Decisions implements BaboonGeneratedLatest {
             'schedule_1' in overrides ? overrides.schedule_1! : this._schedule_1,
             'zappi_mode' in overrides ? overrides.zappi_mode! : this._zappi_mode,
             'eddi_mode' in overrides ? overrides.eddi_mode! : this._eddi_mode,
-            'weather_soc' in overrides ? overrides.weather_soc! : this._weather_soc
+            'weather_soc' in overrides ? overrides.weather_soc! : this._weather_soc,
+            'heat_pump' in overrides ? overrides.heat_pump! : this._heat_pump
         );
     }
 
-    public static fromPlain(obj: {grid_setpoint: Decision | undefined; input_current_limit: Decision | undefined; schedule_0: Decision | undefined; schedule_1: Decision | undefined; zappi_mode: Decision | undefined; eddi_mode: Decision | undefined; weather_soc: Decision | undefined}): Decisions {
+    public static fromPlain(obj: {grid_setpoint: Decision | undefined; input_current_limit: Decision | undefined; schedule_0: Decision | undefined; schedule_1: Decision | undefined; zappi_mode: Decision | undefined; eddi_mode: Decision | undefined; weather_soc: Decision | undefined; heat_pump: Decision | undefined}): Decisions {
         return new Decisions(
             obj.grid_setpoint,
             obj.input_current_limit,
@@ -75,7 +82,8 @@ export class Decisions implements BaboonGeneratedLatest {
             obj.schedule_1,
             obj.zappi_mode,
             obj.eddi_mode,
-            obj.weather_soc
+            obj.weather_soc,
+            obj.heat_pump
         );
     }
 
@@ -91,7 +99,7 @@ export class Decisions implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Decisions.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return Decisions.BaboonSameInVersions
     }
@@ -193,6 +201,18 @@ export class Decisions_UEBACodec {
                 const after = buffer.position();
                 BinTools.writeI32(writer, after - before);
             }
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.heat_pump === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                Decision_UEBACodec.instance.encode(ctx, value.heat_pump, buffer);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -238,6 +258,12 @@ export class Decisions_UEBACodec {
                 BinTools.writeByte(writer, 1);
                 Decision_UEBACodec.instance.encode(ctx, value.weather_soc, writer);
             }
+            if (value.heat_pump === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                Decision_UEBACodec.instance.encode(ctx, value.heat_pump, writer);
+            }
         }
     }
     
@@ -249,7 +275,7 @@ export class Decisions_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 7; i++) {
+            for (let i = 0; i < 8; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
@@ -261,6 +287,7 @@ export class Decisions_UEBACodec {
         const zappi_mode = (BinTools.readByte(reader) === 0 ? undefined : Decision_UEBACodec.instance.decode(ctx, reader));
         const eddi_mode = (BinTools.readByte(reader) === 0 ? undefined : Decision_UEBACodec.instance.decode(ctx, reader));
         const weather_soc = (BinTools.readByte(reader) === 0 ? undefined : Decision_UEBACodec.instance.decode(ctx, reader));
+        const heat_pump = (BinTools.readByte(reader) === 0 ? undefined : Decision_UEBACodec.instance.decode(ctx, reader));
         return new Decisions(
             grid_setpoint,
             input_current_limit,
@@ -269,6 +296,7 @@ export class Decisions_UEBACodec {
             zappi_mode,
             eddi_mode,
             weather_soc,
+            heat_pump,
         );
     }
 

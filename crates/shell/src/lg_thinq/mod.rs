@@ -21,6 +21,7 @@
 //! / `ActuatedId` / `SensorId` variants added in D03 — the old
 //! `lg_thinq/discovery.rs` file is deleted.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -77,12 +78,21 @@ impl Client {
 
     /// Fetch the current device state.
     pub async fn get_state(&self) -> Result<HeatPumpState> {
+        let (state, _raw) = self.get_state_with_raw().await?;
+        Ok(state)
+    }
+
+    /// Fetch the current device state, returning both the decoded
+    /// `HeatPumpState` and the raw JSON envelope. Used by the poller
+    /// to log the raw response once-per-process for diagnostics.
+    pub async fn get_state_with_raw(&self) -> Result<(HeatPumpState, serde_json::Value)> {
         let raw = self
             .api
             .get_device_state(&self.device_id)
             .await
             .map_err(|e| anyhow!("get_device_state: {e}"))?;
-        HeatPumpState::from_json(&raw).map_err(|e| anyhow!("decode state: {e}"))
+        let state = HeatPumpState::from_json(&raw).map_err(|e| anyhow!("decode state: {e}"))?;
+        Ok((state, raw))
     }
 
     /// Post a control payload to LG ThinQ.
@@ -147,6 +157,11 @@ pub(crate) fn action_to_payload(action: LgThinqAction) -> serde_json::Value {
 // Poller — emits Event::Sensor readings
 // =============================================================================
 
+/// Set after the first successful poll cycle logs the raw response.
+/// Process-wide so we only emit one diagnostic dump per process,
+/// regardless of poller restarts.
+static RAW_STATE_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Polls device state periodically and emits six `Event::Sensor`
 /// readings into the core event channel. Mirrors
 /// `myenergi::Poller::run` for the four actuated-mirror sensors and the
@@ -199,13 +214,25 @@ impl Poller {
     /// Execute one poll cycle. Returns `true` on success, `false` on error.
     async fn poll_once(&self, tx: &mpsc::Sender<Event>) -> bool {
         let now = Instant::now();
-        let state = match self.client.get_state().await {
+        let (state, raw) = match self.client.get_state_with_raw().await {
             Ok(s) => s,
             Err(e) => {
                 warn!(error = %e, "lg_thinq state poll failed; will retry");
                 return false;
             }
         };
+
+        // PR-LG-THINQ-DECISIONS-1: dump the raw `get_device_state`
+        // envelope on the first successful poll of this process. Lets
+        // the operator confirm which fields the live unit actually
+        // returns (e.g. whether `waterHeatTargetTemperature` is omitted
+        // while the heating circuit is powered off).
+        if !RAW_STATE_LOGGED.swap(true, Ordering::Relaxed) {
+            info!(
+                raw = %raw,
+                "lg_thinq raw device-state envelope (first poll only, diagnostic)"
+            );
+        }
 
         // Emit all six sensor readings. The four actuated-mirror sensors
         // arrive as `f64` (1.0=true, 0.0=false); `apply_sensor_reading`

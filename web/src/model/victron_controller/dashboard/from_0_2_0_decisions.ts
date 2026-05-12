@@ -10,6 +10,7 @@ export function convert__decisions__from__0_2_0(from: v0_2_0_Decisions): dashboa
         JSON.parse(JSON.stringify(from.schedule_1)),
         JSON.parse(JSON.stringify(from.zappi_mode)),
         JSON.parse(JSON.stringify(from.eddi_mode)),
-        JSON.parse(JSON.stringify(from.weather_soc))
+        JSON.parse(JSON.stringify(from.weather_soc)),
+        undefined
     )
 }

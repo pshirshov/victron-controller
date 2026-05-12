@@ -9,13 +9,14 @@ pub struct Decisions {
     pub zappi_mode: Option<Decision>,
     pub eddi_mode: Option<Decision>,
     pub weather_soc: Option<Decision>,
+    pub heat_pump: Option<Decision>,
 }
 
 
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Decisions {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        7
+        8
     }
 }
 
@@ -123,6 +124,20 @@ impl crate::baboon_runtime::BaboonBinEncode for Decisions {
                 let length = after - before;
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.heat_pump {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -175,6 +190,13 @@ impl crate::baboon_runtime::BaboonBinEncode for Decisions {
                     v.encode_ueba(ctx, writer)?;
                 }
             }
+            match &value.heat_pump {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
         }
         Ok(())
     }
@@ -214,6 +236,10 @@ impl crate::baboon_runtime::BaboonBinDecode for Decisions {
             let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
             if tag == 0 { None } else { Some(Decision::decode_ueba(ctx, reader)?) }
         };
+        let heat_pump = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(Decision::decode_ueba(ctx, reader)?) }
+        };
         Ok(Decisions {
             grid_setpoint,
             input_current_limit,
@@ -222,6 +248,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Decisions {
             zappi_mode,
             eddi_mode,
             weather_soc,
+            heat_pump,
         })
     }
 }

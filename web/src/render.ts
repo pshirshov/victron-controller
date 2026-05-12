@@ -692,19 +692,19 @@ export function renderActuated(snap: WorldSnapshot) {
     ),
     mkRow(
       "lg_heating_water_target_c",
-      lgHwt.target_value === null ? "—" : `${lgHwt.target_value} °C`,
+      lgHwt.target_value === undefined ? "—" : `${lgHwt.target_value} °C`,
       String(lgHwt.target_owner),
       String(lgHwt.target_phase),
-      lgHwt.actual.value === null ? "—" : `${lgHwt.actual.value} °C`,
+      lgHwt.actual.value === undefined ? "—" : `${lgHwt.actual.value} °C`,
       String(lgHwt.actual.freshness),
       lgHwt.actual.since_epoch_ms as unknown as number,
     ),
     mkRow(
       "lg_dhw_target_c",
-      lgDhwT.target_value === null ? "—" : `${lgDhwT.target_value} °C`,
+      lgDhwT.target_value === undefined ? "—" : `${lgDhwT.target_value} °C`,
       String(lgDhwT.target_owner),
       String(lgDhwT.target_phase),
-      lgDhwT.actual.value === null ? "—" : `${lgDhwT.actual.value} °C`,
+      lgDhwT.actual.value === undefined ? "—" : `${lgDhwT.actual.value} °C`,
       String(lgDhwT.actual.freshness),
       lgDhwT.actual.since_epoch_ms as unknown as number,
     ),
@@ -778,6 +778,7 @@ export function renderDecisions(snap: WorldSnapshot) {
     ["zappi_mode", d.zappi_mode],
     ["eddi_mode", d.eddi_mode],
     ["weather_soc", d.weather_soc],
+    ["heat_pump", d.heat_pump],
   ];
   ordered.sort(([a], [b]) => displayNameOfTyped(a, "decision").localeCompare(displayNameOfTyped(b, "decision")));
   const rows: KeyedRow[] = ordered.map(([name, dec]) => {

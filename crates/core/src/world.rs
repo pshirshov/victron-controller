@@ -430,6 +430,9 @@ pub struct Decisions {
     /// Target ESS state decision (9 inside the override window on
     /// full-charge days, 10 otherwise).
     pub ess_state_override: Option<Decision>,
+    /// PR-LG-THINQ-DECISIONS-1: heat-pump controller decision —
+    /// time-window, outdoor-temp bucket, freshness factors per tick.
+    pub heat_pump: Option<Decision>,
 }
 
 /// PR-ha-discovery-expand: per-sensor + per-bookkeeping last-published

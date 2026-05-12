@@ -1141,6 +1141,7 @@ fn decisions_to_model(d: &victron_controller_core::world::Decisions) -> ModelDec
         zappi_mode: d.zappi_mode.as_ref().map(decision),
         eddi_mode: d.eddi_mode.as_ref().map(decision),
         weather_soc: d.weather_soc.as_ref().map(decision),
+        heat_pump: d.heat_pump.as_ref().map(decision),
     }
 }
 

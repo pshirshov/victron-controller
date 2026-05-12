@@ -91,7 +91,7 @@ export class Decisions implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Decisions.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Decisions.BaboonSameInVersions
     }
