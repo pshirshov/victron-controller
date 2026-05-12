@@ -161,12 +161,13 @@ impl ThinqApi {
         let v = self
             .request_json(Method::GET, "devices", None, &[])
             .await?;
-        // LG returns either {"devices": [...]} or the array directly,
-        // depending on the API edition. Handle both shapes.
-        let arr = v
-            .get("devices")
-            .cloned()
-            .unwrap_or(v);
+        // Observed response shape on `api-eic.lgthinq.com` (2026-05):
+        //   {"messageId":"…","timestamp":"…","response":[{device}, …]}
+        // `parse_envelope` already unwrapped `response`, so `v` here is
+        // the array. We keep the `.get("devices")` fallback because
+        // earlier SDK doc samples showed `response: {devices: [...]}`
+        // and we don't want to break if LG flips back to that shape.
+        let arr = v.get("devices").cloned().unwrap_or(v);
         serde_json::from_value(arr).map_err(|e| Error::Decode(e.to_string()))
     }
 
@@ -300,8 +301,12 @@ mod tests {
         ThinqApi::with_base_url(http, auth, url)
     }
 
+    /// Mirrors a real response captured against `api-eic.lgthinq.com`
+    /// in 2026-05: `response` is the device array directly, no
+    /// `devices` wrapper. `messageId` and `timestamp` sit on the
+    /// envelope alongside `response` and are ignored by the client.
     #[tokio::test]
-    async fn get_devices_unwraps_response_envelope() {
+    async fn get_devices_decodes_real_response_shape() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/devices"))
@@ -310,14 +315,43 @@ mod tests {
             .and(header("x-client-id", "cid-1"))
             .and(header_exists("x-message-id"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "messageId": "94a6e638-e384-4e23-add5-97925567f6b9",
+                "timestamp": "2026-05-12T11:05:47.492399",
+                "response": [{
+                    "deviceId": "5325ea6518f9e15bddb21374a4f607a7071c6aa8d50afdf3d5fb16069020b92e",
+                    "deviceInfo": {
+                        "deviceType": "DEVICE_SYSTEM_BOILER",
+                        "modelName": "AWHP_019101_WW",
+                        "alias": "Air to Water Heat Pump",
+                        "reportable": true
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let api = make_api(&server);
+        let devs = api.get_devices().await.unwrap();
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0].device_id.len(), 64, "deviceId is a 64-char hash");
+        assert_eq!(devs[0].device_info.device_type, "DEVICE_SYSTEM_BOILER");
+        assert_eq!(devs[0].device_info.model_name, "AWHP_019101_WW");
+    }
+
+    /// Defensive: older SDK doc samples wrapped the array in
+    /// `{"devices": [...]}`. The client tolerates either shape.
+    #[tokio::test]
+    async fn get_devices_also_decodes_legacy_devices_wrapper() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/devices"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "response": {
                     "devices": [{
                         "deviceId": "dev-1",
                         "deviceInfo": {
                             "deviceType": "DEVICE_SYSTEM_BOILER",
-                            "modelName": "HM051M.U43",
-                            "alias": "Heat Pump",
-                            "reportable": true
+                            "modelName": "AWHP_019101_WW"
                         }
                     }]
                 }
@@ -329,7 +363,6 @@ mod tests {
         let devs = api.get_devices().await.unwrap();
         assert_eq!(devs.len(), 1);
         assert_eq!(devs[0].device_id, "dev-1");
-        assert_eq!(devs[0].device_info.model_name, "HM051M.U43");
     }
 
     #[tokio::test]
