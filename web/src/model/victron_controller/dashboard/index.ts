@@ -30,6 +30,8 @@ export * from './ForecastDisagreementStrategy';
 export * from './ForecastSnapshot';
 export * from './Forecasts';
 export * from './Freshness';
+export * from './HeatingCurve';
+export * from './HeatingCurveBucket';
 export * from './Knobs';
 export * from './Mode';
 export * from './Owner';

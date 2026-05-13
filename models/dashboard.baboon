@@ -259,6 +259,30 @@ data Knobs {
   // future PR. Defaults flow from `Knobs::safe_defaults()` in core and
   // reproduce the previous cascade bit-for-bit.
   weather_soc_table: WeatherSocTable
+  // PR-HEATING-CURVE-1: 5-row outdoor-temperature → heating-water
+  // target lookup. Replaces the hardcoded cascade previously in
+  // `controllers::heat_pump`. Each row carries `outdoor_max_c` (upper
+  // bound, inclusive) and `water_target_c`. Last row's
+  // `outdoor_max_c` is a high sentinel acting as the catch-all anchor.
+  heating_curve: HeatingCurve
+}
+
+// PR-HEATING-CURVE-1: one row of the 5-row heating-water curve.
+data HeatingCurveBucket {
+  outdoor_max_c: f64
+  water_target_c: f64
+}
+
+// PR-HEATING-CURVE-1: 5-row lookup. Buckets evaluated in ascending
+// order; first row where `outdoor_c <= outdoor_max_c` wins. Defaults
+// come from `HeatingCurve::safe_defaults()` in core
+// (≤2→48, ≤5→46, ≤8→44, ≤10→43, else→42).
+data HeatingCurve {
+  row_0: HeatingCurveBucket
+  row_1: HeatingCurveBucket
+  row_2: HeatingCurveBucket
+  row_3: HeatingCurveBucket
+  row_4: HeatingCurveBucket
 }
 
 // PR-WSOC-TABLE-1: one cell in the 6×2 weather-SoC lookup table. The

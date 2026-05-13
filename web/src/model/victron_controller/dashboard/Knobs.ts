@@ -4,6 +4,7 @@ import {DebugFullCharge, DebugFullCharge_UEBACodec} from './DebugFullCharge'
 import {ChargeBatteryExtendedMode, ChargeBatteryExtendedMode_UEBACodec} from './ChargeBatteryExtendedMode'
 import {Mode, Mode_UEBACodec} from './Mode'
 import {WeatherSocTable, WeatherSocTable_UEBACodec} from './WeatherSocTable'
+import {HeatingCurve, HeatingCurve_UEBACodec} from './HeatingCurve'
 import {ExtendedChargeMode, ExtendedChargeMode_UEBACodec} from './ExtendedChargeMode'
 import {DischargeTime, DischargeTime_UEBACodec} from './DischargeTime'
 import {ForecastDisagreementStrategy, ForecastDisagreementStrategy_UEBACodec} from './ForecastDisagreementStrategy'
@@ -64,8 +65,9 @@ export class Knobs implements BaboonGeneratedLatest {
     private readonly _lg_dhw_target_c: number;
     private readonly _weathersoc_very_sunny_threshold: number;
     private readonly _weather_soc_table: WeatherSocTable;
+    private readonly _heating_curve: HeatingCurve;
 
-    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended_mode: ExtendedChargeMode, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean, baseline_winter_start_mm_dd: number, baseline_winter_end_mm_dd: number, baseline_wh_per_hour_winter: number, baseline_wh_per_hour_summer: number, keep_batteries_charged_during_full_charge: boolean, sunrise_sunset_offset_min: number, full_charge_defer_to_next_sunday: boolean, full_charge_snap_back_max_weekday: number, zappi_battery_drain_threshold_w: number, zappi_battery_drain_relax_step_w: number, zappi_battery_drain_kp: number, zappi_battery_drain_target_w: number, zappi_battery_drain_hard_clamp_w: number, zappi_battery_drain_mppt_probe_w: number, actuator_retry_s: number, lg_heat_pump_power: boolean, lg_dhw_power: boolean, lg_heating_water_target_c: number, lg_dhw_target_c: number, weathersoc_very_sunny_threshold: number, weather_soc_table: WeatherSocTable) {
+    constructor(force_disable_export: boolean, export_soc_threshold: number, discharge_soc_target: number, battery_soc_target: number, full_charge_discharge_soc_target: number, full_charge_export_soc_threshold: number, discharge_time: DischargeTime, debug_full_charge: DebugFullCharge, pessimism_multiplier_modifier: number, disable_night_grid_discharge: boolean, charge_car_boost: boolean, charge_car_extended_mode: ExtendedChargeMode, zappi_current_target: number, zappi_limit: number, zappi_emergency_margin: number, grid_export_limit_w: number, grid_import_limit_w: number, allow_battery_to_car: boolean, eddi_enable_soc: number, eddi_disable_soc: number, eddi_dwell_s: number, weathersoc_winter_temperature_threshold: number, weathersoc_low_energy_threshold: number, weathersoc_ok_energy_threshold: number, weathersoc_high_energy_threshold: number, weathersoc_too_much_energy_threshold: number, writes_enabled: boolean, forecast_disagreement_strategy: ForecastDisagreementStrategy, charge_battery_extended_mode: ChargeBatteryExtendedMode, export_soc_threshold_mode: Mode, discharge_soc_target_mode: Mode, battery_soc_target_mode: Mode, disable_night_grid_discharge_mode: Mode, inverter_safe_discharge_enable: boolean, baseline_winter_start_mm_dd: number, baseline_winter_end_mm_dd: number, baseline_wh_per_hour_winter: number, baseline_wh_per_hour_summer: number, keep_batteries_charged_during_full_charge: boolean, sunrise_sunset_offset_min: number, full_charge_defer_to_next_sunday: boolean, full_charge_snap_back_max_weekday: number, zappi_battery_drain_threshold_w: number, zappi_battery_drain_relax_step_w: number, zappi_battery_drain_kp: number, zappi_battery_drain_target_w: number, zappi_battery_drain_hard_clamp_w: number, zappi_battery_drain_mppt_probe_w: number, actuator_retry_s: number, lg_heat_pump_power: boolean, lg_dhw_power: boolean, lg_heating_water_target_c: number, lg_dhw_target_c: number, weathersoc_very_sunny_threshold: number, weather_soc_table: WeatherSocTable, heating_curve: HeatingCurve) {
         this._force_disable_export = force_disable_export
         this._export_soc_threshold = export_soc_threshold
         this._discharge_soc_target = discharge_soc_target
@@ -121,6 +123,7 @@ export class Knobs implements BaboonGeneratedLatest {
         this._lg_dhw_target_c = lg_dhw_target_c
         this._weathersoc_very_sunny_threshold = weathersoc_very_sunny_threshold
         this._weather_soc_table = weather_soc_table
+        this._heating_curve = heating_curve
     }
 
     public get force_disable_export(): boolean {
@@ -288,6 +291,9 @@ export class Knobs implements BaboonGeneratedLatest {
     public get weather_soc_table(): WeatherSocTable {
         return this._weather_soc_table;
     }
+    public get heating_curve(): HeatingCurve {
+        return this._heating_curve;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
@@ -345,11 +351,12 @@ export class Knobs implements BaboonGeneratedLatest {
             lg_heating_water_target_c: this._lg_heating_water_target_c,
             lg_dhw_target_c: this._lg_dhw_target_c,
             weathersoc_very_sunny_threshold: this._weathersoc_very_sunny_threshold,
-            weather_soc_table: this._weather_soc_table
+            weather_soc_table: this._weather_soc_table,
+            heating_curve: this._heating_curve
         };
     }
 
-    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended_mode?: ExtendedChargeMode; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean; baseline_winter_start_mm_dd?: number; baseline_winter_end_mm_dd?: number; baseline_wh_per_hour_winter?: number; baseline_wh_per_hour_summer?: number; keep_batteries_charged_during_full_charge?: boolean; sunrise_sunset_offset_min?: number; full_charge_defer_to_next_sunday?: boolean; full_charge_snap_back_max_weekday?: number; zappi_battery_drain_threshold_w?: number; zappi_battery_drain_relax_step_w?: number; zappi_battery_drain_kp?: number; zappi_battery_drain_target_w?: number; zappi_battery_drain_hard_clamp_w?: number; zappi_battery_drain_mppt_probe_w?: number; actuator_retry_s?: number; lg_heat_pump_power?: boolean; lg_dhw_power?: boolean; lg_heating_water_target_c?: number; lg_dhw_target_c?: number; weathersoc_very_sunny_threshold?: number; weather_soc_table?: WeatherSocTable}): Knobs {
+    public with(overrides: {force_disable_export?: boolean; export_soc_threshold?: number; discharge_soc_target?: number; battery_soc_target?: number; full_charge_discharge_soc_target?: number; full_charge_export_soc_threshold?: number; discharge_time?: DischargeTime; debug_full_charge?: DebugFullCharge; pessimism_multiplier_modifier?: number; disable_night_grid_discharge?: boolean; charge_car_boost?: boolean; charge_car_extended_mode?: ExtendedChargeMode; zappi_current_target?: number; zappi_limit?: number; zappi_emergency_margin?: number; grid_export_limit_w?: number; grid_import_limit_w?: number; allow_battery_to_car?: boolean; eddi_enable_soc?: number; eddi_disable_soc?: number; eddi_dwell_s?: number; weathersoc_winter_temperature_threshold?: number; weathersoc_low_energy_threshold?: number; weathersoc_ok_energy_threshold?: number; weathersoc_high_energy_threshold?: number; weathersoc_too_much_energy_threshold?: number; writes_enabled?: boolean; forecast_disagreement_strategy?: ForecastDisagreementStrategy; charge_battery_extended_mode?: ChargeBatteryExtendedMode; export_soc_threshold_mode?: Mode; discharge_soc_target_mode?: Mode; battery_soc_target_mode?: Mode; disable_night_grid_discharge_mode?: Mode; inverter_safe_discharge_enable?: boolean; baseline_winter_start_mm_dd?: number; baseline_winter_end_mm_dd?: number; baseline_wh_per_hour_winter?: number; baseline_wh_per_hour_summer?: number; keep_batteries_charged_during_full_charge?: boolean; sunrise_sunset_offset_min?: number; full_charge_defer_to_next_sunday?: boolean; full_charge_snap_back_max_weekday?: number; zappi_battery_drain_threshold_w?: number; zappi_battery_drain_relax_step_w?: number; zappi_battery_drain_kp?: number; zappi_battery_drain_target_w?: number; zappi_battery_drain_hard_clamp_w?: number; zappi_battery_drain_mppt_probe_w?: number; actuator_retry_s?: number; lg_heat_pump_power?: boolean; lg_dhw_power?: boolean; lg_heating_water_target_c?: number; lg_dhw_target_c?: number; weathersoc_very_sunny_threshold?: number; weather_soc_table?: WeatherSocTable; heating_curve?: HeatingCurve}): Knobs {
         return new Knobs(
             'force_disable_export' in overrides ? overrides.force_disable_export! : this._force_disable_export,
             'export_soc_threshold' in overrides ? overrides.export_soc_threshold! : this._export_soc_threshold,
@@ -405,11 +412,12 @@ export class Knobs implements BaboonGeneratedLatest {
             'lg_heating_water_target_c' in overrides ? overrides.lg_heating_water_target_c! : this._lg_heating_water_target_c,
             'lg_dhw_target_c' in overrides ? overrides.lg_dhw_target_c! : this._lg_dhw_target_c,
             'weathersoc_very_sunny_threshold' in overrides ? overrides.weathersoc_very_sunny_threshold! : this._weathersoc_very_sunny_threshold,
-            'weather_soc_table' in overrides ? overrides.weather_soc_table! : this._weather_soc_table
+            'weather_soc_table' in overrides ? overrides.weather_soc_table! : this._weather_soc_table,
+            'heating_curve' in overrides ? overrides.heating_curve! : this._heating_curve
         );
     }
 
-    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended_mode: ExtendedChargeMode; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean; baseline_winter_start_mm_dd: number; baseline_winter_end_mm_dd: number; baseline_wh_per_hour_winter: number; baseline_wh_per_hour_summer: number; keep_batteries_charged_during_full_charge: boolean; sunrise_sunset_offset_min: number; full_charge_defer_to_next_sunday: boolean; full_charge_snap_back_max_weekday: number; zappi_battery_drain_threshold_w: number; zappi_battery_drain_relax_step_w: number; zappi_battery_drain_kp: number; zappi_battery_drain_target_w: number; zappi_battery_drain_hard_clamp_w: number; zappi_battery_drain_mppt_probe_w: number; actuator_retry_s: number; lg_heat_pump_power: boolean; lg_dhw_power: boolean; lg_heating_water_target_c: number; lg_dhw_target_c: number; weathersoc_very_sunny_threshold: number; weather_soc_table: WeatherSocTable}): Knobs {
+    public static fromPlain(obj: {force_disable_export: boolean; export_soc_threshold: number; discharge_soc_target: number; battery_soc_target: number; full_charge_discharge_soc_target: number; full_charge_export_soc_threshold: number; discharge_time: DischargeTime; debug_full_charge: DebugFullCharge; pessimism_multiplier_modifier: number; disable_night_grid_discharge: boolean; charge_car_boost: boolean; charge_car_extended_mode: ExtendedChargeMode; zappi_current_target: number; zappi_limit: number; zappi_emergency_margin: number; grid_export_limit_w: number; grid_import_limit_w: number; allow_battery_to_car: boolean; eddi_enable_soc: number; eddi_disable_soc: number; eddi_dwell_s: number; weathersoc_winter_temperature_threshold: number; weathersoc_low_energy_threshold: number; weathersoc_ok_energy_threshold: number; weathersoc_high_energy_threshold: number; weathersoc_too_much_energy_threshold: number; writes_enabled: boolean; forecast_disagreement_strategy: ForecastDisagreementStrategy; charge_battery_extended_mode: ChargeBatteryExtendedMode; export_soc_threshold_mode: Mode; discharge_soc_target_mode: Mode; battery_soc_target_mode: Mode; disable_night_grid_discharge_mode: Mode; inverter_safe_discharge_enable: boolean; baseline_winter_start_mm_dd: number; baseline_winter_end_mm_dd: number; baseline_wh_per_hour_winter: number; baseline_wh_per_hour_summer: number; keep_batteries_charged_during_full_charge: boolean; sunrise_sunset_offset_min: number; full_charge_defer_to_next_sunday: boolean; full_charge_snap_back_max_weekday: number; zappi_battery_drain_threshold_w: number; zappi_battery_drain_relax_step_w: number; zappi_battery_drain_kp: number; zappi_battery_drain_target_w: number; zappi_battery_drain_hard_clamp_w: number; zappi_battery_drain_mppt_probe_w: number; actuator_retry_s: number; lg_heat_pump_power: boolean; lg_dhw_power: boolean; lg_heating_water_target_c: number; lg_dhw_target_c: number; weathersoc_very_sunny_threshold: number; weather_soc_table: WeatherSocTable; heating_curve: HeatingCurve}): Knobs {
         return new Knobs(
             obj.force_disable_export,
             obj.export_soc_threshold,
@@ -465,7 +473,8 @@ export class Knobs implements BaboonGeneratedLatest {
             obj.lg_heating_water_target_c,
             obj.lg_dhw_target_c,
             obj.weathersoc_very_sunny_threshold,
-            obj.weather_soc_table
+            obj.weather_soc_table,
+            obj.heating_curve
         );
     }
 
@@ -554,6 +563,7 @@ export class Knobs_UEBACodec {
             BinTools.writeI32(buffer, value.lg_dhw_target_c);
             BinTools.writeF64(buffer, value.weathersoc_very_sunny_threshold);
             WeatherSocTable_UEBACodec.instance.encode(ctx, value.weather_soc_table, buffer);
+            HeatingCurve_UEBACodec.instance.encode(ctx, value.heating_curve, buffer);
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
@@ -612,6 +622,7 @@ export class Knobs_UEBACodec {
             BinTools.writeI32(writer, value.lg_dhw_target_c);
             BinTools.writeF64(writer, value.weathersoc_very_sunny_threshold);
             WeatherSocTable_UEBACodec.instance.encode(ctx, value.weather_soc_table, writer);
+            HeatingCurve_UEBACodec.instance.encode(ctx, value.heating_curve, writer);
         }
     }
     
@@ -683,6 +694,7 @@ export class Knobs_UEBACodec {
         const lg_dhw_target_c = BinTools.readI32(reader);
         const weathersoc_very_sunny_threshold = BinTools.readF64(reader);
         const weather_soc_table = WeatherSocTable_UEBACodec.instance.decode(ctx, reader);
+        const heating_curve = HeatingCurve_UEBACodec.instance.decode(ctx, reader);
         return new Knobs(
             force_disable_export,
             export_soc_threshold,
@@ -739,6 +751,7 @@ export class Knobs_UEBACodec {
             lg_dhw_target_c,
             weathersoc_very_sunny_threshold,
             weather_soc_table,
+            heating_curve,
         );
     }
 

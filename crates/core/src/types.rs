@@ -887,6 +887,16 @@ pub enum KnobId {
         temp: crate::weather_soc_addr::TempCol,
         field: crate::weather_soc_addr::CellField,
     },
+
+    /// PR-HEATING-CURVE-1: per-cell knob in the 5×2 heating-water
+    /// curve. Surfaces as 10 distinct addressable knobs (5 rows × 2
+    /// fields). Same parametric pattern as `WeathersocTableCell` —
+    /// every plumbing layer matches on the variant once and demuxes
+    /// programmatically off the address pair.
+    HeatingCurveCell {
+        row: crate::heating_curve_addr::RowIndex,
+        field: crate::heating_curve_addr::CellField,
+    },
 }
 
 /// Which branch of the compensated-drain controller fired this tick.

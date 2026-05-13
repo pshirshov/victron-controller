@@ -18,7 +18,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use victron_controller_core::controllers::schedules::ScheduleSpec;
 use victron_controller_core::knobs::{
     ChargeBatteryExtendedMode, DebugFullCharge, DischargeTime, ExtendedChargeMode,
-    ForecastDisagreementStrategy, Knobs, WeatherSocCell, WeatherSocTable,
+    ForecastDisagreementStrategy, HeatingCurve, HeatingCurveBucket, Knobs, WeatherSocCell,
+    WeatherSocTable,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -123,6 +124,9 @@ use victron_controller_dashboard_model::victron_controller::dashboard::knobs::Kn
 // PR-WSOC-TABLE-1: 6×2 weather-SoC lookup table on `Knobs`.
 use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_cell::WeatherSocCell as ModelWeatherSocCell;
 use victron_controller_dashboard_model::victron_controller::dashboard::weather_soc_table::WeatherSocTable as ModelWeatherSocTable;
+// PR-HEATING-CURVE-1: 5-row heating-water curve on `Knobs`.
+use victron_controller_dashboard_model::victron_controller::dashboard::heating_curve::HeatingCurve as ModelHeatingCurve;
+use victron_controller_dashboard_model::victron_controller::dashboard::heating_curve_bucket::HeatingCurveBucket as ModelHeatingCurveBucket;
 use victron_controller_dashboard_model::victron_controller::dashboard::owner::Owner as ModelOwner;
 use victron_controller_dashboard_model::victron_controller::dashboard::schedule_spec::ScheduleSpec as ModelScheduleSpec;
 use victron_controller_dashboard_model::victron_controller::dashboard::sensor_meta::SensorMeta as ModelSensorMeta;
@@ -1175,6 +1179,25 @@ fn weather_soc_table_to_model(t: &WeatherSocTable) -> ModelWeatherSocTable {
     }
 }
 
+/// PR-HEATING-CURVE-1: HeatingCurveBucket → wire model. Trivial — same
+/// field names on both sides.
+fn heating_curve_bucket_to_model(b: &HeatingCurveBucket) -> ModelHeatingCurveBucket {
+    ModelHeatingCurveBucket {
+        outdoor_max_c: b.outdoor_max_c,
+        water_target_c: b.water_target_c,
+    }
+}
+
+fn heating_curve_to_model(c: &HeatingCurve) -> ModelHeatingCurve {
+    ModelHeatingCurve {
+        row_0: heating_curve_bucket_to_model(&c.row_0),
+        row_1: heating_curve_bucket_to_model(&c.row_1),
+        row_2: heating_curve_bucket_to_model(&c.row_2),
+        row_3: heating_curve_bucket_to_model(&c.row_3),
+        row_4: heating_curve_bucket_to_model(&c.row_4),
+    }
+}
+
 fn knobs_to_model(k: &Knobs) -> ModelKnobs {
     ModelKnobs {
         force_disable_export: k.force_disable_export,
@@ -1212,6 +1235,7 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
         // PR-WSOC-TABLE-1: bucket-boundary knob + 6×2 lookup table.
         weathersoc_very_sunny_threshold: k.weathersoc_very_sunny_threshold,
         weather_soc_table: weather_soc_table_to_model(&k.weather_soc_table),
+        heating_curve: heating_curve_to_model(&k.heating_curve),
         writes_enabled: k.writes_enabled,
         forecast_disagreement_strategy: forecast_strategy(k.forecast_disagreement_strategy),
         charge_battery_extended_mode: cbe_mode(k.charge_battery_extended_mode),
@@ -1452,6 +1476,18 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
             return Some(KnobId::WeathersocTableCell { bucket, temp, field });
         }
         // future-proof: any new shape under this prefix needs an arm above
+        return None;
+    }
+    // PR-HEATING-CURVE-1: cell knobs arrive in dotted form
+    // `heating.curve.<row>.<field>`. Mirrors the MQTT-layer parser.
+    if let Some(rest) = n.strip_prefix("heating.curve.") {
+        let parts: Vec<&str> = rest.split('.').collect();
+        if parts.len() == 2 {
+            use victron_controller_core::heating_curve_addr::{CellField, RowIndex};
+            let row = RowIndex::from_kebab(parts[0])?;
+            let field = CellField::from_kebab(parts[1])?;
+            return Some(KnobId::HeatingCurveCell { row, field });
+        }
         return None;
     }
     Some(match n {

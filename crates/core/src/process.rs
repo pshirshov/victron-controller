@@ -974,6 +974,34 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
                 }
             }
         }
+        // PR-HEATING-CURVE-1: programmatic per-row write — one arm
+        // covers all 10 addressable knobs (5 rows × 2 fields). Both
+        // fields are floats, type-mismatch falls through to the
+        // catch-all warn.
+        (KnobId::HeatingCurveCell { row, field }, value) => {
+            use crate::heating_curve_addr::CellField;
+            use crate::knobs::heating_curve_row_mut;
+            let cell = heating_curve_row_mut(&mut k.heating_curve, row);
+            match (field, value) {
+                (CellField::OutdoorMaxC, KnobValue::Float(v)) => {
+                    replace(&mut cell.outdoor_max_c, v) != v
+                }
+                (CellField::WaterTargetC, KnobValue::Float(v)) => {
+                    replace(&mut cell.water_target_c, v) != v
+                }
+                _ => {
+                    effects.push(Effect::Log {
+                        level: LogLevel::Warn,
+                        source: "process::command",
+                        message: format!(
+                            "apply_knob: HeatingCurveCell field/value mismatch — silently dropped \
+                             (schema drift?) row={row:?} field={field:?} value={value:?}"
+                        ),
+                    });
+                    false
+                }
+            }
+        }
         // PR-LG-THINQ-B: heat-pump knob writes. The actuated-target mirror
         // is handled in `apply_command` after this returns (needs owner/at).
         (KnobId::LgHeatPumpPower, KnobValue::Bool(v)) => {
@@ -1205,6 +1233,25 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
                     };
                     out.push(PublishPayload::Knob { id, value });
                 }
+            }
+        }
+    }
+    // PR-HEATING-CURVE-1: append the 10 heating-curve cell knobs.
+    // Cartesian product RowIndex::ALL × CellField::ALL — single source
+    // of truth for the row / field set.
+    {
+        use crate::heating_curve_addr::{CellField, RowIndex};
+        use crate::knobs::heating_curve_row_mut;
+        let mut tmp = k.heating_curve;
+        for &row in RowIndex::ALL {
+            let cell = *heating_curve_row_mut(&mut tmp, row);
+            for &field in CellField::ALL {
+                let id = I::HeatingCurveCell { row, field };
+                let value = match field {
+                    CellField::OutdoorMaxC => V::Float(cell.outdoor_max_c),
+                    CellField::WaterTargetC => V::Float(cell.water_target_c),
+                };
+                out.push(PublishPayload::Knob { id, value });
             }
         }
     }

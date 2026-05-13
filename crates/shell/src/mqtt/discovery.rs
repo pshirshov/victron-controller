@@ -672,6 +672,25 @@ fn weathersoc_table_knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Val
     schemas
 }
 
+/// PR-HEATING-CURVE-1: programmatic enumeration of the 10 heating-curve
+/// cell knob schemas (5 rows × 2 fields). Both fields are floats in
+/// °C: `outdoor_max_c` (threshold) and `water_target_c` (target).
+/// Spliced into `knob_schemas()` below.
+fn heating_curve_knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
+    use victron_controller_core::heating_curve_addr::{CellField, RowIndex};
+    let mut schemas = Vec::with_capacity(10);
+    for &row in RowIndex::ALL {
+        for &field in CellField::ALL {
+            let id = KnobId::HeatingCurveCell { row, field };
+            // Both fields are °C floats with 1° granularity. Range is
+            // gated by `knob_range` in serialize.rs (outdoor: -30..99,
+            // target: LG-config bounds).
+            schemas.push(number_knob(id, 1.0, Some("°C")));
+        }
+    }
+    schemas
+}
+
 /// Per-knob schema: (id, HA component, extras like min/max/step/options).
 fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
     let mut schemas = vec![
@@ -794,6 +813,8 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
     ];
     // PR-WSOC-EDIT-1: append the 48 cell knob schemas.
     schemas.extend(weathersoc_table_knob_schemas());
+    // PR-HEATING-CURVE-1: append the 10 heating-curve cell schemas.
+    schemas.extend(heating_curve_knob_schemas());
     schemas
 }
 
@@ -851,5 +872,28 @@ mod tests {
             }
         }
         assert_eq!(count, 48);
+    }
+
+    /// PR-HEATING-CURVE-1: every (row, field) pair appears in
+    /// `knob_schemas()` as a `number` entity with °C unit.
+    #[test]
+    fn knob_schemas_includes_all_10_heating_curve_cells() {
+        use victron_controller_core::heating_curve_addr::{CellField, RowIndex};
+        let schemas = knob_schemas();
+        let mut count = 0;
+        for &row in RowIndex::ALL {
+            for &field in CellField::ALL {
+                let target = KnobId::HeatingCurveCell { row, field };
+                let found = schemas
+                    .iter()
+                    .any(|(id, component, _)| *id == target && *component == "number");
+                assert!(
+                    found,
+                    "knob_schemas() missing {target:?} (expected component number)"
+                );
+                count += 1;
+            }
+        }
+        assert_eq!(count, 10);
     }
 }

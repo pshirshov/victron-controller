@@ -462,6 +462,12 @@ pub fn knob_name(id: KnobId) -> String {
                 field.kebab(),
             )
         }
+        // PR-HEATING-CURVE-1: programmatic arm — 10 cell knobs.
+        // Format: `heating.curve.<row>.<field>` (e.g.
+        // `heating.curve.row-0.water-target-c`).
+        KnobId::HeatingCurveCell { row, field } => {
+            format!("heating.curve.{}.{}", row.kebab(), field.kebab())
+        }
     }
 }
 
@@ -480,6 +486,18 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
             return Some(KnobId::WeathersocTableCell { bucket, temp, field });
         }
         // future-proof: any new shape under this prefix needs an arm above
+        return None;
+    }
+    // PR-HEATING-CURVE-1: heating-curve cell knobs. Format:
+    // `heating.curve.<row>.<field>`.
+    if let Some(rest) = n.strip_prefix("heating.curve.") {
+        let parts: Vec<&str> = rest.split('.').collect();
+        if parts.len() == 2 {
+            use victron_controller_core::heating_curve_addr::{CellField, RowIndex};
+            let row = RowIndex::from_kebab(parts[0])?;
+            let field = CellField::from_kebab(parts[1])?;
+            return Some(KnobId::HeatingCurveCell { row, field });
+        }
         return None;
     }
     Some(match n {
@@ -805,6 +823,23 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
             }
         }
 
+        // PR-HEATING-CURVE-1: per-cell range. The outdoor-threshold
+        // axis spans -30..=99 °C (-30 covers Arctic / artificial test
+        // installs; 99 is the catch-all sentinel for row_4). The
+        // water-target axis is gated by the same LG-config bounds as
+        // `LgHeatingWaterTargetC` so an operator can't accidentally
+        // configure a target outside the heat pump's accepted range.
+        KnobId::HeatingCurveCell { field, .. } => {
+            use victron_controller_core::heating_curve_addr::CellField;
+            match field {
+                CellField::OutdoorMaxC => (-30.0, 99.0),
+                CellField::WaterTargetC => {
+                    let r = lg_thinq_ranges();
+                    (f64::from(r.heating_target_min_c), f64::from(r.heating_target_max_c))
+                }
+            }
+        }
+
         // PR-LG-THINQ-B: temperature knob ranges from LG config.
         KnobId::LgHeatingWaterTargetC => {
             let r = lg_thinq_ranges();
@@ -1035,6 +1070,10 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
                 CellField::Extended => parse_bool(body).map(KnobValue::Bool),
             }
         }
+
+        // PR-HEATING-CURVE-1: both cell fields are floats and share the
+        // same parse path (range gated by `knob_range`).
+        KnobId::HeatingCurveCell { .. } => parse_ranged_float(id, body).map(KnobValue::Float),
     }
 }
 

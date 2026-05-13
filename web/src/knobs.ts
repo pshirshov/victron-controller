@@ -47,6 +47,7 @@ export const CONFIG_GROUPS: ReadonlyArray<string> = [
   "Eddi",
   "Zappi calibration",
   "Weather-SoC planner",
+  "Heating curve",
   "Actuator retry",
 ];
 
@@ -327,6 +328,34 @@ export const WIDGET_RENDERED_KNOBS: ReadonlySet<string> = new Set([
   "weathersoc_very_sunny_threshold",
 ]);
 
+// --- PR-HEATING-CURVE-1: 10 heating-curve table cell knobs --------------
+//
+// 5 rows × 2 fields. Both fields are °C floats. Defaults mirror
+// `HeatingCurve::safe_defaults()` in core (≤2→48, ≤5→46, ≤8→44, ≤10→43,
+// else→42 — with the last row's outdoor_max_c as a 99 °C sentinel
+// catch-all). Rendered into the flat knobs table by splicing 10
+// synthetic top-level entries into `snap.knobs` inside `renderKnobs`;
+// each cell is click-to-edit via the existing single-knob-edit modal.
+
+export const HEATING_CURVE_ROWS_FOR_KNOBS = [
+  { snake: "row_0", kebab: "row-0", outdoor: 2,  target: 48 },
+  { snake: "row_1", kebab: "row-1", outdoor: 5,  target: 46 },
+  { snake: "row_2", kebab: "row-2", outdoor: 8,  target: 44 },
+  { snake: "row_3", kebab: "row-3", outdoor: 10, target: 43 },
+  { snake: "row_4", kebab: "row-4", outdoor: 99, target: 42 },
+] as const;
+
+for (const r of HEATING_CURVE_ROWS_FOR_KNOBS) {
+  KNOB_SPEC[`heating.curve.${r.kebab}.outdoor-max-c`] = {
+    kind: "float", min: -30, max: 99, step: 1, default: r.outdoor,
+    category: "config", group: "Heating curve",
+  };
+  KNOB_SPEC[`heating.curve.${r.kebab}.water-target-c`] = {
+    kind: "float", min: 25, max: 55, step: 1, default: r.target,
+    category: "config", group: "Heating curve",
+  };
+}
+
 /// Look up a `KnobSpec` by either the canonical snake_case key (as it
 /// appears in `snap.knobs`) or its dotted display name. Renderers call
 /// this rather than indexing KNOB_SPEC directly.
@@ -422,8 +451,11 @@ function dispatchKnobValue(name: string, spec: KnobSpec, value: unknown) {
   }
 }
 
-// Knobs whose value is a structured nested type (rendered by a dedicated widget, not the flat knobs table).
-const NESTED_KNOB_FIELDS = new Set(["weather_soc_table"]);
+// Knobs whose value is a structured nested type (rendered by a dedicated
+// widget, not the flat knobs table) — or, in `heating_curve`'s case,
+// expanded into 10 synthetic dotted entries inside `renderKnobs`. The
+// raw nested struct itself never lands in the flat table.
+const NESTED_KNOB_FIELDS = new Set(["weather_soc_table", "heating_curve"]);
 
 export function renderKnobs(
   snap: WorldSnapshot,
@@ -460,6 +492,36 @@ export function renderKnobs(
     typeof (snap.knobs as { toJSON?: () => unknown }).toJSON === "function"
       ? (snap.knobs as { toJSON: () => Record<string, unknown> }).toJSON()
       : (snap.knobs as unknown as Record<string, unknown>);
+
+  // PR-HEATING-CURVE-1: expand `heating_curve` (5 nested buckets × 2
+  // fields) into 10 synthetic dotted top-level entries so the flat
+  // knobs table picks them up and the standard single-knob-edit
+  // modal handles per-cell editing. The raw `heating_curve` field
+  // itself is skipped by `NESTED_KNOB_FIELDS` below.
+  const hcRaw = knobsPlain["heating_curve"];
+  if (hcRaw && typeof hcRaw === "object") {
+    const hc =
+      typeof (hcRaw as { toJSON?: () => unknown }).toJSON === "function"
+        ? ((hcRaw as { toJSON: () => Record<string, unknown> }).toJSON())
+        : (hcRaw as Record<string, unknown>);
+    for (const r of HEATING_CURVE_ROWS_FOR_KNOBS) {
+      const rawCell = hc[r.snake];
+      if (!rawCell || typeof rawCell !== "object") continue;
+      const cell =
+        typeof (rawCell as { toJSON?: () => unknown }).toJSON === "function"
+          ? ((rawCell as { toJSON: () => Record<string, unknown> }).toJSON())
+          : (rawCell as Record<string, unknown>);
+      const oc = cell["outdoor_max_c"];
+      const wt = cell["water_target_c"];
+      if (typeof oc === "number") {
+        knobsPlain[`heating.curve.${r.kebab}.outdoor-max-c`] = oc;
+      }
+      if (typeof wt === "number") {
+        knobsPlain[`heating.curve.${r.kebab}.water-target-c`] = wt;
+      }
+    }
+  }
+
   Object.entries(knobsPlain).forEach(([name, val]) => {
     if (name === "writes_enabled") return;
     if (NESTED_KNOB_FIELDS.has(name)) return;

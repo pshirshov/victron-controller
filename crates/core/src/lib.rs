@@ -16,6 +16,7 @@ pub mod topology;
 pub mod tz;
 pub mod types;
 pub mod weather_soc_addr;
+pub mod heating_curve_addr;
 pub mod world;
 
 pub use clock::{Clock, FixedClock};

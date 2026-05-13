@@ -826,6 +826,7 @@ impl Core for HeatPumpControlCore {
             now_local,
             world.sensors.outdoor_temperature,
             world.lg_heat_pump_power.actual,
+            &world.knobs.heating_curve,
         );
 
         // PR-LG-THINQ-DECISIONS-1: surface the controller's decision

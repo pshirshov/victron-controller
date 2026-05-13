@@ -3,6 +3,7 @@ use crate::victron_controller::dashboard::debug_full_charge::DebugFullCharge;
 use crate::victron_controller::dashboard::discharge_time::DischargeTime;
 use crate::victron_controller::dashboard::extended_charge_mode::ExtendedChargeMode;
 use crate::victron_controller::dashboard::forecast_disagreement_strategy::ForecastDisagreementStrategy;
+use crate::victron_controller::dashboard::heating_curve::HeatingCurve;
 use crate::victron_controller::dashboard::mode::Mode;
 use crate::victron_controller::dashboard::weather_soc_table::WeatherSocTable;
 
@@ -63,6 +64,7 @@ pub struct Knobs {
     pub lg_dhw_target_c: i32,
     pub weathersoc_very_sunny_threshold: f64,
     pub weather_soc_table: WeatherSocTable,
+    pub heating_curve: HeatingCurve,
 }
 
 impl PartialEq for Knobs {
@@ -301,6 +303,10 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.heating_curve.cmp(&other.heating_curve) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         std::cmp::Ordering::Equal
     }
 }
@@ -372,6 +378,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.lg_dhw_target_c.encode_ueba(ctx, &mut buffer)?;
             value.weathersoc_very_sunny_threshold.encode_ueba(ctx, &mut buffer)?;
             value.weather_soc_table.encode_ueba(ctx, &mut buffer)?;
+            value.heating_curve.encode_ueba(ctx, &mut buffer)?;
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
@@ -430,6 +437,7 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.lg_dhw_target_c.encode_ueba(ctx, writer)?;
             value.weathersoc_very_sunny_threshold.encode_ueba(ctx, writer)?;
             value.weather_soc_table.encode_ueba(ctx, writer)?;
+            value.heating_curve.encode_ueba(ctx, writer)?;
         }
         Ok(())
     }
@@ -496,6 +504,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let lg_dhw_target_c = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let weathersoc_very_sunny_threshold = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let weather_soc_table = WeatherSocTable::decode_ueba(ctx, reader)?;
+        let heating_curve = HeatingCurve::decode_ueba(ctx, reader)?;
         Ok(Knobs {
             force_disable_export,
             export_soc_threshold,
@@ -552,6 +561,7 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             lg_dhw_target_c,
             weathersoc_very_sunny_threshold,
             weather_soc_table,
+            heating_curve,
         })
     }
 }

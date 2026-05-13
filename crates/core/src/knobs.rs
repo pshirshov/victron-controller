@@ -276,6 +276,17 @@ pub struct Knobs {
     /// MQTT `knob/<name>/set`, HA discovery, `[knobs]` `config.toml`,
     /// or the flat `KNOB_SPEC` table.
     pub weather_soc_table: WeatherSocTable,
+
+    /// PR-HEATING-CURVE-1: 5-row outdoor-temperature → heating-water
+    /// target lookup. Replaces the hardcoded cascade previously in
+    /// `controllers::heat_pump::heating_target_from_outdoor_c`. Defaults
+    /// reproduce that cascade bit-for-bit (see
+    /// `HeatingCurve::safe_defaults`). Each cell is addressable via
+    /// `KnobId::HeatingCurveCell { row, field }` (10 distinct knobs);
+    /// MQTT topic-tail / HA discovery / dashboard convert / web
+    /// `KNOB_SPEC` enumerate the cartesian product `RowIndex::ALL ×
+    /// CellField::ALL` programmatically.
+    pub heating_curve: HeatingCurve,
 }
 
 /// PR-WSOC-TABLE-1: one cell of the 6×2 weather-SoC lookup table. The
@@ -417,6 +428,89 @@ impl WeatherSocTable {
     }
 }
 
+/// PR-HEATING-CURVE-1: one row of the 5-row heating-water curve. The
+/// two operator-tunable fields per row are `outdoor_max_c` (the
+/// inclusive upper bound of the outdoor-temperature band this row
+/// applies to) and `water_target_c` (the heating-loop setpoint in °C).
+/// Stored as f64 for uniformity with weather-SoC cells; the controller
+/// casts the target to i32 at the actuator boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeatingCurveBucket {
+    pub outdoor_max_c: f64,
+    pub water_target_c: f64,
+}
+
+/// PR-HEATING-CURVE-1: 5-row lookup. Rows are evaluated in order; the
+/// first row where `outdoor_c <= outdoor_max_c` wins. The last row's
+/// `outdoor_max_c` is a high sentinel (99 °C in safe_defaults) so any
+/// outdoor temperature above the (N-1)th threshold falls through to
+/// row 4 — equivalent to the "else" branch in the old hardcoded cascade.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeatingCurve {
+    pub row_0: HeatingCurveBucket,
+    pub row_1: HeatingCurveBucket,
+    pub row_2: HeatingCurveBucket,
+    pub row_3: HeatingCurveBucket,
+    pub row_4: HeatingCurveBucket,
+}
+
+impl HeatingCurve {
+    /// Defaults reproduce the prior hardcoded cascade verbatim:
+    ///
+    /// | Row | outdoor_max_c | water_target_c |
+    /// |-----|---------------|----------------|
+    /// |  0  |       2       |       48       |
+    /// |  1  |       5       |       46       |
+    /// |  2  |       8       |       44       |
+    /// |  3  |      10       |       43       |
+    /// |  4  |      99 (∞)   |       42       |
+    ///
+    /// Row 4's `outdoor_max_c = 99` acts as the "else" catch-all anchor.
+    #[must_use]
+    pub const fn safe_defaults() -> Self {
+        Self {
+            row_0: HeatingCurveBucket { outdoor_max_c: 2.0, water_target_c: 48.0 },
+            row_1: HeatingCurveBucket { outdoor_max_c: 5.0, water_target_c: 46.0 },
+            row_2: HeatingCurveBucket { outdoor_max_c: 8.0, water_target_c: 44.0 },
+            row_3: HeatingCurveBucket { outdoor_max_c: 10.0, water_target_c: 43.0 },
+            row_4: HeatingCurveBucket { outdoor_max_c: 99.0, water_target_c: 42.0 },
+        }
+    }
+
+    /// Evaluate the curve for an outdoor temperature reading. Scans
+    /// rows in order; the first row where `outdoor_c <= outdoor_max_c`
+    /// wins. The last row's high sentinel guarantees a match for any
+    /// finite outdoor temperature.
+    #[must_use]
+    pub fn water_target_for(&self, outdoor_c: f64) -> f64 {
+        for row in [&self.row_0, &self.row_1, &self.row_2, &self.row_3, &self.row_4] {
+            if outdoor_c <= row.outdoor_max_c {
+                return row.water_target_c;
+            }
+        }
+        // Unreachable in practice given the row_4 sentinel; fall back
+        // to row_4 to keep the function total.
+        self.row_4.water_target_c
+    }
+}
+
+/// Mutable accessor — single source of truth for `(RowIndex) → &mut
+/// HeatingCurveBucket`. Used by `apply_knob`'s programmatic write arm.
+#[must_use]
+pub fn heating_curve_row_mut(
+    table: &mut HeatingCurve,
+    row: crate::heating_curve_addr::RowIndex,
+) -> &mut HeatingCurveBucket {
+    use crate::heating_curve_addr::RowIndex;
+    match row {
+        RowIndex::Row0 => &mut table.row_0,
+        RowIndex::Row1 => &mut table.row_1,
+        RowIndex::Row2 => &mut table.row_2,
+        RowIndex::Row3 => &mut table.row_3,
+        RowIndex::Row4 => &mut table.row_4,
+    }
+}
+
 impl Knobs {
     /// Cold-start safe defaults. Chosen per SPEC §7 to match the user's
     /// "keep battery around 80, schedule-only grid charging, cap grid export
@@ -553,6 +647,7 @@ impl Knobs {
             // strictly inside a bucket; verified by retaining the
             // 11 pre-existing weather_soc tests.
             weather_soc_table: WeatherSocTable::safe_defaults(),
+            heating_curve: HeatingCurve::safe_defaults(),
         }
     }
 }
@@ -658,6 +753,53 @@ mod tests {
         expect(t.low_cold, 100.0, 100.0, 30.0, true);
         expect(t.dim_cold, 100.0, 100.0, 30.0, true);
         expect(t.very_dim_cold, 100.0, 100.0, 30.0, true);
+    }
+
+    /// PR-HEATING-CURVE-1: the 5 default buckets reproduce the prior
+    /// hardcoded cascade output across the full operating envelope.
+    #[test]
+    fn heating_curve_default_buckets_match_legacy_cascade() {
+        let c = Knobs::safe_defaults().heating_curve;
+        // Per-row defaults.
+        assert!((c.row_0.outdoor_max_c - 2.0).abs() < f64::EPSILON);
+        assert!((c.row_0.water_target_c - 48.0).abs() < f64::EPSILON);
+        assert!((c.row_1.outdoor_max_c - 5.0).abs() < f64::EPSILON);
+        assert!((c.row_1.water_target_c - 46.0).abs() < f64::EPSILON);
+        assert!((c.row_2.outdoor_max_c - 8.0).abs() < f64::EPSILON);
+        assert!((c.row_2.water_target_c - 44.0).abs() < f64::EPSILON);
+        assert!((c.row_3.outdoor_max_c - 10.0).abs() < f64::EPSILON);
+        assert!((c.row_3.water_target_c - 43.0).abs() < f64::EPSILON);
+        assert!((c.row_4.outdoor_max_c - 99.0).abs() < f64::EPSILON);
+        assert!((c.row_4.water_target_c - 42.0).abs() < f64::EPSILON);
+
+        // Lookup parity with the legacy cascade.
+        let legacy = |t: f64| -> f64 {
+            if t <= 2.0 { 48.0 }
+            else if t <= 5.0 { 46.0 }
+            else if t <= 8.0 { 44.0 }
+            else if t <= 10.0 { 43.0 }
+            else { 42.0 }
+        };
+        for &t in &[-10.0_f64, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 15.0, 30.0] {
+            assert!(
+                (c.water_target_for(t) - legacy(t)).abs() < f64::EPSILON,
+                "outdoor_c={t} → curve={} vs legacy={}",
+                c.water_target_for(t), legacy(t)
+            );
+        }
+    }
+
+    /// PR-HEATING-CURVE-1: row_4's sentinel must cover any outdoor
+    /// temperature above the (N-1)th threshold. Pinned at 99 °C — if
+    /// ever hit on a real install (Saharan summer?), the controller
+    /// still returns row_4.water_target_c via the trailing fallback.
+    #[test]
+    fn heating_curve_row_4_acts_as_catch_all() {
+        let c = Knobs::safe_defaults().heating_curve;
+        assert!((c.water_target_for(50.0) - 42.0).abs() < f64::EPSILON);
+        assert!((c.water_target_for(99.0) - 42.0).abs() < f64::EPSILON);
+        // Above the row_4 sentinel the fallback kicks in.
+        assert!((c.water_target_for(100.0) - 42.0).abs() < f64::EPSILON);
     }
 
     /// PR-WSOC-TABLE-1: the bucket-boundary knob default (matches the
