@@ -1910,6 +1910,22 @@ function currentValueFor(
     if (typeof v === "number" || typeof v === "boolean") return v;
     return undefined;
   }
+  // PR-HEATING-CURVE-1: cell-knob form
+  // `heating.curve.row-<n>.<field>`.
+  const hcMatch = dotted.match(/^heating\.curve\.(row-[0-4])\.([a-z-]+)$/);
+  if (hcMatch) {
+    const tableRaw = knobs["heating_curve"] as unknown;
+    if (!tableRaw || typeof tableRaw !== "object") return undefined;
+    const tablePlain = toPlain(tableRaw) as Record<string, unknown>;
+    const rowSnake = hcMatch[1].replace("-", "_");
+    const rowRaw = tablePlain[rowSnake];
+    if (!rowRaw || typeof rowRaw !== "object") return undefined;
+    const row = toPlain(rowRaw) as Record<string, unknown>;
+    const fieldKey = hcMatch[2].replace(/-/g, "_");
+    const v = row[fieldKey];
+    if (typeof v === "number") return v;
+    return undefined;
+  }
   // Boundary / winter-temp knobs: dotted → snake_case scalar field.
   const snake = dottedToSnake(dotted);
   const v = (knobs as Record<string, unknown>)[snake];
@@ -2047,6 +2063,63 @@ export function renderWeatherSocTable(
       caption.textContent = "";
     }
   }
+}
+
+// --- PR-HEATING-CURVE-1: 5x2 heating-water curve widget ----------------
+
+/// PR-HEATING-CURVE-1: render the 5×2 heating-water curve table. Each
+/// cell is a click-to-edit anchor routed through the same single-knob-
+/// edit modal used by the weather-SoC widget. The widget reads the
+/// curve directly off `snap.knobs.heating_curve` and re-renders on
+/// every snapshot — operator edits propagate next tick.
+export function renderHeatingCurveTable(
+  snap: WorldSnapshot,
+  sendCommand?: (cmd: unknown) => void,
+): void {
+  if (sendCommand) singleKnobSendCommand = sendCommand;
+  const tbody = document.querySelector("#heating-curve-table tbody") as HTMLElement | null;
+  if (!tbody) return;
+  const k = toPlain(snap.knobs);
+  const tableRaw = k["heating_curve"] as unknown;
+  if (!tableRaw || typeof tableRaw !== "object") return;
+  const tablePlain = toPlain(tableRaw) as Record<string, unknown>;
+
+  const ROW_LABELS: ReadonlyArray<{ snake: string; kebab: string; label: string }> = [
+    { snake: "row_0", kebab: "row-0", label: "0 (coldest)" },
+    { snake: "row_1", kebab: "row-1", label: "1" },
+    { snake: "row_2", kebab: "row-2", label: "2" },
+    { snake: "row_3", kebab: "row-3", label: "3" },
+    { snake: "row_4", kebab: "row-4", label: "4 (catch-all)" },
+  ];
+
+  const rows: KeyedRow[] = ROW_LABELS.map((r) => {
+    const cellRaw = tablePlain[r.snake];
+    const cell =
+      cellRaw && typeof cellRaw === "object"
+        ? (toPlain(cellRaw) as Record<string, unknown>)
+        : {};
+    const outdoor = typeof cell["outdoor_max_c"] === "number" ? (cell["outdoor_max_c"] as number) : NaN;
+    const target = typeof cell["water_target_c"] === "number" ? (cell["water_target_c"] as number) : NaN;
+    const outdoorAnchor = cellAnchor(
+      `heating.curve.${r.kebab}.outdoor-max-c`,
+      fmtCellField(outdoor, false),
+      false,
+    );
+    const targetAnchor = cellAnchor(
+      `heating.curve.${r.kebab}.water-target-c`,
+      fmtCellField(target, false),
+      false,
+    );
+    return {
+      key: r.snake,
+      cells: [
+        { cls: "mono", html: esc(r.label) },
+        { cls: "mono", html: outdoorAnchor },
+        { cls: "mono", html: targetAnchor },
+      ],
+    };
+  });
+  updateKeyedRows(tbody, rows);
 }
 
 // --- PR-WSOC-EDIT-2: single-knob-edit modal body ------------------------

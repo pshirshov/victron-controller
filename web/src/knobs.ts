@@ -47,7 +47,6 @@ export const CONFIG_GROUPS: ReadonlyArray<string> = [
   "Eddi",
   "Zappi calibration",
   "Weather-SoC planner",
-  "Heating curve",
   "Actuator retry",
 ];
 
@@ -492,36 +491,6 @@ export function renderKnobs(
     typeof (snap.knobs as { toJSON?: () => unknown }).toJSON === "function"
       ? (snap.knobs as { toJSON: () => Record<string, unknown> }).toJSON()
       : (snap.knobs as unknown as Record<string, unknown>);
-
-  // PR-HEATING-CURVE-1: expand `heating_curve` (5 nested buckets × 2
-  // fields) into 10 synthetic dotted top-level entries so the flat
-  // knobs table picks them up and the standard single-knob-edit
-  // modal handles per-cell editing. The raw `heating_curve` field
-  // itself is skipped by `NESTED_KNOB_FIELDS` below.
-  const hcRaw = knobsPlain["heating_curve"];
-  if (hcRaw && typeof hcRaw === "object") {
-    const hc =
-      typeof (hcRaw as { toJSON?: () => unknown }).toJSON === "function"
-        ? ((hcRaw as { toJSON: () => Record<string, unknown> }).toJSON())
-        : (hcRaw as Record<string, unknown>);
-    for (const r of HEATING_CURVE_ROWS_FOR_KNOBS) {
-      const rawCell = hc[r.snake];
-      if (!rawCell || typeof rawCell !== "object") continue;
-      const cell =
-        typeof (rawCell as { toJSON?: () => unknown }).toJSON === "function"
-          ? ((rawCell as { toJSON: () => Record<string, unknown> }).toJSON())
-          : (rawCell as Record<string, unknown>);
-      const oc = cell["outdoor_max_c"];
-      const wt = cell["water_target_c"];
-      if (typeof oc === "number") {
-        knobsPlain[`heating.curve.${r.kebab}.outdoor-max-c`] = oc;
-      }
-      if (typeof wt === "number") {
-        knobsPlain[`heating.curve.${r.kebab}.water-target-c`] = wt;
-      }
-    }
-  }
-
   Object.entries(knobsPlain).forEach(([name, val]) => {
     if (name === "writes_enabled") return;
     if (NESTED_KNOB_FIELDS.has(name)) return;

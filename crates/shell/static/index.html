@@ -80,6 +80,30 @@
       </div>
     </section>
 
+    <!-- PR-HEATING-CURVE-1: 5×2 heating-water curve lookup table.
+         One row per outdoor-temperature bucket; two clickable cells
+         per row (outdoor_max_c, water_target_c) routed through the
+         single-knob-edit modal. -->
+    <section id="heating-curve">
+      <h2>Heating curve</h2>
+      <div class="dim" style="margin-bottom:0.4em">
+        Outdoor temperature → heating-water target. Buckets evaluated
+        in order; first row where outdoor ≤ <span class="mono">outdoor_max_c</span> wins.
+      </div>
+      <div class="table-wrap">
+        <table id="heating-curve-table">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th><span class="mono">outdoor_max_c</span> (°C)</th>
+              <th><span class="mono">water_target_c</span> (°C)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="knobs">
       <h2>Knobs</h2>
       <div id="kill-switch" class="kill-switch"></div>

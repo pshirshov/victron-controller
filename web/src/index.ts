@@ -18,6 +18,7 @@ import {
   renderSensors,
   renderTimers,
   renderWeatherSocTable,
+  renderHeatingCurveTable,
   renderZappiDrainSummary,
   renderZappiDrainChart,
   type EntityType,
@@ -194,6 +195,17 @@ function applySnapshot(snap: WorldSnapshot): void {
     )
   ) {
     renderWeatherSocTable(snap, sendCommand);
+  }
+  // PR-HEATING-CURVE-1: re-render only when the nested heating_curve
+  // struct changed. The widget is otherwise content-static.
+  if (
+    !prev
+    || !deepEqual(
+      (prev.knobs as unknown as { heating_curve?: unknown }).heating_curve,
+      (snap.knobs as unknown as { heating_curve?: unknown }).heating_curve,
+    )
+  ) {
+    renderHeatingCurveTable(snap, sendCommand);
   }
   // Schedule: "in 4h 23m" → time-dependent.
   if (
