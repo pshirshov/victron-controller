@@ -260,10 +260,11 @@ export const entityDescriptions: Record<string, string> = {
   "heat-pump.decision":
     "Per-tick heat-pump controller decision. Factors: local time, DHW window membership ([02:00,05:00) ∪ [07:00,08:00)), outdoor-temperature freshness, and (when fresh) the outdoor-temperature bucket → heating-water target mapping.",
 
-  // PR-HEATING-CURVE-1: 5-row outdoor → heating-water lookup. Buckets
-  // evaluated in ascending order; first row where
-  // `outdoor_c <= outdoor_max_c` wins. Row 4's outdoor_max_c is a
-  // high sentinel acting as the catch-all anchor.
+  // PR-HEATING-CURVE-1: 5-row outdoor → heating-water lookup. Rows 0–3
+  // are evaluated in ascending order; first row where
+  // `outdoor_c <= outdoor_max_c` wins. Row 4 is the unconditional
+  // catch-all (any outdoor temperature above row 3's threshold); its
+  // outdoor-max-c field is vestigial and not exposed for editing.
   "heating.curve.row-0.outdoor-max-c":
     "Outdoor-temperature upper bound (°C, inclusive) for heating-curve bucket 0 (coldest). Default 2 °C — outdoor ≤ 2 °C uses row 0's water_target_c.",
   "heating.curve.row-0.water-target-c":
@@ -280,10 +281,8 @@ export const entityDescriptions: Record<string, string> = {
     "Outdoor-temperature upper bound (°C, inclusive) for heating-curve bucket 3. Default 10 °C.",
   "heating.curve.row-3.water-target-c":
     "Heating-loop setpoint (°C) for bucket 3. Default 43 °C.",
-  "heating.curve.row-4.outdoor-max-c":
-    "Sentinel upper bound for the catch-all bucket. Default 99 °C — any outdoor temperature above row 3's threshold falls into row 4. Edit only if your local climate produces sustained outdoor > 99 °C.",
   "heating.curve.row-4.water-target-c":
-    "Heating-loop setpoint (°C) for the catch-all bucket (outdoor above all earlier thresholds). Default 42 °C.",
+    "Heating-loop setpoint (°C) for the catch-all bucket — any outdoor temperature above row 3's threshold. Default 42 °C.",
 
   // --- TASS cores (PR-tass-dag-view + PR-rename-entities) ---
   setpoint:

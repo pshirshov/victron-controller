@@ -2098,13 +2098,24 @@ export function renderHeatingCurveTable(
       cellRaw && typeof cellRaw === "object"
         ? (toPlain(cellRaw) as Record<string, unknown>)
         : {};
-    const outdoor = typeof cell["outdoor_max_c"] === "number" ? (cell["outdoor_max_c"] as number) : NaN;
     const target = typeof cell["water_target_c"] === "number" ? (cell["water_target_c"] as number) : NaN;
-    const outdoorAnchor = cellAnchor(
-      `heating.curve.${r.kebab}.outdoor-max-c`,
-      fmtCellField(outdoor, false),
-      false,
-    );
+    // Row 4 is the unconditional catch-all (any outdoor temperature
+    // above row 3's threshold). The outdoor-max-c field on this row
+    // is vestigial — `HeatingCurve::water_target_for` ignores it — so
+    // render it as a non-editable "≥ row 3" label instead of an
+    // anchor. This keeps the operator from setting a meaningless
+    // 99 °C threshold.
+    let outdoorHtml: string;
+    if (r.snake === "row_4") {
+      outdoorHtml = `<span class="dim">any higher</span>`;
+    } else {
+      const outdoor = typeof cell["outdoor_max_c"] === "number" ? (cell["outdoor_max_c"] as number) : NaN;
+      outdoorHtml = cellAnchor(
+        `heating.curve.${r.kebab}.outdoor-max-c`,
+        fmtCellField(outdoor, false),
+        false,
+      );
+    }
     const targetAnchor = cellAnchor(
       `heating.curve.${r.kebab}.water-target-c`,
       fmtCellField(target, false),
@@ -2114,7 +2125,7 @@ export function renderHeatingCurveTable(
       key: r.snake,
       cells: [
         { cls: "mono", html: esc(r.label) },
-        { cls: "mono", html: outdoorAnchor },
+        { cls: "mono", html: outdoorHtml },
         { cls: "mono", html: targetAnchor },
       ],
     };

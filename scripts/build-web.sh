@@ -24,9 +24,17 @@ cd "$REPO_ROOT/web"
 
 OUT="$REPO_ROOT/crates/shell/static/bundle.js"
 
+# PR-version-reload: bake the current git SHA into the bundle so the
+# client can compare against the server's SHA on every WebSocket Hello
+# and auto-reload on mismatch. Honour an externally provided value
+# first (Nix build) and fall back to `git rev-parse`. Quote the JSON
+# literal so esbuild emits a real string and not an undefined ident.
+GIT_SHA="${VICTRON_CONTROLLER_GIT_SHA:-$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null || true)}"
+DEFINE_GIT_SHA="--define:__WEB_GIT_SHA__=\"${GIT_SHA}\""
+
 if [[ "${1:-}" == "--watch" ]]; then
-  exec esbuild src/index.ts --bundle --watch --outfile="$OUT" --sourcemap
+  exec esbuild src/index.ts --bundle --watch --outfile="$OUT" --sourcemap "$DEFINE_GIT_SHA"
 fi
 
 tsc --noEmit
-esbuild src/index.ts --bundle --minify --outfile="$OUT"
+esbuild src/index.ts --bundle --minify --outfile="$OUT" "$DEFINE_GIT_SHA"

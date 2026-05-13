@@ -27,10 +27,12 @@ export function isAck(value: WsServerMessage): value is Ack { return value insta
 export class Hello implements BaboonGeneratedLatest {
     private readonly _server_version: string;
     private readonly _server_ts_ms: bigint;
+    private readonly _server_git_sha: string | undefined;
 
-    constructor(server_version: string, server_ts_ms: bigint) {
+    constructor(server_version: string, server_ts_ms: bigint, server_git_sha: string | undefined) {
         this._server_version = server_version
         this._server_ts_ms = server_ts_ms
+        this._server_git_sha = server_git_sha
     }
 
     public get server_version(): string {
@@ -39,25 +41,31 @@ export class Hello implements BaboonGeneratedLatest {
     public get server_ts_ms(): bigint {
         return this._server_ts_ms;
     }
+    public get server_git_sha(): string | undefined {
+        return this._server_git_sha;
+    }
 
     public toJSON(): Record<string, unknown> {
         return {
             server_version: this._server_version,
-            server_ts_ms: this._server_ts_ms
+            server_ts_ms: this._server_ts_ms,
+            server_git_sha: this._server_git_sha !== undefined ? this._server_git_sha : undefined
         };
     }
 
-    public with(overrides: {server_version?: string; server_ts_ms?: bigint}): Hello {
+    public with(overrides: {server_version?: string; server_ts_ms?: bigint; server_git_sha?: string | undefined}): Hello {
         return new Hello(
             'server_version' in overrides ? overrides.server_version! : this._server_version,
-            'server_ts_ms' in overrides ? overrides.server_ts_ms! : this._server_ts_ms
+            'server_ts_ms' in overrides ? overrides.server_ts_ms! : this._server_ts_ms,
+            'server_git_sha' in overrides ? overrides.server_git_sha! : this._server_git_sha
         );
     }
 
-    public static fromPlain(obj: {server_version: string; server_ts_ms: bigint}): Hello {
+    public static fromPlain(obj: {server_version: string; server_ts_ms: bigint; server_git_sha: string | undefined}): Hello {
         return new Hello(
             obj.server_version,
-            obj.server_ts_ms
+            obj.server_ts_ms,
+            obj.server_git_sha
         );
     }
 
@@ -73,7 +81,7 @@ export class Hello implements BaboonGeneratedLatest {
     public baboonTypeIdentifier() {
         return Hello.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.3.0"]
     public baboonSameInVersions() {
         return Hello.BaboonSameInVersions
     }
@@ -104,11 +112,29 @@ export class Hello_UEBACodec {
                 BinTools.writeI32(writer, after - before);
             }
             BinTools.writeI64(buffer, value.server_ts_ms);
+            {
+                const before = buffer.position();
+                BinTools.writeI32(writer, before);
+                if (value.server_git_sha === undefined) {
+                BinTools.writeByte(buffer, 0);
+            } else {
+                BinTools.writeByte(buffer, 1);
+                BinTools.writeString(buffer, value.server_git_sha);
+            }
+                const after = buffer.position();
+                BinTools.writeI32(writer, after - before);
+            }
             writer.writeAll(buffer.toBytes());
         } else {
             BinTools.writeByte(writer, 0x00)
             BinTools.writeString(writer, value.server_version);
             BinTools.writeI64(writer, value.server_ts_ms);
+            if (value.server_git_sha === undefined) {
+                BinTools.writeByte(writer, 0);
+            } else {
+                BinTools.writeByte(writer, 1);
+                BinTools.writeString(writer, value.server_git_sha);
+            }
         }
     }
     
@@ -120,16 +146,18 @@ export class Hello_UEBACodec {
         const header = BinTools.readByte(reader);
         const useIndices = header === 0x01;
         if (useIndices) {
-            for (let i = 0; i < 1; i++) {
+            for (let i = 0; i < 2; i++) {
                 BinTools.readI32(reader);
                 BinTools.readI32(reader);
             }
         }
         const server_version = BinTools.readString(reader);
         const server_ts_ms = BinTools.readI64(reader);
+        const server_git_sha = (BinTools.readByte(reader) === 0 ? undefined : BinTools.readString(reader));
         return new Hello(
             server_version,
             server_ts_ms,
+            server_git_sha,
         );
     }
 

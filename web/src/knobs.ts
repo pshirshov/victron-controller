@@ -327,28 +327,31 @@ export const WIDGET_RENDERED_KNOBS: ReadonlySet<string> = new Set([
   "weathersoc_very_sunny_threshold",
 ]);
 
-// --- PR-HEATING-CURVE-1: 10 heating-curve table cell knobs --------------
+// --- PR-HEATING-CURVE-1: heating-curve table cell knobs -----------------
 //
 // 5 rows × 2 fields. Both fields are °C floats. Defaults mirror
 // `HeatingCurve::safe_defaults()` in core (≤2→48, ≤5→46, ≤8→44, ≤10→43,
-// else→42 — with the last row's outdoor_max_c as a 99 °C sentinel
-// catch-all). Rendered into the flat knobs table by splicing 10
-// synthetic top-level entries into `snap.knobs` inside `renderKnobs`;
-// each cell is click-to-edit via the existing single-knob-edit modal.
+// else→42). Row 4 is the unconditional catch-all — its outdoor-max-c
+// is vestigial (`HeatingCurve::water_target_for` ignores it) and is
+// therefore not registered as an editable knob. The widget renders
+// that cell as static "any higher" text. Each remaining cell is
+// click-to-edit via the existing single-knob-edit modal.
 
 export const HEATING_CURVE_ROWS_FOR_KNOBS = [
-  { snake: "row_0", kebab: "row-0", outdoor: 2,  target: 48 },
-  { snake: "row_1", kebab: "row-1", outdoor: 5,  target: 46 },
-  { snake: "row_2", kebab: "row-2", outdoor: 8,  target: 44 },
-  { snake: "row_3", kebab: "row-3", outdoor: 10, target: 43 },
-  { snake: "row_4", kebab: "row-4", outdoor: 99, target: 42 },
+  { snake: "row_0", kebab: "row-0", outdoor: 2,  target: 48, isCatchAll: false },
+  { snake: "row_1", kebab: "row-1", outdoor: 5,  target: 46, isCatchAll: false },
+  { snake: "row_2", kebab: "row-2", outdoor: 8,  target: 44, isCatchAll: false },
+  { snake: "row_3", kebab: "row-3", outdoor: 10, target: 43, isCatchAll: false },
+  { snake: "row_4", kebab: "row-4", outdoor: 99, target: 42, isCatchAll: true  },
 ] as const;
 
 for (const r of HEATING_CURVE_ROWS_FOR_KNOBS) {
-  KNOB_SPEC[`heating.curve.${r.kebab}.outdoor-max-c`] = {
-    kind: "float", min: -30, max: 99, step: 1, default: r.outdoor,
-    category: "config", group: "Heating curve",
-  };
+  if (!r.isCatchAll) {
+    KNOB_SPEC[`heating.curve.${r.kebab}.outdoor-max-c`] = {
+      kind: "float", min: -30, max: 99, step: 1, default: r.outdoor,
+      category: "config", group: "Heating curve",
+    };
+  }
   KNOB_SPEC[`heating.curve.${r.kebab}.water-target-c`] = {
     kind: "float", min: 25, max: 55, step: 1, default: r.target,
     category: "config", group: "Heating curve",

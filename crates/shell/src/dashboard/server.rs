@@ -190,12 +190,37 @@ const INDEX_HTML: &str = include_str!("../../static/index.html");
 const BUNDLE_JS: &str = include_str!("../../static/bundle.js");
 const INDEX_CSS: &str = include_str!("../../static/style.css");
 
+// PR-version-reload: `no-cache` so a browser triggered into
+// `location.reload()` by a version mismatch always re-fetches the
+// bundle instead of replaying the cached one. The bundle lives in
+// the shell binary (`include_str!`) so cost-per-fetch is just a
+// memcpy — there is no win to caching aggressively.
+const NO_CACHE: &str = "no-cache, must-revalidate";
+
 async fn index_handler() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (axum::http::header::CACHE_CONTROL, NO_CACHE),
+        ],
+        INDEX_HTML,
+    )
 }
 async fn bundle_js_handler() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "application/javascript")], BUNDLE_JS)
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/javascript"),
+            (axum::http::header::CACHE_CONTROL, NO_CACHE),
+        ],
+        BUNDLE_JS,
+    )
 }
 async fn index_css_handler() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/css")], INDEX_CSS)
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/css"),
+            (axum::http::header::CACHE_CONTROL, NO_CACHE),
+        ],
+        INDEX_CSS,
+    )
 }

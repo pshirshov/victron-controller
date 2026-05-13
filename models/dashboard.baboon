@@ -15,7 +15,7 @@ version "0.3.0"
 // on `WorldSnapshot` carrying today's sunrise / sunset in local time.
 // We have a single client; in-place addition without a version bump is
 // safe.
-import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors ForecastSnapshot Decisions }
+import "0.2.0" { * } without { WorldSnapshot Forecasts Knobs Actuated Owner Bookkeeping BookkeepingKey Sensors ForecastSnapshot Decisions WsServerMessage }
 
 // PR-DIAG-1: process + host memory diagnostics. Sampled in the shell on
 // a fixed cadence (~120 s) — separate from the per-tick world snapshot
@@ -556,4 +556,31 @@ data WeatherSocInputs {
   temperature_source: WeatherSocTemperatureSource
   energy_kwh: f64
   day: WeatherSocDay
+}
+
+// PR-version-reload: redefine `WsServerMessage` to add
+// `server_git_sha` on the initial `Hello`. The dashboard compares it
+// against its own bundle-baked SHA on every reconnect; on mismatch
+// the page reloads so an operator with a tab open across a deploy
+// picks up the new bundle automatically. `opt[str]` because dev
+// builds without a git checkout (Nix sandbox lacking VCS) leave it
+// `None`, in which case the client skips the comparison.
+root adt WsServerMessage {
+  data Hello {
+    server_version: str
+    server_ts_ms: i64
+    server_git_sha: opt[str]
+  }
+  data Pong {
+    body: WsPong
+  }
+  data Snapshot {
+    body: WorldSnapshot
+  }
+  data Log {
+    body: WsLogLine
+  }
+  data Ack {
+    body: CommandAck
+  }
 }

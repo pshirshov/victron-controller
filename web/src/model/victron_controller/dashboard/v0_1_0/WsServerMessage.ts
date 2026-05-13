@@ -73,7 +73,7 @@ export class Hello implements BaboonGenerated {
     public baboonTypeIdentifier() {
         return Hello.BaboonTypeIdentifier
     }
-    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0", "0.3.0"]
+    public static readonly BaboonSameInVersions = ["0.1.0", "0.2.0"]
     public baboonSameInVersions() {
         return Hello.BaboonSameInVersions
     }

@@ -440,11 +440,13 @@ pub struct HeatingCurveBucket {
     pub water_target_c: f64,
 }
 
-/// PR-HEATING-CURVE-1: 5-row lookup. Rows are evaluated in order; the
-/// first row where `outdoor_c <= outdoor_max_c` wins. The last row's
-/// `outdoor_max_c` is a high sentinel (99 °C in safe_defaults) so any
-/// outdoor temperature above the (N-1)th threshold falls through to
-/// row 4 — equivalent to the "else" branch in the old hardcoded cascade.
+/// PR-HEATING-CURVE-1: 5-row lookup. Rows 0..3 are evaluated in
+/// order; the first row where `outdoor_c <= outdoor_max_c` wins. Row
+/// 4 is the catch-all: any outdoor temperature above row 3's
+/// threshold uses `row_4.water_target_c` regardless of
+/// `row_4.outdoor_max_c`. The threshold field is therefore vestigial
+/// on row 4 (kept only so the struct remains uniform); the UI hides
+/// the cell as non-editable and the lookup ignores it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HeatingCurve {
     pub row_0: HeatingCurveBucket,
@@ -463,9 +465,11 @@ impl HeatingCurve {
     /// |  1  |       5       |       46       |
     /// |  2  |       8       |       44       |
     /// |  3  |      10       |       43       |
-    /// |  4  |      99 (∞)   |       42       |
+    /// |  4  |   (catch-all) |       42       |
     ///
-    /// Row 4's `outdoor_max_c = 99` acts as the "else" catch-all anchor.
+    /// `row_4.outdoor_max_c` is vestigial (the lookup treats row 4 as
+    /// `+∞`). The default value of `99.0` is a legacy artifact; any
+    /// finite number is fine because the field is never read.
     #[must_use]
     pub const fn safe_defaults() -> Self {
         Self {
@@ -478,18 +482,18 @@ impl HeatingCurve {
     }
 
     /// Evaluate the curve for an outdoor temperature reading. Scans
-    /// rows in order; the first row where `outdoor_c <= outdoor_max_c`
-    /// wins. The last row's high sentinel guarantees a match for any
-    /// finite outdoor temperature.
+    /// rows 0..3 in order; the first row where `outdoor_c <=
+    /// outdoor_max_c` wins. Row 4 is the unconditional fallback —
+    /// `row_4.outdoor_max_c` is intentionally ignored, so any outdoor
+    /// temperature above row 3's threshold uses
+    /// `row_4.water_target_c`.
     #[must_use]
     pub fn water_target_for(&self, outdoor_c: f64) -> f64 {
-        for row in [&self.row_0, &self.row_1, &self.row_2, &self.row_3, &self.row_4] {
+        for row in [&self.row_0, &self.row_1, &self.row_2, &self.row_3] {
             if outdoor_c <= row.outdoor_max_c {
                 return row.water_target_c;
             }
         }
-        // Unreachable in practice given the row_4 sentinel; fall back
-        // to row_4 to keep the function total.
         self.row_4.water_target_c
     }
 }
@@ -789,17 +793,24 @@ mod tests {
         }
     }
 
-    /// PR-HEATING-CURVE-1: row_4's sentinel must cover any outdoor
-    /// temperature above the (N-1)th threshold. Pinned at 99 °C — if
-    /// ever hit on a real install (Saharan summer?), the controller
-    /// still returns row_4.water_target_c via the trailing fallback.
+    /// PR-HEATING-CURVE-1: row 4 is the unconditional catch-all —
+    /// `row_4.outdoor_max_c` is intentionally ignored by the lookup,
+    /// so any outdoor temperature above row 3's threshold uses
+    /// `row_4.water_target_c` regardless of what `row_4.outdoor_max_c`
+    /// is set to.
     #[test]
     fn heating_curve_row_4_acts_as_catch_all() {
-        let c = Knobs::safe_defaults().heating_curve;
+        let mut c = Knobs::safe_defaults().heating_curve;
         assert!((c.water_target_for(50.0) - 42.0).abs() < f64::EPSILON);
         assert!((c.water_target_for(99.0) - 42.0).abs() < f64::EPSILON);
-        // Above the row_4 sentinel the fallback kicks in.
-        assert!((c.water_target_for(100.0) - 42.0).abs() < f64::EPSILON);
+        assert!((c.water_target_for(1_000.0) - 42.0).abs() < f64::EPSILON);
+
+        // The vestigial `row_4.outdoor_max_c` must not influence the
+        // lookup. Set it to a value smaller than the query and confirm
+        // the catch-all still fires.
+        c.row_4.outdoor_max_c = -50.0;
+        assert!((c.water_target_for(0.0) - 48.0).abs() < f64::EPSILON); // row_0 still wins
+        assert!((c.water_target_for(15.0) - 42.0).abs() < f64::EPSILON); // row_4 catch-all
     }
 
     /// PR-WSOC-TABLE-1: the bucket-boundary knob default (matches the

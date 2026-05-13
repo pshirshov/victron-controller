@@ -56,8 +56,93 @@ function onServerMessage(raw: unknown): void {
     const ack = (obj.Ack as { body: { accepted: boolean; error_message: string | null } }).body;
     const err = document.getElementById("last-error") as HTMLElement;
     err.textContent = ack.accepted ? "" : `REJECTED: ${ack.error_message ?? "(unknown)"}`;
+  } else if ("Hello" in obj) {
+    const hello = (obj.Hello as {
+      server_version?: string;
+      server_git_sha?: string | null;
+    });
+    handleHello(hello.server_git_sha ?? null);
   }
-  // Hello / Pong / Log are handled inside the connection/widget.
+  // Pong / Log are handled inside the connection/widget.
+}
+
+// PR-version-reload: bundle-baked git SHA. `__WEB_GIT_SHA__` is
+// substituted by esbuild's `--define`; the declared type below keeps
+// the typechecker happy when running `tsc --noEmit`. An empty string
+// (no git checkout during build, e.g. Nix sandbox without VCS) means
+// "skip the version check" — same fallback as `server_git_sha: None`.
+declare const __WEB_GIT_SHA__: string;
+const WEB_GIT_SHA: string = typeof __WEB_GIT_SHA__ === "string" ? __WEB_GIT_SHA__ : "";
+
+// `null` = no Hello observed yet. Records the SHA from the very first
+// Hello of this page-load; later Hellos (after reconnect) compare
+// against it. Comparison runs against the bundle-baked SHA, not the
+// first-seen one — that way a reload across a deploy actually picks
+// up the new bundle even if the *first* Hello after page-load happens
+// to ship the new SHA.
+let firstHelloSeen = false;
+let reloadingForVersion = false;
+
+function handleHello(serverSha: string | null): void {
+  // Strict null/empty check: missing SHA on either side means we
+  // can't be sure, so don't reload.
+  if (!serverSha || !WEB_GIT_SHA) {
+    firstHelloSeen = true;
+    return;
+  }
+
+  if (!firstHelloSeen) {
+    firstHelloSeen = true;
+    // First Hello — initial connection. Only reload if the bundle in
+    // the browser predates the running server, which is exactly the
+    // case we want to handle (stale cached tab opening after a
+    // deploy). Use a sessionStorage breadcrumb so we don't loop in
+    // the unlikely event the cache returns the same stale bundle.
+    if (serverSha !== WEB_GIT_SHA) {
+      reloadIfNotAlreadyAttempted(serverSha);
+    }
+    return;
+  }
+
+  // Subsequent Hello — websocket reconnection. A SHA mismatch here
+  // strongly indicates an in-place deploy: the operator left a tab
+  // open, the shell restarted with a new bundle, and the next
+  // reconnect's Hello carries the new SHA. Reload to pick it up.
+  if (serverSha !== WEB_GIT_SHA) {
+    reloadIfNotAlreadyAttempted(serverSha);
+  }
+}
+
+function reloadIfNotAlreadyAttempted(serverSha: string): void {
+  if (reloadingForVersion) return;
+  const breadcrumb = "victron.versionReloadFor";
+  let prior: string | null = null;
+  try {
+    prior = sessionStorage.getItem(breadcrumb);
+  } catch {
+    // Privacy mode / disabled storage — fall through to reload.
+  }
+  if (prior === serverSha) {
+    // We already reloaded once for this exact server SHA and the
+    // bundle is still mismatched. Don't loop — log and stop.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `version-reload: bundle still mismatches server SHA ${serverSha} after a reload; ` +
+      `cached bundle may be sticky. Check Cache-Control on /bundle.js.`
+    );
+    return;
+  }
+  try {
+    sessionStorage.setItem(breadcrumb, serverSha);
+  } catch {
+    /* ignore */
+  }
+  reloadingForVersion = true;
+  // eslint-disable-next-line no-console
+  console.info(
+    `version-reload: bundle SHA ${WEB_GIT_SHA} ≠ server SHA ${serverSha}; reloading.`
+  );
+  location.reload();
 }
 
 /// Tier 2: structural equality without allocations. Walks plain

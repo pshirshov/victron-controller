@@ -42,10 +42,15 @@ pub async fn ws_handler(
 async fn client_task(socket: WebSocket, state: DashboardState) {
     let (mut tx_ws, mut rx_ws) = socket.split();
 
-    // Send an initial Hello so the client can display server version.
+    // Send an initial Hello so the client can display server version
+    // and detect a deploy mismatch. `server_git_sha` is populated by
+    // `build.rs` from the git checkout (or by Nix at build time);
+    // when missing — e.g. a `cargo build` outside a git checkout —
+    // the client treats `None` as "skip version check" and proceeds.
     let hello = WsServerMessage::Hello(srv::Hello {
         server_version: env!("CARGO_PKG_VERSION").to_string(),
         server_ts_ms: epoch_ms(),
+        server_git_sha: option_env!("VICTRON_CONTROLLER_GIT_SHA").map(str::to_string),
     });
     if send_json(&mut tx_ws, &hello).await.is_err() {
         return;

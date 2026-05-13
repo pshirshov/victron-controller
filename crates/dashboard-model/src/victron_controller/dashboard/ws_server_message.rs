@@ -8,6 +8,7 @@ pub struct Hello {
     pub server_version: String,
     #[serde(deserialize_with = "crate::baboon_runtime::lenient_numeric::deserialize")]
     pub server_ts_ms: i64,
+    pub server_git_sha: Option<String>,
 }
 
 
@@ -42,7 +43,7 @@ pub struct Ack {
 
 impl crate::baboon_runtime::BaboonBinCodecIndexed for Hello {
     fn index_elements_count(_ctx: &crate::baboon_runtime::BaboonCodecContext) -> u16 {
-        1
+        2
     }
 }
 
@@ -61,11 +62,32 @@ impl crate::baboon_runtime::BaboonBinEncode for Hello {
                 crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
             }
             value.server_ts_ms.encode_ueba(ctx, &mut buffer)?;
+            {
+                let before = buffer.len();
+                crate::baboon_runtime::bin_tools::write_i32(writer, before as i32)?;
+                match &value.server_git_sha {
+                None => crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(&mut buffer, 1)?;
+                    v.encode_ueba(ctx, &mut buffer)?;
+                }
+            }
+                let after = buffer.len();
+                let length = after - before;
+                crate::baboon_runtime::bin_tools::write_i32(writer, length as i32)?;
+            }
             writer.write_all(&buffer)?;
         } else {
             crate::baboon_runtime::bin_tools::write_byte(writer, 0x00)?;
             value.server_version.encode_ueba(ctx, writer)?;
             value.server_ts_ms.encode_ueba(ctx, writer)?;
+            match &value.server_git_sha {
+                None => crate::baboon_runtime::bin_tools::write_byte(writer, 0)?,
+                Some(v) => {
+                    crate::baboon_runtime::bin_tools::write_byte(writer, 1)?;
+                    v.encode_ueba(ctx, writer)?;
+                }
+            }
         }
         Ok(())
     }
@@ -79,9 +101,14 @@ impl crate::baboon_runtime::BaboonBinDecode for Hello {
         }
         let server_version = crate::baboon_runtime::bin_tools::read_string(reader)?;
         let server_ts_ms = crate::baboon_runtime::bin_tools::read_i64(reader)?;
+        let server_git_sha = {
+            let tag = crate::baboon_runtime::bin_tools::read_byte(reader)?;
+            if tag == 0 { None } else { Some(crate::baboon_runtime::bin_tools::read_string(reader)?) }
+        };
         Ok(Hello {
             server_version,
             server_ts_ms,
+            server_git_sha,
         })
     }
 }
