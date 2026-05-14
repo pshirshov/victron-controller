@@ -76,41 +76,59 @@ impl<V> Actuated<V> {
         self.actual.on_reading(value, now);
     }
 
-    /// Attempt `Pending | Commanded → Confirmed` using a user-supplied
-    /// predicate.
+    /// Reconcile target phase with the latest reading using a
+    /// user-supplied predicate.
     ///
     /// `close(&target, &actual)` should return true when the actual reading
     /// is close enough to the target to consider it confirmed. Use strict
     /// equality for discrete values, or a tolerance check for analog ones.
     ///
-    /// `Pending` qualifies as well as `Commanded`: a controller may have
-    /// chosen not to write (for example the eddi controller's `Leave`
-    /// action — "the device is already in the desired state"); when the
-    /// readback then matches the target, that observation is just as
-    /// valid a confirmation as one that follows a write. Without this,
-    /// any propose-but-don't-write path would leave the target stuck at
-    /// `Pending` forever even though reality agrees.
+    /// Transitions:
+    /// - `Pending | Commanded` + predicate holds → `Confirmed`
+    /// - `Confirmed` + predicate FAILS → `Commanded` (re-arm retry)
+    /// - everything else: no-op
     ///
-    /// Returns `true` if the phase transitioned.
+    /// `Pending` qualifies for promotion as well as `Commanded`: a
+    /// controller may have chosen not to write (for example the eddi
+    /// controller's `Leave` action — "the device is already in the desired
+    /// state"); when the readback then matches the target, that observation
+    /// is just as valid a confirmation as one that follows a write. Without
+    /// this, any propose-but-don't-write path would leave the target stuck
+    /// at `Pending` forever even though reality agrees.
+    ///
+    /// The `Confirmed → Commanded` demotion path closes a latent gap: once
+    /// an entity reached `Confirmed`, a later divergent reading (operator
+    /// edited the device locally; the device's own scheduling moved the
+    /// setpoint; cloud accepted our write then silently dropped it) used
+    /// to leave the phase pinned at `Confirmed` indefinitely while
+    /// `actual` walked away. The controller never retried because
+    /// `propose_target` is a no-op for the same `(value, owner)` past
+    /// `Unset` and `needs_actuation` is false outside
+    /// `Pending|Commanded`. Demoting on divergence re-arms both paths
+    /// so the controller pushes the device back to target on the next
+    /// retry tick.
+    ///
+    /// Returns `true` if the phase transitioned (either direction).
     pub fn confirm_if<F: FnOnce(&V, &V) -> bool>(&mut self, close: F, now: Instant) -> bool {
-        if !matches!(
-            self.target.phase,
-            TargetPhase::Commanded | TargetPhase::Pending
-        ) {
-            return false;
-        }
         let Some(target) = &self.target.value else {
             return false;
         };
         let Some(actual) = &self.actual.value else {
             return false;
         };
-        if close(target, actual) {
-            self.target.phase = TargetPhase::Confirmed;
-            self.target.since = now;
-            true
-        } else {
-            false
+        let matches = close(target, actual);
+        match self.target.phase {
+            TargetPhase::Pending | TargetPhase::Commanded if matches => {
+                self.target.phase = TargetPhase::Confirmed;
+                self.target.since = now;
+                true
+            }
+            TargetPhase::Confirmed if !matches => {
+                self.target.phase = TargetPhase::Commanded;
+                self.target.since = now;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -358,6 +376,64 @@ mod tests {
         e.on_reading(1, at(t0, 2));
         assert!(e.confirm_if(|t, a| t == a, at(t0, 3)));
         assert_eq!(e.target.phase, TargetPhase::Confirmed);
+    }
+
+    /// PR-confirm-demote: once `Confirmed`, a later divergent reading
+    /// (operator edited the device locally; cloud accepted then
+    /// silently dropped our write) demotes phase back to `Commanded`
+    /// so the controller's retry loop fires another write. Without
+    /// this, the entity stays pinned at `Confirmed` with `actual`
+    /// drifting and `needs_actuation` returning false forever — which
+    /// is exactly the symptom that produced
+    /// `lg.dhw.target 60 / actual 55 / Confirmed`.
+    #[test]
+    fn confirm_if_demotes_on_divergent_reading() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        e.propose_target(60, Owner::HeatPumpController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
+        e.on_reading(60, at(t0, 3));
+        assert!(e.confirm_if(|t, a| t == a, at(t0, 4)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
+
+        // Device drifts away — equivalent to the LG cloud dropping our
+        // write or the operator pressing the device's own controls.
+        e.on_reading(55, at(t0, 10));
+        let demoted = e.confirm_if(|t, a| t == a, at(t0, 11));
+        assert!(demoted, "divergent reading must transition the phase");
+        assert_eq!(
+            e.target.phase,
+            TargetPhase::Commanded,
+            "Confirmed must demote to Commanded so retry re-arms"
+        );
+        assert_eq!(e.target.since, at(t0, 11));
+        // Retry then fires once the threshold elapses.
+        assert!(e.needs_actuation(at(t0, 11), Duration::from_secs(0)));
+    }
+
+    /// Demotion uses the controller's own predicate, so a tolerance-
+    /// based actuator stays `Confirmed` across small drifts inside the
+    /// band and only demotes when the deadband is exceeded.
+    #[test]
+    fn confirm_if_demote_respects_tolerance_predicate() {
+        let t0 = Instant::now();
+        let mut e: Actuated<i32> = Actuated::new(t0);
+        let within_50 = |t: &i32, a: &i32| (*t - *a).abs() <= 50;
+        e.propose_target(-2300, Owner::SetpointController, at(t0, 1));
+        e.mark_commanded(at(t0, 2));
+        e.on_reading(-2312, at(t0, 3));
+        assert!(e.confirm_if(within_50, at(t0, 4)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
+
+        // Inside the tolerance band — no demotion.
+        e.on_reading(-2348, at(t0, 10));
+        assert!(!e.confirm_if(within_50, at(t0, 11)));
+        assert_eq!(e.target.phase, TargetPhase::Confirmed);
+
+        // Outside the band — demote.
+        e.on_reading(-2400, at(t0, 20));
+        assert!(e.confirm_if(within_50, at(t0, 21)));
+        assert_eq!(e.target.phase, TargetPhase::Commanded);
     }
 
     #[test]
