@@ -1048,6 +1048,13 @@ pub struct KnobsDefaultsConfig {
     pub baseline_wh_per_hour_winter: Option<f64>,
     pub baseline_wh_per_hour_summer: Option<f64>,
 
+    // --- PR2: cloud-cover modulation of the baseline forecast ---
+    pub baseline_cloud_sunny_threshold_pct: Option<u32>,
+    pub baseline_cloud_cloudy_threshold_pct: Option<u32>,
+    pub baseline_cloud_factor_sunny: Option<f64>,
+    pub baseline_cloud_factor_partial: Option<f64>,
+    pub baseline_cloud_factor_cloudy: Option<f64>,
+
     // --- PR-keep-batteries-charged ---
     pub keep_batteries_charged_during_full_charge: Option<bool>,
     pub sunrise_sunset_offset_min: Option<u32>,
@@ -1137,6 +1144,12 @@ impl KnobsDefaultsConfig {
         set!(baseline_winter_end_mm_dd);
         set!(baseline_wh_per_hour_winter);
         set!(baseline_wh_per_hour_summer);
+
+        set!(baseline_cloud_sunny_threshold_pct);
+        set!(baseline_cloud_cloudy_threshold_pct);
+        set!(baseline_cloud_factor_sunny);
+        set!(baseline_cloud_factor_partial);
+        set!(baseline_cloud_factor_cloudy);
 
         set!(keep_batteries_charged_during_full_charge);
         set!(sunrise_sunset_offset_min);

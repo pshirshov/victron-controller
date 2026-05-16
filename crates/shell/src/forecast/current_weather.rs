@@ -8,17 +8,25 @@
 //!
 //! Runs independently from the forecast scheduler so temperature
 //! updates arrive on their own cadence (default: 15 min).
+//!
+//! PR2: also requests `hourly=cloud_cover` over the next two days and
+//! emits a `TypedReading::WeatherCloudForecast` so the baseline
+//! forecaster has cloud data even when the solar-forecast providers
+//! are stale or disabled. One endpoint, one poll, two events.
 
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use chrono::Utc;
 use chrono_tz::Tz;
 use reqwest::Client as HttpClient;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-use victron_controller_core::types::{Event, SensorId, SensorReading, TimerId, TimerStatus};
+use victron_controller_core::types::{
+    Event, SensorId, SensorReading, TimerId, TimerStatus, TypedReading,
+};
 
 use super::{epoch_ms_now, fetch_json};
 
@@ -48,6 +56,11 @@ pub async fn run_open_meteo_temperature(
             ("latitude", lat.as_str()),
             ("longitude", lon.as_str()),
             ("current", "temperature_2m"),
+            // PR2: piggyback hourly cloud cover for the baseline
+            // forecaster. Two days = 48 hours starting at local
+            // midnight today, matching ForecastSnapshot's convention.
+            ("hourly", "cloud_cover"),
+            ("forecast_days", "2"),
             // A-50: match the configured site TZ (don't leak machine TZ
             // into the forecast pipeline).
             ("timezone", tz_name),
@@ -81,6 +94,27 @@ pub async fn run_open_meteo_temperature(
                     info!("runtime receiver closed; temperature poller exiting");
                     return Ok(());
                 }
+
+                // PR2: parse hourly cloud_cover into a 48-element array
+                // indexed by local clock hour (today 0..24, tomorrow
+                // 24..48). Missing entries stay NaN; if no rows landed
+                // at all we skip the event rather than emit a noisy
+                // all-NaN array. Schema/quota drift in the response is
+                // tolerated — temperature still emitted regardless.
+                if let Some(arr) = parse_hourly_clouds(&body, tz) {
+                    debug!(non_nan = arr.iter().filter(|v| v.is_finite()).count(), "open-meteo cloud forecast fetched");
+                    if tx
+                        .send(Event::TypedSensor(TypedReading::WeatherCloudForecast {
+                            hourly_cover_pct: arr,
+                            at: Instant::now(),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        info!("runtime receiver closed; temperature poller exiting");
+                        return Ok(());
+                    }
+                }
             }
             Err(e) => {
                 warn!(error = %e, "open-meteo current-weather fetch failed");
@@ -91,6 +125,48 @@ pub async fn run_open_meteo_temperature(
             return Ok(());
         }
     }
+}
+
+/// Parse the `hourly.time` + `hourly.cloud_cover` arrays into a
+/// length-48 vector indexed by local clock hour (today 0..24, tomorrow
+/// 24..48). Returns `None` when the response shape is missing both
+/// arrays so the caller can skip emitting an empty event. Slots that
+/// don't appear in the response remain `NaN`; the consumer
+/// (`baseline.rs`) treats those as "no signal, don't modulate" per
+/// hour.
+fn parse_hourly_clouds(body: &serde_json::Value, tz: Tz) -> Option<Vec<f64>> {
+    let times = body.pointer("/hourly/time").and_then(|v| v.as_array())?;
+    let clouds = body
+        .pointer("/hourly/cloud_cover")
+        .and_then(|v| v.as_array())?;
+    let today = Utc::now().with_timezone(&tz).date_naive();
+    let tomorrow = today.succ_opt()?;
+    let today_str = today.format("%Y-%m-%d").to_string();
+    let tomorrow_str = tomorrow.format("%Y-%m-%d").to_string();
+    let mut out = vec![f64::NAN; 48];
+    let mut saw_any = false;
+    for (t, c) in times.iter().zip(clouds.iter()) {
+        let Some(t_str) = t.as_str() else { continue };
+        let Some(c_f) = c.as_f64() else { continue };
+        let Some(date_part) = t_str.get(..10) else {
+            continue;
+        };
+        let Some(hour) = t_str
+            .get(11..13)
+            .and_then(|h| h.parse::<usize>().ok())
+            .filter(|h| *h < 24)
+        else {
+            continue;
+        };
+        if date_part == today_str {
+            out[hour] = c_f;
+            saw_any = true;
+        } else if date_part == tomorrow_str {
+            out[24 + hour] = c_f;
+            saw_any = true;
+        }
+    }
+    if saw_any { Some(out) } else { None }
 }
 
 /// Emit one `Event::TimerState` for the OpenMeteoCurrent timer. Returns

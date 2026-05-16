@@ -431,6 +431,12 @@ pub fn knob_name(id: KnobId) -> String {
         KnobId::BaselineWinterEndMmDd => "forecast.baseline.winter.end.mmdd".to_string(),
         KnobId::BaselineWhPerHourWinter => "forecast.baseline.wh-per-hour.winter".to_string(),
         KnobId::BaselineWhPerHourSummer => "forecast.baseline.wh-per-hour.summer".to_string(),
+        // PR2: cloud-cover modulation knobs.
+        KnobId::BaselineCloudSunnyThresholdPct => "forecast.baseline.cloud.sunny-threshold-pct".to_string(),
+        KnobId::BaselineCloudCloudyThresholdPct => "forecast.baseline.cloud.cloudy-threshold-pct".to_string(),
+        KnobId::BaselineCloudFactorSunny => "forecast.baseline.cloud.factor.sunny".to_string(),
+        KnobId::BaselineCloudFactorPartial => "forecast.baseline.cloud.factor.partial".to_string(),
+        KnobId::BaselineCloudFactorCloudy => "forecast.baseline.cloud.factor.cloudy".to_string(),
         // PR-keep-batteries-charged.
         KnobId::KeepBatteriesChargedDuringFullCharge => "ess.full-charge.keep-batteries-charged".to_string(),
         KnobId::SunriseSunsetOffsetMin => "ess.full-charge.sunrise-sunset-offset-min".to_string(),
@@ -543,6 +549,12 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "forecast.baseline.winter.end.mmdd" => KnobId::BaselineWinterEndMmDd,
         "forecast.baseline.wh-per-hour.winter" => KnobId::BaselineWhPerHourWinter,
         "forecast.baseline.wh-per-hour.summer" => KnobId::BaselineWhPerHourSummer,
+        // PR2: cloud-cover modulation.
+        "forecast.baseline.cloud.sunny-threshold-pct" => KnobId::BaselineCloudSunnyThresholdPct,
+        "forecast.baseline.cloud.cloudy-threshold-pct" => KnobId::BaselineCloudCloudyThresholdPct,
+        "forecast.baseline.cloud.factor.sunny" => KnobId::BaselineCloudFactorSunny,
+        "forecast.baseline.cloud.factor.partial" => KnobId::BaselineCloudFactorPartial,
+        "forecast.baseline.cloud.factor.cloudy" => KnobId::BaselineCloudFactorCloudy,
         // PR-keep-batteries-charged.
         "ess.full-charge.keep-batteries-charged" => KnobId::KeepBatteriesChargedDuringFullCharge,
         "ess.full-charge.sunrise-sunset-offset-min" => KnobId::SunriseSunsetOffsetMin,
@@ -791,6 +803,16 @@ pub(crate) fn knob_range(id: KnobId) -> Option<(f64, f64)> {
         // pessimistic average so 10000 Wh/h is hard ceiling.
         KnobId::BaselineWhPerHourWinter | KnobId::BaselineWhPerHourSummer => (0.0, 10000.0),
 
+        // PR2: cloud-cover modulation. Thresholds are percentages in
+        // [0, 100]; factors are multipliers in [0, 2] (>1 lets the
+        // operator boost sunny hours above the seasonal default
+        // baseline if they want a more optimistic floor).
+        KnobId::BaselineCloudSunnyThresholdPct
+        | KnobId::BaselineCloudCloudyThresholdPct => (0.0, 100.0),
+        KnobId::BaselineCloudFactorSunny
+        | KnobId::BaselineCloudFactorPartial
+        | KnobId::BaselineCloudFactorCloudy => (0.0, 2.0),
+
         // Multiplier
         KnobId::PessimismMultiplierModifier => (0.0, 2.0),
 
@@ -966,6 +988,10 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         // PR-baseline-forecast: per-hour Wh constants are floats.
         | KnobId::BaselineWhPerHourWinter
         | KnobId::BaselineWhPerHourSummer
+        // PR2: cloud-modulation factors route via Float.
+        | KnobId::BaselineCloudFactorSunny
+        | KnobId::BaselineCloudFactorPartial
+        | KnobId::BaselineCloudFactorCloudy
         // PR-ZD-2: kp and target_w route via Float (no KnobValue::Int32
         // variant; the controller rounds target_w on read).
         | KnobId::ZappiBatteryDrainKp
@@ -978,6 +1004,9 @@ fn parse_knob_value(id: KnobId, body: &str) -> Option<KnobValue> {
         // PR-baseline-forecast: MMDD encoded as Uint32.
         | KnobId::BaselineWinterStartMmDd
         | KnobId::BaselineWinterEndMmDd
+        // PR2: cloud-modulation thresholds as Uint32 (%).
+        | KnobId::BaselineCloudSunnyThresholdPct
+        | KnobId::BaselineCloudCloudyThresholdPct
         // PR-keep-batteries-charged — minutes encoded as Uint32.
         | KnobId::SunriseSunsetOffsetMin
         | KnobId::FullChargeSnapBackMaxWeekday

@@ -92,6 +92,12 @@ const DISPLAY_NAMES: Record<string, string> = {
   baseline_winter_end_mm_dd: "forecast.baseline.winter.end.mmdd",
   baseline_wh_per_hour_winter: "forecast.baseline.wh-per-hour.winter",
   baseline_wh_per_hour_summer: "forecast.baseline.wh-per-hour.summer",
+  // PR2: cloud-cover modulation.
+  baseline_cloud_sunny_threshold_pct: "forecast.baseline.cloud.sunny-threshold-pct",
+  baseline_cloud_cloudy_threshold_pct: "forecast.baseline.cloud.cloudy-threshold-pct",
+  baseline_cloud_factor_sunny: "forecast.baseline.cloud.factor.sunny",
+  baseline_cloud_factor_partial: "forecast.baseline.cloud.factor.partial",
+  baseline_cloud_factor_cloudy: "forecast.baseline.cloud.factor.cloudy",
   // PR-keep-batteries-charged.
   keep_batteries_charged_during_full_charge: "ess.full-charge.keep-batteries-charged",
   sunrise_sunset_offset_min: "ess.full-charge.sunrise-sunset-offset-min",

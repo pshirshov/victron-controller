@@ -58,6 +58,14 @@ struct BaselineKnobs {
     winter_end: (u32, u32),
     wh_per_hour_winter: f64,
     wh_per_hour_summer: f64,
+    /// PR2: cloud-cover modulation knobs. Snapshotted alongside the
+    /// season/Wh knobs so a single locked read of `World.knobs` covers
+    /// every input to a baseline tick.
+    cloud_sunny_threshold_pct: u32,
+    cloud_cloudy_threshold_pct: u32,
+    cloud_factor_sunny: f64,
+    cloud_factor_partial: f64,
+    cloud_factor_cloudy: f64,
 }
 
 /// Decode an `MMDD` u32 (e.g. 1101) into `(month, day)`. Returns
@@ -86,9 +94,14 @@ async fn read_baseline_knobs(world: &Arc<Mutex<World>>) -> BaselineKnobs {
             w.knobs.baseline_winter_end_mm_dd,
             w.knobs.baseline_wh_per_hour_winter,
             w.knobs.baseline_wh_per_hour_summer,
+            w.knobs.baseline_cloud_sunny_threshold_pct,
+            w.knobs.baseline_cloud_cloudy_threshold_pct,
+            w.knobs.baseline_cloud_factor_sunny,
+            w.knobs.baseline_cloud_factor_partial,
+            w.knobs.baseline_cloud_factor_cloudy,
         )
     };
-    let (raw_start, raw_end, wh_w, wh_s) = k;
+    let (raw_start, raw_end, wh_w, wh_s, c_sun_t, c_cld_t, c_f_sun, c_f_par, c_f_cld) = k;
     let winter_start = decode_mm_dd(raw_start).unwrap_or_else(|| {
         warn!(raw_start, "baseline: winter_start_mm_dd invalid; falling back to 11-01");
         (11, 1)
@@ -102,7 +115,74 @@ async fn read_baseline_knobs(world: &Arc<Mutex<World>>) -> BaselineKnobs {
         winter_end,
         wh_per_hour_winter: wh_w,
         wh_per_hour_summer: wh_s,
+        cloud_sunny_threshold_pct: c_sun_t,
+        cloud_cloudy_threshold_pct: c_cld_t,
+        cloud_factor_sunny: c_f_sun,
+        cloud_factor_partial: c_f_par,
+        cloud_factor_cloudy: c_f_cld,
     }
+}
+
+/// PR2: maximum age of the cloud forecast that the baseline scheduler
+/// will trust. Past this, fall back to no modulation (cleanly
+/// degraded behaviour: a stale poller silently drops cloud
+/// awareness, doesn't crash). 2 h is comfortable margin over the
+/// default 15-min current-weather cadence.
+const CLOUD_FORECAST_MAX_AGE: Duration = Duration::from_secs(2 * 3600);
+
+/// PR2: pull a cloned `(hourly_cover_pct, fetched_at)` pair if the
+/// stored cloud forecast is non-empty AND fresh enough to act on.
+async fn read_fresh_cloud_forecast(
+    world: &Arc<Mutex<World>>,
+    now: Instant,
+) -> Option<Vec<f64>> {
+    let w = world.lock().await;
+    let snap = w.typed_sensors.weather_cloud_forecast.as_ref()?;
+    if snap.hourly_cover_pct.len() != 48 {
+        return None;
+    }
+    if now.saturating_duration_since(snap.fetched_at) > CLOUD_FORECAST_MAX_AGE {
+        return None;
+    }
+    Some(snap.hourly_cover_pct.clone())
+}
+
+/// PR2: 3-bucket multiplier selecting cloud-factor by cover %. NaN
+/// (or an out-of-bounds bucket index — shouldn't happen given knob
+/// ranges) returns 1.0 so a missing per-hour datum collapses to the
+/// unmodulated path.
+fn cloud_factor(cover_pct: f64, k: BaselineKnobs) -> f64 {
+    if !cover_pct.is_finite() {
+        return 1.0;
+    }
+    let sunny_t = f64::from(k.cloud_sunny_threshold_pct);
+    let cloudy_t = f64::from(k.cloud_cloudy_threshold_pct);
+    if cover_pct < sunny_t {
+        k.cloud_factor_sunny
+    } else if cover_pct < cloudy_t {
+        k.cloud_factor_partial
+    } else {
+        k.cloud_factor_cloudy
+    }
+}
+
+/// Apply per-hour cloud modulation to a 48-element hourly_kwh array.
+/// Slots with non-finite cloud cover (or no cloud array) are left
+/// unchanged. Returns the cloud array echoed for the emitted
+/// snapshot (empty when no modulation occurred).
+fn apply_cloud_modulation(
+    hourly_kwh: &mut [f64],
+    cloud: Option<&[f64]>,
+    k: BaselineKnobs,
+) -> Vec<f64> {
+    let Some(cloud) = cloud else { return Vec::new() };
+    if cloud.len() != 48 {
+        return Vec::new();
+    }
+    for (kwh, &cover) in hourly_kwh.iter_mut().zip(cloud.iter()) {
+        *kwh *= cloud_factor(cover, k);
+    }
+    cloud.to_vec()
 }
 
 /// Public entry point — spawned by `main` when
@@ -175,7 +255,17 @@ pub async fn run_baseline_scheduler(
             bk.wh_per_hour_summer,
         );
 
-        let hourly_kwh = build_hourly_kwh(today_sr_ss, tomorrow_sr_ss, wh_today, wh_tomorrow, today, tz);
+        let mut hourly_kwh =
+            build_hourly_kwh(today_sr_ss, tomorrow_sr_ss, wh_today, wh_tomorrow, today, tz);
+        // PR2: if a fresh hourly cloud forecast is available, scale
+        // each per-hour Wh credit by the bucket factor selected for
+        // that hour's cloud cover. Stale / missing → leave Wh
+        // unmodulated and emit an empty cloud array (signals "no
+        // cloud info this tick" to the dashboard popup).
+        let now = Instant::now();
+        let cloud_arr = read_fresh_cloud_forecast(&world, now).await;
+        let hourly_cloud_cover_pct =
+            apply_cloud_modulation(&mut hourly_kwh, cloud_arr.as_deref(), bk);
         let today_kwh: f64 = hourly_kwh.iter().take(24).sum();
         let tomorrow_kwh: f64 = hourly_kwh.iter().skip(24).sum();
 
@@ -187,11 +277,11 @@ pub async fn run_baseline_scheduler(
                 hourly_kwh,
                 // Baseline doesn't model temperature.
                 hourly_temperature_c: Vec::new(),
-                // PR2 (cloud-modulated baseline) will populate this
-                // with the cloud array used for modulation. For now,
-                // until that wiring lands, emit empty.
-                hourly_cloud_cover_pct: Vec::new(),
-                at: Instant::now(),
+                // PR2: echo the cloud array we modulated against, so
+                // the per-hour forecast popup can show what drove the
+                // numbers. Empty when no fresh cloud forecast existed.
+                hourly_cloud_cover_pct,
+                at: now,
             }))
             .await;
         if send_result.is_err() {
@@ -451,6 +541,91 @@ mod tests {
         let jul_15 = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
         assert!(mm_dd_in_winter(dec_15, s, e));
         assert!(!mm_dd_in_winter(jul_15, s, e));
+    }
+
+    fn default_cloud_knobs() -> BaselineKnobs {
+        BaselineKnobs {
+            winter_start: (11, 1),
+            winter_end: (3, 1),
+            wh_per_hour_winter: 100.0,
+            wh_per_hour_summer: 1000.0,
+            cloud_sunny_threshold_pct: 30,
+            cloud_cloudy_threshold_pct: 70,
+            cloud_factor_sunny: 1.0,
+            cloud_factor_partial: 0.6,
+            cloud_factor_cloudy: 0.25,
+        }
+    }
+
+    #[test]
+    fn cloud_factor_buckets_at_default_thresholds() {
+        let k = default_cloud_knobs();
+        assert!((cloud_factor(0.0, k) - 1.0).abs() < 1e-9);
+        // Just below sunny threshold.
+        assert!((cloud_factor(29.999, k) - 1.0).abs() < 1e-9);
+        // At sunny threshold → partial.
+        assert!((cloud_factor(30.0, k) - 0.6).abs() < 1e-9);
+        assert!((cloud_factor(50.0, k) - 0.6).abs() < 1e-9);
+        // Just below cloudy threshold.
+        assert!((cloud_factor(69.999, k) - 0.6).abs() < 1e-9);
+        // At cloudy threshold → cloudy.
+        assert!((cloud_factor(70.0, k) - 0.25).abs() < 1e-9);
+        assert!((cloud_factor(100.0, k) - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cloud_factor_returns_one_on_nan() {
+        // NaN sentinel marks "no per-hour datum"; we must not modulate.
+        assert!((cloud_factor(f64::NAN, default_cloud_knobs()) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn apply_cloud_modulation_scales_and_echoes_cloud_array() {
+        let mut hk = vec![1.0; 48];
+        let mut cloud = vec![10.0; 48]; // all sunny
+        // Hour 12: cloudy.
+        cloud[12] = 90.0;
+        // Hour 30: partial.
+        cloud[30] = 50.0;
+        // Hour 40: NaN — must leave that hour unchanged.
+        cloud[40] = f64::NAN;
+        let echo = apply_cloud_modulation(&mut hk, Some(&cloud), default_cloud_knobs());
+        assert_eq!(echo.len(), 48);
+        assert!((echo[12] - 90.0).abs() < 1e-9);
+        // Spot-check the three buckets.
+        assert!((hk[0] - 1.0).abs() < 1e-9, "sunny untouched");
+        assert!((hk[12] - 0.25).abs() < 1e-9, "cloudy: {}", hk[12]);
+        assert!((hk[30] - 0.6).abs() < 1e-9, "partial: {}", hk[30]);
+        assert!((hk[40] - 1.0).abs() < 1e-9, "NaN slot must not modulate");
+    }
+
+    #[test]
+    fn apply_cloud_modulation_skips_when_no_cloud_array() {
+        let mut hk = vec![1.0; 48];
+        let echo = apply_cloud_modulation(&mut hk, None, default_cloud_knobs());
+        assert!(echo.is_empty());
+        assert!(hk.iter().all(|v| (v - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn apply_cloud_modulation_skips_on_wrong_length() {
+        let mut hk = vec![1.0; 48];
+        let cloud = vec![50.0; 24]; // half-length → reject
+        let echo = apply_cloud_modulation(&mut hk, Some(&cloud), default_cloud_knobs());
+        assert!(echo.is_empty());
+        assert!(hk.iter().all(|v| (v - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn cloud_modulation_disabled_when_all_factors_one() {
+        let mut k = default_cloud_knobs();
+        k.cloud_factor_sunny = 1.0;
+        k.cloud_factor_partial = 1.0;
+        k.cloud_factor_cloudy = 1.0;
+        let mut hk = vec![2.0; 48];
+        let cloud = vec![90.0; 48]; // would normally crush to 0.5
+        apply_cloud_modulation(&mut hk, Some(&cloud), k);
+        assert!(hk.iter().all(|v| (v - 2.0).abs() < 1e-9));
     }
 
     #[test]

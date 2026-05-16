@@ -47,6 +47,11 @@ pub struct Knobs {
     pub baseline_winter_end_mm_dd: i32,
     pub baseline_wh_per_hour_winter: f64,
     pub baseline_wh_per_hour_summer: f64,
+    pub baseline_cloud_sunny_threshold_pct: i32,
+    pub baseline_cloud_cloudy_threshold_pct: i32,
+    pub baseline_cloud_factor_sunny: f64,
+    pub baseline_cloud_factor_partial: f64,
+    pub baseline_cloud_factor_cloudy: f64,
     pub keep_batteries_charged_during_full_charge: bool,
     pub sunrise_sunset_offset_min: i32,
     pub full_charge_defer_to_next_sunday: bool,
@@ -235,6 +240,26 @@ impl Ord for Knobs {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
         }
+        match self.baseline_cloud_sunny_threshold_pct.cmp(&other.baseline_cloud_sunny_threshold_pct) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_cloud_cloudy_threshold_pct.cmp(&other.baseline_cloud_cloudy_threshold_pct) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_cloud_factor_sunny.total_cmp(&other.baseline_cloud_factor_sunny) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_cloud_factor_partial.total_cmp(&other.baseline_cloud_factor_partial) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
+        match self.baseline_cloud_factor_cloudy.total_cmp(&other.baseline_cloud_factor_cloudy) {
+            std::cmp::Ordering::Equal => {},
+            ord => return ord,
+        }
         match self.keep_batteries_charged_during_full_charge.cmp(&other.keep_batteries_charged_during_full_charge) {
             std::cmp::Ordering::Equal => {},
             ord => return ord,
@@ -361,6 +386,11 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_winter_end_mm_dd.encode_ueba(ctx, &mut buffer)?;
             value.baseline_wh_per_hour_winter.encode_ueba(ctx, &mut buffer)?;
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_cloud_sunny_threshold_pct.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_cloud_cloudy_threshold_pct.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_cloud_factor_sunny.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_cloud_factor_partial.encode_ueba(ctx, &mut buffer)?;
+            value.baseline_cloud_factor_cloudy.encode_ueba(ctx, &mut buffer)?;
             value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, &mut buffer)?;
             value.sunrise_sunset_offset_min.encode_ueba(ctx, &mut buffer)?;
             value.full_charge_defer_to_next_sunday.encode_ueba(ctx, &mut buffer)?;
@@ -420,6 +450,11 @@ impl crate::baboon_runtime::BaboonBinEncode for Knobs {
             value.baseline_winter_end_mm_dd.encode_ueba(ctx, writer)?;
             value.baseline_wh_per_hour_winter.encode_ueba(ctx, writer)?;
             value.baseline_wh_per_hour_summer.encode_ueba(ctx, writer)?;
+            value.baseline_cloud_sunny_threshold_pct.encode_ueba(ctx, writer)?;
+            value.baseline_cloud_cloudy_threshold_pct.encode_ueba(ctx, writer)?;
+            value.baseline_cloud_factor_sunny.encode_ueba(ctx, writer)?;
+            value.baseline_cloud_factor_partial.encode_ueba(ctx, writer)?;
+            value.baseline_cloud_factor_cloudy.encode_ueba(ctx, writer)?;
             value.keep_batteries_charged_during_full_charge.encode_ueba(ctx, writer)?;
             value.sunrise_sunset_offset_min.encode_ueba(ctx, writer)?;
             value.full_charge_defer_to_next_sunday.encode_ueba(ctx, writer)?;
@@ -487,6 +522,11 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
         let baseline_winter_end_mm_dd = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let baseline_wh_per_hour_winter = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let baseline_wh_per_hour_summer = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let baseline_cloud_sunny_threshold_pct = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let baseline_cloud_cloudy_threshold_pct = crate::baboon_runtime::bin_tools::read_i32(reader)?;
+        let baseline_cloud_factor_sunny = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let baseline_cloud_factor_partial = crate::baboon_runtime::bin_tools::read_f64(reader)?;
+        let baseline_cloud_factor_cloudy = crate::baboon_runtime::bin_tools::read_f64(reader)?;
         let keep_batteries_charged_during_full_charge = crate::baboon_runtime::bin_tools::read_bool(reader)?;
         let sunrise_sunset_offset_min = crate::baboon_runtime::bin_tools::read_i32(reader)?;
         let full_charge_defer_to_next_sunday = crate::baboon_runtime::bin_tools::read_bool(reader)?;
@@ -544,6 +584,11 @@ impl crate::baboon_runtime::BaboonBinDecode for Knobs {
             baseline_winter_end_mm_dd,
             baseline_wh_per_hour_winter,
             baseline_wh_per_hour_summer,
+            baseline_cloud_sunny_threshold_pct,
+            baseline_cloud_cloudy_threshold_pct,
+            baseline_cloud_factor_sunny,
+            baseline_cloud_factor_partial,
+            baseline_cloud_factor_cloudy,
             keep_batteries_charged_during_full_charge,
             sunrise_sunset_offset_min,
             full_charge_defer_to_next_sunday,

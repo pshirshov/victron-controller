@@ -569,6 +569,13 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
                 }));
             }
         }
+        TypedReading::WeatherCloudForecast { hourly_cover_pct, at } => {
+            world.typed_sensors.weather_cloud_forecast =
+                Some(crate::world::WeatherCloudForecast {
+                    hourly_cover_pct,
+                    fetched_at: at,
+                });
+        }
         TypedReading::Forecast {
             provider,
             today_kwh,
@@ -904,6 +911,22 @@ fn apply_knob(id: KnobId, value: KnobValue, world: &mut World, effects: &mut Vec
         (KnobId::BaselineWhPerHourSummer, KnobValue::Float(v)) => {
             replace(&mut k.baseline_wh_per_hour_summer, v) != v
         }
+        // PR2: cloud-cover modulation knobs.
+        (KnobId::BaselineCloudSunnyThresholdPct, KnobValue::Uint32(v)) => {
+            replace(&mut k.baseline_cloud_sunny_threshold_pct, v) != v
+        }
+        (KnobId::BaselineCloudCloudyThresholdPct, KnobValue::Uint32(v)) => {
+            replace(&mut k.baseline_cloud_cloudy_threshold_pct, v) != v
+        }
+        (KnobId::BaselineCloudFactorSunny, KnobValue::Float(v)) => {
+            replace(&mut k.baseline_cloud_factor_sunny, v) != v
+        }
+        (KnobId::BaselineCloudFactorPartial, KnobValue::Float(v)) => {
+            replace(&mut k.baseline_cloud_factor_partial, v) != v
+        }
+        (KnobId::BaselineCloudFactorCloudy, KnobValue::Float(v)) => {
+            replace(&mut k.baseline_cloud_factor_cloudy, v) != v
+        }
         // PR-keep-batteries-charged.
         (KnobId::KeepBatteriesChargedDuringFullCharge, KnobValue::Bool(v)) => {
             replace(&mut k.keep_batteries_charged_during_full_charge, v) != v
@@ -1152,6 +1175,27 @@ pub fn all_knob_publish_payloads(knobs: &crate::knobs::Knobs) -> Vec<PublishPayl
         PublishPayload::Knob {
             id: I::BaselineWhPerHourSummer,
             value: V::Float(k.baseline_wh_per_hour_summer),
+        },
+        // PR2: cloud-cover modulation knobs.
+        PublishPayload::Knob {
+            id: I::BaselineCloudSunnyThresholdPct,
+            value: V::Uint32(k.baseline_cloud_sunny_threshold_pct),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineCloudCloudyThresholdPct,
+            value: V::Uint32(k.baseline_cloud_cloudy_threshold_pct),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineCloudFactorSunny,
+            value: V::Float(k.baseline_cloud_factor_sunny),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineCloudFactorPartial,
+            value: V::Float(k.baseline_cloud_factor_partial),
+        },
+        PublishPayload::Knob {
+            id: I::BaselineCloudFactorCloudy,
+            value: V::Float(k.baseline_cloud_factor_cloudy),
         },
         PublishPayload::Knob {
             id: I::FullChargeDeferToNextSunday,

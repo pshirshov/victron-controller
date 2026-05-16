@@ -209,6 +209,17 @@ data Knobs {
   baseline_winter_end_mm_dd: i32
   baseline_wh_per_hour_winter: f64
   baseline_wh_per_hour_summer: f64
+  // PR2: 3-bucket cloud-cover modulation of the baseline forecast.
+  // Each per-hour Wh credit is multiplied by the bucket factor
+  // selected by the hour's cloud-cover %:
+  //   clouds <  sunny_threshold_pct  → factor_sunny
+  //   clouds <  cloudy_threshold_pct → factor_partial
+  //   otherwise                      → factor_cloudy
+  baseline_cloud_sunny_threshold_pct: i32
+  baseline_cloud_cloudy_threshold_pct: i32
+  baseline_cloud_factor_sunny: f64
+  baseline_cloud_factor_partial: f64
+  baseline_cloud_factor_cloudy: f64
   // PR-keep-batteries-charged: gate the daytime ESS-state override
   // (state 9 = KeepBatteriesCharged) on full-charge days.
   keep_batteries_charged_during_full_charge: bit

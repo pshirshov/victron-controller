@@ -267,6 +267,7 @@ mod tests {
             forecast_baseline: None,
             eddi_raw_json: None,
             zappi_raw_json: None,
+            weather_cloud_forecast: None,
         }
     }
 
@@ -433,6 +434,7 @@ mod tests {
             forecast_baseline: None,
             eddi_raw_json: None,
             zappi_raw_json: None,
+            weather_cloud_forecast: None,
         }
     }
 
@@ -513,6 +515,7 @@ mod tests {
             forecast_baseline: baseline.map(snap),
             eddi_raw_json: None,
             zappi_raw_json: None,
+            weather_cloud_forecast: None,
         }
     }
 
@@ -531,6 +534,7 @@ mod tests {
             forecast_baseline: baseline.map(|h| snap_hourly(0.0, h)),
             eddi_raw_json: None,
             zappi_raw_json: None,
+            weather_cloud_forecast: None,
         }
     }
 

@@ -834,6 +834,16 @@ pub enum KnobId {
     BaselineWinterEndMmDd,
     BaselineWhPerHourWinter,
     BaselineWhPerHourSummer,
+    // PR2: cloud-cover modulation of the baseline forecast. Three
+    // buckets (sunny / partial / cloudy) selected by two thresholds
+    // on `cloud_cover_pct`. Each bucket has its own multiplier on the
+    // per-hour Wh credit. Defaults: thresholds 30/70, factors
+    // 1.0/0.6/0.25 — see `safe_defaults()` in `knobs.rs`.
+    BaselineCloudSunnyThresholdPct,
+    BaselineCloudCloudyThresholdPct,
+    BaselineCloudFactorSunny,
+    BaselineCloudFactorPartial,
+    BaselineCloudFactorCloudy,
     // PR-keep-batteries-charged: gate + window-offset for the
     // daytime ESS-state override (state 9, KeepBatteriesCharged).
     KeepBatteriesChargedDuringFullCharge,
@@ -1189,6 +1199,12 @@ pub enum TypedReading {
         hourly_cloud_cover_pct: Vec<f64>,
         at: Instant,
     },
+    /// PR2: hourly cloud-cover forecast from the Open-Meteo
+    /// current-weather poller (separate stream from the per-provider
+    /// solar forecasts). Length-48 vector in [0, 100] starting at
+    /// midnight LOCAL today. Consumed by the baseline scheduler for
+    /// cloud-aware Wh-per-hour modulation.
+    WeatherCloudForecast { hourly_cover_pct: Vec<f64>, at: Instant },
 }
 
 /// Commands originating from dashboard / HA / explicit user action.

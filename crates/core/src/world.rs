@@ -229,6 +229,19 @@ pub struct ForecastSnapshot {
     pub hourly_cloud_cover_pct: Vec<f64>,
 }
 
+/// PR2: hourly cloud-cover forecast separate from the per-provider
+/// `ForecastSnapshot.hourly_cloud_cover_pct`. Sourced by the Open-Meteo
+/// current-weather poller (which already runs at a tighter cadence
+/// than the solar-forecast schedulers) so the baseline forecaster has
+/// a cloud signal even when the irradiance providers are stale or
+/// disabled. `hourly_cover_pct` is length 48 starting at midnight LOCAL
+/// today (24 today + 24 tomorrow), values in [0, 100].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeatherCloudForecast {
+    pub hourly_cover_pct: Vec<f64>,
+    pub fetched_at: Instant,
+}
+
 /// Non-scalar sensor state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedSensors {
@@ -250,6 +263,12 @@ pub struct TypedSensors {
     /// PR-EDDI-SENSORS-1: same shape as `eddi_raw_json` for the Zappi
     /// `cgi-jstatus-Z*` body.
     pub zappi_raw_json: Option<String>,
+    /// PR2: most-recent hourly cloud-cover forecast from the
+    /// Open-Meteo current-weather poller. Consumed by the baseline
+    /// scheduler to modulate per-hour Wh credits via the 3-bucket
+    /// cloud-factor knobs. `None` until the first successful fetch;
+    /// staleness is judged against `fetched_at` at consumption time.
+    pub weather_cloud_forecast: Option<WeatherCloudForecast>,
 }
 
 impl TypedSensors {
@@ -264,6 +283,7 @@ impl TypedSensors {
             forecast_baseline: None,
             eddi_raw_json: None,
             zappi_raw_json: None,
+            weather_cloud_forecast: None,
         }
     }
 

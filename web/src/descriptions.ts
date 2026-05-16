@@ -202,6 +202,17 @@ export const entityDescriptions: Record<string, string> = {
     "Average per-daylight-hour Wh during winter. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
   "forecast.baseline.wh-per-hour.summer":
     "Average per-daylight-hour Wh during summer. Used by the locally-computed baseline forecast as a rough fallback when all cloud providers are stale.",
+  // PR2: cloud-cover modulation.
+  "forecast.baseline.cloud.sunny-threshold-pct":
+    "Upper bound (exclusive) of the \"sunny\" cloud-cover bucket. When the Open-Meteo hourly cloud forecast is fresh, each baseline hour with cloud cover strictly below this value is credited at the sunny factor.",
+  "forecast.baseline.cloud.cloudy-threshold-pct":
+    "Upper bound (exclusive) of the \"partial\" cloud-cover bucket. Hours with cloud cover ≥ this value fall into the cloudy bucket. Should be > sunny-threshold-pct; if not, the partial bucket is empty and only sunny/cloudy apply.",
+  "forecast.baseline.cloud.factor.sunny":
+    "Multiplier on per-hour Wh credit when the hourly cloud forecast is below the sunny threshold. Default 1.0 = full credit. Setting all three factors to 1.0 disables cloud modulation.",
+  "forecast.baseline.cloud.factor.partial":
+    "Multiplier on per-hour Wh credit in the partial (between the two thresholds) cloud bucket. Default 0.6 reflects ~40 % loss under broken cloud.",
+  "forecast.baseline.cloud.factor.cloudy":
+    "Multiplier on per-hour Wh credit when cloud cover is at or above the cloudy threshold. Default 0.25 — a realistic floor for diffuse light under heavy overcast.",
 
   // --- Actuated (ESS state) ---
   "ess.state.target":

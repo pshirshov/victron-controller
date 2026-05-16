@@ -405,6 +405,17 @@ grid_max_sensible_voltage_v  = 260.0     # EN 50160 +10% + 7V noise headroom.
 # baseline_wh_per_hour_winter         = 100.0
 # baseline_wh_per_hour_summer         = 1000.0
 
+# --- PR2: cloud-cover modulation of the baseline forecast ---
+# Per-hour Wh credit is multiplied by a bucket factor selected by
+# the hour's cloud-cover %: <sunny_threshold → sunny, <cloudy_threshold
+# → partial, otherwise → cloudy. Set all three factors to 1.0 to
+# disable modulation.
+# baseline_cloud_sunny_threshold_pct  = 30
+# baseline_cloud_cloudy_threshold_pct = 70
+# baseline_cloud_factor_sunny         = 1.0
+# baseline_cloud_factor_partial       = 0.6
+# baseline_cloud_factor_cloudy        = 0.25
+
 # --- PR-keep-batteries-charged ---
 # keep_batteries_charged_during_full_charge = false
 # sunrise_sunset_offset_min                  = 60

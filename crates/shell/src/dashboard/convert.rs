@@ -1251,6 +1251,14 @@ fn knobs_to_model(k: &Knobs) -> ModelKnobs {
             .unwrap_or(i32::MAX),
         baseline_wh_per_hour_winter: k.baseline_wh_per_hour_winter,
         baseline_wh_per_hour_summer: k.baseline_wh_per_hour_summer,
+        // PR2: cloud-cover modulation knobs.
+        baseline_cloud_sunny_threshold_pct:
+            i32::try_from(k.baseline_cloud_sunny_threshold_pct).unwrap_or(i32::MAX),
+        baseline_cloud_cloudy_threshold_pct:
+            i32::try_from(k.baseline_cloud_cloudy_threshold_pct).unwrap_or(i32::MAX),
+        baseline_cloud_factor_sunny: k.baseline_cloud_factor_sunny,
+        baseline_cloud_factor_partial: k.baseline_cloud_factor_partial,
+        baseline_cloud_factor_cloudy: k.baseline_cloud_factor_cloudy,
         // PR-keep-batteries-charged.
         keep_batteries_charged_during_full_charge: k.keep_batteries_charged_during_full_charge,
         sunrise_sunset_offset_min: i32::try_from(k.sunrise_sunset_offset_min)
@@ -1533,6 +1541,12 @@ fn knob_id_from_name(n: &str) -> Option<KnobId> {
         "baseline_winter_end_mm_dd" => KnobId::BaselineWinterEndMmDd,
         "baseline_wh_per_hour_winter" => KnobId::BaselineWhPerHourWinter,
         "baseline_wh_per_hour_summer" => KnobId::BaselineWhPerHourSummer,
+        // PR2: cloud-cover modulation.
+        "baseline_cloud_sunny_threshold_pct" => KnobId::BaselineCloudSunnyThresholdPct,
+        "baseline_cloud_cloudy_threshold_pct" => KnobId::BaselineCloudCloudyThresholdPct,
+        "baseline_cloud_factor_sunny" => KnobId::BaselineCloudFactorSunny,
+        "baseline_cloud_factor_partial" => KnobId::BaselineCloudFactorPartial,
+        "baseline_cloud_factor_cloudy" => KnobId::BaselineCloudFactorCloudy,
         // PR-keep-batteries-charged.
         "keep_batteries_charged_during_full_charge" => {
             KnobId::KeepBatteriesChargedDuringFullCharge

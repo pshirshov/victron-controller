@@ -186,6 +186,30 @@ pub struct Knobs {
     /// Average per-hour Wh produced during summer daylight hours.
     pub baseline_wh_per_hour_summer: f64,
 
+    // --- PR2: cloud-cover modulation of the baseline forecast. ---
+    // The baseline scheduler reads the Open-Meteo hourly cloud forecast
+    // (when fresh) and multiplies each daylight hour's Wh credit by
+    // one of three bucket factors selected by these thresholds:
+    //   clouds <  sunny_threshold_pct  → factor_sunny
+    //   clouds <  cloudy_threshold_pct → factor_partial   (partial)
+    //   otherwise                      → factor_cloudy
+    // Setting factor_sunny = factor_partial = factor_cloudy = 1.0
+    // disables modulation (always full credit). All five default to
+    // the values documented at SPEC §10.3 review checkpoint.
+    /// Upper bound (exclusive) of the "sunny" bucket. Cloud cover
+    /// strictly below this value gets `baseline_cloud_factor_sunny`.
+    pub baseline_cloud_sunny_threshold_pct: u32,
+    /// Upper bound (exclusive) of the "partial" bucket. Cloud cover
+    /// below this AND ≥ sunny_threshold_pct gets
+    /// `baseline_cloud_factor_partial`; ≥ this is "cloudy".
+    pub baseline_cloud_cloudy_threshold_pct: u32,
+    /// Multiplier on per-hour Wh credit when cloud cover < sunny threshold.
+    pub baseline_cloud_factor_sunny: f64,
+    /// Multiplier on per-hour Wh credit in the partial bucket.
+    pub baseline_cloud_factor_partial: f64,
+    /// Multiplier on per-hour Wh credit when cloud cover ≥ cloudy threshold.
+    pub baseline_cloud_factor_cloudy: f64,
+
     // --- PR-keep-batteries-charged ---
     /// Gate the daytime ESS-state override on full-charge days. When
     /// `true` AND `bookkeeping.charge_to_full_required` AND `now ∈
@@ -599,6 +623,16 @@ impl Knobs {
             baseline_winter_end_mm_dd: 301,
             baseline_wh_per_hour_winter: 100.0,
             baseline_wh_per_hour_summer: 1000.0,
+            // PR2: 3-bucket cloud-cover modulation. Defaults preserve
+            // pre-PR pessimism in cloudy weather (×0.25), let sunny
+            // hours run at full credit, and split partial cover at
+            // 60% of nominal — operator can flatten the curve by
+            // raising the cloudy factor toward 1.0.
+            baseline_cloud_sunny_threshold_pct: 30,
+            baseline_cloud_cloudy_threshold_pct: 70,
+            baseline_cloud_factor_sunny: 1.0,
+            baseline_cloud_factor_partial: 0.6,
+            baseline_cloud_factor_cloudy: 0.25,
             // PR-keep-batteries-charged: opt-in. The override is only
             // useful when the operator's tariff makes daytime
             // self-consumption from the grid expensive and the topology
@@ -708,6 +742,16 @@ mod tests {
         assert!(!k.lg_dhw_power);
         assert_eq!(k.lg_heating_water_target_c, 42);
         assert_eq!(k.lg_dhw_target_c, 60);
+        // PR2: cloud-modulation defaults — 3-bucket multiplier at
+        // 30/70% thresholds, factors 1.0/0.6/0.25. Locking these here
+        // because the baseline scheduler reads them every cycle and
+        // a silent flip to e.g. 0.0 would zero out the fallback
+        // forecast.
+        assert_eq!(k.baseline_cloud_sunny_threshold_pct, 30);
+        assert_eq!(k.baseline_cloud_cloudy_threshold_pct, 70);
+        assert!((k.baseline_cloud_factor_sunny - 1.0).abs() < f64::EPSILON);
+        assert!((k.baseline_cloud_factor_partial - 0.6).abs() < f64::EPSILON);
+        assert!((k.baseline_cloud_factor_cloudy - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

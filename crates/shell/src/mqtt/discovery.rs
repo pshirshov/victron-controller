@@ -749,6 +749,14 @@ fn knob_schemas() -> Vec<(KnobId, &'static str, serde_json::Value)> {
         number_knob(KnobId::BaselineWinterEndMmDd, 1.0, None),
         number_knob(KnobId::BaselineWhPerHourWinter, 10.0, Some("Wh/h")),
         number_knob(KnobId::BaselineWhPerHourSummer, 10.0, Some("Wh/h")),
+        // PR2: cloud-cover modulation. Thresholds step 5 %; factors
+        // step 0.05 — fine enough for an operator to dial in modest
+        // adjustments without the slider being unusable.
+        number_knob(KnobId::BaselineCloudSunnyThresholdPct, 5.0, Some("%")),
+        number_knob(KnobId::BaselineCloudCloudyThresholdPct, 5.0, Some("%")),
+        number_knob(KnobId::BaselineCloudFactorSunny, 0.05, None),
+        number_knob(KnobId::BaselineCloudFactorPartial, 0.05, None),
+        number_knob(KnobId::BaselineCloudFactorCloudy, 0.05, None),
         // PR-keep-batteries-charged.
         (
             KnobId::KeepBatteriesChargedDuringFullCharge,

@@ -186,6 +186,29 @@ export const KNOB_SPEC: Record<string, KnobSpec> = {
     kind: "float", min: 0, max: 10000, step: 10, default: 1000,
     category: "config", group: "Forecast",
   },
+  // PR2: cloud-cover modulation. `operator` category — these are
+  // weather-sensitive tunables an operator may want to adjust without
+  // a redeploy. Defaults mirror Knobs::safe_defaults.
+  "forecast.baseline.cloud.sunny-threshold-pct": {
+    kind: "int", min: 0, max: 100, step: 5, default: 30,
+    category: "operator", group: "Forecast",
+  },
+  "forecast.baseline.cloud.cloudy-threshold-pct": {
+    kind: "int", min: 0, max: 100, step: 5, default: 70,
+    category: "operator", group: "Forecast",
+  },
+  "forecast.baseline.cloud.factor.sunny": {
+    kind: "float", min: 0, max: 2, step: 0.05, default: 1.0,
+    category: "operator", group: "Forecast",
+  },
+  "forecast.baseline.cloud.factor.partial": {
+    kind: "float", min: 0, max: 2, step: 0.05, default: 0.6,
+    category: "operator", group: "Forecast",
+  },
+  "forecast.baseline.cloud.factor.cloudy": {
+    kind: "float", min: 0, max: 2, step: 0.05, default: 0.25,
+    category: "operator", group: "Forecast",
+  },
 
   // PR-keep-batteries-charged. Operator-table pair gating the daytime
   // ESS state-9 (KeepBatteriesCharged) override on full-charge days.
