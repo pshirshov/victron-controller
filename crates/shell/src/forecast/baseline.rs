@@ -29,7 +29,7 @@ use anyhow::Result;
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use sunrise::{Coordinates, SolarDay, SolarEvent};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::interval;
 use tracing::{info, warn};
 
@@ -187,10 +187,19 @@ fn apply_cloud_modulation(
 
 /// Public entry point — spawned by `main` when
 /// `cfg.forecast.baseline.is_configured()` returns true.
+///
+/// PR2: `cloud_forecast_arrived` lets the current-weather poller wake
+/// the scheduler the moment a fresh cloud forecast lands, so the
+/// startup race (baseline ticks at t=0 before the cloud HTTP fetch
+/// completes; next cadence isn't for an hour) doesn't strand the
+/// dashboard on an unmodulated, no-cloud snapshot for up to one full
+/// cadence. The notify is best-effort: missed notifications are fine
+/// — the next periodic tick picks up the data anyway.
 pub async fn run_baseline_scheduler(
     params: BaselineParams,
     world: Arc<Mutex<World>>,
     tx: mpsc::Sender<Event>,
+    cloud_forecast_arrived: Arc<Notify>,
 ) -> Result<()> {
     let BaselineParams { latitude, longitude, cadence, tz } = params;
     let coord = match Coordinates::new(latitude, longitude) {
@@ -213,7 +222,15 @@ pub async fn run_baseline_scheduler(
     );
     let mut ticker = interval(cadence);
     loop {
-        ticker.tick().await;
+        // Wake on either the periodic cadence or a cloud-forecast
+        // arrival. The first cadence tick fires immediately (tokio
+        // interval semantics) — that's fine; the `notified()` branch
+        // takes care of the case where cloud data lands after that
+        // initial tick but well before the next cadence boundary.
+        tokio::select! {
+            _ = ticker.tick() => {}
+            () = cloud_forecast_arrived.notified() => {}
+        }
 
         let now_local = Utc::now().with_timezone(&tz);
         let today = now_local.date_naive();

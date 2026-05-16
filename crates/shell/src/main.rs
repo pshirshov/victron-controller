@@ -511,6 +511,14 @@ async fn main() -> Result<()> {
         None
     };
 
+    // PR2: shared `Notify` so the runtime can wake the baseline
+    // scheduler the moment a `WeatherCloudForecast` event lands in
+    // `world` — fixes the startup race where baseline emits its
+    // first snapshot before the current-weather poller's HTTP fetch
+    // completes, stranding the dashboard on an unmodulated baseline
+    // for up to one cadence (default 1 h).
+    let cloud_forecast_arrived = Arc::new(tokio::sync::Notify::new());
+
     let runtime = Runtime::new(
         world.clone(),
         writer,
@@ -520,6 +528,7 @@ async fn main() -> Result<()> {
         topology,
         snapshot_stream.clone(),
         meta.clone(),
+        cloud_forecast_arrived.clone(),
     );
 
     if let Some(client) = initial_knob_publish_client {
@@ -726,8 +735,10 @@ async fn main() -> Result<()> {
         };
         let tx_b = tx.clone();
         let world_b = world.clone();
+        let notify_b = cloud_forecast_arrived.clone();
         forecast_tasks.push(tokio::spawn(async move {
-            let _ = forecast::baseline::run_baseline_scheduler(params, world_b, tx_b).await;
+            let _ = forecast::baseline::run_baseline_scheduler(params, world_b, tx_b, notify_b)
+                .await;
         }));
     } else if !location_configured && cfg.forecast.baseline.enabled {
         info!(

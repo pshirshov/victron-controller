@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{debug, info, trace, warn};
 
-use victron_controller_core::types::{check_staleness_invariant, Effect, Event, SensorId};
+use victron_controller_core::types::{check_staleness_invariant, Effect, Event, SensorId, TypedReading};
 use victron_controller_core::{process, Topology, World};
 
 use crate::clock::RealClock;
@@ -38,6 +38,14 @@ pub struct Runtime {
     mqtt: Option<MqttPublisher>,
     snapshot_stream: Arc<SnapshotBroadcast>,
     meta: MetaContext,
+    /// PR2: pinged after the runtime applies a `WeatherCloudForecast`
+    /// to `world`. The baseline scheduler waits on this notify in
+    /// parallel with its periodic cadence so a fresh cloud forecast
+    /// triggers an immediate baseline re-emission instead of waiting
+    /// up to one full cadence (typically 1 h) — the startup race that
+    /// otherwise leaves the dashboard on an unmodulated, no-cloud
+    /// baseline snapshot.
+    cloud_forecast_arrived: Arc<Notify>,
 }
 
 impl Runtime {
@@ -51,6 +59,7 @@ impl Runtime {
         topology: Topology,
         snapshot_stream: Arc<SnapshotBroadcast>,
         meta: MetaContext,
+        cloud_forecast_arrived: Arc<Notify>,
     ) -> Self {
         // Belt-and-braces against constant edits that bypass the unit
         // test in `crates/core/src/types.rs`. PR-staleness-floor (M-UX-1).
@@ -73,6 +82,7 @@ impl Runtime {
             mqtt,
             snapshot_stream,
             meta,
+            cloud_forecast_arrived,
         }
     }
 
@@ -99,12 +109,26 @@ impl Runtime {
                 _ = tick.tick() => Event::Tick { at: Instant::now() },
             };
             trace!(?event, "process");
+            // PR2: detect cloud-forecast events BEFORE process() consumes
+            // the event by value. Used to ping the baseline scheduler
+            // once the world update has actually landed.
+            let is_cloud_forecast = matches!(
+                event,
+                Event::TypedSensor(TypedReading::WeatherCloudForecast { .. }),
+            );
             let (effects, snapshot) = {
                 let mut world = self.world.lock().await;
                 let effects = process(&event, &mut world, &self.clock, &self.topology);
                 let snapshot = world_to_snapshot(&world, &self.meta);
                 (effects, snapshot)
             };
+            if is_cloud_forecast {
+                // World has the fresh cloud array now — wake the
+                // baseline scheduler so it re-emits with modulation
+                // applied, instead of waiting up to one cadence
+                // boundary.
+                self.cloud_forecast_arrived.notify_one();
+            }
             // Fan the fresh snapshot out to every WebSocket client.
             self.snapshot_stream.send(snapshot);
             for e in effects {
