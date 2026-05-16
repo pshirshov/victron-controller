@@ -575,6 +575,7 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
             tomorrow_kwh,
             hourly_kwh,
             hourly_temperature_c,
+            hourly_cloud_cover_pct,
             at,
         } => {
             let snap = ForecastSnapshot {
@@ -583,6 +584,7 @@ fn apply_typed_reading(r: TypedReading, world: &mut World, effects: &mut Vec<Eff
                 fetched_at: at,
                 hourly_kwh,
                 hourly_temperature_c,
+                hourly_cloud_cover_pct,
             };
             match provider {
                 ForecastProvider::Solcast => world.typed_sensors.forecast_solcast = Some(snap),
@@ -5024,6 +5026,7 @@ mod tests {
             fetched_at: at,
             hourly_kwh: Vec::new(),
             hourly_temperature_c: Vec::new(),
+            hourly_cloud_cover_pct: Vec::new(),
         });
     }
 
@@ -5112,6 +5115,7 @@ mod tests {
             fetched_at: at,
             hourly_kwh: Vec::new(),
             hourly_temperature_c,
+            hourly_cloud_cover_pct: Vec::new(),
         });
     }
 
@@ -5348,6 +5352,7 @@ mod tests {
             fetched_at: c0.monotonic,
             hourly_kwh: Vec::new(),
             hourly_temperature_c: Vec::new(),
+            hourly_cloud_cover_pct: Vec::new(),
         });
 
         let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
@@ -5376,6 +5381,7 @@ mod tests {
             fetched_at: c0.monotonic,
             hourly_kwh: Vec::new(),
             hourly_temperature_c: temps,
+            hourly_cloud_cover_pct: Vec::new(),
         });
 
         let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());
@@ -5403,6 +5409,7 @@ mod tests {
             fetched_at: c0.monotonic,
             hourly_kwh: Vec::new(),
             hourly_temperature_c: Vec::new(),
+            hourly_cloud_cover_pct: Vec::new(),
         });
 
         let _ = process(&Event::Tick { at: c0.monotonic }, &mut world, &c0, &Topology::defaults());

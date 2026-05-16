@@ -187,6 +187,10 @@ pub async fn run_baseline_scheduler(
                 hourly_kwh,
                 // Baseline doesn't model temperature.
                 hourly_temperature_c: Vec::new(),
+                // PR2 (cloud-modulated baseline) will populate this
+                // with the cloud array used for modulation. For now,
+                // until that wiring lands, emit empty.
+                hourly_cloud_cover_pct: Vec::new(),
                 at: Instant::now(),
             }))
             .await;

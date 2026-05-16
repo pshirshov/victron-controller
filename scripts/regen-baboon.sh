@@ -129,6 +129,7 @@ find "$RS_OUT/src" -path '*/dashboard*/forecast_snapshot.rs' -print0 | while IFS
   sed -i \
     -e 's|self\.hourly_kwh\.total_cmp(&other\.hourly_kwh)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_kwh, \&other.hourly_kwh)|' \
     -e 's|self\.hourly_temperature_c\.total_cmp(&other\.hourly_temperature_c)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_temperature_c, \&other.hourly_temperature_c)|' \
+    -e 's|self\.hourly_cloud_cover_pct\.total_cmp(&other\.hourly_cloud_cover_pct)|crate::baboon_runtime::__vec_f64_total_cmp(\&self.hourly_cloud_cover_pct, \&other.hourly_cloud_cover_pct)|' \
     "$f"
 done
 

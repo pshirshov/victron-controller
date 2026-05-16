@@ -1590,7 +1590,78 @@ function renderForecastBody(entityId: string, snap: WorldSnapshot): string {
       `<tr><th>last fetch</th><td>${esc(fmtEpoch(f.fetched_at_epoch_ms))}</td></tr>` +
       `</tbody></table></section>`,
   );
+  sections.push(renderForecastHourlySection(f));
   return sections.filter(Boolean).join("");
+}
+
+// Per-hour breakdown for the forecast inspector popup. Renders one row
+// per hour with columns that exist in this snapshot:
+//   hour | kWh | °C (when populated) | clouds % (when populated).
+// Today and tomorrow are split into two side-by-side tables so the
+// operator can see both days without scrolling.
+//
+// Skips entirely when `hourly_kwh` is empty or length is wrong — the
+// daily totals in the Provider section above are still useful.
+function renderForecastHourlySection(f: {
+  hourly_kwh?: number[];
+  hourly_temperature_c?: number[];
+  hourly_cloud_cover_pct?: number[];
+}): string {
+  const hk = Array.isArray(f.hourly_kwh) ? f.hourly_kwh : [];
+  if (hk.length !== 48) return "";
+  const ht = Array.isArray(f.hourly_temperature_c) ? f.hourly_temperature_c : [];
+  const hc = Array.isArray(f.hourly_cloud_cover_pct) ? f.hourly_cloud_cover_pct : [];
+  const hasTemp = ht.length === 48 && ht.some((v) => Number.isFinite(v));
+  const hasCloud = hc.length === 48 && hc.some((v) => Number.isFinite(v));
+
+  // Two side-by-side tables (today + tomorrow). Each row: hour, kWh,
+  // optional temp, optional clouds.
+  const headerCells = ["h", "kWh"]
+    .concat(hasTemp ? ["°C"] : [])
+    .concat(hasCloud ? ["clouds"] : [])
+    .map((h) => `<th>${esc(h)}</th>`)
+    .join("");
+
+  const renderDay = (offset: 0 | 24, label: string): string => {
+    const rows: string[] = [];
+    for (let h = 0; h < 24; h++) {
+      const i = offset + h;
+      const kwh = hk[i];
+      const t = ht[i];
+      const c = hc[i];
+      const hourStr = `${h.toString().padStart(2, "0")}:00`;
+      const cells = [
+        `<td class="mono">${esc(hourStr)}</td>`,
+        `<td class="mono">${fmtNum(kwh, 2)}</td>`,
+      ];
+      if (hasTemp) {
+        cells.push(
+          `<td class="mono">${Number.isFinite(t) ? fmtNum(t, 1) : '<span class="dim">—</span>'}</td>`,
+        );
+      }
+      if (hasCloud) {
+        cells.push(
+          `<td class="mono">${Number.isFinite(c) ? `${fmtNum(c, 0)}%` : '<span class="dim">—</span>'}</td>`,
+        );
+      }
+      rows.push(`<tr>${cells.join("")}</tr>`);
+    }
+    return (
+      `<div style="flex:1;min-width:0">` +
+      `<h4 style="margin:0 0 4px">${esc(label)}</h4>` +
+      `<table><thead><tr>${headerCells}</tr></thead>` +
+      `<tbody>${rows.join("")}</tbody></table>` +
+      `</div>`
+    );
+  };
+
+  return (
+    `<section><h3>Per-hour</h3>` +
+    `<div style="display:flex;gap:12px;flex-wrap:wrap">` +
+    renderDay(0, "Today") +
+    renderDay(24, "Tomorrow") +
+    `</div></section>`
+  );
 }
 
 function renderCoreBody(entityId: string, snap: WorldSnapshot): string {

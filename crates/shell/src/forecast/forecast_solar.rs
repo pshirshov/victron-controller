@@ -155,6 +155,8 @@ impl ForecastFetcher for ForecastSolarClient {
             // Forecast.Solar doesn't supply temperature; planner falls
             // back to the sensor when this is empty.
             hourly_temperature_c: Vec::new(),
+            // Forecast.Solar doesn't supply cloud cover.
+            hourly_cloud_cover_pct: Vec::new(),
         })
     }
 }

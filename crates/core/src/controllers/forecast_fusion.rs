@@ -253,6 +253,7 @@ mod tests {
             fetched_at: Instant::now(),
             hourly_kwh: Vec::new(),
             hourly_temperature_c: Vec::new(),
+            hourly_cloud_cover_pct: Vec::new(),
         }
     }
 
@@ -414,6 +415,7 @@ mod tests {
             fetched_at: Instant::now(),
             hourly_kwh: hourly,
             hourly_temperature_c: Vec::new(),
+            hourly_cloud_cover_pct: Vec::new(),
         }
     }
 

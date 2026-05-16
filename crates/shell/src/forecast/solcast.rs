@@ -148,6 +148,8 @@ impl ForecastFetcher for SolcastClient {
             // "no forecast temperature available" and consults the
             // sensor.
             hourly_temperature_c: Vec::new(),
+            // Solcast doesn't supply cloud cover.
+            hourly_cloud_cover_pct: Vec::new(),
         })
     }
 }

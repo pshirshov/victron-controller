@@ -1297,6 +1297,7 @@ fn forecast_snapshot(f: &victron_controller_core::world::ForecastSnapshot) -> Mo
         // dashboard's SoC chart can subdivide Natural segments.
         hourly_kwh: f.hourly_kwh.clone(),
         hourly_temperature_c: f.hourly_temperature_c.clone(),
+        hourly_cloud_cover_pct: f.hourly_cloud_cover_pct.clone(),
     }
 }
 

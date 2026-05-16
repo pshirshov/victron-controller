@@ -60,6 +60,12 @@ pub struct ForecastTotals {
     pub tomorrow_kwh: f64,
     pub hourly_kwh: Vec<f64>,
     pub hourly_temperature_c: Vec<f64>,
+    /// Length-48 vector of cloud-cover percentage in [0, 100], same
+    /// indexing as `hourly_kwh`. Empty for providers that don't supply
+    /// cloud data (Solcast / Forecast.Solar today). Open-Meteo
+    /// populates from its `cloud_cover` hourly field; the baseline
+    /// forecaster echoes the cloud array it consulted for modulation.
+    pub hourly_cloud_cover_pct: Vec<f64>,
 }
 
 /// Common trait that each provider implementation satisfies.
@@ -149,6 +155,7 @@ pub async fn run_scheduler(
                         tomorrow_kwh: totals.tomorrow_kwh,
                         hourly_kwh: totals.hourly_kwh,
                         hourly_temperature_c: totals.hourly_temperature_c,
+                        hourly_cloud_cover_pct: totals.hourly_cloud_cover_pct,
                         at: std::time::Instant::now(),
                     }))
                     .await

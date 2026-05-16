@@ -107,6 +107,12 @@ impl ForecastFetcher for OpenMeteoClient {
         // loop, NaN slots collapse the vector to empty if none were set.
         let mut hourly_temperature_c: Vec<f64> = vec![f64::NAN; 48];
         let mut saw_any_temperature = false;
+        // Per-hour cloud cover (%). Same indexing + NaN sentinel +
+        // collapse-to-empty pattern as temperature. Open-Meteo returns
+        // this in every per-plane response; folding is idempotent for
+        // the same reason as `temperature_2m`.
+        let mut hourly_cloud_cover_pct: Vec<f64> = vec![f64::NAN; 48];
+        let mut saw_any_cloud_cover = false;
 
         let url = "https://api.open-meteo.com/v1/forecast";
         let tz_name = self.tz.name();
@@ -125,7 +131,9 @@ impl ForecastFetcher for OpenMeteoClient {
                     // `temperature_2m` so the WeatherSoc planner can
                     // average forecast temperature across daylight hours
                     // instead of consulting the instantaneous sensor.
-                    ("hourly", "global_tilted_irradiance,temperature_2m"),
+                    // `cloud_cover` is informational — surfaced in the
+                    // per-hour forecast popup.
+                    ("hourly", "global_tilted_irradiance,temperature_2m,cloud_cover"),
                     ("tilt", &tilt),
                     ("azimuth", &az),
                     // A-50: pin site TZ explicitly (reqwest URL-encodes
@@ -154,6 +162,9 @@ impl ForecastFetcher for OpenMeteoClient {
             let temps: Option<&Vec<serde_json::Value>> = body
                 .pointer("/hourly/temperature_2m")
                 .and_then(|v| v.as_array());
+            let clouds: Option<&Vec<serde_json::Value>> = body
+                .pointer("/hourly/cloud_cover")
+                .and_then(|v| v.as_array());
 
             // Sum hourly irradiance (W/m²) × 1 h × efficiency × kWp/1000
             // into today/tomorrow buckets, using the time string's date.
@@ -176,6 +187,9 @@ impl ForecastFetcher for OpenMeteoClient {
                 let temp_c: Option<f64> = temps
                     .and_then(|arr| arr.get(i))
                     .and_then(serde_json::Value::as_f64);
+                let cloud_pct: Option<f64> = clouds
+                    .and_then(|arr| arr.get(i))
+                    .and_then(serde_json::Value::as_f64);
                 if date_part == today_str {
                     totals_today_kwh += kwh_contrib;
                     if let Some(h) = hour {
@@ -184,6 +198,10 @@ impl ForecastFetcher for OpenMeteoClient {
                         if let Some(c) = temp_c {
                             hourly_temperature_c[h] = c;
                             saw_any_temperature = true;
+                        }
+                        if let Some(c) = cloud_pct {
+                            hourly_cloud_cover_pct[h] = c;
+                            saw_any_cloud_cover = true;
                         }
                     }
                 } else if date_part == tomorrow_str {
@@ -194,6 +212,10 @@ impl ForecastFetcher for OpenMeteoClient {
                         if let Some(c) = temp_c {
                             hourly_temperature_c[24 + h] = c;
                             saw_any_temperature = true;
+                        }
+                        if let Some(c) = cloud_pct {
+                            hourly_cloud_cover_pct[24 + h] = c;
+                            saw_any_cloud_cover = true;
                         }
                     }
                 }
@@ -221,12 +243,21 @@ impl ForecastFetcher for OpenMeteoClient {
             );
             Vec::new()
         };
+        let final_hourly_clouds = if saw_any_cloud_cover {
+            hourly_cloud_cover_pct
+        } else {
+            tracing::debug!(
+                "open_meteo: no cloud_cover entries parsed; emitting empty hourly_cloud_cover_pct"
+            );
+            Vec::new()
+        };
 
         Ok(ForecastTotals {
             today_kwh: totals_today_kwh,
             tomorrow_kwh: totals_tomorrow_kwh,
             hourly_kwh: final_hourly,
             hourly_temperature_c: final_hourly_temp,
+            hourly_cloud_cover_pct: final_hourly_clouds,
         })
     }
 }

@@ -515,12 +515,21 @@ data WeatherSocActive {
 // today); empty for providers that don't (Solcast, Forecast.Solar,
 // baseline). Consumed by the WeatherSoc planner to derive the
 // daylight-window average that drives the Cold/Warm column choice.
+//
+// `hourly_cloud_cover_pct` — additive: length-48 vector of per-hour
+// cloud-cover percentage in [0,100], same indexing convention as
+// `hourly_kwh`. Populated by providers that have cloud data
+// (Open-Meteo today; the baseline forecaster echoes the cloud array
+// it consulted for modulation). Empty for providers that don't.
+// Surfaced in the per-hour forecast popup; not currently consumed by
+// any planner.
 data ForecastSnapshot {
   today_kwh: f64
   tomorrow_kwh: f64
   fetched_at_epoch_ms: i64
   hourly_kwh: lst[f64]
   hourly_temperature_c: lst[f64]
+  hourly_cloud_cover_pct: lst[f64]
 }
 
 // Source of the temperature value the WeatherSoc planner used this

@@ -1181,6 +1181,12 @@ pub enum TypedReading {
         /// Forecast.Solar, baseline). Open-Meteo populates this from
         /// its `temperature_2m` hourly field.
         hourly_temperature_c: Vec<f64>,
+        /// Length-48 vector of cloud-cover percentage in [0, 100] at
+        /// the same indexing convention as `hourly_kwh`. Empty for
+        /// providers without cloud data. Populated by Open-Meteo
+        /// (from `cloud_cover`) and by the baseline forecaster (echo
+        /// of the cloud array it consulted for modulation).
+        hourly_cloud_cover_pct: Vec<f64>,
         at: Instant,
     },
 }

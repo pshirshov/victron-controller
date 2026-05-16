@@ -220,6 +220,13 @@ pub struct ForecastSnapshot {
     /// baseline). Consumed by the WeatherSoc planner to derive the
     /// daylight-window average that drives the Cold/Warm column choice.
     pub hourly_temperature_c: Vec<f64>,
+    /// Hourly cloud-cover percentage in [0, 100] starting at midnight
+    /// LOCAL today. Same length/indexing convention as `hourly_kwh`.
+    /// Empty for providers without cloud data; populated by Open-Meteo
+    /// (sourced from the same response that gives temperature) and by
+    /// the baseline forecaster (echoing the cloud array it consulted
+    /// for modulation). Surfaced in the per-hour forecast popup.
+    pub hourly_cloud_cover_pct: Vec<f64>,
 }
 
 /// Non-scalar sensor state.
