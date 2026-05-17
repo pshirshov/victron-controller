@@ -38,6 +38,7 @@ export const OPERATOR_GROUPS: ReadonlyArray<string> = [
   "Planner overrides",
   "EV / Zappi",
   "Schedule overrides",
+  "Forecast",
   "Heat pump",
 ];
 export const CONFIG_GROUPS: ReadonlyArray<string> = [

@@ -18,6 +18,20 @@
 
         fenixPkgs = fenix.packages.${system};
 
+        # Git SHA threaded into both the web bundle (`__WEB_GIT_SHA__`)
+        # and the shell binary (`option_env!("VICTRON_CONTROLLER_GIT_SHA")`).
+        # Without this, Nix builds drop to the build.rs/build-web.sh
+        # `git rev-parse` fallback, which fails in the Nix sandbox
+        # (no `.git/`, no git binary in PATH) — and `/api/version`
+        # reports `git_sha: null`, breaking the dashboard's
+        # version-reload feature.
+        # `self.rev` is set on clean trees; `self.dirtyRev` on dirty
+        # trees (Nix ≥ 2.16). Match build.rs's `--short=12` length so
+        # client and server SHAs compare equal in the dashboard's
+        # version-mismatch reload check.
+        gitRev = self.rev or self.dirtyRev or null;
+        gitSha = if gitRev != null then builtins.substring 0 12 gitRev else "";
+
         # Rust toolchain with both host and ARMv7-Venus cross targets.
         # Fenix provides per-target std, which stock nixpkgs rustc doesn't.
         # Single source of truth — used by the dev shell AND the package
@@ -66,10 +80,12 @@
           version = "0.1.0";
           src = ./web;
           nativeBuildInputs = [ pkgs.esbuild pkgs.typescript ];
+          VICTRON_CONTROLLER_GIT_SHA = gitSha;
           buildPhase = ''
             runHook preBuild
             tsc --noEmit
-            esbuild src/index.ts --bundle --minify --outfile=bundle.js
+            esbuild src/index.ts --bundle --minify --outfile=bundle.js \
+              "--define:__WEB_GIT_SHA__=\"$VICTRON_CONTROLLER_GIT_SHA\""
             runHook postBuild
           '';
           installPhase = ''
@@ -90,6 +106,10 @@
           src = ./.;
           inherit cargoLock;
           cargoBuildFlags = [ "-p" "victron-controller-shell" ];
+          # Bake the SHA into the shell binary so `/api/version` and the
+          # WebSocket `Hello` carry a non-null value (see `gitSha`
+          # comment above). build.rs treats "" as absent.
+          VICTRON_CONTROLLER_GIT_SHA = gitSha;
           postPatch = ''
             cp ${web-bundle}/bundle.js crates/shell/static/bundle.js
           '';
